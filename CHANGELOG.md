@@ -34,6 +34,20 @@ breaking changes while the command surface settles.
   "what's new" lines from the changelog for the new version (interactive
   terminals only), backed by a best-effort forward-migration runner for
   future config-shape changes.
+
+- Remote-aware sign-in: on SSH or WSL sessions (where a locally-opened
+  browser can't reach the user), `aiand login` skips the browser opener,
+  prints the approval URL directly, and offers to copy it to the clipboard
+  on an interactive terminal. The "Approve at" URL is an OSC-8 terminal
+  hyperlink where supported, so it can be clicked instead of transcribed.
+- `aiand key export` — print the active session key to stdout (env key,
+  stored credential, or interactive sign-in), for piping into tools that
+  want the raw key. `--profile` honored.
+- `native` slot escape hatch: `aiand claude --opus native` (also `--sonnet`,
+  `--haiku`, `--model`) leaves that slot unpinned so Claude Code's own
+  default wins, instead of pinning a gateway model.
+- `aiand models` shows a Vision column (`vision` / `text-only`) after the
+  context window; `--json` remains the raw catalog.
 ### Added
 
 - Agent setup for Cursor, pi, VS Code, DeepSeek Harness, and Prime: each adapter

@@ -105,7 +105,10 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
 
   let model: string;
   if (opts.model) {
-    if (!catalog.some((entry) => entry.id === opts.model)) {
+    // The literal "native" unpins a slot so the agent's own default wins; it
+    // is not a catalog id, so it skips the membership check and the adapter
+    // writes nothing for it (see the claude adapter's enable()).
+    if (opts.model !== "native" && !catalog.some((entry) => entry.id === opts.model)) {
       throw new CliError(`--model "${opts.model}" is not in the catalog.`, {
         hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
       });
@@ -122,7 +125,7 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     ...opts.slots,
   };
   for (const [slot, value] of Object.entries(opts.slots ?? {})) {
-    if (!catalog.some((entry) => entry.id === value)) {
+    if (value !== "native" && !catalog.some((entry) => entry.id === value)) {
       throw new CliError(`--${slot} "${value}" is not in the catalog.`, {
         hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
       });
@@ -140,11 +143,12 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
 
   // Claude Code reads model ids back tagged with [1m]; strip that before the
   // catalog lookup so a text-only 1M model still warns. Every id actually
-  // written (main model + slot values) is checked against the catalog.
+  // written (main model + slot values) is checked against the catalog, except
+  // the literal "native" escape hatch, which names no model and never warns.
   let warnings: string[] = [];
   if (adapter.id === "claude") {
     const ids = [written.model, slots.opus, slots.sonnet, slots.haiku]
-      .filter((id): id is string => typeof id === "string")
+      .filter((id): id is string => typeof id === "string" && id !== "native")
       .map((id) => id.replace(/\[1m\]$/, ""));
     const textOnly = ids.filter((id) => {
       const entry = catalog.find((model) => model.id === id);

@@ -11,6 +11,7 @@ import * as config from "./config.js";
 import * as init from "./init.js";
 import * as status from "./status.js";
 import * as runAgent from "./run-agent.js";
+import * as key from "./key.js";
 import { AGENTS } from "../agents/registry.js";
 
 export type Command = {
@@ -35,6 +36,7 @@ export const COMMANDS: Command[] = [
   { name: "init", summary: "Detect agents and wire them to ai&", ...init },
   { name: "status", summary: "Show auth and agent wiring", ...status },
   { name: "run-agent", summary: "Run a coding agent on ai& for one session", ...runAgent },
+  { name: "key", summary: "Print the active session key", aliases: ["key"], ...key },
 ];
 
 export function findCommand(name: string): Command | undefined {

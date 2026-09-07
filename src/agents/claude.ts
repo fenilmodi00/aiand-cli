@@ -46,6 +46,7 @@ const MANAGED_ENV_KEYS: readonly string[] = [
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
   "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+  "ANTHROPIC_SMALL_FAST_MODEL",
   // fallback tier
   "ANTHROPIC_DEFAULT_FABLE_MODEL",
   "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
@@ -199,15 +200,21 @@ async function enable(input: EnableInput): Promise<{ model: string; filesWritten
   // Claude Code reads a trailing [1m] tag to size its context window and
   // strips it before the request; without it the binary assumes 200K and
   // auto-compacts, starving subagents on 1M-context models.
-  nextEnv.ANTHROPIC_MODEL = withContextTag(input.model, input.catalog);
-  // Slot vars: tag the same way, then mirror the (already tagged) haiku slot.
-  if (input.slots.opus) {
+  // The literal "native" unpins a slot so Claude Code's own default wins: the
+  // managed var was already swept out of nextEnv above, and we deliberately
+  // write nothing back, leaving the binary to fall back to its built-in model.
+  if (input.model !== "native") {
+    nextEnv.ANTHROPIC_MODEL = withContextTag(input.model, input.catalog);
+  }
+  if (input.slots.opus && input.slots.opus !== "native") {
     nextEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = withContextTag(input.slots.opus, input.catalog);
   }
-  if (input.slots.sonnet) {
+  if (input.slots.sonnet && input.slots.sonnet !== "native") {
     nextEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = withContextTag(input.slots.sonnet, input.catalog);
   }
-  if (input.slots.haiku) {
+  if (input.slots.haiku && input.slots.haiku !== "native") {
+    // ANTHROPIC_SMALL_FAST_MODEL mirrors the haiku slot, so when haiku is
+    // unpinned (native) neither var is written.
     const haiku = withContextTag(input.slots.haiku, input.catalog);
     nextEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku;
     nextEnv.ANTHROPIC_SMALL_FAST_MODEL = haiku;

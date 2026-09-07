@@ -1,6 +1,9 @@
 import { parse, bool, str, type Parsed } from "../cli/args.js";
 import { err, fields, out, style, spinner } from "../cli/output.js";
-import { openBrowser } from "../cli/browser.js";
+import { openBrowserAware } from "../cli/browser.js";
+import { copyToClipboard } from "../cli/clipboard.js";
+import { link } from "../cli/links.js";
+import { isRemoteContext } from "../cli/remote.js";
 import { CliError } from "../cli/errors.js";
 import { confirm, isInteractive, readSecret } from "../cli/prompt.js";
 import {
@@ -105,14 +108,25 @@ async function runDeviceLogin(argvOptions: Parsed): Promise<void> {
   const device = await startDeviceAuthorization(profile.authUrl);
   const url = verificationUrl(profile.authUrl, device);
 
+  const remote = isRemoteContext();
+
   out();
   out(`  ${style.dim("Your code ")}  ${style.bold(style.cyan(device.user_code))}`);
-  out(`  ${style.dim("Approve at")}  ${style.blue(url)}`);
+  out(`  ${style.dim("Approve at")}  ${link(url)}`);
   out();
 
   if (bool(argvOptions, "no-browser")) {
     err(style.dim("Open the URL above to continue."));
-  } else if (!openBrowser(url)) {
+  } else if (remote) {
+    err(
+      style.dim(
+        "No browser can open from here (SSH/WSL) -- open the URL above to continue."
+      )
+    );
+    if (isInteractive() && (await copyToClipboard(url))) {
+      err(style.dim("Copied the approval URL to your clipboard."));
+    }
+  } else if (openBrowserAware(url) === "remote") {
     err(style.dim("Could not open a browser -- open the URL above to continue."));
   }
 

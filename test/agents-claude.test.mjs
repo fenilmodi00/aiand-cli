@@ -157,6 +157,102 @@ describe("claude enable", () => {
   });
 });
 
+describe("claude native slot unpinning", () => {
+  const settingsPathFor = (home) => join(home, ".claude", "settings.json");
+
+  const plantAndEnable = async (overrides = {}, {
+    opus = "vendor/opus",
+    sonnet = "vendor/sonnet",
+    haiku = "vendor/haiku",
+  } = {}) => {
+    const home = process.env.AIAND_HOME;
+    const nativeHome = join(home, `native-${Math.random().toString(36).slice(2)}`);
+    process.env.AIAND_HOME = nativeHome;
+    mkdirSync(join(nativeHome, ".claude"), { recursive: true });
+    // Start with managed slot vars planted so we can prove native not only
+    // skips writing them but actively clears a previously-written value.
+    writeFileSync(
+      settingsPathFor(nativeHome),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "stale-opus",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "stale-sonnet",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "stale-haiku",
+          ANTHROPIC_SMALL_FAST_MODEL: "stale-small",
+          ANTHROPIC_MODEL: "stale-model",
+        },
+      })
+    );
+
+    const result = await claudeAdapter.enable(
+      enableInput({
+        model: overrides.model ?? "zai-org/glm-5.3",
+        slots: { opus, sonnet, haiku },
+        ...overrides,
+      })
+    );
+    const written = JSON.parse(readFileSync(settingsPathFor(nativeHome), "utf8"));
+    process.env.AIAND_HOME = home;
+    return { result, written };
+  };
+
+  test("a native slot flag leaves its managed var absent so Claude's own default wins", async () => {
+    const { written } = await plantAndEnable({}, { opus: "native" });
+
+    // opus unpinned: the stale managed var is gone and nothing replaces it.
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, undefined);
+    // sibling slots still written.
+    assert.equal(written.env.ANTHROPIC_DEFAULT_SONNET_MODEL, "vendor/sonnet");
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "vendor/haiku");
+    assert.equal(written.env.ANTHROPIC_SMALL_FAST_MODEL, "vendor/haiku");
+  });
+
+  test("deleting any one managed slot var never leaves a sibling slot stale", async () => {
+    const { written } = await plantAndEnable({}, { opus: "native", sonnet: "native" });
+
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, undefined);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "vendor/haiku");
+  });
+
+  test("a native haiku also drops the mirrored ANTHROPIC_SMALL_FAST_MODEL", async () => {
+    const { written } = await plantAndEnable({}, { haiku: "native" });
+
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined);
+    assert.equal(written.env.ANTHROPIC_SMALL_FAST_MODEL, undefined);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "vendor/opus");
+  });
+
+  test("--model native leaves ANTHROPIC_MODEL absent", async () => {
+    const { written } = await plantAndEnable({ model: "native" });
+
+    assert.equal(written.env.ANTHROPIC_MODEL, undefined);
+    // slots unaffected
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "vendor/opus");
+  });
+
+  test("non-native values are still written and tagged [1m] on 1M-context models", async () => {
+    const home = process.env.AIAND_HOME;
+    const tagHome = join(home, `native-tag-${Math.random().toString(36).slice(2)}`);
+    process.env.AIAND_HOME = tagHome;
+    mkdirSync(join(tagHome, ".claude"), { recursive: true });
+    writeFileSync(settingsPathFor(tagHome), "{}\n");
+
+    const model = "vendor/million-model";
+    const catalog = [modelFixture(model, 1_048_576, ["tools"])];
+    await claudeAdapter.enable(enableInput({ catalog, model, slots: { opus: model, sonnet: model, haiku: model } }));
+
+    const written = JSON.parse(readFileSync(settingsPathFor(tagHome), "utf8"));
+    assert.equal(written.env.ANTHROPIC_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_SONNET_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_SMALL_FAST_MODEL, `${model}[1m]`);
+
+    process.env.AIAND_HOME = home;
+  });
+});
+
 describe("claude probe", () => {
   test("reports active when ANTHROPIC_BASE_URL matches, with its model", async () => {
     mkdirSync(join(process.env.AIAND_HOME, ".claude"), { recursive: true });
@@ -547,6 +643,48 @@ describe("claude agentOn text-only warning", () => {
     assert.equal(
       result.warnings[0],
       "Text-only: zai-org/million-text · Avoid images; recover with /rewind."
+    );
+  });
+
+  test("the literal 'native' model and slot values bypass catalog validation", async () => {
+    // Seed a catalog that does NOT contain "native" — agentOn must accept it
+    // as the escape hatch instead of rejecting it as an unknown id.
+    seedCatalog([modelFixture("zai-org/vision-1m", 262_144, ["vision"])]);
+
+    const result = await runOn({
+      model: "native",
+      slots: { opus: "native", sonnet: "native", haiku: "native" },
+    });
+
+    assert.equal(result.state, "on");
+    assert.equal(result.model, "native");
+    // native names no model, so it must never surface a text-only warning.
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test("native never warns when mixed with a vision-capable slot", async () => {
+    const vision = modelFixture("zai-org/vision-1m", 262_144, ["vision"]);
+    seedCatalog([vision]);
+
+    const result = await runOn({
+      model: "native",
+      slots: { opus: "native", sonnet: "native", haiku: "zai-org/vision-1m" },
+    });
+
+    assert.equal(result.state, "on");
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test("a non-native slot still validates against the catalog", async () => {
+    seedCatalog([modelFixture("zai-org/vision-1m", 262_144, ["vision"])]);
+
+    await assert.rejects(
+      () => runOn({ model: "native", slots: { opus: "ghost/unknown" } }),
+      (e) => {
+        assert.equal(e.name, "CliError");
+        assert.match(e.message, /--opus "ghost\/unknown" is not in the catalog/);
+        return true;
+      }
     );
   });
 });
