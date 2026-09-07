@@ -149,10 +149,9 @@ describe("run-agent launcher", () => {
 
       const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
       assert.ok(args.includes('model_provider="aiand"'));
+      assert.ok(args.some((a) => a.startsWith('model="')));
       assert.ok(args.some((a) => a.startsWith('model_providers.aiand.base_url=')));
       assert.ok(args.some((a) => a.startsWith('model_providers.aiand.env_key=')));
-      // No --model passed -> the model -c line is omitted entirely.
-      assert.ok(!args.some((a) => a.startsWith('model="')));
 
       const envText = readFileSync(join(capture, "capture.env"), "utf8");
       assert.match(envText, /AIAND_CODEX_AUTH_TOKEN=sk-test-aiand\n/);

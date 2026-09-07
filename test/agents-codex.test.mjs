@@ -281,13 +281,15 @@ describe("codex adapter", () => {
     assert.deepEqual(launch.clear, []);
   });
 
-  test("sessionLaunch omits the model override when none is resolved", async () => {
+  test("sessionLaunch resolves the model from the catalog when none is given", async () => {
+    // Codex's own default (gpt-5-codex family) is not in the gateway
+    // catalog, so the launch must always bake a catalog-valid model.
     const launch = await codexAdapter.sessionLaunch({
       apiKey: "sk-launch-1",
       model: undefined,
-      catalog: [],
+      catalog: fixtureModels(),
     });
-    assert.ok(!launch.args.some((arg) => arg.startsWith('model="')));
+    assert.ok(launch.args.includes('model="zai-org/glm-5.3"'));
     assert.equal(launch.env.AIAND_CODEX_AUTH_TOKEN, "sk-launch-1");
   });
 

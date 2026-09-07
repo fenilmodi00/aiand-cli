@@ -282,7 +282,8 @@ describe("claude snapshot round-trip", () => {
 });
 
 describe("claude session launch", () => {
-  const launchInput = (model) => ({ apiKey: BASE_KEY, model, catalog: [] });
+  const catalog = [{ id: "zai-org/glm-5.3" }];
+  const launchInput = (model) => ({ apiKey: BASE_KEY, model, catalog });
 
   test("bakes base url, auth token, and model env with the managed clear list", async () => {
     const launch = await claudeAdapter.sessionLaunch(launchInput("m-run"));
@@ -294,9 +295,11 @@ describe("claude session launch", () => {
     assert.ok(launch.clear.includes("CLAUDE_CODE_OAUTH_TOKEN"));
   });
 
-  test("omits the model key when none is resolved", async () => {
+  test("resolves the model from the catalog when none is given", async () => {
+    // Claude Code's own default (claude-opus-5) is not in the gateway
+    // catalog, so the launch must always bake a catalog-valid model.
     const launch = await claudeAdapter.sessionLaunch(launchInput(undefined));
-    assert.equal(launch.env.ANTHROPIC_MODEL, undefined);
+    assert.equal(launch.env.ANTHROPIC_MODEL, "zai-org/glm-5.3");
     assert.equal(launch.env.ANTHROPIC_BASE_URL, BASE_URL);
     assert.equal(launch.env.ANTHROPIC_AUTH_TOKEN, BASE_KEY);
   });

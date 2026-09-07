@@ -5,6 +5,7 @@ import { CliError } from "../cli/errors.js";
 import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
+import { resolveDefault } from "./catalog.js";
 import { agentHome } from "./paths.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
@@ -240,13 +241,15 @@ export const claudeAdapter: AgentAdapter = {
     return Promise.resolve();
   },
   async sessionLaunch(input: SessionLaunchInput) {
+    // Claude Code's built-in model default (claude-opus-5) is not in the
+    // gateway catalog, so a session launch must always bake a catalog-valid
+    // model into ANTHROPIC_MODEL — never rely on the binary's own default.
+    const model = input.model ?? resolveDefault(input.catalog);
     return {
       env: {
         ANTHROPIC_BASE_URL: CLAUDE_BASE_URL,
         ANTHROPIC_AUTH_TOKEN: input.apiKey,
-        // Omit the model key when the launcher didn't resolve one, letting
-        // Claude Code fall back to its own default.
-        ...(input.model ? { ANTHROPIC_MODEL: input.model } : {}),
+        ANTHROPIC_MODEL: model,
       },
       clear: [...MANAGED_ENV_KEYS],
     };

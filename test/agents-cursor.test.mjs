@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test, { after, before, describe } from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { CliError } from "../dist/cli/errors.js";
 
 let dir;
 const originalEnv = { ...process.env };
@@ -361,5 +362,41 @@ describe("cursor foreign detection", () => {
     // Honest assertion: probe.foreignTool matches the direct detectForeign
     // result on the same bytes — never a stronger claim.
     assert.equal(probe.foreignTool, detected);
+  });
+});
+
+describe("cursor offGuard (engine-level `off`)", () => {
+  test("running Cursor refuses off; the DB is not touched", async () => {
+    const p = makeDb();
+    plantDb(p);
+    await cursorAdapter.enable(enableInput());
+    const afterOn = readFileSync(p);
+
+    // A running Cursor would rewrite state.vscdb from memory on exit and undo
+    // the byte-for-byte restore — `off` must refuse before touching the DB.
+    await assert.rejects(
+      cursorAdapter.offGuard({ force: false, isRunning: () => true }),
+      (error) => error instanceof CliError && /--force/.test(error.hint ?? "")
+    );
+    assert.equal(readFileSync(p).length, afterOn.length, "DB must not change when refused");
+    assert.equal(
+      readFileSync(p).toString("utf8"),
+      afterOn.toString("utf8"),
+      "DB bytes must be identical when refused"
+    );
+  });
+
+  test("--force off completes the restore while running", async () => {
+    const p = makeDb();
+    plantDb(p);
+    await cursorAdapter.enable(enableInput());
+
+    // force skips the refusal (warn-and-proceed), restore proceeds.
+    await cursorAdapter.offGuard({ force: true, isRunning: () => true });
+    const { agentOff } = await import("../dist/agents/engine.js");
+    // With no manifest the strip path runs; markers were just removed above is
+    // NOT the case here — offGuard alone doesn't strip. Exercise the full off:
+    const result = await agentOff(cursorAdapter, { force: true });
+    assert.equal(result.state, "off");
   });
 });

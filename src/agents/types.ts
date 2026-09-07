@@ -38,6 +38,9 @@ export type SessionLaunch = {
   cleanup?: () => Promise<void>;
 };
 
+/** Options for the pre-write guards; `isRunning` is the test seam. */
+export type GuardOptions = { force: boolean; isRunning?: () => boolean };
+
 export type AgentAdapter = {
   id: string; // short: "claude", "codex", ...
   label: string; // "Claude Code"
@@ -48,13 +51,13 @@ export type AgentAdapter = {
   managedFiles(): string[]; // absolute paths this adapter touches
   probe(): Promise<ProbeResult>; // read real config, no flags trusted
   enable(input: EnableInput): Promise<{ model: string; filesWritten: string[] }>;
-  enableGuard?(opts: { force: boolean }): Promise<void>;
+  enableGuard?(opts: GuardOptions): Promise<void>;
   // ^ Runs inside agentOn, after the foreign-config refusal but BEFORE the
   // snapshot + enable(). Adapters whose target app holds config in memory
   // (ChatGPT Desktop, Cursor IDE) refuse the write while the app is running
   // because it would clobber theirs; --force (parsed by the command layer)
   // escapes every guard.
-  offGuard?(opts: { force: boolean }): Promise<void>;
+  offGuard?(opts: GuardOptions): Promise<void>;
   // ^ Same refusal for `off`: the app rewrites its config file from memory on
   // exit, which would clobber the byte-for-byte restore. Only adapters whose
   // target app holds the config in memory define one.

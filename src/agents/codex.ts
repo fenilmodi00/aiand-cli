@@ -6,6 +6,7 @@ import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
 import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./ide-guard.js";
+import { resolveDefault } from "./catalog.js";
 import { agentHome } from "./paths.js";
 import { applyFirstRunDefaults, patchRouting } from "./toml.js";
 import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
@@ -149,7 +150,7 @@ export const codexAdapter: AgentAdapter = {
    * testable on every platform (the platform gate lives here, not in the
    * helper — injecting isRunning must still exercise the rejection path).
    */
-  async enableGuard(opts: { force: boolean }): Promise<void> {
+  async enableGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
     if (process.platform !== "darwin" && process.platform !== "win32") return;
     await chatgptQuitGuard(opts);
   },
@@ -158,7 +159,7 @@ export const codexAdapter: AgentAdapter = {
    * `off` restores the shared config.toml byte-for-byte; a running ChatGPT
    * Desktop would rewrite it from memory on exit and undo the restore.
    */
-  async offGuard(opts: { force: boolean }): Promise<void> {
+  async offGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
     if (process.platform !== "darwin" && process.platform !== "win32") return;
     await chatgptQuitGuard(opts);
   },
@@ -181,14 +182,18 @@ export const codexAdapter: AgentAdapter = {
   async sessionLaunch(input: SessionLaunchInput) {
     // Session launches must work with NO prior `on`: the -c overlay defines
     // the whole provider (name/base_url/wire_api) inline, and the key rides
-    // in env via env_key — nothing secret is written to disk.
+    // in env via env_key — nothing secret is written to disk. Codex's own
+    // default model (gpt-5-codex family) is not in the gateway catalog, so
+    // a concrete model is always baked from the live catalog.
+    const model = input.model ?? resolveDefault(input.catalog);
     return {
       env: { AIAND_CODEX_AUTH_TOKEN: input.apiKey },
       clear: [],
       args: [
         "-c",
         'model_provider="aiand"',
-        ...(input.model ? ["-c", `model="${input.model}"`] : []),
+        "-c",
+        `model="${model}"`,
         "-c",
         'model_providers.aiand.name="ai&"',
         "-c",

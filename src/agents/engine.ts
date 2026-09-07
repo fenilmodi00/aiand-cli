@@ -137,6 +137,15 @@ export async function agentOff(adapter: AgentAdapter, opts: { force?: boolean } 
   }
   const restored = await restoreSnapshot(adapter.id);
   if (!restored) {
+    // No manifest, but the config may still carry orphaned aiand routing
+    // (e.g. the backup was deleted). The adapter's strip path removes only
+    // what it owns; a genuinely untouched config still reports the friendly
+    // nothing-to-turn-off note.
+    const probe = await adapter.probe();
+    if (probe.active) {
+      await adapter.disable();
+      return { agent: adapter.id, state: "off" };
+    }
     return { agent: adapter.id, state: "off", note: "Already your own config — nothing to turn off." };
   }
   await adapter.disable();

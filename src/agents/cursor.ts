@@ -517,10 +517,24 @@ async function probe(): Promise<ProbeResult> {
     blob = {};
   }
   const active = blob.openAIBaseUrl === CURSOR_BASE_URL;
-  const modelId = active ? cursorCurrentModelId(blob, CURSOR_DEFAULT_MODE) : null;
-  // A `"default"`/empty selection means Cursor falls back to its own model —
-  // report no model rather than the sentinel.
-  const model = modelId && modelId !== "default" ? modelId : null;
+  // The composer mode is Cursor's default, but enable() selects the model on
+  // every mode the user already had — with no composer entry (the common
+  // fresh-config case) fall back to any aiand-tracked touched mode, then to
+  // any existing mode, before reporting no model.
+  let modelId: string | null = null;
+  if (active) {
+    const ai = blob.aiSettings as Record<string, unknown> | undefined;
+    const touched = Array.isArray(ai?.aiandTouchedModes) ? (ai.aiandTouchedModes as string[]) : [];
+    const fallbacks = [CURSOR_DEFAULT_MODE, ...touched, ...existingModes(blob)];
+    for (const mode of fallbacks) {
+      const id = cursorCurrentModelId(blob, mode);
+      if (id && id !== "default") {
+        modelId = id;
+        break;
+      }
+    }
+  }
+  const model = modelId;
   // Foreign scan: pass the db path with the default reader; it reads the
   // binary file as text and matches fragment probes — sufficient for a
   // foreign config writer whose markers are plaintext bytes in the DB.
@@ -541,16 +555,22 @@ export const cursorAdapter: AgentAdapter = {
   managedFiles,
   probe,
   enable,
-  async enableGuard(opts: { force: boolean }): Promise<void> {
+  async enableGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
     // Cursor holds state.vscdb in memory while running and rewrites it on
     // exit, clobbering anything written underneath it. Guard on every platform
-    // — Cursor runs on linux too.
-    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", { force: opts.force });
+    // — Cursor runs on linux too. isRunning is the test seam.
+    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", {
+      force: opts.force,
+      ...(opts.isRunning ? { isRunning: opts.isRunning } : {}),
+    });
   },
-  async offGuard(opts: { force: boolean }): Promise<void> {
+  async offGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
     // The byte-for-byte restore lands on disk; a running Cursor rewrites the
     // DB from memory on exit and would undo it.
-    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", { force: opts.force });
+    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", {
+      force: opts.force,
+      ...(opts.isRunning ? { isRunning: opts.isRunning } : {}),
+    });
   },
   async disable(): Promise<void> {
     // The engine restores the snapshotted DB byte-for-byte when a manifest
