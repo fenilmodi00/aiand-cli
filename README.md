@@ -38,36 +38,43 @@ node dist/index.js --help    # or `npm link` to get `aiand` on PATH
 | `aiand orgs` | Organizations you belong to |
 | `aiand config` | Profiles and defaults |
 
-Every command takes `--json` for machine-readable output and `--help` for its own flags.
+Most commands take `--json` for machine-readable output; every command takes `--help` for
+its own flags.
 
 ## Agent setup
 
 Point a local coding agent at ai& without hand-copying env vars. `on` writes the agent's
-own native config — a stock `claude`, `codex`, `opencode`, `pi`, and others just work
-afterwards — and `off` restores the previous state byte for byte, including files that
-did not exist before. Hermes and Grok are launcher-only (`aiand run-agent`). `run-agent`
-skips persistent config: it injects routing into one process's environment.
+own native config for most agents — a stock `claude`, `codex`, `opencode`, `pi`, and others
+just work afterwards — while Prime gets an aiand-owned sidecar under
+`~/.config/aiand/agents/prime/`. `off` restores the previous state byte for byte, including
+files that did not exist before. Hermes and Grok are launcher-only: `on` refuses and points
+at `run-agent`. `run-agent` is the one-session launcher for any agent that supports it
+(claude, codex, opencode, pi, deepseek, prime, hermes, grok); it injects routing into one
+process's environment / overlay without persistent config. Cursor and VS Code are
+wiring-only (`on`).
 ```bash
 aiand claude on          # writes ~/.claude/settings.json with the ai& env block
 aiand claude status      # ground truth from the agent's real config files
 aiand claude off         # byte-for-byte restore of whatever was there before
-aiand codex on           # ~/.codex/config.toml + model catalog; chatgpt is an alias
+aiand codex on           # ~/.codex/config.toml + catalog (quit ChatGPT Desktop first)
 aiand opencode on        # provider entry in ~/.config/opencode/opencode.json
 aiand cursor on          # Cursor state.vscdb routing (quit Cursor first)
 aiand pi on              # ~/.pi/agent settings + auth + models
 aiand deepseek on        # DeepSeek Harness
-aiand prime on           # Prime
-aiand vscode on          # VS Code chat model provider
+aiand prime on           # aiand-owned sidecar under ~/.config/aiand/agents/prime/
+aiand vscode on          # VS Code chat model provider (quit VS Code first)
 aiand claude --model moonshotai/kimi-k3 --opus zai-org/glm-5.3
 aiand init               # detect installed agents, ask which to wire
-aiand run-agent hermes -- …   # launcher-only agents (hermes, grok)
+aiand run-agent claude -- …  # one-session launch (any sessionLaunch agent)
+aiand run-agent hermes -- …  # launcher-only agents (hermes, grok)
 aiand status             # who is signed in, where the key lives, which agents are on
 ```
 
 The baked key comes from the active session (`--profile` honored), and model defaults and
 Claude's opus/sonnet/haiku slots resolve from the live `/v1/models` catalog, so a retired
-model id is never written. `on` refuses to touch a config another tool manages — pass
-`--force` to overwrite it. Snapshots of the pre-existing config live under
+model id is never written. `on` refuses to touch a config another tool manages, and Codex /
+Cursor / VS Code refuse writes while ChatGPT Desktop, Cursor, or VS Code is running — pass
+`--force` to override either guard. Snapshots of the pre-existing config live under
 `~/.config/aiand/backups/` and are removed by `off`.
 
 ## Signing in
@@ -133,8 +140,9 @@ OpenAI-compatible shape:
 deepseek-ai/deepseek-v4-flash  ·  9 in / 21 out  ·  0.00000660 USD  ·  181ms  ·  919a9aa4…
 ```
 
-Cost and timing are opt-in server-side and only sent on non-streaming responses, so
-`--no-stream` shows more of the footer than a stream does. Pass `-q` to drop it entirely.
+Cost and timing are opt-in server-side; the server typically returns them on non-streaming
+responses, so `--no-stream` shows more of the footer than a stream does. Pass `-q` to drop
+it entirely.
 
 If a response comes back with no content — a reasoning model can spend its whole token
 budget thinking — the CLI says why rather than printing a blank line:
@@ -194,6 +202,8 @@ aiand config set auth-url http://127.0.0.1:8080
 | `AIAND_CONFIG_DIR` | Where config and credentials live |
 | `AIAND_HOME` | Home directory agents resolve their config from |
 | `AIAND_KEY_STORAGE` | Force the secret tier: `keychain`, `file`, or `plaintext` |
+| `AIAND_SECRET_STORE_MASTER_KEY` | 64 hex chars; overrides the encrypted-file master key |
+| `DSH_HOME` | DeepSeek Harness config root (default `~/.dsh`) |
 | `NO_COLOR` | Disable color |
 
 Precedence is flags, then environment variables, then the stored profile.
@@ -209,7 +219,7 @@ Precedence is flags, then environment variables, then the stored profile.
 | `3` | Login denied in the browser |
 | `70` | A bug in the CLI — the stack trace is printed |
 | `127` | Unknown command or missing agent binary |
-| `130` | Interrupted |
+| `130` | Interrupted (e.g. Ctrl-C during `run` / `login`) |
 
 ## Contributing
 
