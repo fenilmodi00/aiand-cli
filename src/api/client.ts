@@ -4,8 +4,9 @@ import {
   loadCredential,
   saveCredential,
   maskKey,
-  type Credential,
   type ResolvedProfile,
+  type Credential,
+  type LoadedCredential,
 } from "../config.js";
 import { rotateTokens } from "./device.js";
 
@@ -31,35 +32,43 @@ export type Session = {
 
   token: string;
 
-  credential: Credential | null;
+  credential: LoadedCredential | null;
 };
 
 export async function openSession(profile: ResolvedProfile): Promise<Session> {
   const fromEnv = process.env.AIAND_API_KEY;
   if (fromEnv) return { profile, token: fromEnv, credential: null };
 
-  const stored = loadCredential(profile.name);
+  const stored = await loadCredential(profile.name);
   if (!stored) throw new NotLoggedInError();
 
-  const secondsLeft = stored.expires_at - Math.floor(Date.now() / 1000);
+  // A pasted key has no refresh token: rotation is impossible and a 401 must
+  // surface as the plain hint, so hand it back as-is regardless of expiry.
+  if (!stored.refresh_token) {
+    return { profile, token: stored.access_token, credential: stored };
+  }
+
+  const secondsLeft = (stored.expires_at ?? 0) - Math.floor(Date.now() / 1000);
   if (secondsLeft > ROTATE_BEFORE_SECONDS) {
     return { profile, token: stored.access_token, credential: stored };
   }
   return { profile, ...(await refresh(profile, stored)) };
 }
-
 async function refresh(
   profile: ResolvedProfile,
-  stored: Credential
-): Promise<{ token: string; credential: Credential }> {
-  const tokens = await rotateTokens(profile.authUrl, stored.refresh_token);
-  const next: Credential = {
+  stored: LoadedCredential
+): Promise<{ token: string; credential: LoadedCredential }> {
+  // Callers guard on refresh_token existing; this is the rotation path only.
+  const refreshToken = stored.refresh_token;
+  if (!refreshToken) throw new CliError("This credential has no refresh token.");
+  const tokens = await rotateTokens(profile.authUrl, refreshToken);
+  const next: LoadedCredential = {
     ...stored,
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
   };
-  saveCredential(profile.name, next);
+  await saveCredential(profile.name, next);
   return { token: next.access_token, credential: next };
 }
 
@@ -103,7 +112,7 @@ export async function request(session: Session, options: RequestOptions): Promis
 
   let response = await send(session.token);
 
-  if (response.status === 401 && session.credential) {
+  if (response.status === 401 && session.credential?.refresh_token) {
     const rotated = await refresh(session.profile, session.credential);
     session.token = rotated.token;
     session.credential = rotated.credential;

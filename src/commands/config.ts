@@ -52,9 +52,9 @@ export async function run(argv: string[]): Promise<void> {
   }
 }
 
-function show(parsed: ReturnType<typeof parse>): void {
+async function show(parsed: ReturnType<typeof parse>): Promise<void> {
   const profile = resolveProfile(str(parsed, "profile"));
-  const signedIn = Boolean(loadCredential(profile.name));
+  const signedIn = Boolean(await loadCredential(profile.name));
 
   if (bool(parsed, "json")) {
     return json({ ...profile, signed_in: signedIn, config_path: configPath() });
@@ -109,13 +109,16 @@ function set(args: string[]): void {
   out(style.green(`Set ${key} = ${value} on profile "${name}".`));
 }
 
-function profiles(parsed: ReturnType<typeof parse>): void {
+async function profiles(parsed: ReturnType<typeof parse>): Promise<void> {
   const config = loadConfig();
-  const rows = Object.entries(config.profiles).map(([name]) => ({
-    name,
-    active: name === config.profile,
-    signed_in: Boolean(loadCredential(name)),
-  }));
+  const rows: { name: string; active: boolean; signed_in: boolean }[] = [];
+  for (const [name] of Object.entries(config.profiles)) {
+    rows.push({
+      name,
+      active: name === config.profile,
+      signed_in: Boolean(await loadCredential(name)),
+    });
+  }
 
   if (bool(parsed, "json")) return json(rows);
 

@@ -32,7 +32,7 @@ export async function run(argv: string[]): Promise<void> {
 
   const profile = resolveProfile(str(parsed, "profile"));
 
-  const hasKey = Boolean(process.env.AIAND_API_KEY ?? loadCredential(profile.name));
+  const hasKey = Boolean(process.env.AIAND_API_KEY ?? (await loadCredential(profile.name)));
   const session = hasKey ? await openSession(profile) : null;
 
   let models = await listModels(session, profile.apiUrl);

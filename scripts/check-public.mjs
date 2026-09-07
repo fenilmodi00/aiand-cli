@@ -34,7 +34,9 @@ const RULES = [
       match.startsWith("@types/") ||
       match.startsWith("@opencode-ai/") ||
       match.startsWith("@anthropic-ai/") ||
-      match.startsWith("@openai/"),
+      match.startsWith("@openai/") ||
+      match.startsWith("@earendil-works/") ||
+      match.startsWith("@deepseek-ai/"),
     hint: "Reference only published packages.",
   },
   {

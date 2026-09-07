@@ -20,14 +20,14 @@ export async function run(argv: string[]): Promise<void> {
 
   const profile = resolveProfile(str(parsed, "profile"));
   const session = await openSession(profile);
-  const cached = loadCredential(profile.name);
+  const cached = await loadCredential(profile.name);
 
   const [user, orgs] = bool(parsed, "local")
     ? [cached?.user ?? null, cached?.org ? [cached.org] : []]
     : await Promise.all([getUser(session), listOrgs(session)]);
 
   const org = orgs[0] ?? null;
-  const expiresAt = cached ? new Date(cached.expires_at * 1000) : null;
+  const expiresAt = cached?.expires_at ? new Date(cached.expires_at * 1000) : null;
 
   if (bool(parsed, "json")) {
     return json({
@@ -39,10 +39,10 @@ export async function run(argv: string[]): Promise<void> {
       organizations: orgs,
       key: maskKey(session.token),
       key_expires_at: expiresAt?.toISOString() ?? null,
-      source: session.credential ? "device-login" : "AIAND_API_KEY",
+      source: session.credential ? (session.credential.origin === "paste" ? "pasted-key" : "device-login") : "AIAND_API_KEY",
+      storage: session.credential ? cached?.storage ?? null : null,
     });
   }
-
   fields([
     ["email", user?.email || style.dim("unknown")],
     ["user id", user?.id ?? style.dim("unknown")],
@@ -50,6 +50,8 @@ export async function run(argv: string[]): Promise<void> {
     ["profile", profile.name],
     ["api", style.dim(profile.apiUrl)],
     ["key", style.dim(maskKey(session.token))],
+    ["source", style.dim(sourceLabel(session.credential))],
+    ["storage", style.dim(storageLabel(session.credential ? cached?.storage ?? null : null))],
     [
       "expires",
       expiresAt
@@ -57,4 +59,22 @@ export async function run(argv: string[]): Promise<void> {
         : style.dim("from AIAND_API_KEY"),
     ],
   ]);
+}
+
+function sourceLabel(credential: { origin?: "device" | "paste" } | null): string {
+  if (!credential) return "AIAND_API_KEY";
+  return credential.origin === "paste" ? "pasted key" : "device login";
+}
+
+function storageLabel(storage: string | null): string {
+  switch (storage) {
+    case "keychain":
+      return "keychain";
+    case "file":
+      return "encrypted file";
+    case "plaintext":
+      return "plaintext file";
+    default:
+      return "from AIAND_API_KEY";
+  }
 }
