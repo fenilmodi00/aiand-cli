@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
+## [0.2.0] - 2026-09-07
+
+### Added
+
+- Agent setup for Claude Code and Codex: `aiand <agent> on|off|status` writes
+  the agent's own native config so the stock binary runs against ai& — no
+  daemon, no proxy. `on` snapshots the pre-existing config first and `off`
+  restores it byte for byte, including files that did not exist.
+  `chatgpt` is an alias for `codex` (both share `~/.codex/config.toml`).
+- `aiand init` — detect installed agents and wire the chosen subset
+  (`--all`, `--off`, interactive picker); detection never installs anything,
+  it prints the official install command instead.
+- `aiand status` — sign-in state, key source, storage tier, and every
+  registered agent's on/off/foreign state from its real config files.
+- `aiand login --paste` / `--api-key` / `--with-token` — sign in with an
+  existing console key (validated against the API before storing). Pasted
+  keys are never revoked by `aiand logout`; device-minted keys are.
+- Tiered secret storage: OS keychain when usable, otherwise an AES-256-GCM
+  encrypted file under the config dir, plaintext only via explicit
+  `AIAND_KEY_STORAGE=plaintext`. `credentials.json` now holds metadata and
+  migrates legacy shapes automatically.
+- Model defaults and Claude's opus/sonnet/haiku slots resolve from the live
+  `/v1/models` catalog (6h-cached, stale-when-offline), so retired model ids
+  are never written into agent config. `--model`, `--opus`, `--sonnet`,
+  `--haiku` override per `on`.
+- Foreign-writer detection: `on` refuses to overwrite a config another tool
+  manages, unless `--force` is passed.
+
+### Changed
+
+- `aiand logout` asks before revoking a device-minted key on a TTY
+  (`--revoke` / `--keep-remote` to skip the question); non-interactive use
+  keeps today's default-revoke behavior.
+- `aiand whoami` reports the key source (`device-login`, `pasted-key`,
+  `AIAND_API_KEY`) and the active storage tier.
+- Exit code `127` now also covers a missing agent binary (with its install
+  hint), not just unknown commands.
+
 ## [0.1.2] - 2026-09-07
 
 ### Fixed
