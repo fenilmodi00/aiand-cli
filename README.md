@@ -43,19 +43,24 @@ Every command takes `--json` for machine-readable output and `--help` for its ow
 ## Agent setup
 
 Point a local coding agent at ai& without hand-copying env vars. `on` writes the agent's
-own native config — a stock `claude`, `codex`, or `opencode` binary just works afterwards —
-and `off` restores the previous state byte for byte, including files that did not exist
-before. `run-agent` skips the config entirely: it injects everything into one process's
-environment, so nothing is written and nothing needs undoing.
+own native config — a stock `claude`, `codex`, `opencode`, `pi`, and others just work
+afterwards — and `off` restores the previous state byte for byte, including files that
+did not exist before. Hermes and Grok are launcher-only (`aiand run-agent`). `run-agent`
+skips persistent config: it injects routing into one process's environment.
 ```bash
 aiand claude on          # writes ~/.claude/settings.json with the ai& env block
 aiand claude status      # ground truth from the agent's real config files
 aiand claude off         # byte-for-byte restore of whatever was there before
 aiand codex on           # ~/.codex/config.toml + model catalog; chatgpt is an alias
 aiand opencode on        # provider entry in ~/.config/opencode/opencode.json
+aiand cursor on          # Cursor state.vscdb routing (quit Cursor first)
+aiand pi on              # ~/.pi/agent settings + auth + models
+aiand deepseek on        # DeepSeek Harness
+aiand prime on           # Prime
+aiand vscode on          # VS Code chat model provider
 aiand claude --model moonshotai/kimi-k3 --opus zai-org/glm-5.3
 aiand init               # detect installed agents, ask which to wire
-aiand run-agent claude -- claude-args…   # one session on ai&, nothing written to disk
+aiand run-agent hermes -- …   # launcher-only agents (hermes, grok)
 aiand status             # who is signed in, where the key lives, which agents are on
 ```
 
@@ -221,9 +226,9 @@ All of these run in CI. Issues and pull requests are welcome.
 
 ## Roadmap
 
-Sign-in, inference, observability, and agent setup for Claude Code, Codex, Cursor, and
-OpenCode ship today, plus one-session launches via `aiand run-agent`. More agents
-(pi, vscode, deepseek, …) are next:
+Sign-in, inference, observability, and agent setup (Claude, Codex/ChatGPT, OpenCode,
+Cursor, pi, VS Code, DeepSeek Harness, Prime, plus Hermes/Grok session launches) ship
+today.
 - **Files** — uploads for vision, video, audio, and document inputs
 - **Billing** — balance, history, auto-recharge, redemption codes
 - **Video** — asynchronous generation jobs

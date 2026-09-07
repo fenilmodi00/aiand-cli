@@ -2,7 +2,7 @@ import { resolveProfile } from "../config.js";
 import { CliError } from "../cli/errors.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
 import { requireSessionKey } from "./session.js";
-import { snapshotFiles, restoreSnapshot, hasSnapshot } from "./snapshot.js";
+import { snapshotFiles, restoreSnapshot } from "./snapshot.js";
 import { getCatalog, resolveDefault, resolveSlots } from "./catalog.js";
 import { agentHome } from "./paths.js";
 import type { AgentAdapter } from "./types.js";
@@ -40,14 +40,22 @@ export type AgentStatusResult = {
 
 /**
  * Turn an agent on: resolve a session key, detect the binary, refuse foreign
- * configs unless forced, snapshot once, resolve model/slots from the live
- * catalog, then let the adapter write its config. The snapshot happens only
- * when there is no prior manifest OR the config is not yet aiand-routed
- * (idempotent second run keeps the first backup).
+ * configs unless forced, snapshot when inactive, resolve model/slots from the
+ * live catalog, then let the adapter write its config. An already-active
+ * probe skips the snapshot so a re-`on` keeps the first pre-aiand backup.
  */
 export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}): Promise<AgentOnResult> {
-  const session = await requireSessionKey(opts.profile);
+  // Launcher-only agents (hermes, grok) have no persistent wiring: their
+  // config strategy is a throwaway overlay/env per session, so `on` cannot
+  // mean anything. Point at the one process launcher instead of writing
+  // anything.
+  if (adapter.launcherOnly) {
+    throw new CliError(`${adapter.label} runs on ai& per session only.`, {
+      hint: `Use: aiand run-agent ${adapter.id}`,
+    });
+  }
 
+  const session = await requireSessionKey(opts.profile);
   const detected = adapter.detect();
   if (!detected.installed) {
     throw new CliError(`${adapter.label} is not installed.`, {
@@ -79,7 +87,13 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     await adapter.enableGuard({ force: opts.force ?? false });
   }
   const managed = adapter.managedFiles();
-  if (!(await hasSnapshot(adapter.id)) || !probe.active) {
+  // Idempotency: a re-`on` while already routed keeps the first backup
+  // (probe.active), and every inactive `on` re-snapshots so the manifest
+  // always matches the pre-aiand state — including after a foreign config
+  // was overwritten with --force, or an `off` that left a stale manifest
+  // behind. An aiand-routed config is never its own backup: active probes
+  // skip the snapshot entirely.
+  if (!probe.active) {
     await snapshotFiles(adapter.id, managed);
   }
 

@@ -61,7 +61,10 @@ function enableInput(overrides = {}) {
     apiKey: BASE_KEY,
     model: "zai-org/glm-5.3",
     slots: {},
-    catalog: [model(), model({ id: "zai-org/other", name: "Other", reasoning_efforts: null })],
+    catalog: [
+      model(),
+      model({ id: "zai-org/other", name: "Other", reasoning_efforts: null, capabilities: ["tool"] }),
+    ],
     home: process.env.AIAND_HOME,
     baseUrl: "https://api.aiand.com",
     ...overrides,

@@ -192,9 +192,9 @@ describe("run-agent launcher", () => {
   });
 
   test("unknown agent -> CliError listing agents", async () => {
-    const { code, stderr } = await stubCli(["grok"], {}, dir);
+    const { code, stderr } = await stubCli(["not-an-agent"], {}, dir);
     assert.equal(code, 1);
-    assert.match(stderr, /Unknown agent "grok"/);
+    assert.match(stderr, /Unknown agent "not-an-agent"/);
     assert.match(stderr, /Agents:/);
   });
 

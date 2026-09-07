@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test, { after, before, describe } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 let dir;
 const originalEnv = { ...process.env };
@@ -163,12 +163,10 @@ describe("sessionLaunch", () => {
       model: "zai-org/glm-5.3",
       catalog,
     };
-
     const launch = await grokAdapter.sessionLaunch(input);
+    const { env } = launch;
     try {
-      const { env } = launch;
       const modelsListUrl = env.GROK_MODELS_LIST_URL;
-      assert.ok(modelsListUrl, "GROK_MODELS_LIST_URL present");
       assert.match(modelsListUrl, /^http:\/\/127\.0\.0\.1:\d+\/v1\/models$/);
 
       // Exact catalog body served at /v1/models.
@@ -204,10 +202,20 @@ describe("sessionLaunch", () => {
       await launch.cleanup();
     }
 
-    // Cleanup: server closed -> connection refused; auth dir gone.
-    await assert.rejects(() => fetch(launch.env.GROK_MODELS_LIST_URL), (error) => {
-      const code = error?.cause?.code ?? error?.code;
-      return code === "ECONNREFUSED" || code === "UND_ERR_CONNECT" || code === "ECONNRESET";
-    });
+
+    // Cleanup: the auth dir is gone and the server no longer accepts
+    // connections. Assert the observable teardown (dir removed, any fetch
+    // attempt fails) rather than a specific undici error code — after
+    // server.close() a keep-alive agent can surface several distinct errors
+    // (ECONNREFUSED, UND_ERR_CONNECT, "other side closed" on a racing
+    // keep-alive socket), all of which prove the listener is gone.
+    assert.equal(existsSync(dirname(env.GROK_AUTH_PATH)), false, "auth dir removed");
+    let fetchFailed = false;
+    try {
+      await fetch(launch.env.GROK_MODELS_LIST_URL);
+    } catch {
+      fetchFailed = true;
+    }
+    assert.equal(fetchFailed, true, "fetch after cleanup must fail");
   });
 });

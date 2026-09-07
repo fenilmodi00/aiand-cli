@@ -25,13 +25,17 @@ for. `logs` and `usage` are org-scoped.
 The three verbs - `on`, `off`, `status` - are the primary product surface;
 `init` and the launcher are conveniences layered over the same adapters.
 
-**Agent** - a local coding-agent CLI (claude, codex, opencode, ...) that this
-CLI can wire to the gateway, identified by its short id. One adapter per
-agent. _Avoid:_ harness, integration, connector.
+**Agent** - a local coding-agent CLI identified by its short id, one of the ten
+shipped: claude, codex, cursor, opencode, pi, vscode, deepseek, prime, hermes,
+grok. One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
 which config files it owns, and how to enable, disable, and probe it. Adding
 an agent is one adapter module plus one registry line.
+
+**Registry** - the single ordered list in `registry.ts` every adapter ships
+in; agent lookup walks it by id and alias. The one place the agent matrix is
+enumerated.
 
 **on** - the primary verb: write the agent's own native config so the stock
 binary reaches the gateway afterwards, with no wrapper process required. The
@@ -54,6 +58,10 @@ second `on` never re-captures over the original. _Avoid:_ backup, checkpoint.
 managed file. Its presence blocks `on` until the user explicitly forces an
 overwrite; last writer must never win silently. _Avoid:_ conflicting writer,
 rival tool.
+
+**Quit-guard** - `on` refusing to write while the agent's own process is
+running, because that process would overwrite the config on exit; `--force`
+proceeds anyway. _Avoid:_ lock, file watch.
 
 **Marker** - a recognizable ownership signature inside a managed file. aiand
 stamps its own so `off` can strip surgically, and so other tools can detect

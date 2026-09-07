@@ -9,6 +9,12 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Agent setup for Cursor, pi, VS Code, DeepSeek Harness, and Prime: each adapter
+  writes native config (or an aiand-owned sidecar for Prime) so the stock binary
+  routes to ai&. Hermes and Grok are launcher-only (`aiand run-agent`); `on`
+  points at that path instead of writing a permanent home.
+- ChatGPT Desktop and IDE quit-guards: refuse `codex`/`cursor`/`vscode` writes
+  while the owning app holds config in memory; `--force` escapes.
 - Agent setup for OpenCode: `aiand opencode on` writes the `aiand` provider
   (key literal, `@ai-sdk/openai-compatible` adapter) into
   `~/.config/opencode/opencode.json`, with the model entries taken verbatim

@@ -7,9 +7,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
+  readdirSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -165,11 +166,12 @@ describe("hermes sessionLaunch", () => {
       const sessionsLink = join(overlay, "sessions");
       assert.ok(existsSync(sessionsLink), "sessions linked into overlay");
       assert.ok(lstatSync(sessionsLink).isSymbolicLink(), "sessions is a symlink");
-      assert.equal(readlinkValue(sessionsLink), join(nativeHome, "sessions"));
+      assert.equal(readlinkSync(sessionsLink), join(nativeHome, "sessions"));
 
-      // credential-shaped entries are NOT linked
-      const overlayEntries = await readdirSet(overlay);
-      assert.ok(!overlayEntries.has(".env"), "native .env not linked (ov replaces it)");
+      // credential-shaped native entries are NOT symlinked; .env is our fresh
+      // write (asserted below), active_profile/auth.json are excluded entirely
+      const overlayEntries = new Set(readdirSync(overlay));
+      assert.ok(!lstatSync(join(overlay, ".env")).isSymbolicLink(), ".env is our fresh file");
       assert.ok(!overlayEntries.has("active_profile"), "active_profile not linked");
       assert.ok(!overlayEntries.has("auth.json"), "auth.json not linked");
 
@@ -273,15 +275,3 @@ describe("hermes sessionLaunch", () => {
     await launch.cleanup(); // second call is a no-op, must not reject
   });
 });
-
-function readlinkValue(path) {
-  // no fs.readlinkSync import needed; use lstat target resolution via symlinkSync? —
-  // readlinkSync is on node:fs; inline instead:
-  const { readlinkSync } = require("node:fs");
-  return readlinkSync(path);
-}
-
-function readdirSet(path) {
-  const { readdirSync } = require("node:fs");
-  return new Set(readdirSync(path));
-}
