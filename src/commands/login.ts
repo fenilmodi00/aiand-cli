@@ -20,6 +20,18 @@ import {
 import { openSession } from "../api/client.js";
 import { getUser, listOrgs, validateKey } from "../api/account.js";
 import { readStdin } from "../cli/stdin.js";
+import { rebakeAgentKeys } from "../agents/sync.js";
+
+/**
+ * After a fresh credential is stored, rebake it into every active agent config
+ * and print one dim stderr line per note (silently skip when nothing changed).
+ */
+async function rebakeIntoAgents(key: string): Promise<void> {
+  const notes = await rebakeAgentKeys(key);
+  for (const note of notes) {
+    err(style.dim(`[${note.agent}] ${note.note}`));
+  }
+}
 
 export const help = `${style.bold("aiand login")} -- sign in with a browser approval, or store a key you already have
 
@@ -144,6 +156,8 @@ async function runDeviceLogin(argvOptions: Parsed): Promise<void> {
     ...(org ? { org } : {}),
   });
 
+  await rebakeIntoAgents(session.token);
+
   if (bool(argvOptions, "json")) {
     return out(
       JSON.stringify({ profile: profile.name, user, org: org ?? null, key: maskKey(session.token) }, null, 2)
@@ -208,6 +222,8 @@ export async function run(argv: string[]): Promise<void> {
     if (bool(parsed, "json")) {
       return out(JSON.stringify({ profile: profile.name, source: "pasted-key", storage }, null, 2));
     }
+
+    await rebakeIntoAgents(key);
 
     out(style.green("Signed in with a pasted key."));
     out();

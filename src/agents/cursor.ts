@@ -555,6 +555,9 @@ export const cursorAdapter: AgentAdapter = {
   managedFiles,
   probe,
   enable,
+  // No refreshKey: Cursor's API key is a safeStorage-encrypted secret that
+  // cannot be swapped surgically — re-running `aiand cursor on` is the
+  // refresh path.
   async enableGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
     // Cursor holds state.vscdb in memory while running and rewrites it on
     // exit, clobbering anything written underneath it. Guard on every platform

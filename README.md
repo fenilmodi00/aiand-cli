@@ -72,10 +72,12 @@ aiand status             # who is signed in, where the key lives, which agents a
 
 The baked key comes from the active session (`--profile` honored), and model defaults and
 Claude's opus/sonnet/haiku slots resolve from the live `/v1/models` catalog, so a retired
-model id is never written. `on` refuses to touch a config another tool manages, and Codex /
-Cursor / VS Code refuse writes while ChatGPT Desktop, Cursor, or VS Code is running — pass
-`--force` to override either guard. Snapshots of the pre-existing config live under
-`~/.config/aiand/backups/` and are removed by `off`.
+model id is never written. Claude Code models with a 1M-token context window are written
+with a `[1m]` suffix so Claude Code sizes them correctly, and wiring a model that cannot
+accept images prints a one-line text-only warning. `on` refuses to touch a config another
+tool manages, and Codex / Cursor / VS Code refuse writes while ChatGPT Desktop, Cursor, or
+VS Code is running — pass `--force` to override either guard. Snapshots of the
+pre-existing config live under `~/.config/aiand/backups/` and are removed by `off`.
 
 ## Signing in
 

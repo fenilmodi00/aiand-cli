@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before, describe } from "node:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -302,5 +303,250 @@ describe("claude session launch", () => {
     assert.equal(launch.env.ANTHROPIC_MODEL, "zai-org/glm-5.3");
     assert.equal(launch.env.ANTHROPIC_BASE_URL, BASE_URL);
     assert.equal(launch.env.ANTHROPIC_AUTH_TOKEN, BASE_KEY);
+  });
+
+  test("tags a 1M-context model in the session env", async () => {
+    const bigCatalog = [{ id: "vendor/million-model", context_window: 1_048_576 }];
+    const launch = await claudeAdapter.sessionLaunch({
+      apiKey: BASE_KEY,
+      model: "vendor/million-model",
+      catalog: bigCatalog,
+    });
+    assert.equal(launch.env.ANTHROPIC_MODEL, "vendor/million-model[1m]");
+  });
+});
+
+/** A minimal catalog `Model` fixture shaped like GET /v1/models returns. */
+function modelFixture(id, contextWindow, capabilities) {
+  return {
+    id,
+    name: id,
+    object: "model",
+    created: 0,
+    owned_by: "aiand",
+    provider: "aiand",
+    context_window: contextWindow,
+    capabilities,
+    reasoning_efforts: null,
+    reasoning_effort_default: null,
+    description: null,
+    currency: "usd",
+    input_per_1m: "1",
+    output_per_1m: "1",
+    cached_input_per_1m: null,
+  };
+}
+
+describe("claude [1m] context tag", () => {
+  const writeTagged = (catalog, model) =>
+    claudeAdapter.enable(
+      enableInput({
+        catalog,
+        model,
+        slots: { opus: model, sonnet: model, haiku: model },
+      })
+    );
+
+  test("a 1M-context model is written as <id>[1m] in every slot var", async () => {
+    const home = process.env.AIAND_HOME;
+    const tagHome = join(home, "context-tag");
+    process.env.AIAND_HOME = tagHome;
+    mkdirSync(join(tagHome, ".claude"), { recursive: true });
+    writeFileSync(settingsPath(), "{}\n");
+
+    const model = "vendor/million-model";
+    await writeTagged([modelFixture(model, 1_048_576, ["tools"])], model);
+
+    const written = JSON.parse(readFileSync(settingsPath(), "utf8"));
+    assert.equal(written.env.ANTHROPIC_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_SONNET_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, `${model}[1m]`);
+    assert.equal(written.env.ANTHROPIC_SMALL_FAST_MODEL, `${model}[1m]`);
+
+    process.env.AIAND_HOME = home;
+  });
+
+  test("a 262144-context model is written bare in every slot var", async () => {
+    const home = process.env.AIAND_HOME;
+    const tagHome = join(home, "no-tag");
+    process.env.AIAND_HOME = tagHome;
+    mkdirSync(join(tagHome, ".claude"), { recursive: true });
+    writeFileSync(settingsPath(), "{}\n");
+
+    const model = "vendor/small-model";
+    await writeTagged([modelFixture(model, 262_144, ["tools"])], model);
+
+    const written = JSON.parse(readFileSync(settingsPath(), "utf8"));
+    assert.equal(written.env.ANTHROPIC_MODEL, model);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, model);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_SONNET_MODEL, model);
+    assert.equal(written.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, model);
+    assert.equal(written.env.ANTHROPIC_SMALL_FAST_MODEL, model);
+
+    process.env.AIAND_HOME = home;
+  });
+});
+
+describe("claude refreshKey", () => {
+  test("swaps only the baked token, preserving model ids, slots, and unrelated keys", async () => {
+    const home = process.env.AIAND_HOME;
+    const refreshHome = join(home, "refresh");
+    process.env.AIAND_HOME = refreshHome;
+    mkdirSync(join(refreshHome, ".claude"), { recursive: true });
+    writeFileSync(
+      settingsPath(),
+      JSON.stringify({
+        permissions: { allow: ["Bash*"] },
+        env: {
+          ANTHROPIC_BASE_URL: BASE_URL,
+          ANTHROPIC_AUTH_TOKEN: BASE_KEY,
+          ANTHROPIC_MODEL: "m-default[1m]",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "m-opus",
+          KEEP_ME: "user-value",
+        },
+      })
+    );
+
+    await claudeAdapter.refreshKey({ apiKey: "sk-new-refreshed-key", home: refreshHome });
+
+    const written = JSON.parse(readFileSync(settingsPath(), "utf8"));
+    assert.equal(written.env.ANTHROPIC_AUTH_TOKEN, "sk-new-refreshed-key");
+    assert.equal(written.env.ANTHROPIC_MODEL, "m-default[1m]", "model id untouched");
+    assert.equal(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "m-opus", "slot untouched");
+    assert.equal(written.permissions.allow[0], "Bash*", "unrelated key untouched");
+    assert.equal(written.env.KEEP_ME, "user-value");
+
+    // Idempotent: same key leaves the file untouched.
+    await claudeAdapter.refreshKey({ apiKey: "sk-new-refreshed-key", home: refreshHome });
+    assert.equal(
+      readFileSync(settingsPath(), "utf8"),
+      JSON.stringify(written, null, 2) + "\n",
+      "refresh with the same key is a no-op"
+    );
+
+    process.env.AIAND_HOME = home;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Engine text-only warning: `agentOn` for claude emits a stderr warning naming
+// every wired model (main + slots) that is text-only in the catalog. Runs the
+// real engine against the real claude adapter with a stub binary for detection
+// and an offline-seeded catalog cache, so nothing touches the network.
+// ---------------------------------------------------------------------------
+describe("claude agentOn text-only warning", () => {
+  const modelFixture = (id, contextWindow, capabilities) => ({
+    id,
+    name: id,
+    object: "model",
+    created: 0,
+    owned_by: "aiand",
+    provider: "aiand",
+    context_window: contextWindow,
+    capabilities,
+    reasoning_efforts: null,
+    reasoning_effort_default: null,
+    description: null,
+    currency: "usd",
+    input_per_1m: "1",
+    output_per_1m: "1",
+    cached_input_per_1m: null,
+  });
+
+  let engine;
+  let origHome, origCfg, origKey, origPath;
+
+  before(async () => {
+    origHome = process.env.AIAND_HOME;
+    origCfg = process.env.AIAND_CONFIG_DIR;
+    origKey = process.env.AIAND_API_KEY;
+    origPath = process.env.PATH;
+
+    // A dedicated home + config dir so this suite owns its agents/cache.
+    const winHome = join(dir, "warn-home");
+    const winCfg = join(dir, "warn-cfg");
+    process.env.AIAND_HOME = winHome;
+    process.env.AIAND_CONFIG_DIR = winCfg;
+    process.env.AIAND_API_KEY = BASE_KEY;
+    mkdirSync(join(winHome, ".claude"), { recursive: true });
+    mkdirSync(winCfg, { recursive: true });
+
+    engine = await import("../dist/agents/engine.js");
+
+    // Stub `claude` out front onto PATH so detection flags it installed.
+    const stubDir = join(dir, "warn-bin");
+    mkdirSync(stubDir, { recursive: true });
+    writeFileSync(join(stubDir, "claude"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(stubDir, "claude"), 0o755);
+    process.env.PATH = `${stubDir}:${process.env.PATH}`;
+  });
+
+  after(() => {
+    process.env.AIAND_HOME = origHome;
+    process.env.AIAND_CONFIG_DIR = origCfg;
+    if (origKey === undefined) delete process.env.AIAND_API_KEY;
+    else process.env.AIAND_API_KEY = origKey;
+    process.env.PATH = origPath;
+  });
+
+  const seedCatalog = (models, baseUrl = BASE_URL) => {
+    // Fresh cache only matters when baseUrl matches resolveProfile().
+    writeFileSync(
+      join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"),
+      JSON.stringify({ fetchedAt: Date.now(), baseUrl, models })
+    );
+  };
+
+  const runOn = (opts = {}) =>
+    engine.agentOn(claudeAdapter, { baseUrl: BASE_URL, force: true, slots: {}, ...opts });
+
+  test("a text-only wired model surfaces the exact warning line on the on result", async () => {
+    // Main model vision-capable; haiku slot text-only (worst case: 2 handled,
+    // 3 ids, deduped to one line).
+    const vision = modelFixture("zai-org/vision-1m", 1_048_576, ["text", "vision"]);
+    const textOnly = modelFixture("vendor/text-slot", 1_048_576, ["text"]);
+    seedCatalog([vision, textOnly]);
+
+    const result = await runOn({
+      model: "zai-org/vision-1m",
+      slots: { opus: "zai-org/vision-1m", sonnet: "vendor/text-slot", haiku: "vendor/text-slot" },
+    });
+
+    assert.equal(result.state, "on");
+    assert.equal(result.warnings.length, 1);
+    assert.equal(
+      result.warnings[0],
+      "Text-only: vendor/text-slot · Avoid images; recover with /rewind."
+    );
+  });
+
+  test("no warning when every wired model is vision-capable", async () => {
+    const vision = modelFixture("zai-org/vision-1m", 1_048_576, ["text", "vision"]);
+    seedCatalog([vision]);
+
+    const result = await runOn({
+      model: "zai-org/vision-1m",
+      slots: { opus: "zai-org/vision-1m", sonnet: "zai-org/vision-1m", haiku: "zai-org/vision-1m" },
+    });
+
+    assert.equal(result.state, "on");
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test("[1m]-tagged ids are stripped before the text-only lookup", async () => {
+    // enable() writes [1m] for a 1M model; agentOn must strip it before the
+    // catalog lookup so a text-only 1M main model still warns.
+    const textOnlyMillion = modelFixture("zai-org/million-text", 1_048_576, ["text"]);
+    seedCatalog([textOnlyMillion]);
+
+    const result = await runOn({ model: "zai-org/million-text" });
+
+    assert.equal(result.state, "on");
+    assert.equal(result.warnings.length, 1);
+    assert.equal(
+      result.warnings[0],
+      "Text-only: zai-org/million-text · Avoid images; recover with /rewind."
+    );
   });
 });

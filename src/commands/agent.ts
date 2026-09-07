@@ -2,6 +2,9 @@ import { bool, parse, str, type Parsed } from "../cli/args.js";
 import { err, fields, json, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 import { agentOn, agentOff, agentStatus } from "../agents/engine.js";
+import { getCatalog } from "../agents/catalog.js";
+import { visionLabel } from "../agents/vision.js";
+import { resolveProfile } from "../config.js";
 import { agentHome } from "../agents/paths.js";
 import type { AgentAdapter, Verb } from "../agents/types.js";
 
@@ -110,6 +113,9 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
     ["model", result.model],
     ["files", result.files.join(", ")],
   ]);
+  for (const warning of result.warnings ?? []) {
+    err(style.dim(warning));
+  }
 }
 
 async function runOff(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): Promise<void> {
@@ -129,12 +135,32 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
   if (jsonOut) {
     return json(result);
   }
+
+  // Append " (text-only)" to the model label when the probed (possibly [1m]-tagged)
+  // model resolves text-only in a fetchable catalog. Strip the trailing [1m] tag
+  // before the lookup — probe reads back tagged ids. Silent if the catalog is
+  // unreachable or the id is unknown.
+  let modelLabel: string = result.model ?? style.dim("—");
+  if (result.model) {
+    try {
+      const profile = resolveProfile();
+      const catalog = await getCatalog(profile.apiUrl, null);
+      const bare = result.model.replace(/\[1m\]$/, "");
+      const entry = catalog.find((model) => model.id === bare);
+      if (entry && visionLabel(entry) === "text-only") {
+        modelLabel = `${bare} (text-only)`;
+      }
+    } catch {
+      // Catalog unreachable → degrade silently to the plain probed model.
+    }
+  }
+
   fields([
     ["agent", result.agent],
     ["installed", result.installed ? (result.binary ?? style.dim("yes")) : style.dim("no")],
     ["state", stateLabel(result.state)],
     ...(result.foreign ? [["foreign", result.foreign] as [string, string]] : []),
-    ["model", result.model ?? style.dim("—")],
+    ["model", modelLabel],
   ]);
   if (!result.installed) {
     err(style.dim(`Install it with: ${adapter.install.command}  See: ${adapter.install.url}`));

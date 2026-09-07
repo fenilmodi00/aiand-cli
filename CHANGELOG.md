@@ -9,6 +9,33 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Key rebake on sign-in: storing a new credential (device login or paste)
+  rewrites the key literal in every active agent config in one pass, so
+  rotation takes effect without re-running `aiand <agent> on` per agent.
+  Adapters that cannot swap a key in place (Cursor and VS Code keep theirs in
+  IDE-encrypted storage) print a note pointing at `on` instead.
+- Claude Code context-window tags: models with a 1M-token context window are
+  written as `<id>[1m]` in every slot Claude Code reads (main, opus, sonnet,
+  haiku, small-fast, session launches). Claude Code uses the tag to size its
+  context window and strips it before the request; without it, a 1M model is
+  assumed to be 200K and auto-compacted, starving subagents.
+- Text-only model warnings: wiring a model without vision capability to a
+  Claude Code slot prints `Text-only: <ids> · Avoid images; recover with
+  /rewind.` after `on` (and in the `--json` payload); `aiand claude status`
+  labels the routed model `text-only`.
+- `aiand init` uses an arrow-key space-to-toggle checkbox picker over the
+  detected agents (numbers still work as shortcuts) instead of a
+  typed number list.
+- Update-available notice: once a day, on an interactive terminal only, the
+  CLI compares its version against the npm registry and prints a dim one-line
+  tip when a newer release exists. Disable with `AIAND_UPDATE_CHECK=0` or
+  `NO_UPDATE_CHECK=1`; never runs under `CI`.
+- Version-change housekeeping: after an upgrade, the CLI prints up to four
+  "what's new" lines from the changelog for the new version (interactive
+  terminals only), backed by a best-effort forward-migration runner for
+  future config-shape changes.
+### Added
+
 - Agent setup for Cursor, pi, VS Code, DeepSeek Harness, and Prime: each adapter
   writes native config (or an aiand-owned sidecar for Prime) so the stock binary
   routes to ai&. Hermes and Grok are launcher-only (`aiand run-agent`); `on`

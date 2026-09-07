@@ -463,6 +463,9 @@ export const vscodeAdapter: AgentAdapter = {
   managedFiles,
   probe,
   enable,
+  // No refreshKey: VS Code's API key is a safeStorage-encrypted secret that
+  // cannot be swapped surgically — re-running `aiand vscode on` is the
+  // refresh path.
   async enableGuard(opts: GuardOptions): Promise<void> {
     // VS Code holds state.vscdb in memory while running and rewrites it on
     // exit, clobbering anything written underneath it. Guard only `on`;

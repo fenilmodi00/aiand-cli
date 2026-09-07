@@ -263,9 +263,35 @@ export const opencodeAdapter: AgentAdapter = {
   enable,
   async disable(): Promise<void> {
     // Nothing beyond manifest restore: the engine restores the snapshotted
-    // config byte-for-byte, and there is no aiand-owned file of ours to clean
-    // up. A no-op is the whole contract.
+    // config byte-for-byte, and there is no aiand-owned side file of ours to
+    // clean up. A no-op is the whole contract.
     return Promise.resolve();
+  },
+
+  /**
+   * Swap ONLY the `provider.aiand.options.apiKey` literal in an already-active
+   * opencode.json, preserving the model ref, the full provider model map, and
+   * every unrelated key. Reads/patches/writes through the same
+   * readConfig/writeFileAtomic pair enable() uses (mode 0600). Idempotent.
+   */
+  async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
+    const current = await readConfig();
+    const provider = current.provider as Record<string, Record<string, unknown>> | undefined;
+    const aiand = provider?.[OPENCODE_PROVIDER_ID] as
+      | { options?: { apiKey?: unknown } }
+      | undefined;
+    const options = aiand?.options;
+    if (!options || options.apiKey === input.apiKey) return;
+    const next = {
+      ...current,
+      provider: {
+        ...(provider ?? {}),
+        [OPENCODE_PROVIDER_ID]: { ...aiand!, options: { ...options, apiKey: input.apiKey } },
+      },
+    };
+    await writeFileAtomic(opencodeConfigPath(), `${JSON.stringify(next, null, 2)}\n`, {
+      mode: 0o600,
+    });
   },
   async sessionLaunch(input: SessionLaunchInput) {
     // Session launches must work with NO prior `on`: the whole config rides

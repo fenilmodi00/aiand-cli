@@ -5,7 +5,7 @@ import { CliError } from "../cli/errors.js";
 import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { resolveDefault } from "./catalog.js";
+import { resolveDefault, withContextTag } from "./catalog.js";
 import { agentHome } from "./paths.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
@@ -196,14 +196,21 @@ async function enable(input: EnableInput): Promise<{ model: string; filesWritten
   }
   nextEnv.ANTHROPIC_BASE_URL = CLAUDE_BASE_URL;
   nextEnv.ANTHROPIC_AUTH_TOKEN = input.apiKey;
-  nextEnv.ANTHROPIC_MODEL = input.model;
-  // Slot vars from input.slots; a missing slot is left unset rather than
-  // written as undefined.
-  if (input.slots.opus) nextEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = input.slots.opus;
-  if (input.slots.sonnet) nextEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = input.slots.sonnet;
+  // Claude Code reads a trailing [1m] tag to size its context window and
+  // strips it before the request; without it the binary assumes 200K and
+  // auto-compacts, starving subagents on 1M-context models.
+  nextEnv.ANTHROPIC_MODEL = withContextTag(input.model, input.catalog);
+  // Slot vars: tag the same way, then mirror the (already tagged) haiku slot.
+  if (input.slots.opus) {
+    nextEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = withContextTag(input.slots.opus, input.catalog);
+  }
+  if (input.slots.sonnet) {
+    nextEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = withContextTag(input.slots.sonnet, input.catalog);
+  }
   if (input.slots.haiku) {
-    nextEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = input.slots.haiku;
-    nextEnv.ANTHROPIC_SMALL_FAST_MODEL = input.slots.haiku;
+    const haiku = withContextTag(input.slots.haiku, input.catalog);
+    nextEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = haiku;
+    nextEnv.ANTHROPIC_SMALL_FAST_MODEL = haiku;
   }
 
   const next = { ...current, env: nextEnv };
@@ -223,6 +230,30 @@ async function enable(input: EnableInput): Promise<{ model: string; filesWritten
 
 const CLAUDE_INSTALL = INSTALL_HINTS.claude!;
 
+/**
+ * Swap ONLY the baked ANTHROPIC_AUTH_TOKEN literal in an already-active
+ * settings.json, preserving every model id, slot, and unrelated key. Reads,
+ * patches, and rewrites through the same readSettings/writeFileAtomic pair
+ * enable() uses, so the file mode (0600) and structure stay stable. A key
+ * that already matches the file is a no-op (idempotent refresh).
+ */
+async function refreshKey(input: { apiKey: string; home: string }): Promise<void> {
+  const settingsPath = join(input.home, ".claude", "settings.json");
+  const current = await readSettings(settingsPath);
+  const env =
+    current.env && typeof current.env === "object" && !Array.isArray(current.env)
+      ? (current.env as Record<string, unknown>)
+      : {};
+  if (env.ANTHROPIC_AUTH_TOKEN === input.apiKey) return;
+  const next = {
+    ...current,
+    env: { ...env, ANTHROPIC_BASE_URL: CLAUDE_BASE_URL, ANTHROPIC_AUTH_TOKEN: input.apiKey },
+  };
+  if (!deepEqual(current, next)) {
+    await writeFileAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  }
+}
+
 export const claudeAdapter: AgentAdapter = {
   id: "claude",
   label: "Claude Code",
@@ -234,6 +265,7 @@ export const claudeAdapter: AgentAdapter = {
   managedFiles,
   probe,
   enable,
+  refreshKey,
   async disable(): Promise<void> {
     // Nothing beyond manifest restore: the engine restores both snapshotted
     // files byte-for-byte, and unlike the codex adapter there is no aiand-owned
@@ -249,7 +281,8 @@ export const claudeAdapter: AgentAdapter = {
       env: {
         ANTHROPIC_BASE_URL: CLAUDE_BASE_URL,
         ANTHROPIC_AUTH_TOKEN: input.apiKey,
-        ANTHROPIC_MODEL: model,
+        // Same [1m] tag as enable(): sizes Claude Code's context window.
+        ANTHROPIC_MODEL: withContextTag(model, input.catalog),
       },
       clear: [...MANAGED_ENV_KEYS],
     };

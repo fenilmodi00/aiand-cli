@@ -6,6 +6,8 @@ import { VERSION } from "./api/client.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
 import { findAgent } from "./agents/registry.js";
 import { runAgentCommand } from "./commands/agent.js";
+import { checkForUpdate } from "./system/update.js";
+import { finalizeOnVersionChange } from "./system/finalize.js";
 
 const USAGE = `${style.bold("aiand")} -- the ai& command line interface
 
@@ -39,6 +41,41 @@ function showHelp(topicHelp?: string): void {
   printBanner({ version: VERSION });
   out("");
   out(topicHelp ?? USAGE);
+}
+
+/**
+ * Background housekeeping shown only on an interactive terminal with a real
+ * command (never --version, never --json, never CI). Update notice and
+ * version-change notes both go to stderr as dim lines so they never pollute
+ * a command's stdout. Any failure is swallowed — housekeeping never breaks a
+ * command.
+ */
+async function runSystemHousekeeping(): Promise<void> {
+  const interactive =
+    process.stderr.isTTY === true &&
+    !process.argv.includes("--json") &&
+    process.env.CI === undefined;
+  if (!interactive) return;
+
+  try {
+    const update = await checkForUpdate();
+    if (update) {
+      err(
+        style.dim(
+          `Update available: v${update.current} → v${update.latest}  (npm install -g @aiand/cli)`
+        )
+      );
+    }
+  } catch {
+    // swallow
+  }
+
+  try {
+    const notes = await finalizeOnVersionChange();
+    for (const note of notes) err(style.dim(note));
+  } catch {
+    // swallow
+  }
 }
 
 async function main(): Promise<number> {
@@ -79,6 +116,11 @@ async function main(): Promise<number> {
   }
 
   await command.run(argv.slice(1));
+
+  // Housekeeping after a real command's output — never on the --version path,
+  // which returns above after printing VERSION.
+  await runSystemHousekeeping();
+
   return 0;
 }
 

@@ -160,3 +160,39 @@ describe("getCatalog cache", () => {
     }
   });
 });
+
+describe("withContextTag", () => {
+  const big = makeModel("big/model", { input: "1", output: "2", capabilities: ["tools"] });
+  big.context_window = 1_048_576;
+
+  const boundaryMillion = makeModel("million/model", {
+    input: "1",
+    output: "2",
+    capabilities: ["tools"],
+  });
+  boundaryMillion.context_window = 1_000_000;
+
+  const justUnder = makeModel("under/model", {
+    input: "1",
+    output: "2",
+    capabilities: ["tools"],
+  });
+  justUnder.context_window = 999_999;
+
+  test("tags an id whose catalog entry has a >=1M context window", () => {
+    assert.equal(catalog.withContextTag("big/model", [big]), "big/model[1m]");
+  });
+
+  test("boundary: exactly 1,000,000 is tagged; 999,999 is not", () => {
+    assert.equal(catalog.withContextTag("million/model", [boundaryMillion]), "million/model[1m]");
+    assert.equal(catalog.withContextTag("under/model", [justUnder]), "under/model");
+  });
+
+  test("unknown id passes through unchanged", () => {
+    assert.equal(catalog.withContextTag("ghost/model", [big]), "ghost/model");
+  });
+
+  test("a sub-million entry is written bare", () => {
+    assert.equal(catalog.withContextTag("openai/gpt-5", fixtureModels), "openai/gpt-5");
+  });
+});

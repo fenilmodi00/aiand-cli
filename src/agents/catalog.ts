@@ -93,6 +93,18 @@ export function resolveDefault(models: Model[], profileModel?: string): string {
   return first.id;
 }
 
+/**
+ * Claude Code reads a trailing `[1m]` tag on a model id to size its context
+ * window; without it, the binary assumes 200K and auto-compacts, starving
+ * subagents on 1M-context models. Return `${modelId}[1m]` when the catalog
+ * entry exists and its context window is at least one million tokens,
+ * otherwise the id unchanged (unknown ids pass through untouched).
+ */
+export function withContextTag(modelId: string, catalog: Model[]): string {
+  const entry = catalog.find((model) => model.id === modelId);
+  return entry && entry.context_window >= 1_000_000 ? `${modelId}[1m]` : modelId;
+}
+
 function toolCapable(model: Model): boolean {
   if (!Array.isArray(model.capabilities) || model.capabilities.length === 0) {
     // No capability metadata: assume the model can call tools.

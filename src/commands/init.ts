@@ -1,10 +1,8 @@
-import { createInterface } from "node:readline/promises";
-import { stdin } from "node:process";
-
 import { bool, parse } from "../cli/args.js";
 import { json, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 import { isInteractive } from "../cli/prompt.js";
+import { promptCheckbox } from "../cli/select.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { agentOn, agentOff } from "../agents/engine.js";
 import { hasSnapshot as hasSnapshotFor } from "../agents/snapshot.js";
@@ -161,57 +159,37 @@ async function runInteractive(jsonOut: boolean): Promise<void> {
     return;
   }
 
-  const rl = createInterface({ input: stdin });
-  try {
-    out("Installed agents:");
-    detected.forEach((row, index) => {
-      out(`  ${index + 1}. ${row.adapter.label} (${row.adapter.id})`);
-    });
-    // Even when something is installed, list the rest so a user knows what
-    // exists to install — never auto-installed, just told how.
-    if (missingNames.length > 0) {
-      out("");
-      out("Not installed:");
-      for (const id of missingNames) {
-        const a = AGENTS.find((adapter) => adapter.id === id);
-        if (a) out(style.dim(`  ${id}  Install it with: ${a.install.command}`));
-      }
-    }
+  // Even when something is installed, list the rest so a user knows what
+  // exists to install — never auto-installed, just told how.
+  if (missingNames.length > 0) {
     out("");
-    const answer = await rl.question("Which agents should use ai&? (e.g. 1,3 — or \"all\") ");
-    const targets = pickTargets(answer, detected);
-    for (const adapter of targets) {
-      const result = await wireOn(adapter);
-      out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+    out("Not installed:");
+    for (const id of missingNames) {
+      const a = AGENTS.find((adapter) => adapter.id === id);
+      if (a) out(style.dim(`  ${id}  Install it with: ${a.install.command}`));
     }
-  } finally {
-    rl.close();
   }
-}
+  out("");
 
-/** Parse the interactive answer into selected detected adapters. */
-function pickTargets(
-  answer: string,
-  detected: { adapter: AgentAdapter }[]
-): AgentAdapter[] {
-  const trimmed = answer.trim().toLowerCase();
-  if (trimmed === "" || trimmed === "all") return detected.map((d) => d.adapter);
-  const parts = trimmed.split(/[,\s]+/).filter(Boolean);
-  const picked: AgentAdapter[] = [];
-  for (const part of parts) {
-    if (/^\d+$/.test(part)) {
-      const index = Number(part) - 1;
-      const row = detected[index];
-      if (row && !picked.includes(row.adapter)) picked.push(row.adapter);
-      continue;
-    }
-    const adapter = findAgent(part);
-    if (adapter && !picked.includes(adapter)) picked.push(adapter);
-  }
-  if (picked.length === 0) {
+  const picked = await promptCheckbox({
+    message: "Which agents should use ai&?",
+    choices: detected.map((row) => ({
+      value: row.adapter.id,
+      label: `${row.adapter.label} (${row.adapter.id})`,
+    })),
+  });
+
+  const targets = picked
+    .map((id) => findAgent(id))
+    .filter((adapter): adapter is AgentAdapter => Boolean(adapter));
+
+  if (targets.length === 0) {
     throw new CliError("No agents selected.", {
-      hint: "Answer with numbers (1,3), names, or \"all\".",
+      hint: "Use space to toggle agents, then Enter to confirm.",
     });
   }
-  return picked;
+  for (const adapter of targets) {
+    const result = await wireOn(adapter);
+    out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+  }
 }

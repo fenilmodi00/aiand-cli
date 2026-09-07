@@ -201,6 +201,25 @@ export const piAdapter: AgentAdapter = {
     return Promise.resolve();
   },
 
+  /**
+   * Swap ONLY the baked key under `auth.aiand.key` in auth.json, preserving
+   * settings.json and models.json and every unrelated key. Uses the same
+   * readJsonObject/writeFileAtomic helpers enable() does (mode 0600).
+   * Idempotent: a key that already matches leaves the file untouched.
+   */
+  async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
+    const auth = await readJsonObject(authPath(), "auth.json");
+    const entry = auth[PI_PROVIDER];
+    const key =
+      entry && typeof entry === "object" ? (entry as Record<string, unknown>).key : undefined;
+    if (key === input.apiKey) return;
+    await writeFileAtomic(
+      authPath(),
+      `${JSON.stringify({ ...auth, [PI_PROVIDER]: { ...(entry as object ?? {}), key: input.apiKey } }, null, 2)}\n`,
+      { mode: 0o600 }
+    );
+  },
+
   async sessionLaunch(_input: SessionLaunchInput) {
     // Pi reads auth.json/models.json/settings.json at startup, so a launched
     // session rides the persistent wiring `on` already wrote. The launcher

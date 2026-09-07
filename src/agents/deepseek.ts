@@ -534,6 +534,23 @@ async function disable(): Promise<void> {
   }
 }
 
+/**
+ * Swap ONLY the `AIAND_API_KEY` literal in `.credentials.yaml`, preserving
+ * settings.yaml (model ids, provider block) and every other credential line.
+ * Goes through the same read/parse/serialize/write path enable() uses (mode
+ * 0600). Idempotent: a key that already matches leaves the file untouched.
+ */
+async function refreshKey(input: { apiKey: string; home: string }): Promise<void> {
+  const credPath = credentialsPath(input.home);
+  const credRaw = await readTextIfExists(credPath);
+  if (!credRaw.trim()) return;
+  const creds = parseYamlDeepseek(credRaw, credPath);
+  if (creds[API_KEY_ENV] === input.apiKey) return;
+  await writeFileAtomic(credPath, serializeYamlDeepseek({ ...creds, [API_KEY_ENV]: input.apiKey }), {
+    mode: 0o600,
+  });
+}
+
 async function sessionLaunch(input: SessionLaunchInput): Promise<SessionLaunch> {
   const overlay = createDeepseekHomeOverlay(dshHome(), input.apiKey);
   return {
@@ -568,5 +585,6 @@ export const deepseekAdapter: AgentAdapter = {
   probe,
   enable,
   disable,
+  refreshKey,
   sessionLaunch,
 };

@@ -63,5 +63,12 @@ export type AgentAdapter = {
   // target app holds the config in memory define one.
   sessionLaunch?(input: SessionLaunchInput): Promise<SessionLaunch>;
   disable(): Promise<void>; // strip aiand writes AFTER manifest restore
+  // ^ Swap ONLY the baked API-key literal in an already-active config, leaving
+  // model ids, slots, and every unrelated key/byte untouched. Idempotent: a
+  // config whose key already matches is a no-op. Adapters that do not persist
+  // a plaintext key skip this: cursor/vscode store a safeStorage-encrypted
+  // secret (re-running `aiand <id> on` is the refresh path), prime persists
+  // no key at all, and hermes/grok are launcherOnly.
+  refreshKey?(input: { apiKey: string; home: string }): Promise<void>;
   launcherOnly?: boolean; // hermes/grok: on/off unsupported
 };

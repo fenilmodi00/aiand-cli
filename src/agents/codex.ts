@@ -8,7 +8,7 @@ import { detectForeign } from "./foreign.js";
 import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./ide-guard.js";
 import { resolveDefault } from "./catalog.js";
 import { agentHome } from "./paths.js";
-import { applyFirstRunDefaults, patchRouting } from "./toml.js";
+import { applyFirstRunDefaults, patchRouting, tomlString } from "./toml.js";
 import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /** Status note shown when Codex routing is live (shared config + cache). */
@@ -232,5 +232,37 @@ export const codexAdapter: AgentAdapter = {
     // catalog file is ours alone and simply removed.
     await rm(codexCatalogFile(), { force: true });
     await rm(codexCacheFile(), { force: true });
+  },
+
+  /**
+   * Swap ONLY the baked `experimental_bearer_token` literal inside the
+   * `[model_providers.aiand]` table, preserving the model id, catalog path,
+   * and every other line/table byte-for-byte. Idempotent: a key that already
+   * matches does not rewrite the file.
+   */
+  async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
+    const file = codexConfigFile();
+    const raw = await readTextIfExists(file);
+    if (!raw.trim()) return;
+    const lines = raw.split("\n");
+    let insideAiand = false;
+    let changed = false;
+    const keyLine = /^(\s*)experimental_bearer_token\s*=(.*)$/;
+    const next = lines.map((line) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        insideAiand = trimmed === "[model_providers.aiand]";
+        return line;
+      }
+      if (!insideAiand) return line;
+      const match = keyLine.exec(line);
+      if (!match) return line;
+      const newValue = tomlString(input.apiKey);
+      if (line.trimEnd() === `${match[1]}experimental_bearer_token = ${newValue}`) return line;
+      changed = true;
+      return `${match[1]}experimental_bearer_token = ${newValue}`;
+    });
+    if (!changed) return;
+    await writeFileAtomic(file, `${next.join("\n")}\n`, { mode: 0o600 });
   },
 };

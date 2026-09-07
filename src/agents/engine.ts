@@ -4,6 +4,7 @@ import { confirm, isInteractive } from "../cli/prompt.js";
 import { requireSessionKey } from "./session.js";
 import { snapshotFiles, restoreSnapshot } from "./snapshot.js";
 import { getCatalog, resolveDefault, resolveSlots } from "./catalog.js";
+import { visionLabel, formatTextOnlyWarning } from "./vision.js";
 import { agentHome } from "./paths.js";
 import type { AgentAdapter } from "./types.js";
 
@@ -21,6 +22,8 @@ export type AgentOnResult = {
   state: "on";
   model: string;
   files: string[];
+  /** e.g. a warning when a wired model is text-only and can't take images. */
+  warnings: string[];
 };
 
 export type AgentOffResult = {
@@ -135,7 +138,29 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     baseUrl: opts.baseUrl ?? profile.apiUrl,
   });
 
-  return { agent: adapter.id, state: "on", model: written.model, files: written.filesWritten };
+  // Claude Code reads model ids back tagged with [1m]; strip that before the
+  // catalog lookup so a text-only 1M model still warns. Every id actually
+  // written (main model + slot values) is checked against the catalog.
+  let warnings: string[] = [];
+  if (adapter.id === "claude") {
+    const ids = [written.model, slots.opus, slots.sonnet, slots.haiku]
+      .filter((id): id is string => typeof id === "string")
+      .map((id) => id.replace(/\[1m\]$/, ""));
+    const textOnly = ids.filter((id) => {
+      const entry = catalog.find((model) => model.id === id);
+      return entry !== undefined && visionLabel(entry) === "text-only";
+    });
+    const line = formatTextOnlyWarning([...new Set(textOnly)]);
+    if (line) warnings = [line];
+  }
+
+  return {
+    agent: adapter.id,
+    state: "on",
+    model: written.model,
+    files: written.filesWritten,
+    warnings,
+  };
 }
 
 /**
