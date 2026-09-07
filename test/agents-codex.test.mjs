@@ -28,7 +28,8 @@ after(() => {
 const { patchRouting, stripRouting, applyFirstRunDefaults, tomlString } = await import(
   "../dist/agents/toml.js"
 );
-const { codexAdapter, codexModelCatalogJson, CODEX_SHARED_NOTE } = await import(
+const { CliError } = await import("../dist/cli/errors.js");
+const { codexAdapter, codexModelCatalogJson, chatgptQuitGuard, CODEX_SHARED_NOTE } = await import(
   "../dist/agents/codex.js"
 );
 
@@ -256,21 +257,68 @@ describe("codex adapter", () => {
     assert.throws(() => statSync(join(codexDir, "aiand-models.json")), /ENOENT/);
   });
 
-  test("sessionLaunch passes -c args with aiand provider, empty env", () => {
-    const launch = codexAdapter.sessionLaunch("zai-org/glm-5.3");
+  test("sessionLaunch overlays provider via -c args and keys via env", async () => {
+    const launch = await codexAdapter.sessionLaunch({
+      apiKey: "sk-launch-1",
+      model: "zai-org/glm-5.3",
+      catalog: [],
+    });
     assert.deepEqual(launch.args, [
       "-c",
       'model_provider="aiand"',
       "-c",
       'model="zai-org/glm-5.3"',
+      "-c",
+      'model_providers.aiand.name="ai&"',
+      "-c",
+      'model_providers.aiand.base_url="https://api.aiand.com/v1"',
+      "-c",
+      'model_providers.aiand.wire_api="responses"',
+      "-c",
+      'model_providers.aiand.env_key="AIAND_CODEX_AUTH_TOKEN"',
     ]);
-    assert.deepEqual(launch.env, {});
+    assert.deepEqual(launch.env, { AIAND_CODEX_AUTH_TOKEN: "sk-launch-1" });
     assert.deepEqual(launch.clear, []);
+  });
+
+  test("sessionLaunch omits the model override when none is resolved", async () => {
+    const launch = await codexAdapter.sessionLaunch({
+      apiKey: "sk-launch-1",
+      model: undefined,
+      catalog: [],
+    });
+    assert.ok(!launch.args.some((arg) => arg.startsWith('model="')));
+    assert.equal(launch.env.AIAND_CODEX_AUTH_TOKEN, "sk-launch-1");
   });
 
   test("CODEX_SHARED_NOTE is exported", () => {
     assert.equal(typeof CODEX_SHARED_NOTE, "string");
     assert.ok(CODEX_SHARED_NOTE.length > 0);
+  });
+});
+
+describe("chatgptQuitGuard", () => {
+  // Tests drive the guard through chatgptQuitGuard's injected isRunning
+  // probe (assertIdeStopped's own seam), so the rejection/force/not-running
+  // paths run on every platform — the adapter's darwin/win32-only gate that
+  // returns early on linux is intentionally not part of this block.
+  test("running + no force rejects with a CliError hinting --force (non-interactive)", async () => {
+    await assert.rejects(
+      chatgptQuitGuard({ force: false, isRunning: () => true }),
+      (error) => {
+        assert.ok(error instanceof CliError);
+        assert.match(error.hint ?? "", /--force/);
+        return true;
+      }
+    );
+  });
+
+  test("running + force resolves without throwing", async () => {
+    await chatgptQuitGuard({ force: true, isRunning: () => true });
+  });
+
+  test("not running resolves without throwing", async () => {
+    await chatgptQuitGuard({ force: false, isRunning: () => false });
   });
 });
 

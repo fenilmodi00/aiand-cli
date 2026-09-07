@@ -18,6 +18,7 @@ ${COMMANDS.map((c) => `  ${c.name.padEnd(9)} ${c.summary}`).join("\n")}
 Agents
   aiand <agent> on|off|status    wire a coding agent to ai&
   aiand init                     detect and wire agents
+  aiand run-agent <agent>        run a coding agent for one session
   aiand status                   show auth and agent wiring
 
 Global options
@@ -69,7 +70,13 @@ async function main(): Promise<number> {
 }
 
 main()
-  .then((code) => process.exit(code))
+  .then((code) => {
+    // A command (run-agent) may set process.exitCode to propagate a child's
+    // exit status without process.exit-ing (so stdio flushes); honor it when
+    // the command itself did not return a nonzero code.
+    const finalCode = code !== 0 ? code : (process.exitCode ?? 0);
+    process.exit(finalCode);
+  })
   .catch((error: unknown) => {
     if (error instanceof CliError) {
       const prefix = error instanceof ApiError && error.status ? `HTTP ${error.status}: ` : "";

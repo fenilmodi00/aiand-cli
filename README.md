@@ -28,6 +28,7 @@ node dist/index.js --help    # or `npm link` to get `aiand` on PATH
 | `aiand whoami` | Identity, organization, and key expiry |
 | `aiand <agent> on\|off\|status` | Wire a coding agent to ai& — see below |
 | `aiand init` | Detect installed agents and wire them in batch |
+| `aiand run-agent <agent>` | Launch an agent on ai& for one session only |
 | `aiand status` | Sign-in state plus every agent's wiring |
 | `aiand run <prompt>` | One prompt, streamed to stdout |
 | `aiand chat` | Interactive conversation with a transcript |
@@ -42,16 +43,19 @@ Every command takes `--json` for machine-readable output and `--help` for its ow
 ## Agent setup
 
 Point a local coding agent at ai& without hand-copying env vars. `on` writes the agent's
-own native config — a stock `claude` or `codex` binary just works afterwards — and `off`
-restores the previous state byte for byte, including files that did not exist before.
-
+own native config — a stock `claude`, `codex`, or `opencode` binary just works afterwards —
+and `off` restores the previous state byte for byte, including files that did not exist
+before. `run-agent` skips the config entirely: it injects everything into one process's
+environment, so nothing is written and nothing needs undoing.
 ```bash
 aiand claude on          # writes ~/.claude/settings.json with the ai& env block
 aiand claude status      # ground truth from the agent's real config files
 aiand claude off         # byte-for-byte restore of whatever was there before
 aiand codex on           # ~/.codex/config.toml + model catalog; chatgpt is an alias
+aiand opencode on        # provider entry in ~/.config/opencode/opencode.json
 aiand claude --model moonshotai/kimi-k3 --opus zai-org/glm-5.3
 aiand init               # detect installed agents, ask which to wire
+aiand run-agent claude -- claude-args…   # one session on ai&, nothing written to disk
 aiand status             # who is signed in, where the key lives, which agents are on
 ```
 
@@ -217,9 +221,9 @@ All of these run in CI. Issues and pull requests are welcome.
 
 ## Roadmap
 
-Sign-in, inference, observability, and agent setup for Claude Code and Codex ship today.
-More agents (opencode, pi, cursor, vscode, …) and the remaining surface are next:
-
+Sign-in, inference, observability, and agent setup for Claude Code, Codex, Cursor, and
+OpenCode ship today, plus one-session launches via `aiand run-agent`. More agents
+(pi, vscode, deepseek, …) are next:
 - **Files** — uploads for vision, video, audio, and document inputs
 - **Billing** — balance, history, auto-recharge, redemption codes
 - **Video** — asynchronous generation jobs

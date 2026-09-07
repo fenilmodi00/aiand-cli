@@ -6,7 +6,7 @@ import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
 import { agentHome } from "./paths.js";
-import type { AgentAdapter, DetectResult, EnableInput, ProbeResult } from "./types.js";
+import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
  * Claude Code routes to the gateway through ANTHROPIC_BASE_URL plus the
@@ -239,17 +239,15 @@ export const claudeAdapter: AgentAdapter = {
     // file to clean up. A no-op is the whole contract.
     return Promise.resolve();
   },
-  sessionLaunch(model: string | undefined) {
+  async sessionLaunch(input: SessionLaunchInput) {
     return {
       env: {
         ANTHROPIC_BASE_URL: CLAUDE_BASE_URL,
+        ANTHROPIC_AUTH_TOKEN: input.apiKey,
         // Omit the model key when the launcher didn't resolve one, letting
         // Claude Code fall back to its own default.
-        ...(model ? { ANTHROPIC_MODEL: model } : {}),
+        ...(input.model ? { ANTHROPIC_MODEL: input.model } : {}),
       },
-      // The launcher injects ANTHROPIC_AUTH_TOKEN (the resolved session key)
-      // after this call merges — this adapter is stateless and cannot resolve
-      // it — so the token is deliberately NOT baked here.
       clear: [...MANAGED_ENV_KEYS],
     };
   },

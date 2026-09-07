@@ -72,6 +72,12 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     }
   }
 
+  // App-held-config guards (ChatGPT Desktop, Cursor IDE) run after the
+  // foreign refusal and before any snapshot: refusing must never leave a
+  // half-state behind, and --force must escape both gates.
+  if (adapter.enableGuard) {
+    await adapter.enableGuard({ force: opts.force ?? false });
+  }
   const managed = adapter.managedFiles();
   if (!(await hasSnapshot(adapter.id)) || !probe.active) {
     await snapshotFiles(adapter.id, managed);
@@ -112,6 +118,7 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     slots,
     catalog,
     home: agentHome(),
+    baseUrl: opts.baseUrl ?? profile.apiUrl,
   });
 
   return { agent: adapter.id, state: "on", model: written.model, files: written.filesWritten };
@@ -122,7 +129,12 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
  * that nothing was ours to begin with), then let the adapter clean up any
  * aiand-owned side files. Exit 0 either way.
  */
-export async function agentOff(adapter: AgentAdapter): Promise<AgentOffResult> {
+export async function agentOff(adapter: AgentAdapter, opts: { force?: boolean } = {}): Promise<AgentOffResult> {
+  // The restore must land on disk while the owning app is NOT running — it
+  // rewrites the config from memory on exit and would undo the restore.
+  if (adapter.offGuard) {
+    await adapter.offGuard({ force: opts.force ?? false });
+  }
   const restored = await restoreSnapshot(adapter.id);
   if (!restored) {
     return { agent: adapter.id, state: "off", note: "Already your own config — nothing to turn off." };

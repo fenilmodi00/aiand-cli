@@ -12,17 +12,30 @@ export type ProbeResult = {
 };
 
 export type EnableInput = {
-  apiKey: string; // resolved session key, baked literal
-  model: string; // resolved default or --model
-  slots: Record<string, string>; // claude only: opus/sonnet/haiku
-  catalog: Model[]; // live /v1/models
-  home: string; // agentHome()
+  apiKey: string;                       // resolved session key, baked literal
+  model: string;                         // resolved default or --model
+  slots: Record<string, string>;         // claude only: opus/sonnet/haiku
+  catalog: Model[];                      // live /v1/models
+  home: string;                          // agentHome()
+  baseUrl: string;                       // API origin (api.json fetches)
+};
+
+/** Everything a one-process session launcher needs to build its injection. */
+export type SessionLaunchInput = {
+  apiKey: string;                        // resolved session key, baked into env/config content
+  model: string | undefined;              // --model or the adapter default, catalog-validated
+  catalog: Model[];                      // live /v1/models (adapters that build model maps)
 };
 
 export type SessionLaunch = {
   env: Record<string, string>; // added to child env
   clear: string[]; // deleted from child env
   args?: string[]; // extra CLI args before passthrough
+  // Always run by the launcher after the child exits, success or failure:
+  // remove throwaway overlays, close ephemeral servers. The launcher owns
+  // this lifecycle because sessionLaunch is async — ephemeral servers can
+  // bind before returning, so no pre-spawn hook is needed.
+  cleanup?: () => Promise<void>;
 };
 
 export type AgentAdapter = {
@@ -35,7 +48,17 @@ export type AgentAdapter = {
   managedFiles(): string[]; // absolute paths this adapter touches
   probe(): Promise<ProbeResult>; // read real config, no flags trusted
   enable(input: EnableInput): Promise<{ model: string; filesWritten: string[] }>;
+  enableGuard?(opts: { force: boolean }): Promise<void>;
+  // ^ Runs inside agentOn, after the foreign-config refusal but BEFORE the
+  // snapshot + enable(). Adapters whose target app holds config in memory
+  // (ChatGPT Desktop, Cursor IDE) refuse the write while the app is running
+  // because it would clobber theirs; --force (parsed by the command layer)
+  // escapes every guard.
+  offGuard?(opts: { force: boolean }): Promise<void>;
+  // ^ Same refusal for `off`: the app rewrites its config file from memory on
+  // exit, which would clobber the byte-for-byte restore. Only adapters whose
+  // target app holds the config in memory define one.
+  sessionLaunch?(input: SessionLaunchInput): Promise<SessionLaunch>;
   disable(): Promise<void>; // strip aiand writes AFTER manifest restore
-  sessionLaunch?(model: string | undefined): SessionLaunch;
   launcherOnly?: boolean; // hermes/grok: on/off unsupported
 };

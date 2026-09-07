@@ -73,7 +73,7 @@ export async function runAgentCommand(adapter: AgentAdapter, argv: string[]): Pr
     case "on":
       return runOn(adapter, parsed, jsonOut);
     case "off":
-      return runOff(adapter, jsonOut);
+      return runOff(adapter, parsed, jsonOut);
     case "status":
       return runStatus(adapter, jsonOut);
   }
@@ -112,8 +112,8 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
   ]);
 }
 
-async function runOff(adapter: AgentAdapter, jsonOut: boolean): Promise<void> {
-  const result = await agentOff(adapter);
+async function runOff(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): Promise<void> {
+  const result = await agentOff(adapter, { force: bool(parsed, "force") });
   if (jsonOut) {
     return json(result);
   }

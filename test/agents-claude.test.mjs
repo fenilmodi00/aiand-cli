@@ -282,20 +282,22 @@ describe("claude snapshot round-trip", () => {
 });
 
 describe("claude session launch", () => {
-  test("provides base url + model env and the managed clear list", () => {
-    const launch = claudeAdapter.sessionLaunch("m-run");
+  const launchInput = (model) => ({ apiKey: BASE_KEY, model, catalog: [] });
+
+  test("bakes base url, auth token, and model env with the managed clear list", async () => {
+    const launch = await claudeAdapter.sessionLaunch(launchInput("m-run"));
     assert.equal(launch.env.ANTHROPIC_BASE_URL, BASE_URL);
     assert.equal(launch.env.ANTHROPIC_MODEL, "m-run");
-    // token deliberately absent — the launcher injects it
-    assert.equal(launch.env.ANTHROPIC_AUTH_TOKEN, undefined);
+    assert.equal(launch.env.ANTHROPIC_AUTH_TOKEN, BASE_KEY);
     assert.ok(launch.clear.includes("ANTHROPIC_API_KEY"));
     assert.ok(launch.clear.includes("ANTHROPIC_AUTH_TOKEN"));
     assert.ok(launch.clear.includes("CLAUDE_CODE_OAUTH_TOKEN"));
   });
 
-  test("omits the model key when none is resolved", () => {
-    const launch = claudeAdapter.sessionLaunch(undefined);
+  test("omits the model key when none is resolved", async () => {
+    const launch = await claudeAdapter.sessionLaunch(launchInput(undefined));
     assert.equal(launch.env.ANTHROPIC_MODEL, undefined);
     assert.equal(launch.env.ANTHROPIC_BASE_URL, BASE_URL);
+    assert.equal(launch.env.ANTHROPIC_AUTH_TOKEN, BASE_KEY);
   });
 });

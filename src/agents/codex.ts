@@ -5,9 +5,10 @@ import type { Model } from "../api/models.js";
 import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
+import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./ide-guard.js";
 import { agentHome } from "./paths.js";
 import { applyFirstRunDefaults, patchRouting } from "./toml.js";
-import type { AgentAdapter, ProbeResult } from "./types.js";
+import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /** Status note shown when Codex routing is live (shared config + cache). */
 export const CODEX_SHARED_NOTE = "Shared by the Codex CLI and ChatGPT Desktop.";
@@ -115,6 +116,21 @@ function inspectConfig(configText: string): { active: boolean; model: string | n
   return { active, model };
 }
 
+/**
+ * ChatGPT Desktop quit-guard core, exported so tests can drive the
+ * rejection/force/not-running paths on any platform without touching global
+ * process state. `isRunning` lets tests inject a probe instead of stubbing
+ * the real process scan (assertIdeStopped's own injection seam).
+ */
+export async function chatgptQuitGuard(
+  opts: { force: boolean; isRunning?: () => boolean } = { force: false }
+): Promise<void> {
+  await assertIdeStopped(CHATGPT_DESKTOP_SPEC, "ChatGPT Desktop", {
+    force: opts.force,
+    isRunning: opts.isRunning,
+  });
+}
+
 export const codexAdapter: AgentAdapter = {
   id: "codex",
   label: "Codex CLI",
@@ -124,6 +140,27 @@ export const codexAdapter: AgentAdapter = {
 
   detect() {
     return detectBinary(this.bin);
+  },
+
+  /**
+   * Refuse to write ~/.codex/config.toml while ChatGPT Desktop is running:
+   * it shares that config and rewrites it on exit, silently clobbering the
+   * write. Calls the exported chatgptQuitGuard so the guard logic is
+   * testable on every platform (the platform gate lives here, not in the
+   * helper — injecting isRunning must still exercise the rejection path).
+   */
+  async enableGuard(opts: { force: boolean }): Promise<void> {
+    if (process.platform !== "darwin" && process.platform !== "win32") return;
+    await chatgptQuitGuard(opts);
+  },
+
+  /**
+   * `off` restores the shared config.toml byte-for-byte; a running ChatGPT
+   * Desktop would rewrite it from memory on exit and undo the restore.
+   */
+  async offGuard(opts: { force: boolean }): Promise<void> {
+    if (process.platform !== "darwin" && process.platform !== "win32") return;
+    await chatgptQuitGuard(opts);
   },
 
   managedFiles() {
@@ -141,7 +178,30 @@ export const codexAdapter: AgentAdapter = {
     return { active, foreignTool, model };
   },
 
-  async enable(input) {
+  async sessionLaunch(input: SessionLaunchInput) {
+    // Session launches must work with NO prior `on`: the -c overlay defines
+    // the whole provider (name/base_url/wire_api) inline, and the key rides
+    // in env via env_key — nothing secret is written to disk.
+    return {
+      env: { AIAND_CODEX_AUTH_TOKEN: input.apiKey },
+      clear: [],
+      args: [
+        "-c",
+        'model_provider="aiand"',
+        ...(input.model ? ["-c", `model="${input.model}"`] : []),
+        "-c",
+        'model_providers.aiand.name="ai&"',
+        "-c",
+        'model_providers.aiand.base_url="https://api.aiand.com/v1"',
+        "-c",
+        'model_providers.aiand.wire_api="responses"',
+        "-c",
+        'model_providers.aiand.env_key="AIAND_CODEX_AUTH_TOKEN"',
+      ],
+    };
+  },
+
+  async enable(input: EnableInput) {
     const raw = await readTextIfExists(codexConfigFile());
     const withDefaults = applyFirstRunDefaults(raw);
     const next = patchRouting(withDefaults, {
@@ -167,17 +227,5 @@ export const codexAdapter: AgentAdapter = {
     // catalog file is ours alone and simply removed.
     await rm(codexCatalogFile(), { force: true });
     await rm(codexCacheFile(), { force: true });
-  },
-
-  sessionLaunch(model) {
-    // The launcher injects the session key after this call via
-    // AIAND_CODEX_AUTH_TOKEN — never baked here so a launched session's env
-    // can't linger with the token. Permanent routing bakes the literal into
-    // config.toml instead (see enable), which needs no env involvement.
-    return {
-      env: {},
-      clear: [],
-      args: ["-c", 'model_provider="aiand"', "-c", `model="${model ?? ""}"`],
-    };
   },
 };

@@ -32,6 +32,7 @@ const RULES = [
     allow: (match) =>
       match.startsWith("@aiand/") ||
       match.startsWith("@types/") ||
+      match.startsWith("@ai-sdk/") ||
       match.startsWith("@opencode-ai/") ||
       match.startsWith("@anthropic-ai/") ||
       match.startsWith("@openai/") ||

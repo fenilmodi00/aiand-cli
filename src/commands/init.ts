@@ -31,8 +31,8 @@ async function wireOn(adapter: AgentAdapter): Promise<InitResult> {
   return { agent: result.agent, state: result.state, model: result.model };
 }
 
-async function wireOff(adapter: AgentAdapter): Promise<InitResult> {
-  const result = await agentOff(adapter);
+async function wireOff(adapter: AgentAdapter, force: boolean): Promise<InitResult> {
+  const result = await agentOff(adapter, { force });
   return { agent: result.agent, state: result.state, note: result.note };
 }
 
@@ -40,12 +40,13 @@ export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     all: { type: "boolean", default: false },
     off: { type: "boolean", default: false },
+    force: { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
   const jsonOut = bool(parsed, "json");
 
-  if (bool(parsed, "off")) return runOff(parsed.positionals, jsonOut);
+  if (bool(parsed, "off")) return runOff(parsed.positionals, jsonOut, bool(parsed, "force"));
 
   const named = parsed.positionals;
   if (bool(parsed, "all") || named.length > 0) {
@@ -133,6 +134,13 @@ async function runInteractive(jsonOut: boolean): Promise<void> {
   );
 
   if (!isInteractive()) {
+    // With nothing installed there is no list of names to pass, so the hint
+    // becomes a single actionable sentence instead of `aiand init ` (empty).
+    if (detected.length === 0) {
+      const msg = "No coding agents detected on this machine. Install one and re-run aiand init.";
+      if (jsonOut) return json({ agents: [], message: msg });
+      throw new CliError("Non-interactive init needs explicit agents.", { hint: msg });
+    }
     if (jsonOut) {
       return json({
         agents: [],
@@ -160,6 +168,17 @@ async function runInteractive(jsonOut: boolean): Promise<void> {
     detected.forEach((row, index) => {
       out(`  ${index + 1}. ${row.adapter.label} (${row.adapter.id})`);
     });
+    // Even when something is installed, list the rest so a user knows what
+    // exists to install — never auto-installed, just told how.
+    if (missingNames.length > 0) {
+      out("");
+      out("Not installed:");
+      for (const id of missingNames) {
+        const a = AGENTS.find((adapter) => adapter.id === id);
+        if (a) out(style.dim(`  ${id}  Install it with: ${a.install.command}`));
+      }
+    }
+    out("");
     const answer = await rl.question("Which agents should use ai&? (e.g. 1,3 — or \"all\") ");
     const targets = pickTargets(answer, detected);
     for (const adapter of targets) {

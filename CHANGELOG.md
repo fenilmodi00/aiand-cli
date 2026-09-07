@@ -5,7 +5,25 @@ All notable changes to this project will be documented in this file.
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
-## [0.2.0] - 2026-09-07
+## [Unreleased]
+
+### Added
+
+- Agent setup for OpenCode: `aiand opencode on` writes the `aiand` provider
+  (key literal, `@ai-sdk/openai-compatible` adapter) into
+  `~/.config/opencode/opencode.json`, with the model entries taken verbatim
+  from the live `/v1/api.json` catalog. `enabled_providers` locks the picker
+  to ai& and the Zen gateway (`opencode` id) is disabled to cut clutter.
+  `off` restores the file byte for byte.
+- `aiand run-agent <agent> [--model <id>] [--] [args…]` — launch a stock
+  agent binary on ai& for one session only: routing and the session key are
+  injected into that process's environment, nothing is written to disk, and
+  the agent's own exit status is propagated. Works without a prior `on`.
+- `aiand init` polish: the interactive picker lists not-installed agents with
+  their install commands below the detected ones, and a non-interactive bare
+  `aiand init` with nothing detected says so instead of printing an empty
+  agent list. `aiand init --off <agent>` is the same as
+  `aiand <agent> off`.
 
 ### Added
 

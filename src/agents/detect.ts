@@ -31,6 +31,10 @@ export const INSTALL_HINTS: Record<string, { command: string; url: string }> = {
     command: "npm install -g @openai/codex",
     url: "https://github.com/openai/codex",
   },
+  cursor: {
+    command: "Download Cursor from cursor.com/downloads",
+    url: "https://cursor.com/downloads",
+  },
   opencode: {
     command: "npm install -g opencode-ai@latest",
     url: "https://opencode.ai",

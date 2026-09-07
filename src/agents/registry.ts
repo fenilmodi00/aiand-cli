@@ -1,12 +1,14 @@
 import { claudeAdapter } from "./claude.js";
 import { codexAdapter } from "./codex.js";
+import { cursorAdapter } from "./cursor.js";
+import { opencodeAdapter } from "./opencode.js";
 import type { AgentAdapter } from "./types.js";
 
 /**
  * Every adapter ships here, in a stable display order. Growing the matrix is
  * one import + one line; findAgent matches ids and aliases over this list.
  */
-const registered: AgentAdapter[] = [claudeAdapter, codexAdapter];
+const registered: AgentAdapter[] = [claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter];
 
 /** Every registered adapter, in registration order. */
 export const AGENTS: readonly AgentAdapter[] = registered;
