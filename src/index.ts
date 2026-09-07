@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { ApiError, CliError } from "./cli/errors.js";
 import { err, out, style } from "./cli/output.js";
+import { printBanner } from "./cli/ui/banner.js";
 import { VERSION } from "./api/client.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
 import { findAgent } from "./agents/registry.js";
@@ -34,13 +35,25 @@ Get started
 
 Run \`aiand <command> --help\` for a command's own flags.`;
 
+function showHelp(topicHelp?: string): void {
+  printBanner({ version: VERSION });
+  out("");
+  out(topicHelp ?? USAGE);
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const first = argv[0];
 
+  // Hidden easter-egg / preview — not listed in help.
+  if (first === "banner") {
+    printBanner({ version: VERSION });
+    return 0;
+  }
+
   if (!first || first === "help") {
     const topic = argv[1] ? findCommand(argv[1]) : undefined;
-    out(topic ? topic.help : USAGE);
+    showHelp(topic?.help);
     return 0;
   }
   if (first === "--version" || first === "-v") {
@@ -48,7 +61,7 @@ async function main(): Promise<number> {
     return 0;
   }
   if (first === "--help" || first === "-h") {
-    out(USAGE);
+    showHelp();
     return 0;
   }
 
