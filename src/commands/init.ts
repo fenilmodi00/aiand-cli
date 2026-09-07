@@ -99,8 +99,7 @@ async function runOnAll(targets: AgentAdapter[], jsonOut: boolean): Promise<void
     out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
   }
 }
-
-async function runOff(names: string[], jsonOut: boolean): Promise<void> {
+async function runOff(names: string[], jsonOut: boolean, force: boolean): Promise<void> {
   const targets = names.length > 0 ? resolveNames(names) : await registeredRouted();
   if (targets.length === 0 && names.length === 0) {
     if (jsonOut) return json({ agents: [] });
@@ -109,7 +108,7 @@ async function runOff(names: string[], jsonOut: boolean): Promise<void> {
   }
   const results: InitResult[] = [];
   for (const adapter of targets) {
-    results.push(await wireOff(adapter));
+    results.push(await wireOff(adapter, force));
   }
   if (jsonOut) return json({ agents: results });
   for (const result of results) {
