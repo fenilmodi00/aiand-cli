@@ -26,6 +26,7 @@ const fixtureModels = [
   makeModel("zai-org/glm-5.3", { input: "0.60", output: "2.20", capabilities: ["tools"] }),
   makeModel("google/gemma-4-31b-it", { input: "0.05", output: "0.20", capabilities: ["vision"] }),
   makeModel("deepseek-ai/r1", { input: "0.40", output: "1.60", capabilities: ["tool-calling"] }),
+  makeModel("qwen/qwen3.8-27b", { input: "0.30", output: "1.00", capabilities: ["tool_calling"] }),
 ];
 
 function makeModel(id, { input, output, capabilities }) {
@@ -73,8 +74,9 @@ describe("resolveSlots", () => {
     assert.equal(slots.opus, "openai/gpt-5");
     // sonnet mirrors the default model.
     assert.equal(slots.sonnet, "zai-org/glm-5.3");
-    // gemma has no tool capability, so cheapest tool-capable input is r1 (0.40).
-    assert.equal(slots.haiku, "deepseek-ai/r1");
+    // gemma has no tool capability; qwen spells it "tool_calling" the way the
+    // live gateway does and undercuts r1 (0.30 vs 0.40).
+    assert.equal(slots.haiku, "qwen/qwen3.8-27b");
   });
 
   test("treats missing capability info as tool-capable", () => {

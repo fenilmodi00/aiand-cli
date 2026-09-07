@@ -8,6 +8,9 @@ import * as chat from "./chat.js";
 import * as logs from "./logs.js";
 import * as usage from "./usage.js";
 import * as config from "./config.js";
+import * as init from "./init.js";
+import * as status from "./status.js";
+import { AGENTS } from "../agents/registry.js";
 
 export type Command = {
   name: string;
@@ -28,6 +31,8 @@ export const COMMANDS: Command[] = [
   { name: "usage", summary: "Request and token usage", aliases: ["analytics"], ...usage },
   { name: "orgs", summary: "List your organizations", ...orgs },
   { name: "config", summary: "Inspect and change stored settings", ...config },
+  { name: "init", summary: "Detect agents and wire them to ai&", ...init },
+  { name: "status", summary: "Show auth and agent wiring", ...status },
 ];
 
 export function findCommand(name: string): Command | undefined {
@@ -35,10 +40,16 @@ export function findCommand(name: string): Command | undefined {
 }
 
 export function suggest(name: string): string | undefined {
+  // Agent nouns are valid dispatch targets, so include them in the
+  // suggestion candidate set alongside commands.
+  const candidates = [
+    ...COMMANDS.map((c) => c.name),
+    ...AGENTS.flatMap((a) => [a.id, ...(a.aliases ?? [])]),
+  ];
   let best: { name: string; distance: number } | undefined;
-  for (const command of COMMANDS) {
-    const distance = editDistance(name, command.name);
-    if (!best || distance < best.distance) best = { name: command.name, distance };
+  for (const candidate of candidates) {
+    const distance = editDistance(name, candidate);
+    if (!best || distance < best.distance) best = { name: candidate, distance };
   }
   return best && best.distance <= Math.max(2, Math.floor(name.length / 3))
     ? best.name

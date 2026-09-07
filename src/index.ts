@@ -3,14 +3,22 @@ import { ApiError, CliError } from "./cli/errors.js";
 import { err, out, style } from "./cli/output.js";
 import { VERSION } from "./api/client.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
+import { findAgent } from "./agents/registry.js";
+import { runAgentCommand } from "./commands/agent.js";
 
 const USAGE = `${style.bold("aiand")} -- the ai& command line interface
 
 Usage
   aiand <command> [options]
+  aiand <agent> [on|off|status] [options]
 
 Commands
 ${COMMANDS.map((c) => `  ${c.name.padEnd(9)} ${c.summary}`).join("\n")}
+
+Agents
+  aiand <agent> on|off|status    wire a coding agent to ai&
+  aiand init                     detect and wire agents
+  aiand status                   show auth and agent wiring
 
 Global options
   --profile <name>    use a stored profile
@@ -45,6 +53,11 @@ async function main(): Promise<number> {
 
   const command = findCommand(first);
   if (!command) {
+    const agent = findAgent(first);
+    if (agent) {
+      await runAgentCommand(agent, argv.slice(1));
+      return 0;
+    }
     const guess = suggest(first);
     err(style.red(`Unknown command "${first}".`));
     err(guess ? `Did you mean \`aiand ${guess}\`?` : "Run `aiand help` to see the commands.");

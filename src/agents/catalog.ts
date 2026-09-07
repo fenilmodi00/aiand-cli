@@ -98,7 +98,12 @@ function toolCapable(model: Model): boolean {
     // No capability metadata: assume the model can call tools.
     return true;
   }
-  return model.capabilities.includes("tools") || model.capabilities.includes("tool-calling");
+  // The gateway publishes "tool_calling"; older catalogs used "tools" /
+  // "tool-calling". Match every spelling so a catalog refresh never empties
+  // the slot resolution.
+  return model.capabilities.some((capability) =>
+    ["tools", "tool-calling", "tool_calling"].includes(capability)
+  );
 }
 
 function price(value: string | null): number {
