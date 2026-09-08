@@ -149,10 +149,6 @@ function toolCapable(model: Model): boolean {
   );
 }
 
-function price(value: string | null): number {
-  return Number.parseFloat(value ?? "0");
-}
-
 /**
  * Claude Code's three model slots resolved from the live catalog: opus takes
  * the priciest tool-capable output, sonnet mirrors the default, and haiku
@@ -163,10 +159,10 @@ export function resolveSlots(models: Model[]): Record<string, string> {
   if (capable.length === 0) return {};
 
   const opus = capable.reduce((best, model) =>
-    price(model.output_per_1m) > price(best.output_per_1m) ? model : best
+    Number.parseFloat(model.output_per_1m ?? "0") > Number.parseFloat(best.output_per_1m ?? "0") ? model : best
   );
   const haiku = capable.reduce((best, model) =>
-    price(model.input_per_1m) < price(best.input_per_1m) ? model : best
+    Number.parseFloat(model.input_per_1m ?? "0") < Number.parseFloat(best.input_per_1m ?? "0") ? model : best
   );
   const sonnet = resolveDefault(models);
 

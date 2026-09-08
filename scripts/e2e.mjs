@@ -1,56 +1,64 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, cpSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const DIST = join(ROOT, "dist", "index.js");
-const S = join("/tmp", "aiand-e2e");
-execSync(`rm -rf ${S}`);
-const cursorStorage = join(S, "home", ".config", "Cursor", "User", "globalStorage");
-mkdirSync(cursorStorage, { recursive: true });
-mkdirSync(join(S, "cfg"), { recursive: true });
-mkdirSync(join(S, "bin"), { recursive: true });
-const db = join(cursorStorage, "state.vscdb");
 
 // Offline catalog so this script does not need the live gateway.
-writeFileSync(
-  join(S, "cfg", "model-catalog.json"),
-  JSON.stringify({
-    fetchedAt: Date.now(),
-    baseUrl: "https://api.aiand.com",
-    models: [
-      {
-        id: "zai-org/glm-5.3",
-        name: "GLM 5.3",
-        object: "model",
-        created: 1,
-        owned_by: "zai-org",
-        provider: "zai-org",
-        context_window: 200000,
-        capabilities: ["text", "vision", "tool_calling"],
-        reasoning_efforts: null,
-        reasoning_effort_default: null,
-        description: null,
-        currency: "usd",
-        input_per_1m: "0.60",
-        output_per_1m: "2.40",
-        cached_input_per_1m: "0.10",
-      },
-    ],
-  })
-);
-
-function dbScript(code) {
-  const file = join(S, "probe.mjs");
+function writeOfflineCatalog(cfgDir) {
   writeFileSync(
-    file,
-    `import { DatabaseSync } from "node:sqlite";\nconst db = new DatabaseSync(${JSON.stringify(db)});\n${code}\ndb.close();\n`
+    join(cfgDir, "model-catalog.json"),
+    JSON.stringify({
+      fetchedAt: Date.now(),
+      baseUrl: "https://api.aiand.com",
+      models: [
+        {
+          id: "zai-org/glm-5.3",
+          name: "GLM 5.3",
+          object: "model",
+          created: 1,
+          owned_by: "zai-org",
+          provider: "zai-org",
+          context_window: 200000,
+          capabilities: ["text", "vision", "tool_calling"],
+          reasoning_efforts: null,
+          reasoning_effort_default: null,
+          description: null,
+          currency: "usd",
+          input_per_1m: "0.60",
+          output_per_1m: "2.40",
+          cached_input_per_1m: "0.10",
+        },
+      ],
+    })
   );
-  return execSync(`node ${file}`, { encoding: "utf8" }).trim();
 }
 
-dbScript(`
+// Isolated sandbox: tmp dirs, seeded Cursor DB, offline catalog, CLI helpers.
+function tmpEnv() {
+  const S = join("/tmp", "aiand-e2e");
+  execSync(`rm -rf ${S}`);
+  const cursorStorage = join(S, "home", ".config", "Cursor", "User", "globalStorage");
+  mkdirSync(cursorStorage, { recursive: true });
+  const cfg = join(S, "cfg");
+  mkdirSync(cfg, { recursive: true });
+  const bin = join(S, "bin");
+  mkdirSync(bin, { recursive: true });
+  const db = join(cursorStorage, "state.vscdb");
+  writeOfflineCatalog(cfg);
+
+  function dbScript(code) {
+    const file = join(S, "probe.mjs");
+    writeFileSync(
+      file,
+      `import { DatabaseSync } from "node:sqlite";\nconst db = new DatabaseSync(${JSON.stringify(db)});\n${code}\ndb.close();\n`
+    );
+    return execSync(`node ${file}`, { encoding: "utf8" }).trim();
+  }
+
+  dbScript(`
 db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);");
 const blob = JSON.stringify({
   someOtherField: 42,
@@ -63,16 +71,53 @@ db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run("src.vs.platf
 db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run("unrelated/row", "precious");
 db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run("cursorAuth/otherKey", "user-secret");
 `);
+  const DB_BEFORE = readFileSync(db);
 
-const DB_BEFORE = readFileSync(db);
+  const env = {
+    ...process.env,
+    AIAND_HOME: join(S, "home"),
+    AIAND_CONFIG_DIR: cfg,
+    AIAND_API_KEY: "sk-e2e-test-key-0000000000000000000000",
+    PATH: `${bin}:${process.env.PATH}`,
+  };
 
-const env = {
-  ...process.env,
-  AIAND_HOME: join(S, "home"),
-  AIAND_CONFIG_DIR: join(S, "cfg"),
-  AIAND_API_KEY: "sk-e2e-test-key-0000000000000000000000",
-  PATH: `${join(S, "bin")}:${process.env.PATH}`,
-};
+  return { S, cfg, bin, db, dbScript, DB_BEFORE, env };
+}
+
+// Decoy Cursor-like process: prove the non-TTY refusal, run one --force
+// scenario past the guard, then tear the decoy down.
+function spawnRunner(S, env, { cli, cliOrNull, check }) {
+  const runner = join(S, "bin", "cursor-runner");
+  writeFileSync(runner, "#!/bin/bash\nexec -a /cursor sleep 30\n");
+  chmodSync(runner, 0o755);
+  const decoy = spawn(runner, [], { env, detached: true, stdio: "ignore" });
+  decoy.unref();
+  execSync("sleep 0.5");
+
+  let refused = false;
+  let refuseStderr = "";
+  const attempt = cliOrNull("cursor on --json");
+  refuseStderr = attempt.err;
+  refused = /--force|will overwrite this config/.test(refuseStderr);
+  check("on refuses while Cursor-like process runs (non-TTY)", refused, refuseStderr.split("\n")[0]);
+
+  const forced = JSON.parse(cli("cursor on --force --json"));
+  check("on --force proceeds past the guard", forced.state === "on", JSON.stringify(forced));
+
+  try {
+    process.kill(-decoy.pid, "SIGTERM");
+  } catch {
+    try {
+      process.kill(decoy.pid, "SIGTERM");
+    } catch {
+      // Decoy may already have exited.
+    }
+  }
+  execSync("sleep 0.3");
+}
+
+const { S, cfg, dbScript, DB_BEFORE, env } = tmpEnv();
+const db = join(S, "home", ".config", "Cursor", "User", "globalStorage", "state.vscdb");
 
 function cli(args) {
   return execSync(`node ${DIST} ${args}`, { env, encoding: "utf8" });
@@ -181,34 +226,7 @@ check(
   ).includes("cursorAuth/otherKey")
 );
 
-writeFileSync(join(S, "bin", "cursor-runner"), "#!/bin/bash\nexec -a /cursor sleep 30\n");
-execSync(`chmod +x ${join(S, "bin", "cursor-runner")}`);
-const decoy = spawn(join(S, "bin", "cursor-runner"), [], { env, detached: true, stdio: "ignore" });
-decoy.unref();
-execSync("sleep 0.5");
-let refused = false;
-let refuseStderr = "";
-{
-  const attempt = cliOrNull("cursor on --json");
-  refuseStderr = attempt.err;
-  refused = /--force|will overwrite this config/.test(refuseStderr);
-}
-check("on refuses while Cursor-like process runs (non-TTY)", refused, refuseStderr.split("\n")[0]);
-
-{
-  const forced = JSON.parse(cli("cursor on --force --json"));
-  check("on --force proceeds past the guard", forced.state === "on", JSON.stringify(forced));
-}
-try {
-  process.kill(-decoy.pid, "SIGTERM");
-} catch {
-  try {
-    process.kill(decoy.pid, "SIGTERM");
-  } catch {
-    // Decoy may already have exited.
-  }
-}
-execSync("sleep 0.3");
+spawnRunner(S, env, { cli, cliOrNull, check });
 cli(`cursor off${forceFlag || " --force"} --json`);
 const finalStatus = JSON.parse(cli("cursor status --json"));
 check("final off leaves status off", finalStatus.state === "off", JSON.stringify(finalStatus));

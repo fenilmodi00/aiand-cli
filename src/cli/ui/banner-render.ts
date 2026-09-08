@@ -1,9 +1,11 @@
-import { RESET, type Theme } from "./theme.js";
+import { type Theme } from "./theme.js";
 
 const MARKUP_TAGS = ["spark", "burst", "core", "trail", "ember", "brand", "fuse"] as const;
-type MarkupTag = (typeof MARKUP_TAGS)[number];
 
 const TAG_PATTERN = new RegExp(`\\{(/?)(${MARKUP_TAGS.join("|")})\\}`, "g");
+
+/** Split keeps `{tag}`/`{/tag}` tokens as separate parts. */
+const TAG_SPLIT = new RegExp(`(\\{/?(${MARKUP_TAGS.join("|")})\\})`, "u");
 
 /** Strip {tag} markup for plain-text / NO_COLOR output. */
 export function stripBannerMarkup(line: string): string {
@@ -65,79 +67,23 @@ function stripLeadingVisibleSpaces(line: string, count: number): string {
   return out;
 }
 
-type BannerNode = string | { tag: MarkupTag; children: BannerNode[] };
-
-function parseBannerMarkup(line: string): BannerNode[] {
-  const root: BannerNode[] = [];
-  const stack: BannerNode[][] = [root];
-  TAG_PATTERN.lastIndex = 0;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = TAG_PATTERN.exec(line)) !== null) {
-    const closing = match[1];
-    const tag = match[2] as MarkupTag;
-    const text = line.slice(cursor, match.index);
-    if (text) {
-      stack[stack.length - 1]!.push(text);
-    }
-    cursor = match.index + match[0].length;
-
-    if (!closing) {
-      const node: BannerNode = { tag, children: [] };
-      stack[stack.length - 1]!.push(node);
-      stack.push(node.children);
-    } else if (stack.length > 1) {
-      stack.pop();
-    }
-  }
-  const rest = line.slice(cursor);
-  if (rest) {
-    stack[stack.length - 1]!.push(rest);
-  }
-  return root;
-}
-
-/**
- * Render nested markup. After each child closes (RESET), reopen the parent
- * open sequence so outer colors survive nested spans — zero-dep ansis stand-in.
- */
-function renderBannerNodes(
-  nodes: BannerNode[],
-  opens: Record<string, string>,
-  parentOpen: string | null
-): string {
-  return nodes
-    .map((node) => {
-      if (typeof node === "string") {
-        return node;
-      }
-      const open = opens[node.tag] ?? "";
-      const inner = renderBannerNodes(node.children, opens, open || parentOpen);
-      if (!open) {
-        return inner;
-      }
-      const close = parentOpen ? `${RESET}${parentOpen}` : RESET;
-      const coreClose =
-        node.tag === "core"
-          ? parentOpen
-            ? `\x1b[22m${RESET}${parentOpen}`
-            : `\x1b[22m${RESET}`
-          : close;
-      const fuseClose =
-        node.tag === "fuse"
-          ? parentOpen
-            ? `\x1b[22m${parentOpen}`
-            : `\x1b[22m`
-          : coreClose;
-      const end = node.tag === "fuse" ? fuseClose : node.tag === "core" ? coreClose : close;
-      return `${open}${inner}${end}`;
-    })
-    .join("");
-}
-
 export function renderBannerLine(line: string, theme: Theme): string {
+  const plain = stripBannerMarkup(line);
   if (!theme.color) {
-    return stripBannerMarkup(line);
+    return plain;
   }
-  return renderBannerNodes(parseBannerMarkup(line), theme.opens, null);
+  let out = "";
+  let inBrand = false;
+  for (const part of line.split(TAG_SPLIT)) {
+    if (part === "{brand}") {
+      inBrand = true;
+    } else if (part === "{/brand}") {
+      inBrand = false;
+    } else if (inBrand && part) {
+      out += theme.brand(part);
+    } else if (!TAG_SPLIT.test(part)) {
+      out += part;
+    }
+  }
+  return out;
 }

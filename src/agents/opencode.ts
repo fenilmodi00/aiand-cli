@@ -175,16 +175,31 @@ async function enable(
   );
   const models = api.opencode?.models ?? {};
 
+  const built = buildOpencodeConfig({
+    apiKey: input.apiKey,
+    model: input.model,
+    models,
+    options: OPENCODE_OPTIONS,
+  });
+  // Replace only the `aiand` provider, preserving any foreign providers the
+  // user already configured (same merge-preserve rule as pi.ts enable).
+  const currentProviders =
+    current.provider &&
+    typeof current.provider === "object" &&
+    !Array.isArray(current.provider)
+      ? (current.provider as Record<string, unknown>)
+      : {};
+  const builtProvider = built.provider as Record<string, unknown>;
+
   const next = {
     // Preserve every unrelated key the user already had (theme, keybinds, …);
-    // buildOpencodeConfig contributes provider/model/lockdown on top.
+    // buildOpencodeConfig contributes model/lockdown on top.
     ...current,
-    ...buildOpencodeConfig({
-      apiKey: input.apiKey,
-      model: input.model,
-      models,
-      options: OPENCODE_OPTIONS,
-    }),
+    ...built,
+    provider: {
+      ...currentProviders,
+      [OPENCODE_PROVIDER_ID]: builtProvider[OPENCODE_PROVIDER_ID],
+    },
   };
 
   // Idempotency guard: a re-`on` whose computed config already matches the

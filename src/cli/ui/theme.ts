@@ -46,8 +46,6 @@ export type Theme = {
   core: StyleFn;
   trail: StyleFn;
   ember: StyleFn;
-  /** Open sequences for nested banner rendering (reopen after child close). */
-  opens: Record<string, string>;
 };
 
 /**
@@ -68,7 +66,6 @@ export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme
       core: plain,
       trail: plain,
       ember: plain,
-      opens: {},
     };
   }
 
@@ -80,15 +77,6 @@ export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme
     burst: plainHex(BRAND.mid),
     core: boldWhite(),
     trail: plainHex(BRAND.deep),
-    ember: plainHex(BRAND.rose),
-    opens: {
-      spark: fgHex(BRAND.glow),
-      burst: fgHex(BRAND.mid),
-      core: `\x1b[1m\x1b[97m`,
-      trail: fgHex(BRAND.deep),
-      ember: fgHex(BRAND.rose),
-      brand: fgHex(BRAND.red),
-      fuse: "\x1b[2m",
-    },
+    ember: plainHex(BRAND.rose)
   };
 }

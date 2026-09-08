@@ -377,21 +377,21 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
 
   let revoked = false;
   let keepRemote = opts.keepRemote ?? false;
-
+  const revokeToken = credential.refresh_token ?? credential.access_token;
   if (pasted) {
     keepRemote = true;
   } else if (!keepRemote) {
     if (opts.revoke) {
-      revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
+      revoked = await revokeTokens(profile.authUrl, revokeToken);
     } else if (isInteractive()) {
       const yes = await confirm("Revoke the ai& key this machine minted?", { default: true });
       if (yes) {
-        revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
+        revoked = await revokeTokens(profile.authUrl, revokeToken);
       } else {
         keepRemote = true;
       }
     } else {
-      revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
+      revoked = await revokeTokens(profile.authUrl, revokeToken);
     }
   }
 

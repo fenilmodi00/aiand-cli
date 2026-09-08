@@ -39,7 +39,7 @@ type Invocation = {
  * Split raw argv without the strict parse() (the trailing args must reach the
  * agent's binary byte-for-byte, including unknown flags). The first `--` is
  * the hard boundary: everything before it is ours unless it is a bare
- * positional (relay's withPrependedPassthrough), everything after is
+ * positional (gateway's withPrependedPassthrough), everything after is
  * passthrough verbatim.
  */
 function splitInvocation(argv: string[]): Invocation {

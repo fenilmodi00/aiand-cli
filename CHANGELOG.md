@@ -72,7 +72,6 @@ breaking changes while the command surface settles.
   default wins, instead of pinning a gateway model.
 - `aiand models` shows a Vision column (`vision` / `text-only`) after the
   context window; `--json` remains the raw catalog.
-### Added
 
 - Agent setup for Cursor, pi, VS Code, DeepSeek Harness, and Prime: each adapter
   writes native config (or an aiand-owned sidecar for Prime) so the stock binary
@@ -95,8 +94,6 @@ breaking changes while the command surface settles.
   `aiand init` with nothing detected says so instead of printing an empty
   agent list. `aiand init --off <agent>` is the same as
   `aiand <agent> off`.
-
-### Added
 
 - Agent setup for Claude Code and Codex: `aiand <agent> on|off|status` writes
   the agent's own native config so the stock binary runs against ai& — no
