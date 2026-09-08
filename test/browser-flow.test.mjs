@@ -59,7 +59,8 @@ function stubServer(mode) {
       req.on("end", () => {
         const params = JSON.parse(raw || "{}");
         state.tokenBodies.push(params);
-        if (params.grant_type === "authorization_code") return reply(200, TOKENS);
+        if (params.grant_type === "authorization_code")
+          return reply(200, TOKENS);
         reply(400, { error: "unsupported_grant_type" });
       });
       return;
@@ -151,7 +152,9 @@ describe("signInViaLocalhostCallback", () => {
         callbackPort = new URL(authorize.searchParams.get("redirect_uri")).port;
         // Forged callback with the wrong state must not settle the flow.
         await fetch(`http://127.0.0.1:${callbackPort}/?code=first&state=WRONG`);
-        await fetch(`http://127.0.0.1:${callbackPort}/?code=good&state=${ourState}`);
+        await fetch(
+          `http://127.0.0.1:${callbackPort}/?code=good&state=${ourState}`,
+        );
         return false;
       },
       timeoutMs: 5000,
@@ -174,8 +177,23 @@ describe("signInViaLocalhostCallback", () => {
     });
   });
 
+  test("throwing opener settles at the timeout, never strands the wait", async () => {
+    // Regression: an exception from the opener seam was swallowed by the
+    // status-line catch, leaving the 300s callback timer as the only thing
+    // keeping a --test worker alive past its run. Must settle at timeoutMs.
+    const result = await browser.signInViaLocalhostCallback({
+      authUrl,
+      open: async () => {
+        throw new Error("opener exploded");
+      },
+      timeoutMs: 100,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.fatal, false);
+    assert.match(result.failure, /Timed out|opener exploded/);
+  });
+
   test("pre-flight 404 -> unsupported, no token exchange", async () => {
-    server.closeAllConnections?.();
     server.close();
     ({ server, state } = stubServer("unsupported"));
     server.listen(0, "127.0.0.1");

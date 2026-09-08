@@ -33,7 +33,7 @@ function devicePost(url: string, body: unknown): Promise<Response> {
 
 export async function startDeviceAuthorization(
   authUrl: string,
-  opts: { keyName?: string } = {}
+  opts: { keyName?: string } = {},
 ): Promise<DeviceCodeResponse> {
   const body: Record<string, string> = { client_id: CLIENT_ID };
   if (opts.keyName) body.key_name = opts.keyName;
@@ -46,7 +46,10 @@ export async function startDeviceAuthorization(
   return (await response.json()) as DeviceCodeResponse;
 }
 
-export function verificationUrl(authUrl: string, device: DeviceCodeResponse): string {
+export function verificationUrl(
+  authUrl: string,
+  device: DeviceCodeResponse,
+): string {
   const path = device.verification_uri_complete || device.verification_uri;
   return path.startsWith("http") ? path : `${authUrl}${path}`;
 }
@@ -59,13 +62,14 @@ export type PollOptions = {
 export async function pollForToken(
   authUrl: string,
   device: DeviceCodeResponse,
-  options: PollOptions = {}
+  options: PollOptions = {},
 ): Promise<TokenResponse> {
   const deadline = Date.now() + device.expires_in * 1000;
   let interval = Math.max(1, device.interval);
 
   for (;;) {
-    if (options.signal?.aborted) throw new CliError("Login cancelled.", { exitCode: 130 });
+    if (options.signal?.aborted)
+      throw new CliError("Login cancelled.", { exitCode: 130 });
     if (Date.now() >= deadline) {
       throw new CliError("The login code expired before it was approved.", {
         hint: "Run `aiand login` again.",
@@ -81,7 +85,9 @@ export async function pollForToken(
 
     if (response.ok) return (await response.json()) as TokenResponse;
 
-    const body = (await response.json().catch(() => ({}))) as Partial<TokenErrorBody>;
+    const body = (await response
+      .json()
+      .catch(() => ({}))) as Partial<TokenErrorBody>;
     switch (body.error) {
       case "authorization_pending":
         continue;
@@ -99,7 +105,7 @@ export async function pollForToken(
         throw new ApiError(
           response.status,
           body.error_description ?? body.error ?? "Device login failed.",
-          { hint: "Run `aiand login` again." }
+          { hint: "Run `aiand login` again." },
         );
     }
   }
@@ -107,7 +113,7 @@ export async function pollForToken(
 
 export async function rotateTokens(
   authUrl: string,
-  refreshToken: string
+  refreshToken: string,
 ): Promise<TokenResponse> {
   const response = await devicePost(`${authUrl}/auth/device/token`, {
     grant_type: "refresh_token",
@@ -122,7 +128,10 @@ export async function rotateTokens(
   return (await response.json()) as TokenResponse;
 }
 
-export async function revokeTokens(authUrl: string, refreshToken: string): Promise<boolean> {
+export async function revokeTokens(
+  authUrl: string,
+  refreshToken: string,
+): Promise<boolean> {
   try {
     const response = await devicePost(`${authUrl}/auth/device/logout`, {
       refresh_token: refreshToken,
@@ -134,15 +143,15 @@ export async function revokeTokens(authUrl: string, refreshToken: string): Promi
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new CliError("Login cancelled.", { exitCode: 130 }));
-      },
-      { once: true }
-    );
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onAbort = () => {
+    clearTimeout(timer);
+    reject(new CliError("Login cancelled.", { exitCode: 130 }));
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  return promise;
 }

@@ -11,16 +11,20 @@ export type BrowserFlowResult =
   | { ok: false; failure: string; fatal: boolean; unsupported?: boolean };
 
 function base64url(bytes: Buffer): string {
-  return bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return bytes
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 const SUCCESS_HTML =
-  '<!doctype html><title>Signed in</title>' +
+  "<!doctype html><title>Signed in</title>" +
   '<body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
   "<p>Signed in &mdash; return to your terminal.</p></body>";
 
 const FAILURE_HTML =
-  '<!doctype html><title>Sign-in failed</title>' +
+  "<!doctype html><title>Sign-in failed</title>" +
   '<body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
   "<p>Sign-in did not complete.</p></body>";
 
@@ -53,7 +57,9 @@ export type SignInOptions = {
  * via the `{ok: false, unsupported}` result when the server has no authorize
  * endpoint (pre-flight 404/501).
  */
-export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<BrowserFlowResult> {
+export async function signInViaLocalhostCallback(
+  opts: SignInOptions,
+): Promise<BrowserFlowResult> {
   const { authUrl, signal } = opts;
   const onStatus = opts.onStatus ?? (() => {});
 
@@ -61,7 +67,9 @@ export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<B
   // other status (including 400 on the empty probe) proceeds.
   let preflight: Response;
   try {
-    preflight = await publicRequest(`${authUrl}/auth/authorize`, { method: "GET" });
+    preflight = await publicRequest(`${authUrl}/auth/authorize`, {
+      method: "GET",
+    });
   } catch (error) {
     return { ok: false, failure: (error as Error).message, fatal: false };
   }
@@ -74,11 +82,14 @@ export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<B
     };
   }
 
-  if (signal?.aborted) return { ok: false, failure: "Login cancelled.", fatal: false };
+  if (signal?.aborted)
+    return { ok: false, failure: "Login cancelled.", fatal: false };
 
   const verifier = base64url(randomBytes(32));
   const state = base64url(randomBytes(16));
-  const codeChallenge = base64url(createHash("sha256").update(verifier).digest());
+  const codeChallenge = base64url(
+    createHash("sha256").update(verifier).digest(),
+  );
 
   type CallbackOutcome = { code: string } | { failure: string; fatal: boolean };
   let redirectUri = "";
@@ -93,11 +104,18 @@ export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<B
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
+      // closeAllConnections: a keep-alive socket that somehow bypassed the
+      // Connection:close respond() path must never outlive the flow.
+      server.closeAllConnections?.();
       server.close();
       resolveOutcome(result);
     };
-    const onAbort = (): void => settle({ failure: "Login cancelled.", fatal: false });
+    const onAbort = (): void =>
+      settle({ failure: "Login cancelled.", fatal: false });
 
+    // An exception inside the wiring below (a bad `open` seam throwing
+    // synchronously, a listen error outside the 'error' handler) must never
+    // strand the 300s timer or the listener: settle() always runs.
     server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       const known = req.method === "GET" && url.pathname === "/";
@@ -110,9 +128,16 @@ export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<B
       if (code) return settle({ code });
       const error = url.searchParams.get("error");
       if (error === "access_denied") {
-        return settle({ failure: "Sign-in was cancelled in the browser.", fatal: true });
+        return settle({
+          failure: "Sign-in was cancelled in the browser.",
+          fatal: true,
+        });
       }
-      if (error) return settle({ failure: `Sign-in failed in the browser (${error}).`, fatal: false });
+      if (error)
+        return settle({
+          failure: `Sign-in failed in the browser (${error}).`,
+          fatal: false,
+        });
     });
 
     server.on("error", (error: NodeJS.ErrnoException) => {
@@ -126,39 +151,49 @@ export async function signInViaLocalhostCallback(opts: SignInOptions): Promise<B
     });
 
     timer = setTimeout(
-      () => settle({ failure: "Timed out waiting for the browser sign-in.", fatal: false }),
-      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+      () =>
+        settle({
+          failure: "Timed out waiting for the browser sign-in.",
+          fatal: false,
+        }),
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     );
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    server.listen(opts.port ?? 0, "127.0.0.1", () => {
-      const address = server.address();
-      const actualPort = typeof address === "object" && address ? address.port : 0;
-      redirectUri = `http://localhost:${actualPort}`;
-      const params = new URLSearchParams({
-        client_id: CLIENT_ID,
-        response_type: "code",
-        redirect_uri: redirectUri,
-        state,
-        code_challenge_method: "S256",
-        code_challenge: codeChallenge,
-      });
-      if (opts.keyName) params.set("key_name", opts.keyName);
-      const authorizeUrl = `${authUrl}/auth/authorize?${params}`;
+    try {
+      server.listen(opts.port ?? 0, "127.0.0.1", () => {
+        const address = server.address();
+        const actualPort =
+          typeof address === "object" && address ? address.port : 0;
+        redirectUri = `http://localhost:${actualPort}`;
+        const params = new URLSearchParams({
+          client_id: CLIENT_ID,
+          response_type: "code",
+          redirect_uri: redirectUri,
+          state,
+          code_challenge_method: "S256",
+          code_challenge: codeChallenge,
+        });
+        if (opts.keyName) params.set("key_name", opts.keyName);
+        const authorizeUrl = `${authUrl}/auth/authorize?${params}`;
 
-      const opener =
-        opts.open ?? (async (url: string) => openBrowserAware(url) === "opened");
-      opener(authorizeUrl)
-        .then((opened) => {
-          if (opened) {
-            onStatus("Opened your browser — finish signing in there.");
-            onStatus(`If it did not open, visit: ${authorizeUrl}`);
-          } else {
-            onStatus(`Open this URL to sign in: ${authorizeUrl}`);
-          }
-        })
-        .catch(() => onStatus(`Open this URL to sign in: ${authorizeUrl}`));
-    });
+        const opener =
+          opts.open ??
+          (async (url: string) => openBrowserAware(url) === "opened");
+        opener(authorizeUrl)
+          .then((opened) => {
+            if (opened) {
+              onStatus("Opened your browser — finish signing in there.");
+              onStatus(`If it did not open, visit: ${authorizeUrl}`);
+            } else {
+              onStatus(`Open this URL to sign in: ${authorizeUrl}`);
+            }
+          })
+          .catch(() => onStatus(`Open this URL to sign in: ${authorizeUrl}`));
+      });
+    } catch (error) {
+      settle({ failure: (error as Error).message, fatal: false });
+    }
   });
 
   if ("failure" in outcome) return { ok: false, ...outcome };
