@@ -171,6 +171,44 @@ describe("opencode adapter", () => {
     assert.equal(statSync(configPath()).mode & 0o777, 0o600);
   });
 
+  test("enable(): unreachable api.json falls back to the cached map", async () => {
+    // Seed the last-good cache, then fail every fetch: enable must still
+    // wire from cache instead of throwing.
+    const cachePath = join(process.env.AIAND_CONFIG_DIR, "opencode-api.json");
+    const cachedModels = {
+      "zai-org/glm-5.3": { id: "zai-org/glm-5.3", name: "GLM 5.3" },
+    };
+    writeFileSync(
+      cachePath,
+      JSON.stringify({ fetchedAt: 1, baseUrl: "https://api.aiand.com", models: cachedModels })
+    );
+    const self = globalThis;
+    const originalFetch = self.fetch;
+    self.fetch = async () => {
+      throw new Error("offline");
+    };
+    try {
+      await opencodeAdapter.enable(enableInput());
+    } finally {
+      self.fetch = originalFetch;
+    }
+    const config = readConfigJson();
+    assert.deepEqual(Object.keys(config.provider.aiand.models), ["zai-org/glm-5.3"]);
+  });
+
+  test("enable(): unreachable api.json with no cache still throws", async () => {
+    const self = globalThis;
+    const originalFetch = self.fetch;
+    self.fetch = async () => {
+      throw new Error("offline");
+    };
+    try {
+      await assert.rejects(() => opencodeAdapter.enable(enableInput({ baseUrl: "https://no-cache.test" })));
+    } finally {
+      self.fetch = originalFetch;
+    }
+  });
+
   test("enable(): preserves unrelated top-level keys", async () => {
     writeFileSync(
       configPath(),

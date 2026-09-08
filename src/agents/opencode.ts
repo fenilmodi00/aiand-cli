@@ -5,9 +5,10 @@ import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { agentHome, writeFileAtomic } from "../config.js";
+import { agentHome, configDir, writeFileAtomic } from "../config.js";
 import { deepEqual, readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
+import { err } from "../cli/output.js";
 
 /** OpenAI-compatible base URL OpenCode dials for every ai& model. */
 export const OPENCODE_BASE_URL = "https://api.aiand.com/v1";
@@ -23,9 +24,50 @@ const OPENCODE_PROVIDER_ID = "aiand";
  * output-token field).
  */
 type OpencodeModelEntry = Record<string, unknown>;
-
 function opencodeConfigPath(): string {
   return join(agentHome(), ".config", "opencode", "opencode.json");
+}
+
+/** Last-good `/v1/api.json` model map, so `on` survives an unreachable gateway. */
+const OPENCODE_API_CACHE_FILE = "opencode-api.json";
+
+type ApiJsonCache = {
+  fetchedAt: number;
+  baseUrl: string;
+  models: Record<string, OpencodeModelEntry>;
+};
+
+/**
+ * Live api.json carries the canonical OpenCode model map (with real
+ * limit.output) — take it verbatim so the picker matches the gateway. The
+ * fetched map is cached per base URL; a failed fetch falls back to the last
+ * good map instead of failing `on` outright (offline machine, fixture env).
+ */
+async function getApiModels(baseUrl: string): Promise<Record<string, OpencodeModelEntry>> {
+  const cachePath = join(configDir(), OPENCODE_API_CACHE_FILE);
+  try {
+    const api = await publicJson<{ opencode?: { models?: Record<string, OpencodeModelEntry> } }>(
+      `${baseUrl}/v1/api.json`
+    );
+    const models = api.opencode?.models ?? {};
+    await writeFileAtomic(
+      cachePath,
+      `${JSON.stringify({ fetchedAt: Date.now(), baseUrl, models }, null, 2)}\n`,
+      { mode: 0o600 }
+    );
+    return models;
+  } catch (error) {
+    try {
+      const cached = JSON.parse(await readFile(cachePath, "utf8")) as Partial<ApiJsonCache>;
+      if (cached?.baseUrl === baseUrl && cached.models && typeof cached.models === "object") {
+        err("OpenCode model map unreachable; using the last cached map.");
+        return cached.models as Record<string, OpencodeModelEntry>;
+      }
+    } catch {
+      // No usable cache — fall through to the original fetch error.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -168,12 +210,7 @@ async function enable(
 ): Promise<{ model: string; filesWritten: string[] }> {
   const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
 
-  // Live api.json carries the canonical OpenCode model map (with real
-  // limit.output) — take it verbatim so the picker matches the gateway.
-  const api = await publicJson<{ opencode?: { models?: Record<string, OpencodeModelEntry> } }>(
-    `${input.baseUrl}/v1/api.json`
-  );
-  const models = api.opencode?.models ?? {};
+  const models = await getApiModels(input.baseUrl);
 
   const built = buildOpencodeConfig({
     apiKey: input.apiKey,
