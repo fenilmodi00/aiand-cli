@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -162,5 +163,38 @@ test("init claude wires on; init --off claude and claude off restore byte-identi
 
   const offB = await runCli(["init", "--off", "claude"], { withStubs: true });
   assert.equal(offB.code, 0);
+  assert.equal(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
+});
+
+test("init --all wires detected agents and skips launcher-only ones instead of aborting", async () => {
+  // A launcher-only binary (hermes) alongside a wiring agent (claude) must
+  // not abort the batch: claude wires on, hermes is reported with a note.
+  plantClaudeStub();
+  const hermesStub = join(stubBin, "hermes");
+  writeFileSync(hermesStub, "#!/bin/sh\nexit 0\n");
+  chmodSync(hermesStub, 0o755);
+  writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
+  // Hermetic PATH: stubs + which + node only. System-wide agent binaries
+  // (a dev machine or CI image with real installs, possibly sharing a dir
+  // with node itself) must not leak into detection and change what --all
+  // wires — so resolve node through the stub dir too.
+  try {
+    symlinkSync(process.execPath, join(stubBin, "node"));
+  } catch {
+    // Already linked by an earlier run in this process.
+  }
+  const hermeticPath = [stubBin, "/usr/bin"].join(":");
+  const { code, stdout } = await runCli(["init", "--all", "--json"], {
+    env: { PATH: hermeticPath },
+  });
+  assert.equal(code, 0);
+  const parsed = JSON.parse(stdout);
+  const byId = Object.fromEntries(parsed.agents.map((row) => [row.agent, row]));
+  assert.equal(byId.claude.state, "on", "wiring agent still wires");
+  assert.equal(byId.hermes.state, "off", "launcher-only agent is not wired");
+  assert.match(byId.hermes.note, /run-agent hermes/, "note points at the launcher");
+  const off = await runCli(["init", "--off"], { env: { PATH: hermeticPath } });
+
+  assert.equal(off.code, 0);
   assert.equal(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
 });

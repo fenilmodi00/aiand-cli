@@ -48,8 +48,16 @@ export async function run(argv: string[]): Promise<void> {
 
   const named = parsed.positionals;
   if (bool(parsed, "all") || named.length > 0) {
-    const targets = named.length > 0 ? resolveNames(named) : (await detectedInstalled()).map((a) => a.adapter);
-    return runOnAll(targets, jsonOut);
+    if (named.length > 0) return runOnAll(resolveNames(named), jsonOut);
+    // Batch wiring skips launcher-only agents (hermes, grok): `on` is
+    // refused for them by the engine, so including them would abort the
+    // whole batch. They are reported, not wired.
+    const detected = (await detectedInstalled()).map((row) => row.adapter);
+    return runOnAll(
+      detected.filter((adapter) => !adapter.launcherOnly),
+      jsonOut,
+      detected.filter((adapter) => adapter.launcherOnly)
+    );
   }
 
   // Bare `aiand init` (interactive): pick from installed agents.
@@ -80,8 +88,12 @@ async function detectedInstalled(): Promise<{ adapter: AgentAdapter; installed: 
   return rows.filter((row) => row.installed);
 }
 
-async function runOnAll(targets: AgentAdapter[], jsonOut: boolean): Promise<void> {
-  if (targets.length === 0) {
+async function runOnAll(
+  targets: AgentAdapter[],
+  jsonOut: boolean,
+  skipped: AgentAdapter[] = []
+): Promise<void> {
+  if (targets.length === 0 && skipped.length === 0) {
     if (jsonOut) return json({ agents: [], message: "No coding agents detected on this machine." });
     out("No coding agents detected on this machine.");
     out(style.dim("Install one, then re-run `aiand init --all`."));
@@ -92,9 +104,20 @@ async function runOnAll(targets: AgentAdapter[], jsonOut: boolean): Promise<void
   for (const adapter of targets) {
     results.push(await wireOn(adapter));
   }
+  for (const adapter of skipped) {
+    results.push({
+      agent: adapter.id,
+      state: "off",
+      note: `launcher-only — use aiand run-agent ${adapter.id}`,
+    });
+  }
   if (jsonOut) return json({ agents: results });
   for (const result of results) {
-    out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+    out(
+      result.note
+        ? `  ${style.dim(result.agent)} — ${result.note}`
+        : `  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`
+    );
   }
 }
 async function runOff(names: string[], jsonOut: boolean, force: boolean): Promise<void> {
