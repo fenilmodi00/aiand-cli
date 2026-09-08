@@ -247,50 +247,7 @@ exec "\$NODE_BIN" --disable-warning=ExperimentalWarning "${source_dir}/dist/inde
 EOF
   chmod +x "${launcher_path}"
 
-  install_windows_cmd_shim "${node_bin}" "${source_dir}"
   add_bin_dir_to_path
-}
-
-# On Windows (Git Bash / MSYS / Cygwin) the bash launcher above only works from
-# a POSIX shell. Also drop an `aiand.cmd` shim so native cmd.exe/PowerShell
-# can run `aiand`. Best-effort and Windows-only: it needs `cygpath` to
-# translate the Unix node/CLI paths to Windows paths, and silently no-ops
-# otherwise so it can never break a macOS/Linux install.
-install_windows_cmd_shim() {
-  local node_bin="$1" source_dir="$2"
-  case "$(uname -s)" in
-    MINGW* | MSYS* | CYGWIN*) ;;
-    *) return 0 ;;
-  esac
-  command -v cygpath >/dev/null 2>&1 || return 0
-
-  local bin_dir="${HOME}/.local/bin"
-  local cmd_path="${bin_dir}/aiand.cmd"
-  local node_src node_win cli_win
-  node_src="${node_bin:-$(command -v node 2>/dev/null || true)}"
-  [[ -n "${node_src}" ]] || return 0
-  node_win="$(cygpath -w "${node_src}" 2>/dev/null || true)"
-  cli_win="$(cygpath -w "${source_dir}/dist/index.js" 2>/dev/null || true)"
-  [[ -n "${node_win}" && -n "${cli_win}" ]] || return 0
-
-  mkdir -p "${bin_dir}"
-  cat >"${cmd_path}" <<EOF
-@echo off
-"${node_win}" --disable-warning=ExperimentalWarning "${cli_win}" %*
-EOF
-  install_note "Wrote a Windows launcher shim at ${cmd_path}."
-}
-
-print_quickstart() {
-  echo
-  echo "aiand is installed. Get started:"
-  echo
-  echo "  aiand login          # sign in with a browser approval"
-  echo "  aiand login --paste  # …or paste a key from the ai& console"
-  echo "  aiand init           # detect your coding agents and wire them to ai&"
-  echo '  aiand run "hello"    # one prompt, streamed to stdout'
-  echo
-  echo "Tip: set AIAND_API_KEY to skip sign-in entirely (CI, scripts)."
 }
 
 main() {
@@ -313,7 +270,6 @@ main() {
 
   "${launcher}" --version 2>/dev/null || true
   print_install_notes
-  print_quickstart
 }
 
 main "$@"
