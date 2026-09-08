@@ -2,13 +2,29 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { CliError } from "../cli/errors.js";
-import { configDir } from "../config.js";
+import { configDir, writeFileAtomic } from "../config.js";
 import { listModels, type Model } from "../api/models.js";
 import type { Session } from "../api/client.js";
-import { writeFileAtomic } from "../io/atomic.js";
 
 const CATALOG_CACHE_FILE = "model-catalog.json";
 const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Whether a catalog model accepts image input. A model is vision-capable when
+ * its capability list contains "vision"; everything else is text-only.
+ */
+export function visionLabel(model: Model): "vision" | "text-only" {
+  return model.capabilities.includes("vision") ? "vision" : "text-only";
+}
+
+/**
+ * One stderr warning line naming the text-only models just wired. Empty list →
+ * empty string (callers skip the line entirely).
+ */
+export function formatTextOnlyWarning(ids: string[]): string {
+  if (ids.length === 0) return "";
+  return `Text-only: ${ids.join(", ")} · Avoid images; recover with /rewind.`;
+}
 
 // Curated fallback order, filtered through the live catalog so retired ids
 // are never written into an agent's config.

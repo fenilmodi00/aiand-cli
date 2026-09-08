@@ -3,12 +3,11 @@ import { join } from "node:path";
 
 import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
-import { CliError } from "../cli/errors.js";
-import { writeFileAtomic } from "../io/atomic.js";
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { agentHome } from "./paths.js";
+import { agentHome, writeFileAtomic } from "../config.js";
+import { deepEqual, readJsonOrEmpty } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /** OpenAI-compatible base URL OpenCode dials for every ai& model. */
@@ -133,50 +132,6 @@ const OPENCODE_OPTIONS: OpencodeProviderOptions = {
   baseURL: OPENCODE_BASE_URL,
 };
 
-/**
- * Read opencode.json with strict semantics for enable(): missing → `{}`;
- * invalid JSON → a CliError pointing the user at the malformed file.
- */
-async function readConfig(): Promise<Record<string, unknown>> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(opencodeConfigPath(), "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    if (error instanceof SyntaxError) {
-      throw new CliError(`${opencodeConfigPath()} is not valid JSON.`, {
-        hint: "Fix it by hand, or delete it and run aiand opencode on again.",
-      });
-    }
-    throw error;
-  }
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
-}
-
-/**
- * Structural deep-equality that ignores object key order, used to skip a
- * redundant rewrite on an idempotent re-`on`. Arrays and scalars compare
- * positionally/strictly.
- */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj).sort();
-  const bKeys = Object.keys(bObj).sort();
-  if (aKeys.length !== bKeys.length) return false;
-  for (let i = 0; i < aKeys.length; i++) {
-    const aKey = aKeys[i];
-    const bKey = bKeys[i];
-    if (aKey === undefined || bKey === undefined || aKey !== bKey) return false;
-    if (!deepEqual(aObj[aKey], bObj[aKey])) return false;
-  }
-  return true;
-}
-
 async function probe(): Promise<ProbeResult> {
   let provider: Record<string, unknown> | undefined;
   let model: string | null = null;
@@ -213,7 +168,7 @@ async function probe(): Promise<ProbeResult> {
 async function enable(
   input: EnableInput
 ): Promise<{ model: string; filesWritten: string[] }> {
-  const current = await readConfig();
+  const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
 
   // Live api.json carries the canonical OpenCode model map (with real
   // limit.output) — take it verbatim so the picker matches the gateway.
@@ -275,7 +230,7 @@ export const opencodeAdapter: AgentAdapter = {
    * readConfig/writeFileAtomic pair enable() uses (mode 0600). Idempotent.
    */
   async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
-    const current = await readConfig();
+    const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
     const provider = current.provider as Record<string, Record<string, unknown>> | undefined;
     const aiand = provider?.[OPENCODE_PROVIDER_ID] as
       | { options?: { apiKey?: unknown } }

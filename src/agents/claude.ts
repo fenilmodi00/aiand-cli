@@ -1,12 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { CliError } from "../cli/errors.js";
-import { writeFileAtomic } from "../io/atomic.js";
+import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
 import { resolveDefault, withContextTag } from "./catalog.js";
-import { agentHome } from "./paths.js";
+import { deepEqual, readJsonOrEmpty } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
@@ -64,50 +63,6 @@ const MANAGED_ENV_KEYS: readonly string[] = [
 function managedFiles(): string[] {
   const home = agentHome();
   return [join(home, ".claude", "settings.json"), join(home, ".claude.json")];
-}
-
-/**
- * Structural deep-equality that ignores object key order, used to skip a
- * redundant rewrite on an idempotent re-`on`. Arrays and scalars compare
- * positionally/strictly.
- */
-function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj).sort();
-  const bKeys = Object.keys(bObj).sort();
-  if (aKeys.length !== bKeys.length) return false;
-  for (let i = 0; i < aKeys.length; i++) {
-    const aKey = aKeys[i];
-    const bKey = bKeys[i];
-    if (aKey === undefined || bKey === undefined || aKey !== bKey) return false;
-    if (!deepEqual(aObj[aKey], bObj[aKey])) return false;
-  }
-  return true;
-}
-
-/**
- * Read settings.json with strict semantics for enable(): missing → `{}`;
- * invalid JSON → a CliError pointing the user at the malformed file.
- */
-async function readSettings(path: string): Promise<Record<string, unknown>> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(path, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    if (error instanceof SyntaxError) {
-      throw new CliError(`${path} is not valid JSON.`, {
-        hint: "Fix it by hand, or delete it and run aiand claude on again.",
-      });
-    }
-    throw error;
-  }
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
 }
 
 async function probe(): Promise<ProbeResult> {
@@ -183,7 +138,7 @@ async function approveStrayAnthropicApiKey(home: string): Promise<boolean> {
 
 async function enable(input: EnableInput): Promise<{ model: string; filesWritten: string[] }> {
   const settingsPath = join(agentHome(), ".claude", "settings.json");
-  const current = await readSettings(settingsPath);
+  const current = await readJsonOrEmpty(settingsPath, "claude");
 
   // Build the env block: copy the existing env minus every managed key FIRST
   // (so stale sibling keys never survive), then write ours.
@@ -246,7 +201,7 @@ const CLAUDE_INSTALL = INSTALL_HINTS.claude!;
  */
 async function refreshKey(input: { apiKey: string; home: string }): Promise<void> {
   const settingsPath = join(input.home, ".claude", "settings.json");
-  const current = await readSettings(settingsPath);
+  const current = await readJsonOrEmpty(settingsPath, "claude");
   const env =
     current.env && typeof current.env === "object" && !Array.isArray(current.env)
       ? (current.env as Record<string, unknown>)

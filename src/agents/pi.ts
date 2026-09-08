@@ -2,11 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { Model } from "../api/models.js";
-import { CliError } from "../cli/errors.js";
-import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { agentHome } from "./paths.js";
+import { agentHome, writeFileAtomic } from "../config.js";
+import { readJsonOrEmpty } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
@@ -44,33 +43,9 @@ function modelsPath(): string {
 }
 
 /**
- * Read a JSON config file with strict semantics for enable(): missing → `{}`;
- * invalid JSON → a CliError pointing the user at the malformed file. Non-object
- * JSON (a scalar or array at the top level) is treated as `{}` so a partial
- * file can't wedge the write.
- */
-async function readJsonObject(filePath: string, friendly: string): Promise<Record<string, unknown>> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readFile(filePath, "utf8"));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    if (error instanceof SyntaxError) {
-      throw new CliError(`${filePath} is not valid JSON.`, {
-        hint: `Fix ${friendly} by hand, or delete it and run aiand pi on again.`,
-      });
-    }
-    throw error;
-  }
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
-}
-
-/**
  * One Pi models.json entry built from a live aiand catalog model. Prices are
  * USD-per-1M-token strings in the gateway catalog; pi's `cost` object wants
- * the same USD-per-1M numbers, so `Number(...)` straight over. The gateway's
+…
  * cached price is a per-1M string too; when the model has no cached price we
  * fall back to its input price (cacheRead always costs ≤ input in aiand's
  * catalog, so this never overstates).
@@ -134,9 +109,9 @@ async function enable(input: EnableInput): Promise<{ model: string; filesWritten
   const mPath = modelsPath();
 
   // Merge-preserve: each file keeps every unrelated key the user planted.
-  const settings = await readJsonObject(sPath, "settings.json");
-  const auth = await readJsonObject(aPath, "auth.json");
-  const modelsConfig = await readJsonObject(mPath, "models.json");
+  const settings = await readJsonOrEmpty(sPath, "pi", "settings.json");
+  const auth = await readJsonOrEmpty(aPath, "pi", "auth.json");
+  const modelsConfig = await readJsonOrEmpty(mPath, "pi", "models.json");
 
   const nextSettings = {
     ...settings,
@@ -208,7 +183,7 @@ export const piAdapter: AgentAdapter = {
    * Idempotent: a key that already matches leaves the file untouched.
    */
   async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
-    const auth = await readJsonObject(authPath(), "auth.json");
+    const auth = await readJsonOrEmpty(authPath(), "pi", "auth.json");
     const entry = auth[PI_PROVIDER];
     const key =
       entry && typeof entry === "object" ? (entry as Record<string, unknown>).key : undefined;

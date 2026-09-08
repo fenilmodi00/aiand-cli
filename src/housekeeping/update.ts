@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { configDir } from "../config.js";
-import { writeFileAtomic } from "../io/atomic.js";
+import { configDir, writeFileAtomic } from "../config.js";
 import { VERSION, publicJson } from "../api/client.js";
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // fresh ok-cache window (<24h)

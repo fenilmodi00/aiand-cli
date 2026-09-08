@@ -1,5 +1,4 @@
-import type { Theme } from "./theme.js";
-import { RESET } from "./ansi.js";
+import { RESET, type Theme } from "./theme.js";
 
 const MARKUP_TAGS = ["spark", "burst", "core", "trail", "ember", "brand", "fuse"] as const;
 type MarkupTag = (typeof MARKUP_TAGS)[number];

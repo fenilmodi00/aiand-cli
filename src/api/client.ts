@@ -136,6 +136,26 @@ export async function publicJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * A sessionless request with no Authorization header — the auth flow's
+ * device endpoints (start/poll/rotate/revoke) and paste-key validation live
+ * here. Network failures surface as ApiError with the same "Could not reach"
+ * framing as every other request; the raw Response is returned so callers
+ * can branch on status/error bodies before unwrapping.
+ */
+export async function publicRequest(url: string, init: RequestInit = {}): Promise<Response> {
+  const { body, headers, ...rest } = init;
+  return fetchOrFail(url, {
+    ...rest,
+    headers: {
+      Accept: "application/json",
+      "User-Agent": userAgent(),
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(headers as Record<string, string>),
+    },
+  });
+}
+
 async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init);

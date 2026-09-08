@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { CliError } from "../dist/cli/errors.js";
-import { setIdeProbeForTests } from "../dist/agents/ide-guard.js";
+import { setIdeProbeForTests } from "../dist/agents/quit-guard.js";
 import { foreignMarkerFixtures } from "../dist/agents/foreign.js";
 
 let dir;

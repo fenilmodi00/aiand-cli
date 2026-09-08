@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { agentHome } from "./paths.js";
+import { agentHome } from "../config.js";
 import type { AgentAdapter, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**

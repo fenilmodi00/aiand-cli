@@ -1,12 +1,23 @@
 import { EOL } from "node:os";
 
+import { colorsEnabled } from "./ui/color.js";
+
 const ESC = "\x1b[";
 
-const useColor =
-  !process.env.NO_COLOR && process.env.TERM !== "dumb" && process.stdout.isTTY === true;
+let enabled = colorsEnabled();
+
+/** Whether styling is currently active (test hook + help coloring). */
+export function isStyleEnabled(): boolean {
+  return enabled;
+}
+
+/** Test hook: force styling on/off regardless of the ambient terminal. */
+export function _setColorEnabled(value: boolean): void {
+  enabled = Boolean(value);
+}
 
 const wrap = (open: string, close: string) => (s: string) =>
-  useColor ? `${ESC}${open}m${s}${ESC}${close}m` : s;
+  enabled ? `${ESC}${open}m${s}${ESC}${close}m` : s;
 
 export const style = {
   bold: wrap("1", "22"),
@@ -18,6 +29,82 @@ export const style = {
   magenta: wrap("35", "39"),
   cyan: wrap("36", "39"),
 };
+
+const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dimFaint: "\x1b[2m",
+  muted: "\x1b[90m",
+  red: "\x1b[31m",
+  yellow: "\x1b[33m",
+  cyan: "\x1b[36m",
+  orange: "\x1b[38;5;208m",
+} as const;
+
+// style.ts-derived helpers take full ANSI sequences (already include \x1b[ and
+// the trailing m) — wrap them by prefixing the open sequence directly.
+const wrapSeq = (open: string, close: string) => (s: string) =>
+  enabled ? `${open}${s}${close}` : String(s);
+
+export const bold = wrapSeq(ANSI.bold, "\x1b[22m");
+export const dim = wrapSeq(ANSI.dimFaint, "\x1b[22m");
+export const muted = wrapSeq(ANSI.muted, "\x1b[39m");
+export const red = wrapSeq(ANSI.red, "\x1b[39m");
+export const yellow = wrapSeq(ANSI.yellow, "\x1b[39m");
+export const cyan = wrapSeq(ANSI.cyan, "\x1b[39m");
+export const orange = wrapSeq(ANSI.orange, "\x1b[39m");
+
+export function accent(text: string, stream?: { isTTY?: boolean }): string {
+  const useColor = stream === undefined ? enabled : colorsEnabled(stream);
+  return useColor ? `${ANSI.cyan}${text}\x1b[39m` : String(text);
+}
+
+function unicodeOk(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (process.platform === "win32") {
+    return false;
+  }
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
+  return /utf-?8/i.test(locale);
+}
+
+const glyphs = unicodeOk()
+  ? { ok: "\u2713", fail: "\u2717", warn: "!", bullet: "\u2022", pointer: "\u203a" }
+  : { ok: "ok", fail: "x", warn: "!", bullet: "*", pointer: ">" };
+
+export const symbols = Object.freeze(glyphs);
+
+export function ok(message: string): string {
+  return `${cyan(symbols.ok)} ${message}`;
+}
+
+export function fail(message: string): string {
+  return `${red(symbols.fail)} ${message}`;
+}
+
+export function warn(message: string): string {
+  return `${yellow(symbols.warn)} ${message}`;
+}
+
+export function yesNo(value: boolean): string {
+  return value ? cyan("yes") : red("no");
+}
+
+/** Cyan success glyph, stream-gated like the rest of the layer. */
+export function check(stream: { isTTY?: boolean } = process.stdout): string {
+  return enabled || colorsEnabled(stream) ? cyan(symbols.ok) : symbols.ok;
+}
+
+/**
+ * Paint raw text with an open sequence when the stream takes color,
+ * otherwise return it untouched.
+ */
+export function paint(
+  openSeq: string,
+  text: string,
+  stream: { isTTY?: boolean } = process.stdout
+): string {
+  return colorsEnabled(stream) ? `${openSeq}${text}${ANSI.reset}` : text;
+}
 
 export function out(line = ""): void {
   process.stdout.write(line + EOL);

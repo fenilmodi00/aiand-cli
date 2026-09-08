@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { configDir } from "./config.js";
+import { configDir, writeFileAtomic } from "./fsutil.js";
 import { CliError } from "./cli/errors.js";
 
 export type Tier = "keychain" | "file" | "plaintext";
@@ -240,14 +240,6 @@ async function decryptStore(data: Buffer): Promise<SecretMap> {
   return JSON.parse(decrypted.toString("utf8")) as SecretMap;
 }
 
-async function atomicWrite(file: string, buf: Buffer): Promise<void> {
-  const dir = dirname(file);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const tmp = join(dir, `.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await writeFile(tmp, buf, { mode: 0o600 });
-  await rename(tmp, file);
-}
-
 async function readStore(): Promise<SecretMap> {
   try {
     const data = await readFile(secretsFilePath());
@@ -262,7 +254,7 @@ async function readStore(): Promise<SecretMap> {
 
 async function writeStore(store: SecretMap): Promise<void> {
   const encrypted = await encryptStore(store);
-  await atomicWrite(secretsFilePath(), encrypted);
+  await writeFileAtomic(secretsFilePath(), encrypted, { mode: 0o600 });
 }
 
 async function fileSet(account: string, secret: string): Promise<void> {

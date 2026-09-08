@@ -5,7 +5,7 @@ import { out, style } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { getCatalog, resolveDefault } from "../agents/catalog.js";
-import { requireSessionKey } from "../agents/session.js";
+import { requireSessionKey } from "../auth/session.js";
 
 export const help = `${style.bold("aiand run-agent")} -- run a coding agent on ai& for one session
 

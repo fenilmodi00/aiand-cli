@@ -2,8 +2,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { configDir } from "../config.js";
-import { writeFileAtomic } from "../io/atomic.js";
+import { configDir, writeFileAtomic } from "../config.js";
 import { VERSION } from "../api/client.js";
 
 export type Migration = {

@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
-
 import type { ForeignTool } from "./types.js";
+import { readTextIfExists } from "./managed-file.js";
 
 // Zero-mention rule: this module must probe for OTHER config writers' on-disk
 // markers, but their names may never appear as literals anywhere in the repo
@@ -54,14 +53,9 @@ export function foreignMarkerFixtures(): Record<string, string> {
 type Reader = (path: string) => Promise<string | null>;
 
 function defaultReader(): Reader {
-  return async (path) => {
-    try {
-      return await readFile(path, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
-  };
+  // Missing file → null (a managed file that was never written); anything
+  // read is scanned for a foreign signature. Real read errors propagate.
+  return async (path) => (await readTextIfExists(path)) || null;
 }
 
 function matchesSetupTool(text: string): boolean {

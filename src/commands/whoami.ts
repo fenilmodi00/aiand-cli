@@ -1,8 +1,8 @@
 import { parse, bool, str } from "../cli/args.js";
 import { fields, json, out, style } from "../cli/output.js";
-import { loadCredential, maskKey, resolveProfile } from "../config.js";
-import { openSession } from "../api/client.js";
-import { getUser, listOrgs } from "../api/account.js";
+import { NotLoggedInError } from "../cli/errors.js";
+import { maskKey } from "../config.js";
+import { probeIdentity, classifySource, sourceLabel, storageLabel } from "../auth/flow.js";
 
 export const help = `${style.bold("aiand whoami")} -- show the signed-in identity
 
@@ -18,15 +18,17 @@ export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, { local: { type: "boolean", default: false } });
   if (bool(parsed, "help")) return out(help);
 
-  const profile = resolveProfile(str(parsed, "profile"));
-  const session = await openSession(profile);
-  const cached = await loadCredential(profile.name);
+  const { profile, session, user, org, orgs, cached } = await probeIdentity(
+    str(parsed, "profile"),
+    bool(parsed, "local")
+  );
 
-  const [user, orgs] = bool(parsed, "local")
-    ? [cached?.user ?? null, cached?.org ? [cached.org] : []]
-    : await Promise.all([getUser(session), listOrgs(session)]);
+  if (!session) {
+    // whoami requires a session; probeIdentity swallows NotLoggedInError and
+    // returns null. Surface the same exit the key path uses.
+    throw new NotLoggedInError();
+  }
 
-  const org = orgs[0] ?? null;
   const expiresAt = cached?.expires_at ? new Date(cached.expires_at * 1000) : null;
 
   if (bool(parsed, "json")) {
@@ -39,7 +41,7 @@ export async function run(argv: string[]): Promise<void> {
       organizations: orgs,
       key: maskKey(session.token),
       key_expires_at: expiresAt?.toISOString() ?? null,
-      source: session.credential ? (session.credential.origin === "paste" ? "pasted-key" : "device-login") : "AIAND_API_KEY",
+      source: classifySource(session.credential?.origin),
       storage: session.credential ? cached?.storage ?? null : null,
     });
   }
@@ -59,22 +61,4 @@ export async function run(argv: string[]): Promise<void> {
         : style.dim("from AIAND_API_KEY"),
     ],
   ]);
-}
-
-function sourceLabel(credential: { origin?: "device" | "paste" } | null): string {
-  if (!credential) return "AIAND_API_KEY";
-  return credential.origin === "paste" ? "pasted key" : "device login";
-}
-
-function storageLabel(storage: string | null): string {
-  switch (storage) {
-    case "keychain":
-      return "keychain";
-    case "file":
-      return "encrypted file";
-    case "plaintext":
-      return "plaintext file";
-    default:
-      return "from AIAND_API_KEY";
-  }
 }

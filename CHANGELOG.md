@@ -7,6 +7,19 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Changed
+
+- Internal restructuring, no behavior change: sign-in flows moved to a new
+  `src/auth/` module (device login, paste validation, logout, auth status) so
+  commands only route and print; the launch-time version/update checks moved
+  from `src/system/` to `src/housekeeping/`; atomic writes and config paths
+  consolidated into one `src/fsutil.ts`; adapter modules renamed to the
+  domain glossary (`engine`→`setup`, `sync`→`rebake`, `ide-guard`→
+  `quit-guard`, `safestorage`→`cursor-secret`); shared managed-file reading
+  (read-or-empty, JSON error hints, idempotency check) extracted to
+  `src/agents/managed-file.ts`; the terminal styling layer collapsed to one
+  color policy in `src/cli/ui/color.ts` with dead duplicate modules deleted.
+
 ### Added
 
 - Key rebake on sign-in: storing a new credential (device login or paste)

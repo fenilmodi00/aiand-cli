@@ -4,7 +4,7 @@ import { CliError } from "../cli/errors.js";
 import { isInteractive } from "../cli/prompt.js";
 import { promptCheckbox } from "../cli/select.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
-import { agentOn, agentOff } from "../agents/engine.js";
+import { agentOn, agentOff } from "../agents/setup.js";
 import { hasSnapshot as hasSnapshotFor } from "../agents/snapshot.js";
 import type { AgentAdapter } from "../agents/types.js";
 

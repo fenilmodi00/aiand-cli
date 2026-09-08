@@ -103,7 +103,7 @@ before(async () => {
     })
   );
 
-  eng = await import("../dist/agents/engine.js");
+  eng = await import("../dist/agents/setup.js");
   bin = join(dirname(import.meta.dirname), "dist", "index.js");
 });
 

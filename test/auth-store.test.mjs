@@ -181,8 +181,6 @@ describe("legacy credential migration", () => {
 describe("paste vs device logout", () => {
   beforeEach(() => resetDir());
 
-  const logout = () => import("../dist/commands/logout.js");
-
   test("pasted credential: logout clears locally and never calls revoke", async () => {
     process.env.AIAND_KEY_STORAGE = "plaintext";
     try {
@@ -191,17 +189,18 @@ describe("paste vs device logout", () => {
         origin: "paste",
         storage: "plaintext",
       });
-      const { __setRevokeForTests } = await logout();
+      const { logout } = await import("../dist/auth/flow.js");
       let revokeCalls = 0;
-      __setRevokeForTests(async () => {
-        revokeCalls++;
-        return true;
+      await logout({
+        profile: "pp",
+        deps: {
+          revoke: async () => {
+            revokeCalls++;
+            return true;
+          },
+          config: { resolveProfile: config.resolveProfile },
+        },
       });
-      try {
-        await logout().then((m) => m.run(["--profile", "pp"]));
-      } finally {
-        __setRevokeForTests(null);
-      }
 
       assert.equal(revokeCalls, 0);
       assert.equal(await config.loadCredential("pp"), null);
@@ -221,16 +220,17 @@ describe("paste vs device logout", () => {
       });
 
       const revokedWith = [];
-      const { __setRevokeForTests } = await logout();
-      __setRevokeForTests(async (authUrl, token) => {
-        revokedWith.push(token);
-        return true;
+      const { logout } = await import("../dist/auth/flow.js");
+      await logout({
+        profile: "dd",
+        deps: {
+          revoke: async (authUrl, token) => {
+            revokedWith.push(token);
+            return true;
+          },
+          config: { resolveProfile: config.resolveProfile },
+        },
       });
-      try {
-        await logout().then((m) => m.run(["--profile", "dd"]));
-      } finally {
-        __setRevokeForTests(null);
-      }
 
       assert.deepEqual(revokedWith, ["rt-device"]);
       assert.equal(await config.loadCredential("dd"), null);
@@ -247,9 +247,8 @@ describe("paste vs device logout", () => {
         origin: "paste",
         storage: "plaintext",
       });
-      const { run, __setRevokeForTests } = await logout();
-      __setRevokeForTests(null);
-      await assert.rejects(() => run(["--revoke", "--profile", "pp"]), /refusing to revoke/);
+      const { logout } = await import("../dist/auth/flow.js");
+      await assert.rejects(() => logout({ profile: "pp", revoke: true, deps: { config: { resolveProfile: config.resolveProfile } } }), /refusing to revoke/);
       // Credential survives the refusal.
       assert.ok(await config.loadCredential("pp"));
     } finally {

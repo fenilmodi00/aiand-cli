@@ -4,16 +4,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { CliError } from "../cli/errors.js";
-import { configDir } from "../config.js";
-import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { assertIdeStopped, type IdeProcessSpec } from "./ide-guard.js";
-import { agentHome } from "./paths.js";
+import { assertIdeStopped, type QuitGuardSpec } from "./quit-guard.js";
+import { agentHome, configDir, writeFileAtomic } from "../config.js";
+import { notValidJsonError } from "./managed-file.js";
 import {
   encryptSecret,
   isSecretEncryptionAvailable,
-} from "./safestorage.js";
+} from "./cursor-secret.js";
 import { applyItemTableWrites, ensureItemTable, readItemTableValue, writeItemTableValue } from "./vscdb.js";
 import type { AgentAdapter, DetectResult, EnableInput, GuardOptions, ProbeResult } from "./types.js";
 import type { Model } from "../api/models.js";
@@ -28,7 +27,8 @@ import type { Model } from "../api/models.js";
  * `ISecretStorageService.get(<id>)`, which reads an Electron `safeStorage`-
  * encrypted blob from the application-scoped `state.vscdb` (`ItemTable`, key
  * `secret://<id>`). The adapter therefore writes the key there — encrypted via
- * the shared safestorage module — so VS Code can actually decrypt and use it.
+ * the shared cursor-secret OSCrypt ciphertext codec — so VS Code can actually
+ * decrypt and use it.
  *
  * - Provider -> array element `{ name, vendor:"customendpoint",
  *   apiType:"chat-completions", apiKey:"${input:<secretId>}", models[] }`.
@@ -178,7 +178,7 @@ function parseChatLanguageModelsRaw(raw: string, filePath: string): object[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new CliError(`${filePath} is not valid JSON.`);
+      throw notValidJsonError(filePath);
     }
     throw error;
   }
@@ -318,7 +318,7 @@ function computeModels(existing: object | undefined, catalog: Model[]): object[]
  * The VS Code main-process process spec (Stable + Insiders). Only the main
  * process (no `--type=`) owns state.vscdb and must block writes.
  */
-export const VSCODE_SPEC: IdeProcessSpec = {
+export const VSCODE_SPEC: QuitGuardSpec = {
   darwinPattern: "Visual Studio Code( - Insiders)?.app/Contents/MacOS/Electron",
   linuxPattern: "[/]code(-insiders)?([[:space:]]|$)",
   linuxCmdlineMatches: (cmdline) => !/\s--type=/.test(cmdline),

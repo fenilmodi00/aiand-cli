@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { compareVersions, checkForUpdate } = await import("../dist/system/update.js");
+const { compareVersions, checkForUpdate } = await import("../dist/housekeeping/update.js");
 const { VERSION } = await import("../dist/api/client.js");
 
 // Build a version string safely above the local one (same part count).

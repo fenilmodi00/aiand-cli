@@ -1,13 +1,13 @@
-import { readFile, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { Model } from "../api/models.js";
-import { writeFileAtomic } from "../io/atomic.js";
+import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./ide-guard.js";
+import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./quit-guard.js";
 import { resolveDefault } from "./catalog.js";
-import { agentHome } from "./paths.js";
+import { readTextIfExists } from "./managed-file.js";
 import { applyFirstRunDefaults, patchRouting, tomlString } from "./toml.js";
 import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
@@ -33,20 +33,6 @@ function codexCatalogFile(): string {
 
 function codexCacheFile(): string {
   return join(agentHome(), ".codex", "models_cache.json");
-}
-
-/**
- * Read a file, treating a missing file as empty content (enable() on a
- * brand-new config, probe() before any write). Anything other than ENOENT
- * propagates — a real read error is not a clean "off".
- */
-async function readTextIfExists(file: string): Promise<string> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
 }
 
 function reasoningEfforts(model: Model): Array<{ effort: string; description: string }> {

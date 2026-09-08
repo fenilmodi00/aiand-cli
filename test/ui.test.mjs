@@ -9,22 +9,16 @@ const execFileAsync = promisify(execFile);
 const root = dirname(fileURLToPath(import.meta.url));
 const bin = join(root, "..", "dist", "index.js");
 
-const {
-  BRAND,
-  isColorEnabled,
-  loadBannerArt,
-  printBanner,
-  stripBannerMarkup,
-  normalizeBannerArt,
-  sanitize,
-  hyperlinksEnabled,
-  link,
-  check,
-  paint,
-} = await import("../dist/cli/ui/index.js");
-
-const { _setColorEnabled, symbols, isStyleEnabled } = await import(
-  "../dist/cli/ui/style.js"
+const { BRAND } = await import("../dist/cli/ui/theme.js");
+const { colorsEnabled } = await import("../dist/cli/ui/color.js");
+const { loadBannerArt, printBanner } = await import("../dist/cli/ui/banner.js");
+const { stripBannerMarkup, normalizeBannerArt } = await import(
+  "../dist/cli/ui/banner-render.js"
+);
+const { sanitize } = await import("../dist/cli/ui/sanitize.js");
+const { hyperlinksEnabled, link } = await import("../dist/cli/links.js");
+const { _setColorEnabled, symbols, isStyleEnabled, check, paint } = await import(
+  "../dist/cli/output.js"
 );
 
 async function runCli(args, env = {}) {
@@ -53,7 +47,7 @@ describe("ui color", () => {
     const prev = process.env.NO_COLOR;
     process.env.NO_COLOR = "1";
     try {
-      assert.equal(isColorEnabled({ isTTY: true }), false);
+      assert.equal(colorsEnabled({ isTTY: true }), false);
     } finally {
       if (prev === undefined) delete process.env.NO_COLOR;
       else process.env.NO_COLOR = prev;
@@ -66,7 +60,7 @@ describe("ui color", () => {
     delete process.env.NO_COLOR;
     process.env.FORCE_COLOR = "1";
     try {
-      assert.equal(isColorEnabled({ isTTY: false }), true);
+      assert.equal(colorsEnabled({ isTTY: false }), true);
     } finally {
       if (prevNo === undefined) delete process.env.NO_COLOR;
       else process.env.NO_COLOR = prevNo;
@@ -81,7 +75,7 @@ describe("ui color", () => {
     delete process.env.NO_COLOR;
     delete process.env.FORCE_COLOR;
     try {
-      assert.equal(isColorEnabled({ isTTY: false }), false);
+      assert.equal(colorsEnabled({ isTTY: false }), false);
     } finally {
       if (prevNo === undefined) delete process.env.NO_COLOR;
       else process.env.NO_COLOR = prevNo;
@@ -265,19 +259,19 @@ describe("ui links", () => {
 
   test("hyperlinks disabled off-tty by default", () => {
     withEnv({ FORCE_HYPERLINK: undefined }, () => {
-      assert.equal(hyperlinksEnabled({ isTTY: false }), false);
+      assert.equal(hyperlinksEnabled({ stream: { isTTY: false }, env: process.env }), false);
     });
   });
 
   test("FORCE_HYPERLINK overrides both ways", () => {
     withEnv({ FORCE_HYPERLINK: "1" }, () => {
-      assert.equal(hyperlinksEnabled({ isTTY: false }), true);
+      assert.equal(hyperlinksEnabled({ stream: { isTTY: false }, env: process.env }), true);
     });
     withEnv({ FORCE_HYPERLINK: "0" }, () => {
-      assert.equal(hyperlinksEnabled({ isTTY: true }), false);
+      assert.equal(hyperlinksEnabled({ stream: { isTTY: true }, env: process.env }), false);
     });
     withEnv({ FORCE_HYPERLINK: "" }, () => {
-      assert.equal(hyperlinksEnabled({ isTTY: true }), false);
+      assert.equal(hyperlinksEnabled({ stream: { isTTY: true }, env: process.env }), false);
     });
   });
 
@@ -292,7 +286,7 @@ describe("ui links", () => {
         VTE_VERSION: undefined,
       },
       () => {
-        assert.equal(hyperlinksEnabled({ isTTY: true }), true);
+        assert.equal(hyperlinksEnabled({ stream: { isTTY: true }, env: process.env }), true);
       }
     );
     withEnv(
@@ -305,7 +299,7 @@ describe("ui links", () => {
         VTE_VERSION: undefined,
       },
       () => {
-        assert.equal(hyperlinksEnabled({ isTTY: true }), false);
+        assert.equal(hyperlinksEnabled({ stream: { isTTY: true }, env: process.env }), false);
       }
     );
   });
@@ -323,7 +317,10 @@ describe("ui links", () => {
         FORCE_COLOR: undefined,
       },
       () => {
-        assert.equal(link("https://example.com", { isTTY: false }), "https://example.com");
+        assert.equal(
+          link("https://example.com", { stream: { isTTY: false }, env: process.env }),
+          "https://example.com"
+        );
       }
     );
     withEnv(
@@ -339,7 +336,7 @@ describe("ui links", () => {
       },
       () => {
         assert.equal(
-          link("https://example.com", { isTTY: true }),
+          link("https://example.com", { stream: { isTTY: true }, env: process.env }),
           "\x1b]8;;https://example.com\x1b\\https://example.com\x1b]8;;\x1b\\"
         );
       }

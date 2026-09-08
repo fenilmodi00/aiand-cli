@@ -1,5 +1,5 @@
 import { ApiError, CliError } from "../cli/errors.js";
-import { userAgent } from "./client.js";
+import { publicRequest } from "./client.js";
 
 const CLIENT_ID = "aiand-cli";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -23,27 +23,15 @@ export type TokenResponse = {
 
 type TokenErrorBody = { error: string; error_description?: string };
 
-async function postJson(url: string, body: unknown): Promise<Response> {
-  try {
-    return await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent": userAgent(),
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    throw new ApiError(0, `Could not reach ${new URL(url).origin}: ${reason}`, {
-      hint: "Check your network, or pick another environment with --env.",
-    });
-  }
+function devicePost<R>(url: string, body: unknown): Promise<Response> {
+  return publicRequest(url, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export async function startDeviceAuthorization(authUrl: string): Promise<DeviceCodeResponse> {
-  const response = await postJson(`${authUrl}/auth/device/code`, { client_id: CLIENT_ID });
+  const response = await devicePost(`${authUrl}/auth/device/code`, { client_id: CLIENT_ID });
   if (!response.ok) {
     throw new ApiError(response.status, "Could not start a device login.", {
       hint: `${authUrl} did not accept the request (HTTP ${response.status}).`,
@@ -80,7 +68,7 @@ export async function pollForToken(
 
     await sleep(interval * 1000, options.signal);
 
-    const response = await postJson(`${authUrl}/auth/device/token`, {
+    const response = await devicePost(`${authUrl}/auth/device/token`, {
       grant_type: DEVICE_GRANT,
       device_code: device.device_code,
     });
@@ -115,7 +103,7 @@ export async function rotateTokens(
   authUrl: string,
   refreshToken: string
 ): Promise<TokenResponse> {
-  const response = await postJson(`${authUrl}/auth/device/token`, {
+  const response = await devicePost(`${authUrl}/auth/device/token`, {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
   });
@@ -130,7 +118,7 @@ export async function rotateTokens(
 
 export async function revokeTokens(authUrl: string, refreshToken: string): Promise<boolean> {
   try {
-    const response = await postJson(`${authUrl}/auth/device/logout`, {
+    const response = await devicePost(`${authUrl}/auth/device/logout`, {
       refresh_token: refreshToken,
     });
     return response.ok;

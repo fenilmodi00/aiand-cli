@@ -35,7 +35,7 @@ const {
   plaintextMode,
   isSecretEncryptionAvailable,
   resetLinuxSafeStorageDetectionForTests,
-} = await import("../dist/agents/safestorage.js");
+} = await import("../dist/agents/cursor-secret.js");
 const {
   cursorAdapter,
   cursorStateDbPath,
@@ -393,7 +393,7 @@ describe("cursor offGuard (engine-level `off`)", () => {
 
     // force skips the refusal (warn-and-proceed), restore proceeds.
     await cursorAdapter.offGuard({ force: true, isRunning: () => true });
-    const { agentOff } = await import("../dist/agents/engine.js");
+    const { agentOff } = await import("../dist/agents/setup.js");
     // With no manifest the strip path runs; markers were just removed above is
     // NOT the case here — offGuard alone doesn't strip. Exercise the full off:
     const result = await agentOff(cursorAdapter, { force: true });

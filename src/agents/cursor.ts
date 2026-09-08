@@ -4,13 +4,13 @@ import os from "node:os";
 import { CliError } from "../cli/errors.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { assertIdeStopped, CURSOR_SPEC } from "./ide-guard.js";
-import { agentHome } from "./paths.js";
+import { assertIdeStopped, CURSOR_SPEC } from "./quit-guard.js";
+import { agentHome } from "../config.js";
 import {
   decryptSecret,
   encryptSecret,
   isSecretEncryptionAvailable,
-} from "./safestorage.js";
+} from "./cursor-secret.js";
 import { applyItemTableWrites, ensureItemTable, readItemTableValue } from "./vscdb.js";
 import type { ItemTableMutation } from "./vscdb.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult } from "./types.js";

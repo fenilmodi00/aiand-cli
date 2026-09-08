@@ -1,7 +1,7 @@
 import { bool, parse, str } from "../cli/args.js";
 import { out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
-import { requireSessionKey } from "../agents/session.js";
+import { requireSessionKey } from "../auth/session.js";
 
 export const help = `${style.bold("aiand key export")} -- print the active session key
 

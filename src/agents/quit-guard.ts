@@ -7,17 +7,16 @@ import { err, style } from "../cli/output.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
 
 /**
- * Shared "is the desktop app that owns this config running?" guard.
- *
- * ChatGPT Desktop shares ~/.codex/config.toml with the Codex CLI, and Cursor
- * keeps its AI settings inside state.vscdb; both apps hold their config in
- * memory while running and rewrite it on exit, silently clobbering anything
- * written underneath them. Adapters that write into such a config call
- * assertIdeStopped() first: a running app means a TTY confirm, a refusal in
- * non-interactive contexts, and --force escapes the guard entirely.
+ * Quit-guard: the shared "is the desktop app that owns this config running?"
+ * gate. ChatGPT Desktop shares ~/.codex/config.toml with the Codex CLI, and
+ * Cursor keeps its AI settings inside state.vscdb; both apps hold their
+ * config in memory while running and rewrite it on exit, silently clobbering
+ * anything written underneath them. Adapters that write into such a config
+ * call assertIdeStopped() first: a running app means a TTY confirm, a refusal
+ * in non-interactive contexts, and --force escapes the guard entirely.
  */
 
-export type IdeProcessSpec = {
+export type QuitGuardSpec = {
   /** pgrep -f pattern used on darwin. */
   darwinPattern?: string;
   /** pgrep -f pattern used on linux (see linuxCmdlineMatches). */
@@ -35,13 +34,13 @@ export type IdeProcessSpec = {
  * ChatGPT Desktop build, so the spec intentionally has no linuxPattern — the
  * guard becomes a no-op there.
  */
-export const CHATGPT_DESKTOP_SPEC: IdeProcessSpec = {
+export const CHATGPT_DESKTOP_SPEC: QuitGuardSpec = {
   darwinPattern: "ChatGPT",
   windowsImage: "ChatGPT\\.exe",
 };
 
 /** Cursor IDE main process (helper children filtered via linuxCmdlineMatches). */
-export const CURSOR_SPEC: IdeProcessSpec = {
+export const CURSOR_SPEC: QuitGuardSpec = {
   darwinPattern: "Cursor.app/Contents/MacOS/Cursor",
   // Unanchored with a trailing boundary so it matches the real install paths
   // (`/opt/cursor/cursor`, `/usr/share/cursor/cursor`, …); an anchored `^cursor`
@@ -54,9 +53,9 @@ export const CURSOR_SPEC: IdeProcessSpec = {
 };
 
 /** Test seam: replaces the process probe inside isIdeRunning (null restores). */
-let probeOverride: ((spec: IdeProcessSpec) => boolean) | null = null;
+let probeOverride: ((spec: QuitGuardSpec) => boolean) | null = null;
 
-export function setIdeProbeForTests(probe: ((spec: IdeProcessSpec) => boolean) | null): void {
+export function setIdeProbeForTests(probe: ((spec: QuitGuardSpec) => boolean) | null): void {
   probeOverride = probe;
 }
 
@@ -83,7 +82,7 @@ function anyLinuxPgrepHitMatches(pgrepOutput: string, cmdlineMatches: (cmdline: 
  * requires a word boundary — matching a whole image name and not a substring
  * (e.g. VSCode.exe must not count as Code.exe).
  */
-export function isIdeRunning(spec: IdeProcessSpec): boolean {
+export function isIdeRunning(spec: QuitGuardSpec): boolean {
   if (probeOverride) return probeOverride(spec);
   try {
     if (platform() === "win32") {
@@ -112,7 +111,7 @@ export function isIdeRunning(spec: IdeProcessSpec): boolean {
  * itself warns and proceeds. `isRunning` is injectable for tests.
  */
 export async function assertIdeStopped(
-  spec: IdeProcessSpec,
+  spec: QuitGuardSpec,
   label: string,
   opts: { force?: boolean; isRunning?: () => boolean } = {}
 ): Promise<void> {

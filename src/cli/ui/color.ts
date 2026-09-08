@@ -19,8 +19,5 @@ export function colorsEnabled(
   return Boolean(stream && stream.isTTY);
 }
 
-/** Alias kept for theme/banner callers. */
-export function isColorEnabled(stream: { isTTY?: boolean } = process.stdout): boolean {
-  return colorsEnabled(stream);
-}
+
 

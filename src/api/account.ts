@@ -1,6 +1,5 @@
 import { ApiError } from "../cli/errors.js";
-import { userAgent } from "./client.js";
-import { requestJson, type Session } from "./client.js";
+import { requestJson, publicRequest, type Session } from "./client.js";
 
 export type AccountUser = { id: string; email: string };
 export type AccountOrg = { id: string; name: string };
@@ -26,8 +25,8 @@ export function listOrgs(session: Session): Promise<AccountOrg[]> {
  * problem the caller should surface as-is.
  */
 export async function validateKey(key: string, authUrl: string): Promise<AccountUser> {
-  const response = await fetch(`${authUrl}/api/user`, {
-    headers: { Authorization: `Bearer ${key}`, Accept: "application/json", "User-Agent": userAgent() },
+  const response = await publicRequest(`${authUrl}/api/user`, {
+    headers: { Authorization: `Bearer ${key}` },
   });
   if (response.status === 401) {
     throw new ApiError(401, "That key was rejected.", { hint: "Check the key and try again." });

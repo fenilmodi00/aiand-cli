@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 
 /**
- * Electron `safeStorage`-compatible secret encryption.
+ * Electron `safeStorage`-compatible secret encryption — the OSCrypt ciphertext
+ * codec behind Cursor and VS Code's managed files (kin to toml.ts / vscdb.ts,
+ * which code the sibling on-disk formats).
  *
  * Cursor's BYOK API key is not stored as a per-secret OS keychain entry but as
  * an **encrypted blob in the application-scoped `state.vscdb`** (`ItemTable`,
  * key `secret://cursorAuth/openAIKey`), decrypted with Electron `safeStorage`
- * (see Cursor's `BaseSecretStorageService` + `EncryptionMainService`).
+ * (see Cursor's `BaseSecretStorageService` + `EncryptionMainService`). VS Code
+ * stores its chat-language-model secret the same way.
  *
  * The value stored is exactly `JSON.stringify(safeStorage.encryptString(plaintext))`,
  * i.e. the JSON form of a Node Buffer — `{"type":"Buffer","data":[...]}` — whose

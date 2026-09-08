@@ -1,9 +1,17 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  chmodSync,
+  unlinkSync,
+} from "node:fs";
 import { CliError } from "./cli/errors.js";
+import { agentHome, configDir, writeFileAtomic } from "./fsutil.js";
 import * as secrets from "./secrets.js";
 import type { Tier } from "./secrets.js";
+
+export { agentHome, configDir, writeFileAtomic } from "./fsutil.js";
 
 export const DEFAULT_BASE_URL = "https://api.aiand.com";
 
@@ -41,12 +49,6 @@ export type Credential = {
 export type LoadedCredential = Credential & { access_token: string };
 
 const DEFAULT_PROFILE: Profile = {};
-
-export function configDir(): string {
-  if (process.env.AIAND_CONFIG_DIR) return process.env.AIAND_CONFIG_DIR;
-  const xdg = process.env.XDG_CONFIG_HOME;
-  return xdg ? join(xdg, "aiand") : join(homedir(), ".config", "aiand");
-}
 
 export const configPath = (): string => join(configDir(), "config.json");
 export const credentialsPath = (): string => join(configDir(), "credentials.json");

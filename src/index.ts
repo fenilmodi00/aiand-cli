@@ -6,8 +6,8 @@ import { VERSION } from "./api/client.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
 import { findAgent } from "./agents/registry.js";
 import { runAgentCommand } from "./commands/agent.js";
-import { checkForUpdate } from "./system/update.js";
-import { finalizeOnVersionChange } from "./system/finalize.js";
+import { checkForUpdate } from "./housekeeping/update.js";
+import { finalizeOnVersionChange } from "./housekeeping/finalize.js";
 
 const USAGE = `${style.bold("aiand")} -- the ai& command line interface
 

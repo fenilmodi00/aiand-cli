@@ -3,7 +3,7 @@ import { json, num, out, style, table } from "../cli/output.js";
 import { loadCredential, resolveProfile } from "../config.js";
 import { openSession } from "../api/client.js";
 import { listModels, type Model } from "../api/models.js";
-import { visionLabel } from "../agents/vision.js";
+import { visionLabel } from "../agents/catalog.js";
 
 export const help = `${style.bold("aiand models")} -- list the model catalog
 

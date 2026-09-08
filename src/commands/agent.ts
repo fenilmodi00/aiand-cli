@@ -1,11 +1,9 @@
 import { bool, parse, str, type Parsed } from "../cli/args.js";
 import { err, fields, json, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
-import { agentOn, agentOff, agentStatus } from "../agents/engine.js";
-import { getCatalog } from "../agents/catalog.js";
-import { visionLabel } from "../agents/vision.js";
-import { resolveProfile } from "../config.js";
-import { agentHome } from "../agents/paths.js";
+import { agentOn, agentOff, agentStatus } from "../agents/setup.js";
+import { getCatalog, visionLabel } from "../agents/catalog.js";
+import { agentHome, resolveProfile } from "../config.js";
 import type { AgentAdapter, Verb } from "../agents/types.js";
 
 const VERBS: Verb[] = ["on", "off", "status"];

@@ -1,11 +1,9 @@
 import { chmod, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { configDir } from "../config.js";
-import { writeFileAtomic } from "../io/atomic.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { agentHome } from "./paths.js";
+import { agentHome, configDir, writeFileAtomic } from "../config.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 import type { Model } from "../api/models.js";
 

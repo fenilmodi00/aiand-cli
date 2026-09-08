@@ -568,7 +568,7 @@ describe("claude agentOn text-only warning", () => {
     mkdirSync(join(winHome, ".claude"), { recursive: true });
     mkdirSync(winCfg, { recursive: true });
 
-    engine = await import("../dist/agents/engine.js");
+    engine = await import("../dist/agents/setup.js");
 
     // Stub `claude` out front onto PATH so detection flags it installed.
     const stubDir = join(dir, "warn-bin");

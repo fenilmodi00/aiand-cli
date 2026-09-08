@@ -1,15 +1,14 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
 import type { Model } from "../api/models.js";
-import { writeFileAtomic } from "../io/atomic.js";
 import { CliError } from "../cli/errors.js";
+import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { detectForeign } from "./foreign.js";
-import { agentHome } from "./paths.js";
+import { readTextIfExists } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunch, SessionLaunchInput } from "./types.js";
 
 /**
@@ -405,15 +404,6 @@ export function stripDeepseekSettings(settings: Record<string, unknown>): {
 /* -------------------------------------------------------------------------- */
 /* File I/O                                                                   */
 /* -------------------------------------------------------------------------- */
-
-async function readTextIfExists(file: string): Promise<string> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
-}
 
 function writeSettingsHome(overlay: string, apiKey: string, nativeCredentials?: string): void {
   let creds: Record<string, unknown> = {};

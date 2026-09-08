@@ -1,12 +1,24 @@
-import { resolveProfile } from "../config.js";
+import { agentHome, resolveProfile } from "../config.js";
 import { CliError } from "../cli/errors.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
-import { requireSessionKey } from "./session.js";
+import { requireSessionKey } from "../auth/session.js";
 import { snapshotFiles, restoreSnapshot } from "./snapshot.js";
-import { getCatalog, resolveDefault, resolveSlots } from "./catalog.js";
-import { visionLabel, formatTextOnlyWarning } from "./vision.js";
-import { agentHome } from "./paths.js";
+import {
+  formatTextOnlyWarning,
+  getCatalog,
+  resolveDefault,
+  resolveSlots,
+  visionLabel,
+} from "./catalog.js";
 import type { AgentAdapter } from "./types.js";
+
+/**
+ * The agent on/off/status verbs. `agentOn` wires an adapter to ai& (after a
+ * foreign-config refusal and a pre-aiand snapshot), `agentOff` restores the
+ * pre-aiand bytes and strips aiand-owned side files, and `agentStatus` reads
+ * the ground-truth config state (on/foreign/off) without trusting any local
+ * bookkeeping.
+ */
 
 export type AgentOnOptions = {
   model?: string;

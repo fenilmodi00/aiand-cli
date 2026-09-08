@@ -1,8 +1,7 @@
 import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
-import { configDir } from "../config.js";
-import { writeFileAtomic } from "../io/atomic.js";
+import { configDir, writeFileAtomic } from "../config.js";
 
 const MANIFEST_FILE = "latest.json";
 

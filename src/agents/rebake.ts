@@ -1,8 +1,8 @@
 import { AGENTS } from "./registry.js";
-import { agentHome } from "./paths.js";
+import { agentHome } from "../config.js";
 
 /** One agent's key-refresh outcome, after a fresh credential is stored. */
-export type SyncNote = {
+export type RebakeNote = {
   agent: string;
   state: "refreshed" | "skipped" | "failed";
   note: string;
@@ -21,9 +21,9 @@ export type SyncNote = {
  * probe or refresh failure becomes a `failed` note rather than aborting the
  * login.
  */
-export async function rebakeAgentKeys(apiKey: string): Promise<SyncNote[]> {
+export async function rebakeAgentKeys(apiKey: string): Promise<RebakeNote[]> {
   const home = agentHome();
-  const notes: SyncNote[] = [];
+  const notes: RebakeNote[] = [];
 
   for (const adapter of AGENTS) {
     if (adapter.launcherOnly) continue;

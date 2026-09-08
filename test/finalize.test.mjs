@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { finalizeOnVersionChange } = await import("../dist/system/finalize.js");
+const { finalizeOnVersionChange } = await import("../dist/housekeeping/finalize.js");
 const { VERSION } = await import("../dist/api/client.js");
 
 describe("finalizeOnVersionChange", () => {

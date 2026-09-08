@@ -28,7 +28,7 @@ after(() => {
 
 const { claudeAdapter } = await import("../dist/agents/claude.js");
 const { codexAdapter } = await import("../dist/agents/codex.js");
-const { rebakeAgentKeys } = await import("../dist/agents/sync.js");
+const { rebakeAgentKeys } = await import("../dist/agents/rebake.js");
 const { registerAgent, AGENTS } = await import("../dist/agents/registry.js");
 
 const claudeSettings = () => join(home, ".claude", "settings.json");
