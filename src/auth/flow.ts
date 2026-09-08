@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { CliError, NotLoggedInError } from "../cli/errors.js";
+import { ApiError, CliError, NotLoggedInError } from "../cli/errors.js";
 import { openSession, type Session } from "../api/client.js";
 import {
   getUser,
@@ -8,13 +8,20 @@ import {
   type AccountOrg,
   type AccountUser,
 } from "../api/account.js";
-import { signInViaLocalhostCallback, type BrowserFlowResult } from "./browser.js";
+import {
+  signInViaLocalhostCallback,
+  type BrowserFlowResult,
+} from "./browser.js";
 import * as device from "../api/device.js";
 import { readSecret, confirm, isInteractive } from "../cli/prompt.js";
 import { readStdin } from "../cli/stdin.js";
 import { copyToClipboard } from "../cli/clipboard.js";
 import { openBrowserAware } from "../cli/browser.js";
-import { promptSelect, type PromptInput, type PromptOutput } from "../cli/select.js";
+import {
+  promptSelect,
+  type PromptInput,
+  type PromptOutput,
+} from "../cli/select.js";
 import { isRemoteContext } from "../cli/remote.js";
 import { link } from "../cli/links.js";
 import { err, fields, out, spinner, style } from "../cli/output.js";
@@ -34,7 +41,13 @@ import {
   type ResolvedProfile,
 } from "../config.js";
 import { rebakeAgentKeys, type RebakeNote } from "../agents/rebake.js";
-import { revokeTokens, startDeviceAuthorization, verificationUrl, pollForToken } from "../api/device.js";
+import {
+  type DeviceCodeResponse,
+  revokeTokens,
+  startDeviceAuthorization,
+  verificationUrl,
+  pollForToken,
+} from "../api/device.js";
 
 function printRebakeNotes(notes: RebakeNote[]): void {
   for (const note of notes) {
@@ -53,13 +66,15 @@ function activateProfile(name: string): void {
  * whoami emit. Shared classification lives here so the two commands cannot
  * drift. */
 export function classifySource(
-  origin: Credential["origin"] | null | undefined
+  origin: Credential["origin"] | null | undefined,
 ): "device-login" | "pasted-key" | "AIAND_API_KEY" {
   if (origin === undefined || origin === null) return "AIAND_API_KEY";
   return origin === "paste" ? "pasted-key" : "device-login";
 }
 
-export function sourceLabel(credential: { origin?: "device" | "paste" } | null): string {
+export function sourceLabel(
+  credential: { origin?: "device" | "paste" } | null,
+): string {
   if (!credential) return "AIAND_API_KEY";
   return credential.origin === "paste" ? "pasted key" : "device login";
 }
@@ -92,7 +107,7 @@ export type Identity = {
  * present it. */
 export async function probeIdentity(
   profileOverride?: string,
-  local = false
+  local = false,
 ): Promise<Identity> {
   const profile = resolveProfile(profileOverride);
   let session: Session | null = null;
@@ -112,7 +127,10 @@ export async function probeIdentity(
       orgs = await listOrgs(session);
       user = await getUser(session);
       const cachedOrg = cached?.org;
-      org = cachedOrg && orgs.some((o) => o.id === cachedOrg.id) ? cachedOrg : (orgs[0] ?? null);
+      org =
+        cachedOrg && orgs.some((o) => o.id === cachedOrg.id)
+          ? cachedOrg
+          : (orgs[0] ?? null);
     }
   } catch (error) {
     if (!(error instanceof NotLoggedInError)) throw error;
@@ -139,8 +157,13 @@ export type AuthStatusOptions = {
 /** The auth half of `aiand status`: identity, masked key, key source, and the
  * storage tier holding the secret. Uses the shared probe so whoami classifies
  * identically. */
-export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStatus> {
-  const { profile, session, user, org, cached } = await probeIdentity(opts.profile, opts.local);
+export async function authStatus(
+  opts: AuthStatusOptions = {},
+): Promise<AuthStatus> {
+  const { profile, session, user, org, cached } = await probeIdentity(
+    opts.profile,
+    opts.local,
+  );
 
   if (!session) {
     return {
@@ -178,33 +201,52 @@ export type DeviceLoginOptions = {
   keyName?: string;
   /** Internal test seam: opener injected into the browser sign-in. */
   open?: (url: string) => Promise<boolean>;
+  /** Internal test seam: browser callback wait cap (default 5 minutes). */
+  timeoutMs?: number;
 };
 
 /** Mint an org-scoped API key via a browser device-code approval, persist the
  * credential, promote the profile, and rebake the key into active agents. */
-export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> {
+export async function deviceLogin(
+  opts: DeviceLoginOptions = {},
+): Promise<void> {
   const profile = resolveProfile(opts.profile);
 
   const keyName = opts.keyName ?? `aiand@${hostname() || "cli"}`;
-  const deviceStart = await startDeviceAuthorization(profile.authUrl, { keyName });
+  let deviceStart: DeviceCodeResponse;
+  try {
+    deviceStart = await startDeviceAuthorization(profile.authUrl, {
+      keyName,
+    });
+  } catch (error) {
+    return degradeToPaste(error, opts, "starting the device sign-in");
+  }
   const url = verificationUrl(profile.authUrl, deviceStart);
 
   const remote = isRemoteContext();
 
   out();
-  out(`  ${style.dim("Your code ")}  ${style.bold(style.cyan(deviceStart.user_code))}`);
+  out(
+    `  ${style.dim("Your code ")}  ${style.bold(style.cyan(deviceStart.user_code))}`,
+  );
   out(`  ${style.dim("Approve at")}  ${link(url)}`);
   out();
 
   if (opts.noBrowser) {
     err(style.dim("Open the URL above to continue."));
   } else if (remote) {
-    err(style.dim("No browser can open from here (SSH/WSL) -- open the URL above to continue."));
+    err(
+      style.dim(
+        "No browser can open from here (SSH/WSL) -- open the URL above to continue.",
+      ),
+    );
     if (isInteractive() && (await copyToClipboard(url))) {
       err(style.dim("Copied the approval URL to your clipboard."));
     }
   } else if (openBrowserAware(url) === "remote") {
-    err(style.dim("Could not open a browser -- open the URL above to continue."));
+    err(
+      style.dim("Could not open a browser -- open the URL above to continue."),
+    );
   }
 
   const controller = new AbortController();
@@ -217,8 +259,12 @@ export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> 
     tokens = await pollForToken(profile.authUrl, deviceStart, {
       signal: controller.signal,
       onSlowDown: (interval) =>
-        err(style.dim(`Server asked us to back off; polling every ${interval}s.`)),
+        err(
+          style.dim(`Server asked us to back off; polling every ${interval}s.`),
+        ),
     });
+  } catch (error) {
+    return degradeToPaste(error, opts, "waiting for the approval");
   } finally {
     spin.stop();
     process.removeListener("SIGINT", onInterrupt);
@@ -227,10 +273,43 @@ export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> 
   await completeSignIn(profile, tokens, opts);
 }
 
+/**
+ * The fireconnect degradation: when the device service can't be reached or
+ * the code expires before approval, an interactive terminal falls through to
+ * pasting a key instead of dead-ending the sign-in. Non-interactive runs
+ * (CI, pipes) keep the original error — paste needs a prompt. User-driven
+ * outcomes (deny, Ctrl-C, poll expiry) stay fatal so cancellation remains
+ * cancellation.
+ */
+function degradeToPaste(
+  error: unknown,
+  opts: DeviceLoginOptions,
+  doing: string,
+): Promise<void> {
+  // Ctrl-C (130) and an explicit deny in the browser (3) are user decisions —
+  // keep them fatal. Everything else (network unreachable, 5xx, contract
+  // violations, code expiry) means the device service can't get this user
+  // signed in, so an interactive terminal falls through to pasting a key.
+  if (
+    error instanceof CliError &&
+    (error.exitCode === 130 || error.exitCode === 3)
+  )
+    throw error;
+  if (!isInteractive() || opts.json) throw error;
+  err(
+    style.yellow(
+      `Device sign-in failed while ${doing} (${(error as Error).message}) — paste a key instead.`,
+    ),
+  );
+  return pasteLogin({ ...opts, interactive: true });
+}
+
 /** Default interactive sign-in: browser authorization-code + PKCE with a
  * device-code fallback when the server or terminal cannot do the browser
  * half. Minted keys keep origin "device" either way. */
-export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void> {
+export async function browserLogin(
+  opts: DeviceLoginOptions = {},
+): Promise<void> {
   const profile = resolveProfile(opts.profile);
   const keyName = opts.keyName ?? `aiand@${hostname() || "cli"}`;
 
@@ -243,6 +322,7 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
       authUrl: profile.authUrl,
       keyName,
       open: opts.open,
+      timeoutMs: opts.timeoutMs,
       signal: controller.signal,
       onStatus: (line) => err(style.dim(line)),
     });
@@ -252,10 +332,15 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
   if (!result.ok) {
     // Ctrl-C after a successful callback still completes the sign-in; only a
     // failed wait is a cancellation.
-    if (controller.signal.aborted) throw new CliError("Login cancelled.", { exitCode: 130 });
+    if (controller.signal.aborted)
+      throw new CliError("Login cancelled.", { exitCode: 130 });
     if (result.fatal) throw new CliError(result.failure, { exitCode: 3 });
     if (!result.unsupported) {
-      err(style.dim(`Browser sign-in didn't complete (${result.failure}) — continuing with a device code.`));
+      err(
+        style.dim(
+          `Browser sign-in didn't complete (${result.failure}) — continuing with a device code.`,
+        ),
+      );
     }
     return deviceLogin({ ...opts, keyName });
   }
@@ -264,7 +349,7 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
 
 async function pickOrg(
   orgs: AccountOrg[],
-  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput }
+  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput },
 ): Promise<AccountOrg | null> {
   if (orgs.length === 1) return orgs[0]!;
   if (orgs.length === 0) return null;
@@ -275,17 +360,22 @@ async function pickOrg(
       input: opts.input,
       output: opts.output,
     });
-    if (picked === null) throw new CliError("Login cancelled.", { exitCode: 130 });
+    if (picked === null)
+      throw new CliError("Login cancelled.", { exitCode: 130 });
     return orgs.find((o) => o.id === picked) ?? orgs[0]!;
   }
-  err(style.dim(`This account has multiple organizations; using ${orgs[0]!.name}.`));
+  err(
+    style.dim(
+      `This account has multiple organizations; using ${orgs[0]!.name}.`,
+    ),
+  );
   return orgs[0]!;
 }
 
 async function completeSignIn(
   profile: ResolvedProfile,
   tokens: device.TokenResponse,
-  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput }
+  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput },
 ): Promise<void> {
   await saveCredential(profile.name, {
     access_token: tokens.access_token,
@@ -313,10 +403,15 @@ async function completeSignIn(
   if (opts.json) {
     return out(
       JSON.stringify(
-        { profile: profile.name, user, org: org ?? null, key: maskKey(session.token) },
+        {
+          profile: profile.name,
+          user,
+          org: org ?? null,
+          key: maskKey(session.token),
+        },
         null,
-        2
-      )
+        2,
+      ),
     );
   }
 
@@ -324,7 +419,10 @@ async function completeSignIn(
   out();
   fields([
     ["email", user.email || style.dim("unknown")],
-    ["org", org ? `${org.name} ${style.dim(`(${org.id})`)}` : style.dim("none")],
+    [
+      "org",
+      org ? `${org.name} ${style.dim(`(${org.id})`)}` : style.dim("none"),
+    ],
     ["profile", profile.name],
     ["key", style.dim(maskKey(session.token))],
   ]);
@@ -339,15 +437,20 @@ export type PasteLoginOptions = {
   /** `--paste`: prompt interactively (masked input). */
   interactive?: boolean;
   json?: boolean;
+  /** Internal test seam: prompt streams for the masked paste prompt. */
+  input?: PromptInput;
+  output?: PromptOutput;
 };
 
 function readPastedKey(opts: PasteLoginOptions): Promise<string> {
   if (opts.interactive) {
-    return readPastedKeyInteractive();
+    return readPastedKeyInteractive(opts);
   }
   if (opts.key !== undefined) {
     if (!/^sk-/.test(opts.key)) {
-      throw new CliError('Keys start with "sk-".', { hint: "Check the key and try again." });
+      throw new CliError('Keys start with "sk-".', {
+        hint: "Check the key and try again.",
+      });
     }
     return Promise.resolve(opts.key);
   }
@@ -357,9 +460,14 @@ function readPastedKey(opts: PasteLoginOptions): Promise<string> {
   throw new CliError("No key source given for paste login.");
 }
 
-async function readPastedKeyInteractive(): Promise<string> {
+async function readPastedKeyInteractive(
+  opts: Pick<PasteLoginOptions, "input" | "output">,
+): Promise<string> {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const key = await readSecret("Paste your ai& API key (sk-…): ");
+    const key = await readSecret("Paste your ai& API key (sk-…): ", {
+      input: opts.input,
+      output: opts.output,
+    });
     if (!/^sk-/.test(key)) {
       err(style.red(`Keys start with "sk-" (attempt ${attempt} of 3).`));
       continue;
@@ -375,7 +483,9 @@ async function readPastedKeyStdin(): Promise<string> {
     throw new CliError("Pipe the key: aiand login --with-token < key.txt");
   }
   if (!/^sk-/.test(piped)) {
-    throw new CliError('Keys start with "sk-".', { hint: "Check the key and try again." });
+    throw new CliError('Keys start with "sk-".', {
+      hint: "Check the key and try again.",
+    });
   }
   return piped;
 }
@@ -399,7 +509,11 @@ export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
 
   if (opts.json) {
     return out(
-      JSON.stringify({ profile: profile.name, source: "pasted-key", storage }, null, 2)
+      JSON.stringify(
+        { profile: profile.name, source: "pasted-key", storage },
+        null,
+        2,
+      ),
     );
   }
 
@@ -433,8 +547,8 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     if (process.env.AIAND_API_KEY) {
       out(
         style.dim(
-          `Profile "${profile.name}" was not signed in. The AIAND_API_KEY environment variable still applies until it is unset.`
-        )
+          `Profile "${profile.name}" was not signed in. The AIAND_API_KEY environment variable still applies until it is unset.`,
+        ),
       );
       return;
     }
@@ -446,7 +560,7 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
   if (pasted && opts.revoke) {
     throw new CliError(
       "This key was pasted, not minted by this CLI; refusing to revoke it.",
-      { hint: "Revoke it in the console if you no longer need it." }
+      { hint: "Revoke it in the console if you no longer need it." },
     );
   }
 
@@ -459,7 +573,9 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     if (opts.revoke) {
       revoked = await revokeTokens(profile.authUrl, revokeToken);
     } else if (isInteractive()) {
-      const yes = await confirm("Revoke the ai& key this machine minted?", { default: true });
+      const yes = await confirm("Revoke the ai& key this machine minted?", {
+        default: true,
+      });
       if (yes) {
         revoked = await revokeTokens(profile.authUrl, revokeToken);
       } else {
@@ -475,21 +591,29 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
   if (opts.json) {
     return out(
       JSON.stringify(
-        { profile: profile.name, revoked, source: pasted ? "pasted-key" : "device-login" },
+        {
+          profile: profile.name,
+          revoked,
+          source: pasted ? "pasted-key" : "device-login",
+        },
         null,
-        2
-      )
+        2,
+      ),
     );
   }
 
   out(style.green(`Signed out of "${profile.name}".`));
   if (pasted) {
-    out(style.dim("The pasted key was removed locally; it is still valid in the console."));
+    out(
+      style.dim(
+        "The pasted key was removed locally; it is still valid in the console.",
+      ),
+    );
   } else if (!revoked && !keepRemote) {
     out(
       style.dim(
-        "The server could not be reached, so the key was only removed locally. Revoke it in the console if this machine is untrusted."
-      )
+        "The server could not be reached, so the key was only removed locally. Revoke it in the console if this machine is untrusted.",
+      ),
     );
   }
 }

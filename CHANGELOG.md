@@ -7,6 +7,15 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- Device sign-in degrades to key paste: when the device flow fails for
+  infrastructure reasons (service unreachable, HTTP error, code expired
+  before approval) an interactive `aiand login` prints the reason and
+  falls through to the masked paste prompt instead of dead-ending.
+  User cancellations (Ctrl-C, deny in the browser) and non-interactive
+  runs (CI, pipes, `--json`) keep the original error.
+
 ### Fixed
 
 - `publicRequest` silently dropped the request body, so every device-API

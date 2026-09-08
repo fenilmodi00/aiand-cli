@@ -19,9 +19,10 @@ Options
   --api-key <sk-...>  store a key passed on the command line
   --with-token        read the key from stdin (aiand login --with-token < key.txt)
 
-The default path opens your browser and signs in. Paste paths
-validate the key against the API first; a pasted key is never rotated or revoked
-by this CLI.`;
+The default path opens your browser and signs in. If the device flow
+also fails (service unreachable, code expired) an interactive terminal
+offers to paste a key instead. Paste paths validate the key against the
+API first; a pasted key is never rotated or revoked by this CLI.`;
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {

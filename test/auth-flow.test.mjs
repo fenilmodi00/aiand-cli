@@ -19,6 +19,9 @@ const config = await import("../dist/config.js");
 /** The stub auth/API server: identity endpoints plus device-login endpoints. */
 function stubServer() {
   const state = {
+    /** Device-poll interval the stub advertises; tests override to exercise
+     * slow_down pacing (pollForToken enforces it as real wall time). */
+    pollInterval: 0,
     revocations: [],
     /** /api/orgs payload; tests set two orgs to reach the picker. */
     orgs: [],
@@ -28,6 +31,9 @@ function stubServer() {
     keyName: null,
     /** /auth/authorize behavior: "redirect" 302s, "missing" 404s. */
     authorizeMode: "redirect",
+    /** When "down", the device endpoints 500 — the fireconnect degradation
+     * path: service torn down, identity API still serving. */
+    deviceMode: "up",
   };
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://stub");
@@ -39,25 +45,31 @@ function stubServer() {
       // Paste-key validation: the bearer key decides acceptance.
       const auth = req.headers.authorization ?? "";
       if (auth === "Bearer sk-abc123" || auth === "Bearer sk-bad") {
-        if (auth === "Bearer sk-bad") return reply(401, { error: "That key was rejected." });
+        if (auth === "Bearer sk-bad")
+          return reply(401, { error: "That key was rejected." });
         return reply(200, { id: "u1", email: "paste@example.com" });
       }
       return reply(200, { id: "u1", email: "dev@example.com" });
     }
     if (url.pathname === "/api/orgs") return reply(200, state.orgs);
     if (url.pathname === "/auth/authorize") {
-      if (state.authorizeMode === "missing") return reply(404, { error: "not found" });
+      if (state.authorizeMode === "missing")
+        return reply(404, { error: "not found" });
       const redirectUri = url.searchParams.get("redirect_uri");
       const requestState = url.searchParams.get("state");
       // The paramless GET is the CLI's pre-flight probe; only real authorize
       // requests (which carry state) get the 302.
-      if (!requestState || !redirectUri) return reply(400, { error: "authorize needs params" });
+      if (!requestState || !redirectUri)
+        return reply(400, { error: "authorize needs params" });
       const target = new URL(redirectUri);
       target.searchParams.set("code", "ac_123");
       target.searchParams.set("state", requestState);
       res.writeHead(302, { Location: target.toString() });
       res.end();
       return;
+    }
+    if (state.deviceMode === "down" && url.pathname.startsWith("/auth/device/")) {
+      return reply(500, { error: "device service is down" });
     }
     if (url.pathname === "/auth/device/code") {
       let raw = "";
@@ -70,7 +82,9 @@ function stubServer() {
           verification_uri: "/auth/device?user_code=BCDF-GHJK",
           verification_uri_complete: "",
           expires_in: 600,
-          interval: 5,
+          // The device spec says wait `interval` before polling; the harness
+          // has no reason to pay that in wall time (state.pollInterval=0).
+          interval: state.pollInterval ?? 0,
         });
       });
       return;
@@ -100,7 +114,9 @@ function stubServer() {
             org: { id: "org_2", name: "Second" },
           });
         }
-        if (params.grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
+        if (
+          params.grant_type === "urn:ietf:params:oauth:grant-type:device_code"
+        ) {
           return reply(200, {
             access_token: "sk-minted",
             refresh_token: "rt-minted",
@@ -182,7 +198,10 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
 
       const outText = captured.log.out.join("");
       assert.ok(outText.includes("Signed in."));
-      assert.ok(outText.includes("sk-***"), "masked key printed, full key never");
+      assert.ok(
+        outText.includes("sk-***"),
+        "masked key printed, full key never",
+      );
       assert.ok(captured.log.err.join("").length >= 0);
     } finally {
       captured.restore();
@@ -191,7 +210,9 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
 
   test("passes an onSlowDown handler that prints the back-off line", async () => {
     // Drive the real pollForToken with a stubbed global fetch so the
-    // slow_down branch fires deterministically.
+    // slow_down branch fires deterministically. interval: 0 keeps the
+    // pre-poll wait at Math.max(1, 0) = 1s; the +5 slow_down bump is
+    // asserted from the reported value, not paid in wall time (6s).
     const realFetch = globalThis.fetch;
     const deviceStart = {
       device_code: "dc",
@@ -199,17 +220,20 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
       verification_uri: "/auth/device?user_code=BCDF-GHJK",
       verification_uri_complete: "",
       expires_in: 600,
-      interval: 1,
+      interval: 0,
     };
     let fetchCount = 0;
     const slowDowns = [];
     globalThis.fetch = async () => {
       fetchCount++;
       if (fetchCount === 1) {
-        return new Response(JSON.stringify({ error: "authorization_pending" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({ error: "authorization_pending" }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
       }
       if (fetchCount === 2) {
         return new Response(JSON.stringify({ error: "slow_down" }), {
@@ -224,7 +248,7 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
           token_type: "Bearer",
           expires_in: 3600,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { status: 200, headers: { "Content-Type": "application/json" } },
       );
     };
     try {
@@ -233,7 +257,11 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
       });
       assert.equal(tokens.access_token, "sk-ok");
       assert.equal(fetchCount, 3);
-      assert.deepEqual(slowDowns, [6], "slow_down bumps the interval by 5 (1+5)");
+      assert.deepEqual(
+        slowDowns,
+        [6],
+        "slow_down bumps the interval by 5 (1+5)",
+      );
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -253,7 +281,7 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
     };
     await assert.rejects(
       device.pollForToken(baseUrl, expired),
-      /expired before it was approved/
+      /expired before it was approved/,
     );
   });
 });
@@ -304,7 +332,10 @@ describe("logout (real modules, stub server)", () => {
 
     const captured = captureOutput();
     try {
-      await assert.rejects(flow.logout({ profile: "default", revoke: true }), /refusing to revoke/);
+      await assert.rejects(
+        flow.logout({ profile: "default", revoke: true }),
+        /refusing to revoke/,
+      );
     } finally {
       captured.restore();
     }
@@ -323,7 +354,9 @@ describe("pasteLogin validation (real modules, stub server)", () => {
       const cred = await config.loadCredential("default");
       assert.equal(cred.origin, "paste");
       assert.equal(cred.access_token, "sk-abc123");
-      assert.ok(captured.log.out.join("").includes("Signed in with a pasted key."));
+      assert.ok(
+        captured.log.out.join("").includes("Signed in with a pasted key."),
+      );
     } finally {
       captured.restore();
     }
@@ -334,7 +367,7 @@ describe("pasteLogin validation (real modules, stub server)", () => {
     try {
       await assert.rejects(
         flow.pasteLogin({ profile: "default", key: "not-a-key" }),
-        /Keys start with "sk-"/
+        /Keys start with "sk-"/,
       );
     } finally {
       captured.restore();
@@ -347,7 +380,7 @@ describe("pasteLogin validation (real modules, stub server)", () => {
     try {
       await assert.rejects(
         flow.pasteLogin({ profile: "default", key: "sk-bad" }),
-        /rejected/
+        /rejected/,
       );
     } finally {
       captured.restore();
@@ -397,8 +430,14 @@ class FakeOutput {
 function stubTTY() {
   const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
   const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
-  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
   return () => {
     if (stdinDesc) Object.defineProperty(process.stdin, "isTTY", stdinDesc);
     else delete process.stdin.isTTY;
@@ -418,13 +457,17 @@ function browserOpener() {
 }
 
 /** Wait until the picker is listening, then drive DOWN + ENTER through it.
- * deviceLogin polls ~5s before the prompt appears, so this must out-wait it
- * and never send blindly: keys emitted with no listener are lost forever. */
+ * deviceLogin polls once (interval 0 in this harness) before the prompt
+ * appears, so this must out-wait it and never send blindly: keys emitted
+ * with no listener are lost forever. */
 async function pickSecondRow(input) {
   for (let i = 0; i < 3000 && input.listenerCount("data") === 0; i++) {
     await new Promise((r) => setTimeout(r, 10));
   }
-  assert.ok(input.listenerCount("data") > 0, "org picker never started listening");
+  assert.ok(
+    input.listenerCount("data") > 0,
+    "org picker never started listening",
+  );
   input.send(KEY.DOWN);
   input.send(KEY.ENTER_CR);
 }
@@ -455,7 +498,12 @@ describe("org selection on sign-in (real modules, stub server)", () => {
     const output = new FakeOutput();
     const captured = captureOutput();
     try {
-      const login = flow.deviceLogin({ profile: "default", noBrowser: true, input, output });
+      const login = flow.deviceLogin({
+        profile: "default",
+        noBrowser: true,
+        input,
+        output,
+      });
       await pickSecondRow(input);
       await login;
       const cred = await config.loadCredential("default");
@@ -485,7 +533,11 @@ describe("browserLogin (real modules, stub server)", () => {
     state.orgs = [...TWO_ORGS];
     const captured = captureOutput();
     try {
-      await flow.browserLogin({ profile: "default", open: browserOpener() });
+      await flow.browserLogin({
+        profile: "default",
+        open: browserOpener(),
+        timeoutMs: 2_000,
+      });
       const cred = await config.loadCredential("default");
       assert.ok(captured.log.out.join("").includes("Signed in."));
       assert.equal(cred.access_token, "sk-minted");
@@ -501,7 +553,12 @@ describe("browserLogin (real modules, stub server)", () => {
     state.tokenOrg = { id: "org_2", name: "Second" };
     const captured = captureOutput();
     try {
-      await flow.browserLogin({ profile: "default", noBrowser: true, open: browserOpener() });
+      await flow.browserLogin({
+        profile: "default",
+        noBrowser: true,
+        open: browserOpener(),
+        timeoutMs: 2_000,
+      });
       const cred = await config.loadCredential("default");
       assert.ok(captured.log.out.join("").includes("Signed in."));
       assert.equal(cred.access_token, "sk-minted");
@@ -524,5 +581,103 @@ describe("browserLogin (real modules, stub server)", () => {
     state.orgs = [...TWO_ORGS];
     const identity = await flow.probeIdentity("default");
     assert.equal(identity.org.id, "org_2");
+  });
+});
+
+describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
+  test("(g) device endpoints down + interactive TTY falls through to the paste prompt and signs in", async () => {
+    state.deviceMode = "down";
+    const restoreTTY = stubTTY();
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const captured = captureOutput();
+    try {
+      const login = flow.deviceLogin({
+        profile: "default",
+        noBrowser: true,
+        input,
+        output,
+      });
+      // The paste prompt drives the same raw-mode listener pattern as the
+      // org picker: wait for it, then send a valid key + ENTER.
+      for (let i = 0; i < 3000 && input.listenerCount("data") === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.ok(input.listenerCount("data") > 0, "paste prompt never started");
+      input.send("sk-abc123");
+      input.send(KEY.ENTER_CR);
+      await login;
+
+      const cred = await config.loadCredential("default");
+      assert.equal(cred.origin, "paste");
+      assert.equal(cred.access_token, "sk-abc123");
+      const errText = captured.log.err.join("");
+      assert.match(errText, /Device sign-in failed while starting/);
+      assert.match(errText, /paste a key instead/);
+      assert.ok(captured.log.out.join("").includes("Signed in with a pasted key."));
+    } finally {
+      captured.restore();
+      restoreTTY();
+      state.deviceMode = "up";
+    }
+  });
+
+  test("(h) device endpoints down non-interactively keeps the original error", async () => {
+    state.deviceMode = "down";
+    const captured = captureOutput();
+    try {
+      await assert.rejects(
+        flow.deviceLogin({ profile: "default", noBrowser: true }),
+        /start a device login|Could not reach|HTTP 5/i,
+      );
+      assert.equal(await config.loadCredential("default"), null);
+    } finally {
+      captured.restore();
+      state.deviceMode = "up";
+    }
+  });
+  test("(i) a browser deny stays fatal (no paste fallback)", async () => {
+    const realFetch = globalThis.fetch;
+    // Device code starts fine; every poll after it is denied in the browser.
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/auth/device/code")) {
+        return new Response(
+          JSON.stringify({
+            device_code: "dc",
+            user_code: "BCDF-GHJK",
+            verification_uri: "/auth/device?user_code=BCDF-GHJK",
+            verification_uri_complete: "",
+            expires_in: 600,
+            interval: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ error: "access_denied" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const restoreTTY = stubTTY();
+    const captured = captureOutput();
+    try {
+      await assert.rejects(
+        flow.deviceLogin({
+          profile: "default",
+          noBrowser: true,
+          keyName: "k",
+          input: new FakeInput(),
+          output: new FakeOutput(),
+        }),
+        /denied in the browser/,
+      );
+      const errText = captured.log.err.join("");
+      assert.ok(!errText.includes("paste a key instead"));
+      assert.equal(await config.loadCredential("default"), null);
+    } finally {
+      captured.restore();
+      restoreTTY();
+      globalThis.fetch = realFetch;
+    }
   });
 });
