@@ -5,7 +5,5 @@ dist/
 coverage/
 *.tgz
 
-nebius-tf-relay
-fireconnect
-
 .env
+

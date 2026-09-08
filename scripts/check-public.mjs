@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-const ROOTS = ["src", "scripts", ".github", "dist", "README.md", "CHANGELOG.md", "package.json"];
+const ROOTS = ["src", "scripts", ".github", "dist", "install.sh", "README.md", "CHANGELOG.md", "package.json"];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "coverage"]);
 const SCAN_EXT = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".md", ".yml", ".yaml"]);
@@ -50,7 +50,7 @@ const RULES = [
     pattern: /\b[A-Z]{2,6}-\d{1,6}\b/g,
 
     allow: (match) =>
-      /^(?:RFC|UTF|SHA|ISO|ANSI|AES|RSA|HTTP|IPv|EC|P|CVE|SLSA|ES)-?\d/i.test(match),
+      /^(?:RFC|UTF|SHA|ISO|ANSI|OSC|AES|RSA|HTTP|IPv|EC|P|CVE|SLSA|ES)-?\d/i.test(match),
     hint: "Internal ticket identifiers must not be published.",
   },
   {

@@ -5,18 +5,26 @@ dependencies (enforced by `scripts/check-dist.mjs`).
 
 ## Verification
 
-`npm run lint && npm test && npm run build && npm run check:dist && npm run check:public` before handing over any change. Agent-adapter changes also run `node scripts/e2e-phase3.mjs`.
+`npm run lint && npm test && npm run build && npm run check:dist && npm run check:public` before handing over any change. Agent-adapter changes also run `node scripts/e2e.mjs`.
 
-## Agent skills
+## Conventions
 
-### Issue tracker
+Agent wiring: `status` probes real config files, never bookkeeping; `off`
+restores the snapshot byte for byte; foreign markers and quit-guards refuse
+`on`/`off` unless `--force`; every model id written resolves through the live
+catalog (Claude 1M ids carry the `[1m]` tag).
+Hygiene: foreign-tool markers are assembled at runtime and never appear as
+literals (`npm run check:public` enforces this); tests isolate with
+`AIAND_HOME` and `AIAND_CONFIG_DIR`, never the real home.
 
-Issues live as GitHub issues on fenilmodi00/aiand-cli, managed via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+## Issue tracker
 
-### Triage labels
+Issues live as GitHub issues on fenilmodi00/aiand-cli, managed via the `gh`
+CLI. Triage roles: `needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, `wontfix`.
 
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+## Domain docs
 
-### Domain docs
-
-Single-context: `CONTEXT.md` at the repo root is the domain glossary; ADRs go in `docs/adr/` when a decision is load-bearing. See `docs/agents/domain.md`.
+`CONTEXT.md` at the repo root is the domain glossary: use its words exactly,
+never a synonym it avoids. ADRs go in `docs/adr/` when a decision is
+load-bearing; flag output that contradicts one.

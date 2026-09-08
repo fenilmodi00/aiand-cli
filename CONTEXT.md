@@ -37,9 +37,10 @@ an agent is one adapter module plus one registry line.
 in; agent lookup walks it by id and alias. The one place the agent matrix is
 enumerated.
 
-**on** - the primary verb: write the agent's own native config so the stock
-binary reaches the gateway afterwards, with no wrapper process required. The
-default verb - `aiand claude` means `aiand claude on`.
+**on** - the primary verb: wire the agent permanently so the stock
+binary reaches the gateway afterwards, with no wrapper process required. Most
+adapters write the agent's own native config; prime writes the aiand-owned
+sidecar instead. The default verb - `aiand claude` means `aiand claude on`.
 
 **off** - restore the agent's pre-aiand state byte for byte from its
 snapshot, including the case where a managed file did not exist before.
@@ -50,31 +51,36 @@ config files. Never trusts the CLI's own bookkeeping. _Avoid:_ flag check.
 **Managed file** - a config file an adapter reads or writes. Edits are
 surgical: unrelated keys and sections always survive an aiand write.
 
-**Snapshot** - the byte-for-byte capture of an agent's managed files, taken
-before the first aiand write and restored by `off`. Idempotent by design: a
-second `on` never re-captures over the original. _Avoid:_ backup, checkpoint.
+**Snapshot** - the byte-for-byte capture of an agent's managed files,
+restored by `off`. A re-`on` while still active keeps the first capture; an
+inactive `on` re-captures. _Avoid:_ backup, checkpoint.
 
 **Foreign tool** - another config-writing tool whose markers are present in a
 managed file. Its presence blocks `on` until the user explicitly forces an
 overwrite; last writer must never win silently. _Avoid:_ conflicting writer,
 rival tool.
 
-**Quit-guard** - `on` refusing to write while the agent's own process is
-running, because that process would overwrite the config on exit; `--force`
-proceeds anyway. _Avoid:_ lock, file watch.
+**Quit-guard** - `codex`, `cursor`, and `vscode` refusing `on`/`off` while the
+owning app holds its config in memory, because it would clobber the write on
+exit; `--force` proceeds anyway. _Avoid:_ lock, file watch.
 
 **Marker** - a recognizable ownership signature inside a managed file. aiand
 stamps its own so `off` can strip surgically, and so other tools can detect
 aiand the same way aiand detects them.
 
-**Launcher** - `aiand run-agent <agent>`: run one agent process with routing
-injected through its environment, leaving user files untouched. An optional
-convenience beside permanent `on`, never a replacement. _Avoid:_ wrapper,
-session alias.
+**Sidecar** - the aiand-owned directory under the aiand config dir that prime
+reads as its provider wiring. Entirely ours to write; `off` removes what `on`
+created.
 
-**Launcher-only agent** - an agent whose routing cannot survive a permanent
-stock-binary launch (it needs an overlay or ephemeral auth), so `on` is not
-offered for it; only the launcher is.
+**Launcher** - `aiand run-agent <agent>`: run one agent process with routing
+injected into its environment or a throwaway overlay, leaving user files
+untouched. Works without a prior `on`; an optional convenience beside
+permanent `on`, never a replacement. _Avoid:_ wrapper, session alias.
+
+**Launcher-only agent** - hermes and grok: routing lives only in the
+per-session overlay or ephemeral server, so `on` is refused and only the
+launcher is offered. The mirror image is cursor and vscode, which are
+wiring-only with no launcher.
 
 **Install hint** - the official install command and docs URL printed for a
 missing agent binary. Detection never installs agents.
@@ -114,9 +120,14 @@ takes precedence over any credential until unset. The CI escape hatch.
 encrypted file, or protected plaintext file. Selected by availability, never
 silently downgraded to plaintext.
 
-**Session key** - the key an adapter bakes into agent config at `on` time:
-the active session's resolved key. Agent flows never prompt for a raw key -
-pasting belongs to `aiand login`.
+**Session key** - the active session's resolved key, baked into agent config
+at `on` time and printed raw by `key export`. Agent flows never prompt for a
+raw key - pasting belongs to `aiand login`.
+
+**Rebake** - the sign-in follow-through: storing a fresh credential swaps the
+key literal in every active agent config. Launcher-only agents and adapters
+with no plaintext key to swap (cursor, vscode, prime) are skipped, with a
+re-run-`on` note where one applies. _Avoid:_ rewire, resync.
 
 ## Models
 
@@ -127,9 +138,21 @@ config. _Avoid:_ model list.
 **Slot** - a Claude Code model tier (opus, sonnet, haiku) mapped to a catalog
 id at `on` time; overridable with per-slot flags.
 
+**Vision** - whether a catalog model accepts image input (`vision`) or text
+only (`text-only`). Wiring a text-only model prints a one-line warning;
+`status` labels the routed model the same way.
+
+**Context tag** - the trailing `[1m]` Claude Code reads to size its context
+window. Models with a 1M-token window are written tagged and stripped before
+the request; without it a 1M model is treated as 200K.
+
+**Native** - the literal `native` passed as `--model` or a slot flag to leave
+that slot unpinned, so the agent's own default wins instead of a gateway
+model.
+
 ## Sources of truth
 
-- Locked product decisions (Q1-Q8): `aiand-init-prd.md`.
-- Implementation plan: `aiand-agent-setup-plan.md`.
+- Product surface: `README.md`; shipped decisions: `CHANGELOG.md`.
+- Agent matrix: `src/agents/registry.ts`, one adapter per agent.
 - ADRs: none yet - create `docs/adr/` when a decision is load-bearing.
 - This file is the domain model; update it as terms crystallise.
