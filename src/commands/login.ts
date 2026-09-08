@@ -3,7 +3,7 @@ import { out, err, style } from "../cli/output.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
 import { CliError } from "../cli/errors.js";
 import { loadCredential, resolveProfile } from "../config.js";
-import { deviceLogin, pasteLogin } from "../auth/flow.js";
+import { browserLogin, deviceLogin, pasteLogin } from "../auth/flow.js";
 
 export const help = `${style.bold("aiand login")} -- sign in with a browser approval, or store a key you already have
 
@@ -13,13 +13,13 @@ Usage
 Options
   --base-url <url>    point at a different API endpoint
   --profile <name>    store the session under this profile
-  --no-browser        print the URL instead of opening it
+  --no-browser        use a device code approved from any browser instead of opening one
   --force             sign in again even if this profile already has a session
   --paste             paste an existing ai& API key (masked input)
   --api-key <sk-...>  store a key passed on the command line
   --with-token        read the key from stdin (aiand login --with-token < key.txt)
 
-The default path mints an org-scoped API key via a browser approval. Paste paths
+The default path opens your browser and signs in. Paste paths
 validate the key against the API first; a pasted key is never rotated or revoked
 by this CLI.`;
 
@@ -64,6 +64,14 @@ export async function run(argv: string[]): Promise<void> {
       key: str(parsed, "api-key"),
       fromStdin: bool(parsed, "with-token"),
       interactive: bool(parsed, "paste"),
+      json: bool(parsed, "json"),
+    });
+  }
+
+  if (isInteractive() && !bool(parsed, "no-browser")) {
+    return browserLogin({
+      profile: profile.name,
+      noBrowser: bool(parsed, "no-browser"),
       json: bool(parsed, "json"),
     });
   }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { createKeyParser, promptCheckbox, KEY } from "../dist/cli/select.js";
+import { createKeyParser, promptCheckbox, promptSelect, KEY } from "../dist/cli/select.js";
 
 /**
  * A PassThrough-style fake input: a real EventEmitter that emits "data" and
@@ -125,4 +125,76 @@ test("promptCheckbox: non-TTY input throws CliError instead of hanging", async (
     promptCheckbox({ message: "Pick", choices: [{ value: "a", label: "A" }], input }),
     (err) => err && err.name === "CliError"
   );
+});
+
+// --- promptSelect ------------------------------------------------------------
+
+test("promptSelect: plain Enter returns the first choice and writes the summary", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptSelect({
+    message: "Which org?",
+    choices: [
+      { value: "org_1", label: "Acme" },
+      { value: "org_2", label: "Globex" },
+    ],
+    input,
+    output,
+  });
+  input.send(KEY.ENTER_CR);
+  assert.equal(await promise, "org_1");
+  assert.match(output.text, /✓.*Which org\?.*Acme/);
+});
+
+test("promptSelect: DOWN then Enter returns the second choice", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptSelect({
+    message: "Which org?",
+    choices: [
+      { value: "org_1", label: "Acme" },
+      { value: "org_2", label: "Globex" },
+    ],
+    input,
+    output,
+  });
+  input.send(KEY.DOWN);
+  input.send(KEY.ENTER_CR);
+  assert.equal(await promise, "org_2");
+  assert.match(output.text, /✓.*Which org\?.*Globex/);
+});
+
+test("promptSelect: Esc returns null", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptSelect({
+    message: "Which org?",
+    choices: [{ value: "org_1", label: "Acme" }],
+    input,
+    output,
+  });
+  input.send(KEY.ESC);
+  assert.equal(await promise, null);
+});
+
+test("promptSelect: initial preselects the matching row", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptSelect({
+    message: "Which org?",
+    choices: [
+      { value: "org_1", label: "Acme" },
+      { value: "org_2", label: "Globex" },
+    ],
+    initial: "org_2",
+    input,
+    output,
+  });
+  input.send(KEY.ENTER_CR);
+  assert.equal(await promise, "org_2");
+});
+
+test("promptSelect: empty choices returns null without prompting", async () => {
+  const input = new FakeInput({ tty: false });
+  assert.equal(await promptSelect({ message: "Pick", choices: [], input }), null);
 });

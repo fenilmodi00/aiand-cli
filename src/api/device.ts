@@ -1,7 +1,7 @@
 import { ApiError, CliError } from "../cli/errors.js";
 import { publicRequest } from "./client.js";
 
-const CLIENT_ID = "aiand-cli";
+export const CLIENT_ID = "aiand-cli";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 export type DeviceCodeResponse = {
@@ -19,6 +19,7 @@ export type TokenResponse = {
   refresh_token: string;
   token_type: string;
   expires_in: number;
+  org?: { id: string; name: string };
 };
 
 type TokenErrorBody = { error: string; error_description?: string };
@@ -30,8 +31,13 @@ function devicePost(url: string, body: unknown): Promise<Response> {
   });
 }
 
-export async function startDeviceAuthorization(authUrl: string): Promise<DeviceCodeResponse> {
-  const response = await devicePost(`${authUrl}/auth/device/code`, { client_id: CLIENT_ID });
+export async function startDeviceAuthorization(
+  authUrl: string,
+  opts: { keyName?: string } = {}
+): Promise<DeviceCodeResponse> {
+  const body: Record<string, string> = { client_id: CLIENT_ID };
+  if (opts.keyName) body.key_name = opts.keyName;
+  const response = await devicePost(`${authUrl}/auth/device/code`, body);
   if (!response.ok) {
     throw new ApiError(response.status, "Could not start a device login.", {
       hint: `${authUrl} did not accept the request (HTTP ${response.status}).`,

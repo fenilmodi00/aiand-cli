@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test, { afterEach, beforeEach, describe } from "node:test";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { KEY } from "../dist/cli/select.js";
 
 // Behavioral tests through the real src/auth flow modules (dist build). The
 // device/API seams live behind a localhost stub HTTP server: the profile's
@@ -16,7 +18,17 @@ const config = await import("../dist/config.js");
 
 /** The stub auth/API server: identity endpoints plus device-login endpoints. */
 function stubServer() {
-  const state = { revocations: [] };
+  const state = {
+    revocations: [],
+    /** /api/orgs payload; tests set two orgs to reach the picker. */
+    orgs: [],
+    /** org minted into the device-code grant; null omits it. */
+    tokenOrg: null,
+    /** last key_name seen on /auth/device/code. */
+    keyName: null,
+    /** /auth/authorize behavior: "redirect" 302s, "missing" 404s. */
+    authorizeMode: "redirect",
+  };
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://stub");
     const reply = (status, body) => {
@@ -32,16 +44,36 @@ function stubServer() {
       }
       return reply(200, { id: "u1", email: "dev@example.com" });
     }
-    if (url.pathname === "/api/orgs") return reply(200, []);
+    if (url.pathname === "/api/orgs") return reply(200, state.orgs);
+    if (url.pathname === "/auth/authorize") {
+      if (state.authorizeMode === "missing") return reply(404, { error: "not found" });
+      const redirectUri = url.searchParams.get("redirect_uri");
+      const requestState = url.searchParams.get("state");
+      // The paramless GET is the CLI's pre-flight probe; only real authorize
+      // requests (which carry state) get the 302.
+      if (!requestState || !redirectUri) return reply(400, { error: "authorize needs params" });
+      const target = new URL(redirectUri);
+      target.searchParams.set("code", "ac_123");
+      target.searchParams.set("state", requestState);
+      res.writeHead(302, { Location: target.toString() });
+      res.end();
+      return;
+    }
     if (url.pathname === "/auth/device/code") {
-      return reply(200, {
-        device_code: "dc",
-        user_code: "BCDF-GHJK",
-        verification_uri: "/auth/device?user_code=BCDF-GHJK",
-        verification_uri_complete: "",
-        expires_in: 600,
-        interval: 5,
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        state.keyName = JSON.parse(raw || "{}").key_name ?? null;
+        reply(200, {
+          device_code: "dc",
+          user_code: "BCDF-GHJK",
+          verification_uri: "/auth/device?user_code=BCDF-GHJK",
+          verification_uri_complete: "",
+          expires_in: 600,
+          interval: 5,
+        });
       });
+      return;
     }
     if (url.pathname === "/auth/device/logout") {
       let raw = "";
@@ -59,12 +91,22 @@ function stubServer() {
       req.on("end", () => {
         if (res.writableEnded) return;
         const params = JSON.parse(raw || "{}");
+        if (params.grant_type === "authorization_code") {
+          return reply(200, {
+            access_token: "sk-minted",
+            refresh_token: "rt-minted",
+            token_type: "Bearer",
+            expires_in: 2592000,
+            org: { id: "org_2", name: "Second" },
+          });
+        }
         if (params.grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
           return reply(200, {
             access_token: "sk-minted",
             refresh_token: "rt-minted",
             token_type: "Bearer",
             expires_in: 2592000,
+            ...(state.tokenOrg ? { org: state.tokenOrg } : {}),
           });
         }
         reply(400, { error: "unsupported_grant_type" });
@@ -311,5 +353,176 @@ describe("pasteLogin validation (real modules, stub server)", () => {
       captured.restore();
     }
     assert.equal(await config.loadCredential("default"), null);
+  });
+});
+
+/**
+ * Fake prompt streams copied from test/select.test.mjs: a real EventEmitter
+ * the prompt drives, so the multi-org picker runs its genuine keypress path
+ * with no real terminal.
+ */
+class FakeInput extends EventEmitter {
+  constructor({ tty = true } = {}) {
+    super();
+    this.tty = tty;
+    this.raw = false;
+  }
+  get isTTY() {
+    return this.tty;
+  }
+  setRawMode(mode) {
+    this.raw = mode;
+  }
+  resume() {}
+  pause() {}
+  setEncoding() {}
+  send(seq) {
+    this.emit("data", seq);
+  }
+  end() {
+    this.emit("end");
+  }
+}
+
+class FakeOutput {
+  constructor() {
+    this.text = "";
+  }
+  write(chunk) {
+    this.text += chunk;
+  }
+}
+
+/** Stub the real TTYs so isInteractive() is true without a terminal. */
+function stubTTY() {
+  const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+  const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  return () => {
+    if (stdinDesc) Object.defineProperty(process.stdin, "isTTY", stdinDesc);
+    else delete process.stdin.isTTY;
+    if (stdoutDesc) Object.defineProperty(process.stdout, "isTTY", stdoutDesc);
+    else delete process.stdout.isTTY;
+  };
+}
+
+/** Fake opener mirroring test/browser-flow.test.mjs: follow the 302 into loopback. */
+function browserOpener() {
+  return async (url) => {
+    const res = await fetch(url, { redirect: "manual" });
+    assert.equal(res.status, 302);
+    await fetch(res.headers.get("location"));
+    return true;
+  };
+}
+
+/** Wait until the picker is listening, then drive DOWN + ENTER through it.
+ * deviceLogin polls ~5s before the prompt appears, so this must out-wait it
+ * and never send blindly: keys emitted with no listener are lost forever. */
+async function pickSecondRow(input) {
+  for (let i = 0; i < 3000 && input.listenerCount("data") === 0; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(input.listenerCount("data") > 0, "org picker never started listening");
+  input.send(KEY.DOWN);
+  input.send(KEY.ENTER_CR);
+}
+
+const TWO_ORGS = [
+  { id: "org_1", name: "First" },
+  { id: "org_2", name: "Second" },
+];
+
+describe("org selection on sign-in (real modules, stub server)", () => {
+  test("(a) device login stores the minted-key org and labels the key", async () => {
+    state.tokenOrg = { id: "org_2", name: "Second" };
+    const captured = captureOutput();
+    try {
+      await flow.deviceLogin({ profile: "default", noBrowser: true });
+      const cred = await config.loadCredential("default");
+      assert.equal(cred.org.name, "Second");
+      assert.match(state.keyName ?? "", /^aiand@/);
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test("(b) two orgs without a minted org picks the row chosen interactively", async () => {
+    state.orgs = [...TWO_ORGS];
+    const restoreTTY = stubTTY();
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const captured = captureOutput();
+    try {
+      const login = flow.deviceLogin({ profile: "default", noBrowser: true, input, output });
+      await pickSecondRow(input);
+      await login;
+      const cred = await config.loadCredential("default");
+      assert.equal(cred.org.id, "org_2");
+    } finally {
+      captured.restore();
+      restoreTTY();
+    }
+  });
+
+  test("(c) two orgs non-interactively keeps orgs[0] with a stderr note", async () => {
+    state.orgs = [...TWO_ORGS];
+    const captured = captureOutput();
+    try {
+      await flow.deviceLogin({ profile: "default", noBrowser: true });
+      const cred = await config.loadCredential("default");
+      assert.equal(cred.org.id, "org_1");
+      assert.match(captured.log.err.join(""), /multiple organizations/);
+    } finally {
+      captured.restore();
+    }
+  });
+});
+
+describe("browserLogin (real modules, stub server)", () => {
+  test("(d) end-to-end sign-in stores the minted key with origin device", async () => {
+    state.orgs = [...TWO_ORGS];
+    const captured = captureOutput();
+    try {
+      await flow.browserLogin({ profile: "default", open: browserOpener() });
+      const cred = await config.loadCredential("default");
+      assert.ok(captured.log.out.join("").includes("Signed in."));
+      assert.equal(cred.access_token, "sk-minted");
+      assert.equal(cred.origin, "device");
+      assert.equal(cred.org.name, "Second");
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test("(e) a 404 authorize page falls back silently to the device flow", async () => {
+    state.authorizeMode = "missing";
+    state.tokenOrg = { id: "org_2", name: "Second" };
+    const captured = captureOutput();
+    try {
+      await flow.browserLogin({ profile: "default", noBrowser: true, open: browserOpener() });
+      const cred = await config.loadCredential("default");
+      assert.ok(captured.log.out.join("").includes("Signed in."));
+      assert.equal(cred.access_token, "sk-minted");
+      assert.ok(!captured.log.err.join("").includes("didn't complete"));
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test("(f) probeIdentity prefers the cached org when the orgs list has it", async () => {
+    await config.saveCredential("default", {
+      access_token: "sk-minted",
+      refresh_token: "rt-minted",
+      expires_at: Math.floor(Date.now() / 1000) + 2592000,
+      origin: "device",
+      storage: "plaintext",
+      user: { id: "u1", email: "dev@example.com" },
+      org: { id: "org_2", name: "Second" },
+    });
+    state.orgs = [...TWO_ORGS];
+    const identity = await flow.probeIdentity("default");
+    assert.equal(identity.org.id, "org_2");
   });
 });

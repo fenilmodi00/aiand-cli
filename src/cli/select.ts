@@ -361,3 +361,68 @@ export async function promptCheckbox({
   summaryLine(output, message, names.join(", "));
   return value;
 }
+
+/**
+ * Single-select over labeled choices. Arrow keys move, Enter confirms (the
+ * picked choice's value), Esc/q cancels (null). An empty choices array
+ * returns null without entering the prompt loop.
+ */
+export async function promptSelect({
+  message,
+  choices,
+  initial,
+  pageSize = 10,
+  input,
+  output = process.stdout,
+}: {
+  message: string;
+  choices: Choice[];
+  initial?: string;
+  pageSize?: number;
+  input?: PromptInput;
+  output?: PromptOutput;
+}): Promise<string | null> {
+  if (choices.length === 0) {
+    return null;
+  }
+  let index = Math.max(
+    0,
+    choices.findIndex((choice) => choice.value === initial)
+  );
+
+  const value = await runPrompt<string | null>({
+    input,
+    output,
+    renderLines: () => [
+      style.bold(`${POINTER} ${message}`),
+      ...renderRows({
+        items: choices,
+        index,
+        pageSize,
+        renderRow: (choice, active) =>
+          active
+            ? `${style.cyan(POINTER)} ${choice.label}`
+            : `  ${choice.label}`,
+      }),
+      style.dim("Enter confirm · Esc cancel"),
+    ],
+    onKey: (seq) => {
+      if (seq === KEY.UP) {
+        index = (index - 1 + choices.length) % choices.length;
+      } else if (seq === KEY.DOWN) {
+        index = (index + 1) % choices.length;
+      } else if (isEnter(seq)) {
+        return { done: true, value: choices[index]!.value };
+      } else if (seq === KEY.ESC || seq === "q") {
+        return { done: true, value: null };
+      }
+      return undefined;
+    },
+  });
+
+  if (value === null) {
+    return null;
+  }
+  summaryLine(output, message, choices[index]!.label);
+  return value;
+}

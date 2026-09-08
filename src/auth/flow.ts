@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { CliError, NotLoggedInError } from "../cli/errors.js";
 import { openSession, type Session } from "../api/client.js";
 import {
@@ -7,11 +8,13 @@ import {
   type AccountOrg,
   type AccountUser,
 } from "../api/account.js";
+import { signInViaLocalhostCallback, type BrowserFlowResult } from "./browser.js";
 import * as device from "../api/device.js";
 import { readSecret, confirm, isInteractive } from "../cli/prompt.js";
 import { readStdin } from "../cli/stdin.js";
 import { copyToClipboard } from "../cli/clipboard.js";
 import { openBrowserAware } from "../cli/browser.js";
+import { promptSelect, type PromptInput, type PromptOutput } from "../cli/select.js";
 import { isRemoteContext } from "../cli/remote.js";
 import { link } from "../cli/links.js";
 import { err, fields, out, spinner, style } from "../cli/output.js";
@@ -108,7 +111,8 @@ export async function probeIdentity(
     } else {
       orgs = await listOrgs(session);
       user = await getUser(session);
-      org = orgs[0] ?? null;
+      const cachedOrg = cached?.org;
+      org = cachedOrg && orgs.some((o) => o.id === cachedOrg.id) ? cachedOrg : (orgs[0] ?? null);
     }
   } catch (error) {
     if (!(error instanceof NotLoggedInError)) throw error;
@@ -167,6 +171,13 @@ export type DeviceLoginOptions = {
   profile?: string;
   noBrowser?: boolean;
   json?: boolean;
+  /** Internal test seam: prompt streams for the multi-org picker. */
+  input?: PromptInput;
+  output?: PromptOutput;
+  /** Internal: display name for the minted key; defaults to aiand@<hostname>. */
+  keyName?: string;
+  /** Internal test seam: opener injected into the browser sign-in. */
+  open?: (url: string) => Promise<boolean>;
 };
 
 /** Mint an org-scoped API key via a browser device-code approval, persist the
@@ -174,7 +185,8 @@ export type DeviceLoginOptions = {
 export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> {
   const profile = resolveProfile(opts.profile);
 
-  const deviceStart = await startDeviceAuthorization(profile.authUrl);
+  const keyName = opts.keyName ?? `aiand@${hostname() || "cli"}`;
+  const deviceStart = await startDeviceAuthorization(profile.authUrl, { keyName });
   const url = verificationUrl(profile.authUrl, deviceStart);
 
   const remote = isRemoteContext();
@@ -212,6 +224,69 @@ export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> 
     process.removeListener("SIGINT", onInterrupt);
   }
 
+  await completeSignIn(profile, tokens, opts);
+}
+
+/** Default interactive sign-in: browser authorization-code + PKCE with a
+ * device-code fallback when the server or terminal cannot do the browser
+ * half. Minted keys keep origin "device" either way. */
+export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void> {
+  const profile = resolveProfile(opts.profile);
+  const keyName = opts.keyName ?? `aiand@${hostname() || "cli"}`;
+
+  const controller = new AbortController();
+  const onInterrupt = () => controller.abort();
+  process.once("SIGINT", onInterrupt);
+  let result: BrowserFlowResult;
+  try {
+    result = await signInViaLocalhostCallback({
+      authUrl: profile.authUrl,
+      keyName,
+      open: opts.open,
+      signal: controller.signal,
+      onStatus: (line) => err(style.dim(line)),
+    });
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
+  }
+  if (!result.ok) {
+    // Ctrl-C after a successful callback still completes the sign-in; only a
+    // failed wait is a cancellation.
+    if (controller.signal.aborted) throw new CliError("Login cancelled.", { exitCode: 130 });
+    if (result.fatal) throw new CliError(result.failure, { exitCode: 3 });
+    if (!result.unsupported) {
+      err(style.dim(`Browser sign-in didn't complete (${result.failure}) — continuing with a device code.`));
+    }
+    return deviceLogin({ ...opts, keyName });
+  }
+  await completeSignIn(profile, result.tokens, opts);
+}
+
+async function pickOrg(
+  orgs: AccountOrg[],
+  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput }
+): Promise<AccountOrg | null> {
+  if (orgs.length === 1) return orgs[0]!;
+  if (orgs.length === 0) return null;
+  if (!opts.json && isInteractive()) {
+    const picked = await promptSelect({
+      message: "Which organization should this machine use?",
+      choices: orgs.map((o) => ({ value: o.id, label: o.name })),
+      input: opts.input,
+      output: opts.output,
+    });
+    if (picked === null) throw new CliError("Login cancelled.", { exitCode: 130 });
+    return orgs.find((o) => o.id === picked) ?? orgs[0]!;
+  }
+  err(style.dim(`This account has multiple organizations; using ${orgs[0]!.name}.`));
+  return orgs[0]!;
+}
+
+async function completeSignIn(
+  profile: ResolvedProfile,
+  tokens: device.TokenResponse,
+  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput }
+): Promise<void> {
   await saveCredential(profile.name, {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
@@ -223,7 +298,7 @@ export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> 
 
   const session = await openSession(resolveProfile(profile.name));
   const [user, orgs] = await Promise.all([getUser(session), listOrgs(session)]);
-  const org = orgs[0];
+  const org = tokens.org ?? (await pickOrg(orgs, opts));
   const stored = await loadCredential(profile.name);
   if (!stored) throw new CliError("Session vanished while signing in.");
   await saveCredential(profile.name, {

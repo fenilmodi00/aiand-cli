@@ -96,8 +96,13 @@ pair.
 **Session** - an authenticated request context opened from the env key or the
 active profile's credential. Every API call goes through one.
 
-**Device login** - the default sign-in: the OAuth device authorization grant
-against the gateway, which mints an org-scoped key for this machine.
+**Browser sign-in** - the default interactive sign-in: authorization code
++ PKCE against the gateway, redirect caught on a loopback port. Falls back
+to device login on remote/headless terminals.
+
+**Device login** - the fallback sign-in for remote and non-interactive
+terminals: the OAuth device authorization grant against the gateway, which
+mints an org-scoped key for this machine.
 
 **Minted key** - a key this CLI itself created (device login). Logout may
 revoke a minted key server-side. _Avoid:_ generated key.
