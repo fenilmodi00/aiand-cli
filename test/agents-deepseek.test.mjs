@@ -284,7 +284,6 @@ describe("deepseek probe", () => {
       const p = await deepseekAdapter.probe();
       assert.equal(p.active, false);
       assert.equal(p.model, null);
-      assert.equal(p.foreignTool, null);
     } finally {
       if (saved === undefined) delete process.env.DSH_HOME;
       else process.env.DSH_HOME = saved;

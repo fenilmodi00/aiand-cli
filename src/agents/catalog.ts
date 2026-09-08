@@ -88,6 +88,22 @@ export async function getCatalog(baseUrl: string): Promise<Model[]> {
 }
 
 /**
+ * Refuse a model id that is not in the live catalog. `flag` is the CLI flag
+ * named in the error (`--model`, `--opus`, …). Callers that accept the
+ * literal `"native"` escape hatch must skip this check themselves.
+ */
+export function validateCatalogModel(
+  catalog: Model[],
+  id: string,
+  flag = "--model"
+): void {
+  if (catalog.some((entry) => entry.id === id)) return;
+  throw new CliError(`${flag} "${id}" is not in the catalog.`, {
+    hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
+  });
+}
+
+/**
  * Pick the model written into agent configs: an explicit profile model wins
  * when it still exists in the catalog, then the curated default order, then
  * whatever the gateway lists first.

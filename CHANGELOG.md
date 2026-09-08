@@ -107,7 +107,7 @@ breaking changes while the command surface settles.
   (`--all`, `--off`, interactive picker); detection never installs anything,
   it prints the official install command instead.
 - `aiand status` — sign-in state, key source, storage tier, and every
-  registered agent's on/off/foreign state from its real config files.
+  registered agent's on/off state from its real config files.
 - `aiand login --paste` / `--api-key` / `--with-token` — sign in with an
   existing console key (validated against the API before storing). Pasted
   keys are never revoked by `aiand logout`; device-minted keys are.

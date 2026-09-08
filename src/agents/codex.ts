@@ -4,10 +4,9 @@ import { join } from "node:path";
 import type { Model } from "../api/models.js";
 import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { assertIdeStopped, CHATGPT_DESKTOP_SPEC } from "./quit-guard.js";
 import { resolveDefault } from "./catalog.js";
-import { readTextIfExists } from "./managed-file.js";
+import { readTextIfExists, swapKeyInConfig } from "./managed-file.js";
 import { applyFirstRunDefaults, patchRouting, tomlString } from "./toml.js";
 import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
@@ -144,11 +143,10 @@ export const codexAdapter: AgentAdapter = {
   async probe(): Promise<ProbeResult> {
     const configText = await readTextIfExists(codexConfigFile());
     if (configText.trim() === "") {
-      return { active: false, foreignTool: null, model: null };
+      return { active: false, model: null };
     }
     const { active, model } = inspectConfig(configText);
-    const foreignTool = await detectForeign([codexConfigFile()]);
-    return { active, foreignTool, model };
+    return { active, model };
   },
 
   async sessionLaunch(input: SessionLaunchInput) {
@@ -214,27 +212,53 @@ export const codexAdapter: AgentAdapter = {
    */
   async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
     const file = codexConfigFile();
-    const raw = await readTextIfExists(file);
-    if (!raw.trim()) return;
-    const lines = raw.split("\n");
-    let insideAiand = false;
-    let changed = false;
     const keyLine = /^(\s*)experimental_bearer_token\s*=(.*)$/;
-    const next = lines.map((line) => {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-        insideAiand = trimmed === "[model_providers.aiand]";
-        return line;
-      }
-      if (!insideAiand) return line;
-      const match = keyLine.exec(line);
-      if (!match) return line;
-      const newValue = tomlString(input.apiKey);
-      if (line.trimEnd() === `${match[1]}experimental_bearer_token = ${newValue}`) return line;
-      changed = true;
-      return `${match[1]}experimental_bearer_token = ${newValue}`;
+    await swapKeyInConfig({
+      apiKey: input.apiKey,
+      read: async () => {
+        const raw = await readTextIfExists(file);
+        return raw.trim() ? raw : null;
+      },
+      currentKey: (raw) => {
+        const lines = raw.split("\n");
+        let insideAiand = false;
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            insideAiand = trimmed === "[model_providers.aiand]";
+            continue;
+          }
+          if (!insideAiand) continue;
+          const match = keyLine.exec(line);
+          if (!match) continue;
+          try {
+            return JSON.parse(match[2]!.trim());
+          } catch {
+            return match[2]!.trim();
+          }
+        }
+        return undefined;
+      },
+      apply: (raw, apiKey) => {
+        const lines = raw.split("\n");
+        let insideAiand = false;
+        const newValue = tomlString(apiKey);
+        const next = lines.map((line) => {
+          const trimmed = line.trim();
+          if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            insideAiand = trimmed === "[model_providers.aiand]";
+            return line;
+          }
+          if (!insideAiand) return line;
+          const match = keyLine.exec(line);
+          if (!match) return line;
+          return `${match[1]}experimental_bearer_token = ${newValue}`;
+        });
+        return `${next.join("\n")}\n`;
+      },
+      write: async (next) => {
+        await writeFileAtomic(file, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
+      },
     });
-    if (!changed) return;
-    await writeFileAtomic(file, `${next.join("\n")}\n`, { mode: 0o600 });
   },
 };

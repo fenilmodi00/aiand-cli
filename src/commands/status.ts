@@ -64,7 +64,6 @@ function printAgents(agents: AgentStatusResult[]): void {
   table(agents, [
     { header: "agent", value: (a) => a.agent },
     { header: "state", value: (a) => stateLabel(a.state) },
-    { header: "foreign", value: (a) => a.foreign ?? "—" },
     { header: "model", value: (a) => a.model ?? "—" },
     { header: "binary", value: (a) => a.installed ? (a.binary ?? "yes") : style.dim(`install: ${installCmd(a)}`) },
   ]);
@@ -79,8 +78,6 @@ function stateLabel(state: AgentStatusResult["state"]): string {
   switch (state) {
     case "on":
       return style.green("on");
-    case "foreign":
-      return style.yellow("foreign");
     case "off":
       return style.dim("off");
   }

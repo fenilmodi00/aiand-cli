@@ -3,9 +3,8 @@ import { join } from "node:path";
 
 import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { resolveDefault, withContextTag } from "./catalog.js";
-import { deepEqual, readJsonOrEmpty } from "./managed-file.js";
+import { deepEqual, readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
@@ -82,7 +81,6 @@ async function probe(): Promise<ProbeResult> {
     // Truth from the real file: Claude Code can still route even with an empty
     // or legacy model var, so the model is whatever the env block says.
     model: typeof env?.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL : null,
-    foreignTool: await detectForeign(managedFiles()),
   };
 }
 
@@ -201,19 +199,30 @@ const CLAUDE_INSTALL = INSTALL_HINTS.claude!;
  */
 async function refreshKey(input: { apiKey: string; home: string }): Promise<void> {
   const settingsPath = join(input.home, ".claude", "settings.json");
-  const current = await readJsonOrEmpty(settingsPath, "claude");
-  const env =
-    current.env && typeof current.env === "object" && !Array.isArray(current.env)
-      ? (current.env as Record<string, unknown>)
-      : {};
-  if (env.ANTHROPIC_AUTH_TOKEN === input.apiKey) return;
-  const next = {
-    ...current,
-    env: { ...env, ANTHROPIC_BASE_URL: CLAUDE_BASE_URL, ANTHROPIC_AUTH_TOKEN: input.apiKey },
-  };
-  if (!deepEqual(current, next)) {
-    await writeFileAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  }
+  await swapKeyInConfig({
+    apiKey: input.apiKey,
+    read: () => readJsonOrEmpty(settingsPath, "claude"),
+    currentKey: (current) => {
+      const env =
+        current.env && typeof current.env === "object" && !Array.isArray(current.env)
+          ? (current.env as Record<string, unknown>)
+          : {};
+      return env.ANTHROPIC_AUTH_TOKEN;
+    },
+    apply: (current, apiKey) => {
+      const env =
+        current.env && typeof current.env === "object" && !Array.isArray(current.env)
+          ? (current.env as Record<string, unknown>)
+          : {};
+      return {
+        ...current,
+        env: { ...env, ANTHROPIC_BASE_URL: CLAUDE_BASE_URL, ANTHROPIC_AUTH_TOKEN: apiKey },
+      };
+    },
+    write: async (next) => {
+      await writeFileAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+    },
+  });
 }
 
 export const claudeAdapter: AgentAdapter = {

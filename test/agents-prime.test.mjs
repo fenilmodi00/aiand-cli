@@ -12,8 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { foreignMarkerFixtures } from "../dist/agents/foreign.js";
-
 let dir;
 const originalEnv = { ...process.env };
 
@@ -131,7 +129,6 @@ describe("prime probe", () => {
     const active = await primeAdapter.probe();
     assert.equal(active.active, true);
     assert.equal(active.model, null);
-    assert.equal(active.foreignTool, null);
   });
 
   test("inactive when models.json has a non-gateway base url", async () => {
@@ -142,7 +139,6 @@ describe("prime probe", () => {
     );
     const res = await primeAdapter.probe();
     assert.equal(res.active, false);
-    assert.equal(res.foreignTool, null);
   });
 
   test("inactive on a broken models.json (probe never crashes)", async () => {
@@ -150,28 +146,6 @@ describe("prime probe", () => {
     writeFileSync(modelsPath(), "{ not valid json");
     const res = await primeAdapter.probe();
     assert.equal(res.active, false);
-    assert.equal(res.foreignTool, null);
-  });
-});
-
-describe("prime foreign detection", () => {
-  test("planted foreign markers in models.json report foreignTool before enable clears them", async () => {
-    // Plant another setup tool's signature INTO our models.json (the file
-    // probe reads). detectForeign scans managedFiles() and must surface it.
-    const foreign = foreignMarkerFixtures().codexConfig;
-    mkdirSync(primeDir(), { recursive: true });
-    writeFileSync(modelsPath(), foreign);
-
-    const res = await primeAdapter.probe();
-    assert.equal(res.active, false);
-    assert.ok(res.foreignTool, "foreign tool detected before enable");
-
-    // A normal enable rewrites models.json with our clean bytes; the foreign
-    // signature is gone and probe reports none.
-    await primeAdapter.enable(enableInput());
-    const clean = await primeAdapter.probe();
-    assert.equal(clean.active, true);
-    assert.equal(clean.foreignTool, null);
   });
 });
 

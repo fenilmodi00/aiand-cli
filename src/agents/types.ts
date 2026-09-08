@@ -1,13 +1,11 @@
 import type { Model } from "../api/models.js";
 
 export type Verb = "on" | "off" | "status";
-export type ForeignTool = string; // display id of a foreign config writer, assembled at runtime by foreign.ts — never a literal here (zero-mention rule)
 
 export type DetectResult = { installed: boolean; path: string | null };
 
 export type ProbeResult = {
   active: boolean; // aiand routing live, ground truth from real files
-  foreignTool: ForeignTool | null;
   model: string | null;
 };
 
@@ -52,11 +50,10 @@ export type AgentAdapter = {
   probe(): Promise<ProbeResult>; // read real config, no flags trusted
   enable(input: EnableInput): Promise<{ model: string; filesWritten: string[] }>;
   enableGuard?(opts: GuardOptions): Promise<void>;
-  // ^ Runs inside agentOn, after the foreign-config refusal but BEFORE the
-  // snapshot + enable(). Adapters whose target app holds config in memory
-  // (ChatGPT Desktop, Cursor IDE) refuse the write while the app is running
-  // because it would clobber theirs; --force (parsed by the command layer)
-  // escapes every guard.
+  // ^ Runs inside agentOn, before the snapshot + enable(). Adapters whose
+  // target app holds config in memory (ChatGPT Desktop, Cursor IDE) refuse
+  // the write while the app is running because it would clobber theirs;
+  // --force (parsed by the command layer) escapes every guard.
   offGuard?(opts: GuardOptions): Promise<void>;
   // ^ Same refusal for `off`: the app rewrites its config file from memory on
   // exit, which would clobber the byte-for-byte restore. Only adapters whose

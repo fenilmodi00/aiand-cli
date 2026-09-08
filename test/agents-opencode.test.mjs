@@ -29,7 +29,6 @@ after(() => {
 const { opencodeAdapter, buildOpencodeConfig } = await import("../dist/agents/opencode.js");
 const { CliError } = await import("../dist/cli/errors.js");
 const { snapshotFiles, restoreSnapshot, hasSnapshot } = await import("../dist/agents/snapshot.js");
-const { foreignMarkerFixtures } = await import("../dist/agents/foreign.js");
 
 const home = () => process.env.AIAND_HOME;
 const configPath = () => join(home(), ".config", "opencode", "opencode.json");
@@ -101,7 +100,6 @@ describe("opencode adapter", () => {
     const result = await opencodeAdapter.probe();
     assert.equal(result.active, false);
     assert.equal(result.model, null);
-    assert.equal(result.foreignTool, null);
   });
 
   test("probe(): garbage text is inactive, no throw", async () => {
@@ -110,7 +108,6 @@ describe("opencode adapter", () => {
     const result = await opencodeAdapter.probe();
     assert.equal(result.active, false);
     assert.equal(result.model, null);
-    assert.equal(result.foreignTool, null);
   });
 
   test("probe(): active when aiand baseURL matches; model extracted", async () => {
@@ -126,10 +123,9 @@ describe("opencode adapter", () => {
     const result = await opencodeAdapter.probe();
     assert.equal(result.active, true);
     assert.equal(result.model, "zai-org/glm-5.3");
-    assert.equal(result.foreignTool, null);
   });
 
-  test("probe(): active but foreign model ref → no model; foreign config → foreignTool", async () => {
+  test("probe(): active but foreign model ref → no model", async () => {
     // active routing but a model ref that isn't ours
     writeFileSync(
       configPath(),
@@ -143,24 +139,6 @@ describe("opencode adapter", () => {
     const foreign = await opencodeAdapter.probe();
     assert.equal(foreign.active, true);
     assert.equal(foreign.model, null);
-
-    // foreign-marked config (assemble hostname so no literal appears in
-    // source; hygiene test greps test/ for the brand) → foreignTool reported
-    const fixtures = foreignMarkerFixtures();
-    const foreignSettings = JSON.parse(fixtures[Object.keys(fixtures)[0]]);
-    const foreignHost = foreignSettings.env.ANTHROPIC_BASE_URL.replace(/^https?:\/\//, "").split("/")[0];
-    writeFileSync(
-      configPath(),
-      JSON.stringify({
-        provider: {
-          aiand: { options: { baseURL: `https://${foreignHost}/v1` } },
-        },
-      })
-    );
-    const result = await opencodeAdapter.probe();
-    // A foreign writer's marker must be reported; the label is assembled at
-    // runtime by foreign.ts and cannot be spelled here (hygiene).
-    assert.ok(result.foreignTool);
   });
 
   test("enable(): writes aiand provider with literal key + baseURL, roots, lockdown", async () => {

@@ -44,8 +44,6 @@ const {
   readCursorOpenAiKey,
   cursorHasAiandMarkers,
 } = await import("../dist/agents/cursor.js");
-const { foreignMarkerFixtures } = await import("../dist/agents/foreign.js");
-const { detectForeign } = await import("../dist/agents/foreign.js");
 
 const home = () => process.env.AIAND_HOME;
 
@@ -189,10 +187,10 @@ describe("safestorage encrypt/decrypt", () => {
 
 describe("cursor adapter path helpers", () => {
   test("localStatePath is three dirs above the db", () => {
-    const db = cursorStateDbPath({ home: join(process.env.AIAND_HOME) });
+    const home = join(process.env.AIAND_HOME);
     assert.equal(
-      cursorLocalStatePath(db),
-      join(process.env.AIAND_HOME, ".config", "Cursor", "Local State")
+      cursorLocalStatePath({ home }),
+      join(home, ".config", "Cursor", "Local State")
     );
   });
 
@@ -322,29 +320,6 @@ describe("cursor disable (strip path)", () => {
     assert.equal(await readItemTableValue(p, APPLICATION_USER_KEY), before);
     const blob = await readBlob(p);
     assert.ok(!blob.aiSettings.aiandAddedModels, "no marker created by a no-op disable");
-  });
-});
-
-describe("cursor foreign detection", () => {
-  test("detectForeign on a raw binary state.vscdb may not trip; probe reports truth", async () => {
-    const p = makeDb();
-    // Plant the setup-tool-shaped settings fixture as the ItemTable value, so
-    // the DB's raw bytes literally contain the foreign fragment. Whether
-    // detectForeign's file-read (binary bytes) trips is an empirical fact —
-    // this test asserts whatever holds, without weakening foreign.ts.
-    const [settingsFixture] = Object.values(foreignMarkerFixtures());
-    const db = new DatabaseSync(p);
-    db.prepare("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)").run(
-      APPLICATION_USER_KEY,
-      settingsFixture
-    );
-    db.close();
-
-    const detected = await detectForeign([p]);
-    const probe = await cursorAdapter.probe();
-    // Honest assertion: probe.foreignTool matches the direct detectForeign
-    // result on the same bytes — never a stronger claim.
-    assert.equal(probe.foreignTool, detected);
   });
 });
 

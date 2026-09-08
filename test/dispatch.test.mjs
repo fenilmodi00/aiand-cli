@@ -43,11 +43,10 @@ function makeFixture(home) {
         const cfg = JSON.parse(readFileSync(file(), "utf8"));
         return {
           active: cfg.aiand === true,
-          foreignTool: cfg.foreign ?? null,
           model: cfg.aiand ? cfg.model ?? null : null,
         };
       } catch {
-        return { active: false, foreignTool: null, model: null };
+        return { active: false, model: null };
       }
     },
     enable: async (input) => {
@@ -255,26 +254,6 @@ describe("engine: fixture adapter", () => {
     assert.ok(registry.findAgent("fixture-agent"));
   });
 
-  test("foreign config is refused without --force (non-TTY)", async () => {
-    cleanFixture();
-    plant(JSON.stringify({ foreign: "other-writer" }));
-    await assert.rejects(
-      eng.agentOn(makeFixture(home)),
-      (e) =>
-        e.exitCode === 1 &&
-        e.hint === "Pass --force to overwrite it." &&
-        /manages .* last writer wins/.test(e.message)
-    );
-  });
-
-  test("--force overwrites a foreign config", async () => {
-    cleanFixture();
-    plant(JSON.stringify({ foreign: "other-writer" }));
-    const result = await eng.agentOn(makeFixture(home), { force: true });
-    assert.equal(result.state, "on");
-    assert.equal(JSON.parse(readFileSync(join(home, ".fixture", "config.json"), "utf8")).aiand, true);
-  });
-
   test("off restores byte-identical content", async () => {
     cleanFixture();
     const original = '{"permissions":{"allow":["Bash*"]}}\n';
@@ -308,19 +287,19 @@ describe("engine: fixture adapter", () => {
     assert.equal(off.note, "Already your own config — nothing to turn off.");
   });
 
-  test("status reports on/off/foreign states", async () => {
+  test("status reports on/off states", async () => {
     cleanFixture();
     // off (no file)
     assert.equal((await eng.agentStatus(makeFixture(home))).state, "off");
 
-    // foreign
-    plant(JSON.stringify({ foreign: "other-writer" }));
+    // inactive existing config still reports off
+    plant(JSON.stringify({ permissions: { allow: ["Bash*"] } }));
     let status = await eng.agentStatus(makeFixture(home));
-    assert.equal(status.state, "foreign");
-    assert.equal(status.foreign, "other-writer");
+    assert.equal(status.state, "off");
+    assert.equal(status.model, null);
 
     // on
-    await eng.agentOn(makeFixture(home), { force: true });
+    await eng.agentOn(makeFixture(home));
     status = await eng.agentStatus(makeFixture(home));
     assert.equal(status.state, "on");
     assert.equal(status.installed, true);

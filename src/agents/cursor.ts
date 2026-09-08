@@ -3,7 +3,6 @@ import os from "node:os";
 
 import { CliError } from "../cli/errors.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { assertIdeStopped, CURSOR_SPEC } from "./quit-guard.js";
 import { agentHome } from "../config.js";
 import {
@@ -104,10 +103,10 @@ export function cursorStateDbPath(opts: { home?: string; dbPath?: string } = {})
  * the OSCrypt `os_crypt.encrypted_key` (DPAPI-protected AES-256 key) on Windows.
  * state.vscdb lives at `<userData>/User/globalStorage/state.vscdb`, so `Local
  * State` is three levels up. Only used on Windows; harmless elsewhere.
- * @param {string} dbPath
- * @returns {string}
+ * Resolves the db path itself so callers never chain `cursorLocalStatePath(cursorStateDbPath(opts))`.
  */
-export function cursorLocalStatePath(dbPath: string): string {
+export function cursorLocalStatePath(opts: { home?: string; dbPath?: string } = {}): string {
+  const dbPath = opts.dbPath ?? cursorStateDbPath(opts);
   return path.join(
     path.dirname(path.dirname(path.dirname(path.resolve(dbPath)))),
     "Local State"
@@ -154,7 +153,7 @@ export async function readCursorOpenAiKey(dbPath: string): Promise<string> {
   const secretRaw = await readItemTableValue(dbPath, CURSOR_AUTH_OPENAI_KEY_SECRET);
   const secret = decryptSecret(secretRaw ?? "", {
     variant: "cursor",
-    localStatePath: cursorLocalStatePath(dbPath),
+    localStatePath: cursorLocalStatePath({ dbPath }),
   });
   if (secret) {
     return secret;
@@ -420,7 +419,7 @@ async function cursorKeyWrites(
     { op: "set", key: APPLICATION_USER_KEY, value: blobRaw },
     { op: "set", key: CURSOR_AUTH_OPENAI_KEY, value: apiKey },
   ];
-  const localStatePath = cursorLocalStatePath(dbPath);
+  const localStatePath = cursorLocalStatePath({ dbPath });
   if (isSecretEncryptionAvailable({ variant: "cursor", localStatePath })) {
     const encrypted = encryptSecret(apiKey, { variant: "cursor", localStatePath });
     writes.push({
@@ -533,11 +532,7 @@ async function probe(): Promise<ProbeResult> {
     }
   }
   const model = modelId;
-  // Foreign scan: pass the db path with the default reader; it reads the
-  // binary file as text and matches fragment probes — sufficient for a
-  // foreign config writer whose markers are plaintext bytes in the DB.
-  const foreignTool = await detectForeign([dbPath]);
-  return { active, foreignTool, model };
+  return { active, model };
 }
 
 const CURSOR_INSTALL = INSTALL_HINTS.cursor!;

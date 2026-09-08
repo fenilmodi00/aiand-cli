@@ -80,7 +80,6 @@ describe("rebakeAgentKeys", () => {
         // Active only when the marker lives under the CURRENT home, so the
         // fixture never leaks into tests that switch AIAND_HOME.
         active: existsSync(join(process.env.AIAND_HOME, ".sync-fixture", "state")),
-        foreignTool: null,
         model: "fixture",
       }),
       enable: async () => ({ model: "fixture", filesWritten: [fixtureFile] }),

@@ -2,7 +2,6 @@ import { chmod, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { agentHome, configDir, writeFileAtomic } from "../config.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 import type { Model } from "../api/models.js";
@@ -23,7 +22,7 @@ function modelsPath(): string {
   return join(primeDir(), "models.json");
 }
 
-/** Managed file list, matched by the engine's snapshot + foreign scan. */
+/** Managed file list, matched by the engine's snapshot. */
 function managedFiles(): string[] {
   return [modelsPath()];
 }
@@ -103,7 +102,6 @@ async function probe(): Promise<ProbeResult> {
     active,
     // No persistent model pin: sessionLaunch receives the resolved model.
     model: null,
-    foreignTool: await detectForeign(managedFiles()),
   };
 }
 

@@ -91,7 +91,28 @@ export function deepEqual(a: unknown, b: unknown): boolean {
     const aKey = aKeys[i];
     const bKey = bKeys[i];
     if (aKey === undefined || bKey === undefined || aKey !== bKey) return false;
-    if (!deepEqual(aObj[aKey], bObj[aKey])) return false;
+    if (!deepEqual(aObj[aKey], bObj[bKey])) return false;
   }
   return true;
+}
+
+/**
+ * Idempotent key swap for a managed config: read → if the extracted key
+ * already matches, no-op → else apply and write. Unifies the refreshKey shape
+ * across adapters on a single `===` check for the key field (structural
+ * deepEqual is unnecessary once the key itself differs).
+ *
+ * `read` returns `null` when there is nothing to patch (missing/empty file).
+ */
+export async function swapKeyInConfig<T>(opts: {
+  apiKey: string;
+  read: () => Promise<T | null>;
+  currentKey: (config: T) => unknown;
+  apply: (config: T, apiKey: string) => T;
+  write: (config: T) => Promise<void>;
+}): Promise<void> {
+  const current = await opts.read();
+  if (current === null) return;
+  if (opts.currentKey(current) === opts.apiKey) return;
+  await opts.write(opts.apply(current, opts.apiKey));
 }

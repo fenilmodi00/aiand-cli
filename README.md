@@ -19,6 +19,7 @@ aiand login
 aiand init
 ```
 
+## Install from source
 
 Requires Node.js 22+.
 
@@ -28,20 +29,20 @@ npm run build
 node dist/index.js --help    # or `npm link` to get `aiand` on PATH
 ```
 
-
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `aiand login` / `logout` | Start or end this machine's session |
 | `aiand whoami` | Identity, organization, and key expiry |
+| `aiand key export` | Print the active session key to stdout |
 | `aiand <agent> on\|off\|status` | Wire a coding agent to ai& — see below |
 | `aiand init` | Detect installed agents and wire them in batch |
 | `aiand run-agent <agent>` | Launch an agent on ai& for one session only |
 | `aiand status` | Sign-in state plus every agent's wiring |
 | `aiand run <prompt>` | One prompt, streamed to stdout |
 | `aiand chat` | Interactive conversation with a transcript |
-| `aiand models` | The model catalog, priced in your billing currency |
+| `aiand models` | The model catalog, priced in your billing currency, with a vision column |
 | `aiand logs` | Recent inference requests, with `--follow` |
 | `aiand usage` | Requests and tokens, against the prior window |
 | `aiand orgs` | Organizations you belong to |
@@ -87,12 +88,15 @@ accept images prints a one-line text-only warning. `on` refuses to touch a confi
 tool manages, and Codex / Cursor / VS Code refuse writes while ChatGPT Desktop, Cursor, or
 VS Code is running — pass `--force` to override either guard. Snapshots of the
 pre-existing config live under `~/.config/aiand/backups/` and are removed by `off`.
+Pass `native` as `--model` or a slot value (`--opus`/`--sonnet`/`--haiku`) to leave that slot unpinned so the agent's own default wins.
 
 ## Signing in
 
 `aiand login` uses the OAuth 2.0 device authorization grant. The CLI prints a short code
 and opens your browser; approving there mints an **organization-scoped API key for this
 machine** — the same kind of `sk-` key the console issues.
+
+On SSH/WSL no browser can open, so the CLI prints the approval URL instead (copied to the clipboard on a TTY); `--no-browser` forces the same.
 
 Already have a key from the console? Paste or pipe it instead:
 
@@ -130,6 +134,8 @@ the secret.
 
 For CI and scripts, skip the login entirely and set `AIAND_API_KEY`. Nothing is written to
 disk in that mode.
+
+`aiand key export` prints the active session key raw, for piping into another tool.
 
 ### run
 
@@ -215,10 +221,13 @@ aiand config set auth-url http://127.0.0.1:8080
 | `AIAND_KEY_STORAGE` | Force the secret tier: `keychain`, `file`, or `plaintext` |
 | `AIAND_SECRET_STORE_MASTER_KEY` | 64 hex chars; overrides the encrypted-file master key |
 | `DSH_HOME` | DeepSeek Harness config root (default `~/.dsh`) |
+| `AIAND_UPDATE_CHECK` | Set to `0` to disable the update notice |
+| `NO_UPDATE_CHECK` | Set to `1` to disable the update notice |
 | `NO_COLOR` | Disable color |
 
 Precedence is flags, then environment variables, then the stored profile.
 
+Once a day on a TTY the CLI prints an update tip when npm carries a newer `@aiand/cli`, plus what's-new lines after a version change.
 
 ## Exit codes
 
@@ -241,6 +250,7 @@ npm test             # node:test, no test framework needed
 npm run build
 npm run check:dist   # asserts on the built binary
 npm run check:public # repository hygiene checks
+node scripts/e2e.mjs   # agent-adapter changes
 ```
 
 All of these run in CI. Issues and pull requests are welcome.

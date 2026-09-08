@@ -45,7 +45,6 @@ describe("grok adapter shape", () => {
     assert.deepEqual(grokAdapter.managedFiles(), []);
     const probe = await grokAdapter.probe();
     assert.equal(probe.active, false);
-    assert.equal(probe.foreignTool, null);
     assert.equal(probe.model, null);
   });
 

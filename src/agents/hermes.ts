@@ -284,7 +284,7 @@ export const hermesAdapter: AgentAdapter = {
 
   async probe(): Promise<ProbeResult> {
     // Launcher-only: owns no persistent files, reads nothing.
-    return { active: false, foreignTool: null, model: null };
+    return { active: false, model: null };
   },
 
   async sessionLaunch(input: SessionLaunchInput) {

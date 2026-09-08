@@ -5,7 +5,6 @@ import path from "node:path";
 
 import { CliError } from "../cli/errors.js";
 import { detectBinary } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { assertIdeStopped, type QuitGuardSpec } from "./quit-guard.js";
 import { agentHome, configDir, writeFileAtomic } from "../config.js";
 import { notValidJsonError } from "./managed-file.js";
@@ -100,8 +99,8 @@ export function chatLanguageModelsPath(opts: { home?: string; vscodePath?: strin
 }
 
 /**
- * Resolve the User-dir-relative paths (state.vscdb + Local State) from the
- * chatLanguageModels.json path.
+ * Derive state.vscdb and Local State paths from a chatLanguageModels.json path.
+ * Prefer `vscodeStateDbPath` / `vscodeLocalStatePath` at call sites.
  */
 function userDirPaths(jsonPath: string): { dbPath: string; localStatePath: string } {
   const userDir = path.dirname(jsonPath); // …/User
@@ -112,9 +111,14 @@ function userDirPaths(jsonPath: string): { dbPath: string; localStatePath: strin
   };
 }
 
-/** @param {string} jsonPath @returns {string} the state.vscdb path */
+/** Absolute path to VS Code's state.vscdb for the given home / override. */
 export function vscodeStateDbPath(opts: { home?: string; vscodePath?: string } = {}): string {
   return userDirPaths(chatLanguageModelsPath(opts)).dbPath;
+}
+
+/** Absolute path to VS Code's Chromium `Local State` (safeStorage master key). */
+export function vscodeLocalStatePath(opts: { home?: string; vscodePath?: string } = {}): string {
+  return userDirPaths(chatLanguageModelsPath(opts)).localStatePath;
 }
 
 /** @param {string} secretId @returns {string} the `secret://<id>` ItemTable key */
@@ -350,7 +354,8 @@ async function enable(
     throw new CliError("No API key was resolved for VS Code.");
   }
   const jsonPath = chatLanguageModelsPath({ home: input.home });
-  const { dbPath, localStatePath } = userDirPaths(jsonPath);
+  const dbPath = vscodeStateDbPath({ home: input.home });
+  const localStatePath = vscodeLocalStatePath({ home: input.home });
   // On macOS the safeStorage master key may be absent until VS Code launches
   // once; refuse with an actionable message rather than writing a key VS Code
   // can't decrypt. Linux always works; plaintext-mode tests short-circuit here.
@@ -400,7 +405,7 @@ async function disable(): Promise<void> {
     ...(await readSidecar()),
     ...aiandSecretIds(arr),
   ]);
-  const { dbPath } = userDirPaths(jsonPath);
+  const dbPath = vscodeStateDbPath();
   if (ids.size > 0) {
     const mutations = [...ids]
       .filter(Boolean)
@@ -441,9 +446,7 @@ async function probe(): Promise<ProbeResult> {
     // Unreadable JSON → inactive, never a crash (a file mid-edit shouldn't
     // wedge `vscode status`).
   }
-  // Foreign scan: a foreign config writer may have touched the managed file.
-  const foreignTool = await detectForeign(managedFiles());
-  return { active, foreignTool, model };
+  return { active, model };
 }
 
 export const vscodeAdapter: AgentAdapter = {

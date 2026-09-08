@@ -13,7 +13,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { foreignMarkerFixtures } from "../dist/agents/foreign.js";
 import { snapshotFiles, restoreSnapshot, hasSnapshot } from "../dist/agents/snapshot.js";
 
 let dir;
@@ -264,7 +263,6 @@ describe("claude probe", () => {
     const probe = await claudeAdapter.probe();
     assert.equal(probe.active, true);
     assert.equal(probe.model, "m-default");
-    assert.equal(probe.foreignTool, null);
   });
 
   test("inactive on missing file, wrong base url, or invalid JSON", async () => {
@@ -290,21 +288,6 @@ describe("claude probe", () => {
     }
   });
 
-  test("detects a foreign config writer via foreignMarkerFixtures", async () => {
-    const home = process.env.AIAND_HOME;
-    const foreignHome = join(home, "foreign-claude");
-    process.env.AIAND_HOME = foreignHome;
-    mkdirSync(join(foreignHome, ".claude"), { recursive: true });
-    const fixtures = foreignMarkerFixtures();
-    const [settingsFixture] = Object.values(fixtures);
-    writeFileSync(join(foreignHome, ".claude", "settings.json"), settingsFixture);
-
-    const probe = await claudeAdapter.probe();
-    assert.equal(probe.active, false);
-    assert.ok(probe.foreignTool, "a foreign tool must be reported");
-
-    process.env.AIAND_HOME = home;
-  });
 });
 
 describe("claude pre-approval", () => {

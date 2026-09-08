@@ -5,9 +5,8 @@ import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { agentHome, writeFileAtomic } from "../config.js";
-import { deepEqual, readJsonOrEmpty } from "./managed-file.js";
+import { deepEqual, readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /** OpenAI-compatible base URL OpenCode dials for every ai& model. */
@@ -161,7 +160,6 @@ async function probe(): Promise<ProbeResult> {
     // True ai& routing, read from the real file: the model is whatever the
     // root `model` ref says once it's ours (aiand/…), null otherwise.
     model: active ? model : null,
-    foreignTool: await detectForeign([opencodeConfigPath()]),
   };
 }
 
@@ -230,22 +228,39 @@ export const opencodeAdapter: AgentAdapter = {
    * readConfig/writeFileAtomic pair enable() uses (mode 0600). Idempotent.
    */
   async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
-    const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
-    const provider = current.provider as Record<string, Record<string, unknown>> | undefined;
-    const aiand = provider?.[OPENCODE_PROVIDER_ID] as
-      | { options?: { apiKey?: unknown } }
-      | undefined;
-    const options = aiand?.options;
-    if (!options || options.apiKey === input.apiKey) return;
-    const next = {
-      ...current,
-      provider: {
-        ...(provider ?? {}),
-        [OPENCODE_PROVIDER_ID]: { ...aiand!, options: { ...options, apiKey: input.apiKey } },
+    await swapKeyInConfig({
+      apiKey: input.apiKey,
+      read: async () => {
+        const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
+        const provider = current.provider as Record<string, Record<string, unknown>> | undefined;
+        const aiand = provider?.[OPENCODE_PROVIDER_ID] as
+          | { options?: { apiKey?: unknown } }
+          | undefined;
+        // No options block yet → nothing surgical to patch; leave the file alone.
+        if (!aiand?.options) return null;
+        return current;
       },
-    };
-    await writeFileAtomic(opencodeConfigPath(), `${JSON.stringify(next, null, 2)}\n`, {
-      mode: 0o600,
+      currentKey: (current) => {
+        const provider = current.provider as Record<string, Record<string, unknown>>;
+        const aiand = provider[OPENCODE_PROVIDER_ID] as { options: { apiKey?: unknown } };
+        return aiand.options.apiKey;
+      },
+      apply: (current, apiKey) => {
+        const provider = current.provider as Record<string, Record<string, unknown>>;
+        const aiand = provider[OPENCODE_PROVIDER_ID] as { options: Record<string, unknown> };
+        return {
+          ...current,
+          provider: {
+            ...provider,
+            [OPENCODE_PROVIDER_ID]: { ...aiand, options: { ...aiand.options, apiKey } },
+          },
+        };
+      },
+      write: async (next) => {
+        await writeFileAtomic(opencodeConfigPath(), `${JSON.stringify(next, null, 2)}\n`, {
+          mode: 0o600,
+        });
+      },
     });
   },
   async sessionLaunch(input: SessionLaunchInput) {

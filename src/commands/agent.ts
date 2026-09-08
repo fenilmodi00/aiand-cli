@@ -156,7 +156,6 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
     ["agent", result.agent],
     ["installed", result.installed ? (result.binary ?? style.dim("yes")) : style.dim("no")],
     ["state", stateLabel(result.state)],
-    ...(result.foreign ? [["foreign", result.foreign] as [string, string]] : []),
     ["model", modelLabel],
   ]);
   if (!result.installed) {
@@ -164,12 +163,10 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
   }
 }
 
-function stateLabel(state: "on" | "off" | "foreign"): string {
+function stateLabel(state: "on" | "off"): string {
   switch (state) {
     case "on":
       return style.green("on");
-    case "foreign":
-      return style.yellow("foreign");
     case "off":
       return style.dim("off");
   }

@@ -86,7 +86,7 @@ describe("hermes adapter shape", () => {
 
   test("probe reads nothing and reports inactive", async () => {
     const probe = await hermesAdapter.probe();
-    assert.deepEqual(probe, { active: false, foreignTool: null, model: null });
+    assert.deepEqual(probe, { active: false, model: null });
   });
 
   test("detect resolves the hermes binary via INSTALL_HINTS", () => {

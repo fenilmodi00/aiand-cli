@@ -10,12 +10,11 @@ dependencies (enforced by `scripts/check-dist.mjs`).
 ## Conventions
 
 Agent wiring: `status` probes real config files, never bookkeeping; `off`
-restores the snapshot byte for byte; foreign markers and quit-guards refuse
-`on`/`off` unless `--force`; every model id written resolves through the live
-catalog (Claude 1M ids carry the `[1m]` tag).
-Hygiene: foreign-tool markers are assembled at runtime and never appear as
-literals (`npm run check:public` enforces this); tests isolate with
-`AIAND_HOME` and `AIAND_CONFIG_DIR`, never the real home.
+restores the snapshot byte for byte; quit-guards refuse `on`/`off` unless
+`--force`; every model id written resolves through the live catalog (Claude
+1M ids carry the `[1m]` tag).
+Hygiene: tests isolate with `AIAND_HOME` and `AIAND_CONFIG_DIR`, never the
+real home.
 
 ## Issue tracker
 

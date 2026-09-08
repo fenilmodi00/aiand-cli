@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { CliError } from "../dist/cli/errors.js";
 import { setIdeProbeForTests } from "../dist/agents/quit-guard.js";
-import { foreignMarkerFixtures } from "../dist/agents/foreign.js";
 
 let dir;
 const originalEnv = { ...process.env };
@@ -320,16 +319,5 @@ describe("vscode enableGuard", () => {
 
   test("no running app → guard is a no-op", async () => {
     await vscodeAdapter.enableGuard({ force: false });
-  });
-});
-
-describe("vscode foreign detection", () => {
-  test("probe reports a foreign config writer's markers in the managed file", async () => {
-    const [settingsFixture] = Object.values(foreignMarkerFixtures());
-    plantJson([]);
-    writeFileSync(jsonPath(), settingsFixture);
-    const p = await vscodeAdapter.probe();
-    assert.equal(p.active, false);
-    assert.ok(p.foreignTool, "foreign markers detected in the managed file");
   });
 });

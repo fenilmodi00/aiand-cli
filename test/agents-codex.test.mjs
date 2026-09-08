@@ -175,7 +175,6 @@ describe("codex adapter", () => {
     const result = await codexAdapter.probe();
     assert.equal(result.active, false);
     assert.equal(result.model, null);
-    assert.equal(result.foreignTool, null);
   });
 
   test("probe(): active when our provider table + base_url present; reads root model", async () => {
@@ -188,7 +187,6 @@ describe("codex adapter", () => {
     const result = await codexAdapter.probe();
     assert.equal(result.active, true);
     assert.equal(result.model, "zai-org/glm-5.3");
-    assert.equal(result.foreignTool, null);
   });
 
   test("probe(): garbage text is inactive, no throw", async () => {

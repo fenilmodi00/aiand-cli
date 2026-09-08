@@ -3,9 +3,8 @@ import { join } from "node:path";
 
 import type { Model } from "../api/models.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { detectForeign } from "./foreign.js";
 import { agentHome, writeFileAtomic } from "../config.js";
-import { readJsonOrEmpty } from "./managed-file.js";
+import { readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
@@ -99,7 +98,6 @@ async function probe(): Promise<ProbeResult> {
   return {
     active,
     model,
-    foreignTool: await detectForeign(managedFiles()),
   };
 }
 
@@ -183,16 +181,26 @@ export const piAdapter: AgentAdapter = {
    * Idempotent: a key that already matches leaves the file untouched.
    */
   async refreshKey(input: { apiKey: string; home: string }): Promise<void> {
-    const auth = await readJsonOrEmpty(authPath(), "pi", "auth.json");
-    const entry = auth[PI_PROVIDER];
-    const key =
-      entry && typeof entry === "object" ? (entry as Record<string, unknown>).key : undefined;
-    if (key === input.apiKey) return;
-    await writeFileAtomic(
-      authPath(),
-      `${JSON.stringify({ ...auth, [PI_PROVIDER]: { ...(entry as object ?? {}), key: input.apiKey } }, null, 2)}\n`,
-      { mode: 0o600 }
-    );
+    await swapKeyInConfig({
+      apiKey: input.apiKey,
+      read: () => readJsonOrEmpty(authPath(), "pi", "auth.json"),
+      currentKey: (auth) => {
+        const entry = auth[PI_PROVIDER];
+        return entry && typeof entry === "object"
+          ? (entry as Record<string, unknown>).key
+          : undefined;
+      },
+      apply: (auth, apiKey) => {
+        const entry = auth[PI_PROVIDER];
+        return {
+          ...auth,
+          [PI_PROVIDER]: { ...(entry && typeof entry === "object" ? entry : {}), key: apiKey },
+        };
+      },
+      write: async (next) => {
+        await writeFileAtomic(authPath(), `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+      },
+    });
   },
 
   async sessionLaunch(_input: SessionLaunchInput) {

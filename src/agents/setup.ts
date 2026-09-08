@@ -1,6 +1,5 @@
 import { agentHome, resolveProfile } from "../config.js";
 import { CliError } from "../cli/errors.js";
-import { confirm, isInteractive } from "../cli/prompt.js";
 import { requireSessionKey } from "../auth/session.js";
 import { snapshotFiles, restoreSnapshot } from "./snapshot.js";
 import {
@@ -8,16 +7,16 @@ import {
   getCatalog,
   resolveDefault,
   resolveSlots,
+  validateCatalogModel,
   visionLabel,
 } from "./catalog.js";
 import type { AgentAdapter } from "./types.js";
 
 /**
  * The agent on/off/status verbs. `agentOn` wires an adapter to ai& (after a
- * foreign-config refusal and a pre-aiand snapshot), `agentOff` restores the
- * pre-aiand bytes and strips aiand-owned side files, and `agentStatus` reads
- * the ground-truth config state (on/foreign/off) without trusting any local
- * bookkeeping.
+ * pre-aiand snapshot), `agentOff` restores the pre-aiand bytes and strips
+ * aiand-owned side files, and `agentStatus` reads the ground-truth config
+ * state (on/off) without trusting any local bookkeeping.
  */
 
 export type AgentOnOptions = {
@@ -47,16 +46,15 @@ export type AgentStatusResult = {
   agent: string;
   installed: boolean;
   binary: string | null;
-  state: "on" | "off" | "foreign";
-  foreign: string | null;
+  state: "on" | "off";
   model: string | null;
 };
 
 /**
- * Turn an agent on: resolve a session key, detect the binary, refuse foreign
- * configs unless forced, snapshot when inactive, resolve model/slots from the
- * live catalog, then let the adapter write its config. An already-active
- * probe skips the snapshot so a re-`on` keeps the first pre-aiand backup.
+ * Turn an agent on: resolve a session key, detect the binary, snapshot when
+ * inactive, resolve model/slots from the live catalog, then let the adapter
+ * write its config. An already-active probe skips the snapshot so a re-`on`
+ * keeps the first pre-aiand backup.
  */
 export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}): Promise<AgentOnResult> {
   // Launcher-only agents (hermes, grok) have no persistent wiring: their
@@ -80,33 +78,18 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
 
   const probe = await adapter.probe();
 
-  if (probe.foreignTool && !opts.force) {
-    const files = adapter.managedFiles().map((file) => file.replace(agentHome(), "~")).join(", ");
-    if (isInteractive()) {
-      const proceed = await confirm(`\`${probe.foreignTool}\` manages ${files}. Overwrite it?`, {
-        default: false,
-      });
-      if (!proceed) throw new CliError("Keeping your existing config.");
-    } else {
-      throw new CliError(`${probe.foreignTool} manages ${files}; last writer wins.`, {
-        hint: "Pass --force to overwrite it.",
-      });
-    }
-  }
-
-  // App-held-config guards (ChatGPT Desktop, Cursor IDE) run after the
-  // foreign refusal and before any snapshot: refusing must never leave a
-  // half-state behind, and --force must escape both gates.
+  // App-held-config guards (ChatGPT Desktop, Cursor IDE) run before any
+  // snapshot: refusing must never leave a half-state behind, and --force
+  // must escape the gate.
   if (adapter.enableGuard) {
     await adapter.enableGuard({ force: opts.force ?? false });
   }
   const managed = adapter.managedFiles();
   // Idempotency: a re-`on` while already routed keeps the first backup
   // (probe.active), and every inactive `on` re-snapshots so the manifest
-  // always matches the pre-aiand state — including after a foreign config
-  // was overwritten with --force, or an `off` that left a stale manifest
-  // behind. An aiand-routed config is never its own backup: active probes
-  // skip the snapshot entirely.
+  // always matches the pre-aiand state — including after an `off` that left
+  // a stale manifest behind. An aiand-routed config is never its own backup:
+  // active probes skip the snapshot entirely.
   if (!probe.active) {
     await snapshotFiles(adapter.id, managed);
   }
@@ -119,11 +102,7 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     // The literal "native" unpins a slot so the agent's own default wins; it
     // is not a catalog id, so it skips the membership check and the adapter
     // writes nothing for it (see the claude adapter's enable()).
-    if (opts.model !== "native" && !catalog.some((entry) => entry.id === opts.model)) {
-      throw new CliError(`--model "${opts.model}" is not in the catalog.`, {
-        hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
-      });
-    }
+    if (opts.model !== "native") validateCatalogModel(catalog, opts.model);
     model = opts.model;
   } else {
     model = resolveDefault(catalog, profile.model);
@@ -136,11 +115,7 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     ...opts.slots,
   };
   for (const [slot, value] of Object.entries(opts.slots ?? {})) {
-    if (value !== "native" && !catalog.some((entry) => entry.id === value)) {
-      throw new CliError(`--${slot} "${value}" is not in the catalog.`, {
-        hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
-      });
-    }
+    if (value !== "native") validateCatalogModel(catalog, value, `--${slot}`);
   }
 
   const written = await adapter.enable({
@@ -208,22 +183,16 @@ export async function agentOff(adapter: AgentAdapter, opts: { force?: boolean } 
 
 /**
  * Read-only status: whether the binary is present, and the ground-truth
- * config state (aiand-routed, foreign-owned, or untouched).
+ * config state (aiand-routed or not).
  */
 export async function agentStatus(adapter: AgentAdapter): Promise<AgentStatusResult> {
   const detected = adapter.detect();
   const probe = await adapter.probe();
-  const state: AgentStatusResult["state"] = probe.active
-    ? "on"
-    : probe.foreignTool
-      ? "foreign"
-      : "off";
   return {
     agent: adapter.id,
     installed: detected.installed,
     binary: detected.path,
-    state,
-    foreign: probe.foreignTool,
+    state: probe.active ? "on" : "off",
     model: probe.model,
   };
 }

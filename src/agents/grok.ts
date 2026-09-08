@@ -141,6 +141,19 @@ export function sanitizeGrokEnv(env: Record<string, string>): Record<string, str
 }
 
 /**
+ * Launch-time facts for a Grok session. These travel together for every
+ * launch and never vary independently.
+ */
+export type GrokLaunchParams = {
+  apiKey: string;
+  authPath: string;
+  baseUrl: string;
+  modelsListUrl: string;
+  origin: string;
+  selectedModel: string;
+};
+
+/**
  * Build the child-process environment for a launched Grok session. GROK_AUTH
  * (inline session auth) outranks GROK_AUTH_PATH, so the ai& key wins even when
  * the user's normal Grok login is active; GROK_DISABLE_API_KEY_AUTH is removed
@@ -153,14 +166,7 @@ export function buildGrokLaunchEnvironment({
   modelsListUrl,
   origin,
   selectedModel,
-}: {
-  apiKey: string;
-  authPath: string;
-  baseUrl: string;
-  modelsListUrl: string;
-  origin: string;
-  selectedModel: string;
-}): Record<string, string> {
+}: GrokLaunchParams): Record<string, string> {
   return sanitizeGrokEnv({
     GROK_AUTH_PATH: authPath,
     GROK_MODELS_BASE_URL: baseUrl,
@@ -200,7 +206,7 @@ export const grokAdapter: AgentAdapter = {
   },
 
   async probe(): Promise<ProbeResult> {
-    return { active: false, foreignTool: null, model: null };
+    return { active: false, model: null };
   },
 
   async enable(_input: EnableInput) {

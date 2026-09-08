@@ -55,18 +55,12 @@ surgical: unrelated keys and sections always survive an aiand write.
 restored by `off`. A re-`on` while still active keeps the first capture; an
 inactive `on` re-captures. _Avoid:_ backup, checkpoint.
 
-**Foreign tool** - another config-writing tool whose markers are present in a
-managed file. Its presence blocks `on` until the user explicitly forces an
-overwrite; last writer must never win silently. _Avoid:_ conflicting writer,
-rival tool.
-
 **Quit-guard** - `codex`, `cursor`, and `vscode` refusing `on`/`off` while the
 owning app holds its config in memory, because it would clobber the write on
 exit; `--force` proceeds anyway. _Avoid:_ lock, file watch.
 
 **Marker** - a recognizable ownership signature inside a managed file. aiand
-stamps its own so `off` can strip surgically, and so other tools can detect
-aiand the same way aiand detects them.
+stamps its own so `off` can strip surgically.
 
 **Sidecar** - the aiand-owned directory under the aiand config dir that prime
 reads as its provider wiring. Entirely ours to write; `off` removes what `on`

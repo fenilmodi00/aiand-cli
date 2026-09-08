@@ -8,8 +8,7 @@ import { CliError } from "../cli/errors.js";
 import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { walkSymlinkEntries } from "./hermes.js";
-import { detectForeign } from "./foreign.js";
-import { readTextIfExists } from "./managed-file.js";
+import { readTextIfExists, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunch, SessionLaunchInput } from "./types.js";
 
 /**
@@ -442,20 +441,19 @@ async function probe(): Promise<ProbeResult> {
   const setPath = settingsPath();
   const raw = await readTextIfExists(setPath);
   if (!raw.trim()) {
-    return { active: false, foreignTool: null, model: null };
+    return { active: false, model: null };
   }
   let settings: Record<string, unknown>;
   try {
     settings = parseYamlDeepseek(raw, setPath);
   } catch {
     // Corrupt/mid-edit file → inactive, never a crash (`status` stays usable).
-    return { active: false, foreignTool: null, model: null };
+    return { active: false, model: null };
   }
   const active = isManaged(settings);
   const defaults = asPlainObject(settings[DEFAULT_MODEL_NS]);
   const model = active && typeof defaults?.model === "string" ? defaults.model : null;
-  const foreignTool = await detectForeign([setPath, credentialsPath()]);
-  return { active, foreignTool, model };
+  return { active, model };
 }
 
 async function enable(input: EnableInput): Promise<{ model: string; filesWritten: string[] }> {
@@ -515,12 +513,18 @@ async function disable(): Promise<void> {
  */
 async function refreshKey(input: { apiKey: string; home: string }): Promise<void> {
   const credPath = credentialsPath(input.home);
-  const credRaw = await readTextIfExists(credPath);
-  if (!credRaw.trim()) return;
-  const creds = parseYamlDeepseek(credRaw, credPath);
-  if (creds[API_KEY_ENV] === input.apiKey) return;
-  await writeFileAtomic(credPath, serializeYamlDeepseek({ ...creds, [API_KEY_ENV]: input.apiKey }), {
-    mode: 0o600,
+  await swapKeyInConfig({
+    apiKey: input.apiKey,
+    read: async () => {
+      const credRaw = await readTextIfExists(credPath);
+      if (!credRaw.trim()) return null;
+      return parseYamlDeepseek(credRaw, credPath);
+    },
+    currentKey: (creds) => creds[API_KEY_ENV],
+    apply: (creds, apiKey) => ({ ...creds, [API_KEY_ENV]: apiKey }),
+    write: async (next) => {
+      await writeFileAtomic(credPath, serializeYamlDeepseek(next), { mode: 0o600 });
+    },
   });
 }
 

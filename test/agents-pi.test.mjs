@@ -209,7 +209,6 @@ describe("pi probe", () => {
     const probe = await piAdapter.probe();
     assert.equal(probe.active, false);
     assert.equal(probe.model, null);
-    assert.equal(probe.foreignTool, null);
 
     process.env.AIAND_HOME = home;
   });
@@ -220,7 +219,6 @@ describe("pi probe", () => {
     const probe = await piAdapter.probe();
     assert.equal(probe.active, true);
     assert.equal(probe.model, DEFAULT_MODEL);
-    assert.equal(probe.foreignTool, null);
   });
 
   test("inactive when settings names a different provider or models.json lacks the provider", async () => {
