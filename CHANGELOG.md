@@ -16,6 +16,16 @@ breaking changes while the command surface settles.
   User cancellations (Ctrl-C, deny in the browser) and non-interactive
   runs (CI, pipes, `--json`) keep the original error.
 
+### Removed
+
+- `aiand login --no-browser` and the SSH/WSL browser-detection machinery
+  (`isRemoteContext`, clipboard copy of the approval URL, `openBrowserAware`).
+  The CLI now just tries the platform opener; when none exists (bare WSL, SSH)
+  it prints the URL. In WSL the Windows browser opens `localhost` callbacks
+  natively, so detection only ever disabled a flow that worked. The
+  non-interactive device path remains the automatic fallback when no TTY is
+  present.
+
 ### Fixed
 
 - `publicRequest` silently dropped the request body, so every device-API

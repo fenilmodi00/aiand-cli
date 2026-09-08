@@ -15,14 +15,12 @@ import {
 import * as device from "../api/device.js";
 import { readSecret, confirm, isInteractive } from "../cli/prompt.js";
 import { readStdin } from "../cli/stdin.js";
-import { copyToClipboard } from "../cli/clipboard.js";
-import { openBrowserAware } from "../cli/browser.js";
+import { openBrowser } from "../cli/browser.js";
 import {
   promptSelect,
   type PromptInput,
   type PromptOutput,
 } from "../cli/select.js";
-import { isRemoteContext } from "../cli/remote.js";
 import { link } from "../cli/links.js";
 import { err, fields, out, spinner, style } from "../cli/output.js";
 import {
@@ -192,7 +190,6 @@ export async function authStatus(
 
 export type DeviceLoginOptions = {
   profile?: string;
-  noBrowser?: boolean;
   json?: boolean;
   /** Internal test seam: prompt streams for the multi-org picker. */
   input?: PromptInput;
@@ -223,31 +220,14 @@ export async function deviceLogin(
   }
   const url = verificationUrl(profile.authUrl, deviceStart);
 
-  const remote = isRemoteContext();
-
   out();
   out(
     `  ${style.dim("Your code ")}  ${style.bold(style.cyan(deviceStart.user_code))}`,
   );
   out(`  ${style.dim("Approve at")}  ${link(url)}`);
   out();
-
-  if (opts.noBrowser) {
-    err(style.dim("Open the URL above to continue."));
-  } else if (remote) {
-    err(
-      style.dim(
-        "No browser can open from here (SSH/WSL) -- open the URL above to continue.",
-      ),
-    );
-    if (isInteractive() && (await copyToClipboard(url))) {
-      err(style.dim("Copied the approval URL to your clipboard."));
-    }
-  } else if (openBrowserAware(url) === "remote") {
-    err(
-      style.dim("Could not open a browser -- open the URL above to continue."),
-    );
-  }
+  if (!openBrowser(url))
+    err(style.dim("Could not open a browser -- open the URL above to continue."));
 
   const controller = new AbortController();
   const onInterrupt = () => controller.abort();

@@ -13,7 +13,6 @@ Usage
 Options
   --base-url <url>    point at a different API endpoint
   --profile <name>    store the session under this profile
-  --no-browser        use a device code approved from any browser instead of opening one
   --force             sign in again even if this profile already has a session
   --paste             paste an existing ai& API key (masked input)
   --api-key <sk-...>  store a key passed on the command line
@@ -26,7 +25,6 @@ API first; a pasted key is never rotated or revoked by this CLI.`;
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
-    "no-browser": { type: "boolean", default: false },
     force: { type: "boolean", default: false },
     paste: { type: "boolean", default: false },
     "api-key": { type: "string" },
@@ -69,17 +67,7 @@ export async function run(argv: string[]): Promise<void> {
     });
   }
 
-  if (isInteractive() && !bool(parsed, "no-browser")) {
-    return browserLogin({
-      profile: profile.name,
-      noBrowser: bool(parsed, "no-browser"),
-      json: bool(parsed, "json"),
-    });
-  }
+  if (isInteractive()) return browserLogin({ profile: profile.name, json: bool(parsed, "json") });
 
-  return deviceLogin({
-    profile: profile.name,
-    noBrowser: bool(parsed, "no-browser"),
-    json: bool(parsed, "json"),
-  });
+  return deviceLogin({ profile: profile.name, json: bool(parsed, "json") });
 }

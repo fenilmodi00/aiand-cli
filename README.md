@@ -95,12 +95,13 @@ Pass `native` as `--model` or a slot value (`--opus`/`--sonnet`/`--haiku`) to le
 `aiand login` opens your browser and signs in there by default. Approving
 mints an **organization-scoped API key for this machine** — the same kind of
 `sk-` key the console issues — labeled `aiand@<hostname>` so the console key
-list names the machine. When the browser half cannot complete, the CLI
-continues with a device code instead.
+list names the machine. When the browser half cannot complete (no opener, SSH,
+WSL), the CLI continues with a device code instead:
 
-On SSH/WSL no browser can open, so the CLI prints the approval URL instead
-(copied to the clipboard on a TTY); `--no-browser` forces the same device-code
-path from any terminal.
+```
+  Your code   BCDF-GHJK
+  Approve at  https://api.aiand.com/auth/device?user_code=BCDF-GHJK
+```
 
 Already have a key from the console? Paste or pipe it instead:
 
@@ -123,14 +124,6 @@ email    you@example.com
 org      Acme (org_1a2b…)
 profile  default
 key      sk-abcd…wxyz
-```
-
-With `--no-browser` the CLI prints a short code and an approval URL for any
-browser instead:
-
-```
-  Your code   BCDF-GHJK
-  Approve at  https://api.aiand.com/auth/device?user_code=BCDF-GHJK
 ```
 
 The secret lives in the best available storage tier — the OS keychain, an AES-256-GCM

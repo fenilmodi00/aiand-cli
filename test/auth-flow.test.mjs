@@ -184,9 +184,9 @@ describe("deviceLogin happy path (real modules, stub server)", () => {
   test("mints a credential, activates the profile, and prints Signed in", async () => {
     const captured = captureOutput();
     try {
-      // noBrowser keeps the flow off a real browser; openBrowserAware on a
-      // remote context (CI/non-TTY) would also just print the URL.
-      await flow.deviceLogin({ profile: "default", noBrowser: true });
+      // deviceLogin in the harness has no real browser (no xdg-open here);
+      // openBrowser just returns false and the URL is printed.
+      await flow.deviceLogin({ profile: "default" });
 
       const cred = await config.loadCredential("default");
       assert.equal(cred.origin, "device");
@@ -482,7 +482,7 @@ describe("org selection on sign-in (real modules, stub server)", () => {
     state.tokenOrg = { id: "org_2", name: "Second" };
     const captured = captureOutput();
     try {
-      await flow.deviceLogin({ profile: "default", noBrowser: true });
+      await flow.deviceLogin({ profile: "default" });
       const cred = await config.loadCredential("default");
       assert.equal(cred.org.name, "Second");
       assert.match(state.keyName ?? "", /^aiand@/);
@@ -500,7 +500,6 @@ describe("org selection on sign-in (real modules, stub server)", () => {
     try {
       const login = flow.deviceLogin({
         profile: "default",
-        noBrowser: true,
         input,
         output,
       });
@@ -518,7 +517,7 @@ describe("org selection on sign-in (real modules, stub server)", () => {
     state.orgs = [...TWO_ORGS];
     const captured = captureOutput();
     try {
-      await flow.deviceLogin({ profile: "default", noBrowser: true });
+      await flow.deviceLogin({ profile: "default" });
       const cred = await config.loadCredential("default");
       assert.equal(cred.org.id, "org_1");
       assert.match(captured.log.err.join(""), /multiple organizations/);
@@ -555,7 +554,6 @@ describe("browserLogin (real modules, stub server)", () => {
     try {
       await flow.browserLogin({
         profile: "default",
-        noBrowser: true,
         open: browserOpener(),
         timeoutMs: 2_000,
       });
@@ -594,7 +592,6 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
     try {
       const login = flow.deviceLogin({
         profile: "default",
-        noBrowser: true,
         input,
         output,
       });
@@ -627,7 +624,7 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
     const captured = captureOutput();
     try {
       await assert.rejects(
-        flow.deviceLogin({ profile: "default", noBrowser: true }),
+        flow.deviceLogin({ profile: "default" }),
         /start a device login|Could not reach|HTTP 5/i,
       );
       assert.equal(await config.loadCredential("default"), null);
@@ -664,7 +661,6 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
       await assert.rejects(
         flow.deviceLogin({
           profile: "default",
-          noBrowser: true,
           keyName: "k",
           input: new FakeInput(),
           output: new FakeOutput(),

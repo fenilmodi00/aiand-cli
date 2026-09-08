@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { CLIENT_ID, type TokenResponse } from "../api/device.js";
 import { publicRequest } from "../api/client.js";
-import { openBrowserAware } from "../cli/browser.js";
+import { openBrowser } from "../cli/browser.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 
@@ -178,8 +178,7 @@ export async function signInViaLocalhostCallback(
         const authorizeUrl = `${authUrl}/auth/authorize?${params}`;
 
         const opener =
-          opts.open ??
-          (async (url: string) => openBrowserAware(url) === "opened");
+          opts.open ?? (async (url: string) => openBrowser(url));
         opener(authorizeUrl)
           .then((opened) => {
             if (opened) {
