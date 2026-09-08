@@ -1,21 +1,13 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import test, { describe } from "node:test";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-let dir;
-const originalEnv = { ...process.env };
+import { withTestEnv } from "./helpers.mjs";
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-snapshot-test-"));
+withTestEnv("aiand-snapshot-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   process.env.AIAND_HOME = join(dir, "home");
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
 });
 
 const snapshot = await import("../dist/agents/snapshot.js");
@@ -67,7 +59,7 @@ describe("snapshot manifest", () => {
     assert.equal(manifest.files[0].existed, false);
     assert.equal(manifest.files[0].backupPath, undefined);
 
-    const mode = (await import("node:fs")).statSync(manifestPath).mode & 0o777;
+    const mode = statSync(manifestPath).mode & 0o777;
     assert.equal(mode, 0o600);
   });
 

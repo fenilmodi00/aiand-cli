@@ -14,17 +14,12 @@ export type UpdateInfo = {
   latest: string;
 };
 
-export type UpdateOpts = {
-  fetchImpl?: (url: string) => Promise<unknown>;
-  now?: () => number;
-};
 
 type UpdateCache = {
   checkedAt: number;
   latest?: string;
   ok: boolean;
 };
-
 /**
  * Kill-switches that short-circuit the check before any I/O: the owner can
  * disable the notice entirely (AIAND_UPDATE_CHECK=0 / NO_UPDATE_CHECK=1) or
@@ -87,10 +82,9 @@ export function compareVersions(left: string, right: string): number {
  * (or retrying after 1h on failure). Never throws: any failure degrades to
  * "no update" and writes a failed cache so the next run retries later.
  */
-export async function checkForUpdate(opts: UpdateOpts = {}): Promise<UpdateInfo | null> {
+export async function checkForUpdate(): Promise<UpdateInfo | null> {
   const env = process.env;
-  const now = opts.now ?? (() => Date.now());
-  const fetchImpl = opts.fetchImpl ?? ((url: string) => publicJson<{ version?: string }>(url));
+  const now = (): number => Date.now();
 
   if (updateDisabled(env)) return null;
 
@@ -112,9 +106,9 @@ export async function checkForUpdate(opts: UpdateOpts = {}): Promise<UpdateInfo 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const data = await fetchImpl(REGISTRY_URL);
+    const data = await publicJson<{ version?: string }>(REGISTRY_URL);
     clearTimeout(timer);
-    const latest = (data as { version?: unknown })?.version;
+    const latest = data?.version;
     if (typeof latest !== "string") throw new Error("registry response missing version");
     const payload: UpdateCache = { checkedAt: now(), ok: true, latest };
     await writeUpdateCache(payload).catch(() => {});

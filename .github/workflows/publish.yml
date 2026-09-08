@@ -1,7 +1,9 @@
 name: Publish
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -10,9 +12,16 @@ permissions:
 
 jobs:
   publish:
+    # CI already ran lint + test + build + check:dist + check:public on this
+    # exact push; only release when that run went green.
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest # trusted publishing does not support self-hosted runners
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run fires on the default branch's head; pin to the exact
+          # commit CI validated so we publish what was tested.
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -41,16 +50,6 @@ jobs:
           fi
       - if: steps.gate.outputs.release == 'true'
         run: npm ci
-      - if: steps.gate.outputs.release == 'true'
-        run: npm run lint
-      - if: steps.gate.outputs.release == 'true'
-        run: npm test
-      - if: steps.gate.outputs.release == 'true'
-        run: npm run build
-      - if: steps.gate.outputs.release == 'true'
-        run: npm run check:dist
-      - if: steps.gate.outputs.release == 'true'
-        run: npm run check:public
       # With a trusted publisher configured for this repository and workflow
       # filename, npm authenticates over OIDC and NPM_TOKEN goes unused — the
       # secret can then be deleted without touching this file. Until then the

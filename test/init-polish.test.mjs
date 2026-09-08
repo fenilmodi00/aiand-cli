@@ -1,28 +1,22 @@
 import assert from "node:assert/strict";
-import test, { after, before } from "node:test";
+import test from "node:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { withTestEnv } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 
-// --- Shared temp env (mirrors dispatch.test.mjs) -----------------------------
-let dir, home, cfg, stubBin, bin;
-const originalEnv = { ...process.env };
-const SPY_ROOT = tmpdir();
-
-before(() => {
-  dir = mkdtempSync(join(SPY_ROOT, "aiand-init-polish-"));
+// --- Shared temp env ---------------------------------------------------------
+let home, cfg, stubBin, bin;
+const env = withTestEnv("aiand-init-polish-", (dir) => {
   home = join(dir, "home");
   cfg = join(dir, "cfg");
   stubBin = join(dir, "bin");
@@ -63,11 +57,6 @@ before(() => {
   );
 
   bin = join(dirname(import.meta.dirname), "dist", "index.js");
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
 });
 
 // --- Helpers -----------------------------------------------------------------

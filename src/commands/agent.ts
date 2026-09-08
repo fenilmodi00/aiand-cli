@@ -97,7 +97,6 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
     model: str(parsed, "model"),
     force: bool(parsed, "force"),
     slots,
-    json: jsonOut,
     profile: str(parsed, "profile"),
     baseUrl: str(parsed, "base-url"),
   });
@@ -142,7 +141,7 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
   if (result.model) {
     try {
       const profile = resolveProfile();
-      const catalog = await getCatalog(profile.apiUrl, null);
+      const catalog = await getCatalog(profile.apiUrl);
       const bare = result.model.replace(/\[1m\]$/, "");
       const entry = catalog.find((model) => model.id === bare);
       if (entry && visionLabel(entry) === "text-only") {

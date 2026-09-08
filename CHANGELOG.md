@@ -7,8 +7,19 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Fixed
+
+- `publicRequest` silently dropped the request body, so every device-API
+  POST (device code, token poll, refresh, revoke) shipped an empty body.
+  The body is now forwarded with the JSON content-type; stub-server auth
+  tests assert the wire bytes.
+
 ### Changed
 
+- Banner replaced with the `ai&` ASCII wordmark (solid block letters with
+  shaded edges) and the "Wire any agent" tagline removed from the banner;
+  `aiand banner`, `help`, and `--help` now print the wordmark and the version
+  line only.
 - Internal restructuring, no behavior change: sign-in flows moved to a new
   `src/auth/` module (device login, paste validation, logout, auth status) so
   commands only route and print; the launch-time version/update checks moved

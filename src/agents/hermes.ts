@@ -32,11 +32,6 @@ import type { AgentAdapter, ProbeResult, SessionLaunchInput } from "./types.js";
 const HERMES_BASE_URL = "https://api.aiand.com/v1";
 const PROVIDER_ID = "aiand";
 
-const VALUE_OVERRIDES: Record<string, true> = {
-  "--provider": true,
-  "--model": true,
-  "-m": true,
-};
 const ISOLATED_HOME_ENTRIES: Record<string, true> = {
   ".env": true,
   active_profile: true,
@@ -46,7 +41,12 @@ function containsCredentialState(name: string): boolean {
   return name in ISOLATED_HOME_ENTRIES || /auth|credential|token/i.test(name);
 }
 
-function linkDirectoryEntries(
+/**
+ * Shared overlay-entry walk: link every entry of `source` into `destination`
+ * as a symlink (dirs as dir links, files as file links), skipping names in
+ * `excludedNames`. Used by the hermes and deepseek overlay builders.
+ */
+export function walkSymlinkEntries(
   source: string,
   destination: string,
   excludedNames: Record<string, true> = {}
@@ -250,7 +250,7 @@ function createHermesHomeOverlay(
             entry.isDirectory() ? "dir" : "file"
           );
         }
-        linkDirectoryEntries(
+        walkSymlinkEntries(
           join(nativePlugins, "model-providers"),
           join(overlayPlugins, "model-providers"),
           { [PROVIDER_ID]: true }
@@ -267,38 +267,11 @@ function createHermesHomeOverlay(
   }
 }
 
-/**
- * Strip user-specified runtime overrides so ours win on the CLI. Exported as a
- * pure helper (grok adapter uses the same shape) — the launcher applies it to
- * passthrough args; the adapter's own built args carry no overrides.
- */
-export function argsWithoutRuntimeOverrides(args: string[]): string[] {
-  const sanitized: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === undefined) {
-      continue;
-    }
-    if (arg in VALUE_OVERRIDES) {
-      i += 1;
-      continue;
-    }
-    if (arg.startsWith("--provider=") || arg.startsWith("--model=")) {
-      continue;
-    }
-    sanitized.push(arg);
-  }
-  return sanitized;
-}
-
 export const hermesAdapter: AgentAdapter = {
   id: "hermes",
   label: "Hermes Agent",
   bin: "hermes",
-  install: INSTALL_HINTS.hermes ?? {
-    command: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
-    url: "https://hermes-agent.nousresearch.com/docs/",
-  },
+  install: INSTALL_HINTS.hermes!,
   launcherOnly: true,
 
   detect() {

@@ -1,29 +1,24 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import test, { describe } from "node:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { CliError } from "../dist/cli/errors.js";
+import { setIdeProbeForTests } from "../dist/agents/quit-guard.js";
 
-let dir;
-const originalEnv = { ...process.env };
+import { withTestEnv, enableInput } from "./helpers.mjs";
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-cursor-test-"));
+const MODEL = "zai-org/glm-5.3";
+const KEY = "sk-cursor-test-key-1";
+
+const env = withTestEnv("aiand-cursor-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   process.env.AIAND_HOME = join(dir, "home");
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
+  process.env.AIAND_API_KEY = KEY;
 });
 
 const {
   readItemTableValue,
-  writeItemTableValue,
-  deleteItemTableValue,
   applyItemTableWrites,
   ensureItemTable,
 } = await import("../dist/agents/vscdb.js");
@@ -54,8 +49,6 @@ const { detectForeign } = await import("../dist/agents/foreign.js");
 
 const home = () => process.env.AIAND_HOME;
 
-const MODEL = "zai-org/glm-5.3";
-const KEY = "sk-cursor-test-key-1";
 
 let dbPath;
 function makeDb() {
@@ -92,16 +85,6 @@ function plantDb(p, { aiSettings = {}, extraRows = {} } = {}) {
   db.close();
 }
 
-function enableInput(overrides = {}) {
-  return {
-    apiKey: KEY,
-    model: MODEL,
-    slots: {},
-    catalog: [],
-    home: home(),
-    ...overrides,
-  };
-}
 
 async function readBlob(p) {
   const raw = await readItemTableValue(p, APPLICATION_USER_KEY);
@@ -110,20 +93,20 @@ async function readBlob(p) {
 
 describe("vscdb ItemTable helpers", () => {
   test("write/read/delete round-trip via node:sqlite", async () => {
-    const p = join(dir, "vscdb-roundtrip", "state.vscdb");
+    const p = join(env.dir, "vscdb-roundtrip", "state.vscdb");
     await ensureItemTable(p);
-    await writeItemTableValue(p, "k1", "a value");
+    await applyItemTableWrites(p, [{ op: "set", key: "k1", value: "a value" }]);
     assert.equal(await readItemTableValue(p, "k1"), "a value");
-    await writeItemTableValue(p, "k1", "updated");
+    await applyItemTableWrites(p, [{ op: "set", key: "k1", value: "updated" }]);
     assert.equal(await readItemTableValue(p, "k1"), "updated");
-    await deleteItemTableValue(p, "k1");
+    await applyItemTableWrites(p, [{ op: "del", key: "k1" }]);
     assert.equal(await readItemTableValue(p, "k1"), "");
     // Missing file → ""
-    assert.equal(await readItemTableValue(join(dir, "nope.vscdb"), "x"), "");
+    assert.equal(await readItemTableValue(join(env.dir, "nope.vscdb"), "x"), "");
   });
 
   test("applyItemTableWrites applies multiple mutations", async () => {
-    const p = join(dir, "vscdb-multi", "state.vscdb");
+    const p = join(env.dir, "vscdb-multi", "state.vscdb");
     await ensureItemTable(p);
     await applyItemTableWrites(p, [
       { op: "set", key: "a", value: "1" },
@@ -139,7 +122,7 @@ describe("vscdb ItemTable helpers", () => {
     // conflicts. Enforce a value CHECK constraint instead: the second write
     // exceeds it and throws, proving the first (already applied) write is
     // rolled back rather than partially persisted.
-    const p = join(dir, "vscdb-rollback", "state.vscdb");
+    const p = join(env.dir, "vscdb-rollback", "state.vscdb");
     mkdirSync(join(p, ".."), { recursive: true });
     const db = new DatabaseSync(p);
     db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE, value BLOB CHECK (length(value) <= 4));");
@@ -206,10 +189,10 @@ describe("safestorage encrypt/decrypt", () => {
 
 describe("cursor adapter path helpers", () => {
   test("localStatePath is three dirs above the db", () => {
-    const db = cursorStateDbPath({ home: join(dir, "home") });
+    const db = cursorStateDbPath({ home: join(process.env.AIAND_HOME) });
     assert.equal(
       cursorLocalStatePath(db),
-      join(dir, "home", ".config", "Cursor", "Local State")
+      join(process.env.AIAND_HOME, ".config", "Cursor", "Local State")
     );
   });
 
@@ -374,10 +357,15 @@ describe("cursor offGuard (engine-level `off`)", () => {
 
     // A running Cursor would rewrite state.vscdb from memory on exit and undo
     // the byte-for-byte restore — `off` must refuse before touching the DB.
-    await assert.rejects(
-      cursorAdapter.offGuard({ force: false, isRunning: () => true }),
-      (error) => error instanceof CliError && /--force/.test(error.hint ?? "")
-    );
+    setIdeProbeForTests(() => true);
+    try {
+      await assert.rejects(
+        cursorAdapter.offGuard({ force: false }),
+        (error) => error instanceof CliError && /--force/.test(error.hint ?? "")
+      );
+    } finally {
+      setIdeProbeForTests(null);
+    }
     assert.equal(readFileSync(p).length, afterOn.length, "DB must not change when refused");
     assert.equal(
       readFileSync(p).toString("utf8"),
@@ -392,7 +380,12 @@ describe("cursor offGuard (engine-level `off`)", () => {
     await cursorAdapter.enable(enableInput());
 
     // force skips the refusal (warn-and-proceed), restore proceeds.
-    await cursorAdapter.offGuard({ force: true, isRunning: () => true });
+    setIdeProbeForTests(() => true);
+    try {
+      await cursorAdapter.offGuard({ force: true });
+    } finally {
+      setIdeProbeForTests(null);
+    }
     const { agentOff } = await import("../dist/agents/setup.js");
     // With no manifest the strip path runs; markers were just removed above is
     // NOT the case here — offGuard alone doesn't strip. Exercise the full off:

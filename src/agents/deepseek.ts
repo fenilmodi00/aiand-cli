@@ -7,6 +7,7 @@ import type { Model } from "../api/models.js";
 import { CliError } from "../cli/errors.js";
 import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
+import { walkSymlinkEntries } from "./hermes.js";
 import { detectForeign } from "./foreign.js";
 import { readTextIfExists } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunch, SessionLaunchInput } from "./types.js";
@@ -74,8 +75,7 @@ function tokenize(raw: string): Tok[] {
   }
   return out;
 }
-
-export function scalarValue(raw: string): unknown {
+function scalarValue(raw: string): unknown {
   const s = raw.trim();
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
     return s.slice(1, -1);
@@ -276,28 +276,14 @@ export function serializeYamlDeepseek(doc: Record<string, unknown>): string {
 }
 
 /**
- * Strip the `agent-default-model:` block from a dsh settings file.
- *
- * Hand-rolled rather than a YAML dependency: the file is a flat top-level
- * map, so the block runs from its key to the next line that starts in column
- * zero.
+ * Strip the `agent-default-model:` block from a dsh settings file by
+ * round-tripping through the shared parser/serializer — the block is deleted
+ * from the parsed doc and the rest is re-emitted.
  */
 export function withoutPersistedModel(settings: string): string {
-  const lines = settings.split("\n");
-  const out: string[] = [];
-  let skipping = false;
-  for (const line of lines) {
-    if (line.startsWith("agent-default-model:")) {
-      skipping = true;
-      continue;
-    }
-    if (skipping && (line.startsWith(" ") || line.startsWith("\t") || line.trim() === "")) {
-      continue;
-    }
-    skipping = false;
-    out.push(line);
-  }
-  return out.join("\n");
+  const doc = parseYamlDeepseek(settings, SETTINGS_FILE);
+  delete doc[DEFAULT_MODEL_NS];
+  return serializeYamlDeepseek(doc);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -429,25 +415,22 @@ export function createDeepseekHomeOverlay(nativeHome: string, apiKey: string): s
     writeSettingsHome(overlay, apiKey);
     return overlay;
   }
-  for (const entry of readdirSync(nativeHome, { withFileTypes: true })) {
-    const from = join(nativeHome, entry.name);
-    const to = join(overlay, entry.name);
-    if (entry.isFile() && entry.name === SETTINGS_FILE) {
-      writeFileSync(to, withoutPersistedModel(readFileSync(from, "utf8")), {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      continue;
-    }
-    if (entry.isFile() && entry.name === CREDENTIALS_FILE) {
-      writeSettingsHome(overlay, apiKey, from);
-      continue;
-    }
-    symlinkSync(from, to, entry.isDirectory() ? "dir" : "file");
+  // settings.yaml is copied (not linked) with the persisted model stripped;
+  // .credentials.yaml is re-written with the session key. The shared walk
+  // symlinks everything else (sessions.db, profiles, …).
+  const nativeSettings = join(nativeHome, SETTINGS_FILE);
+  if (existsSync(nativeSettings)) {
+    writeFileSync(
+      join(overlay, SETTINGS_FILE),
+      withoutPersistedModel(readFileSync(nativeSettings, "utf8")),
+      { encoding: "utf8", mode: 0o600 }
+    );
   }
-  if (!existsSync(join(overlay, CREDENTIALS_FILE))) {
-    writeSettingsHome(overlay, apiKey);
-  }
+  writeSettingsHome(overlay, apiKey, join(nativeHome, CREDENTIALS_FILE));
+  walkSymlinkEntries(nativeHome, overlay, {
+    [SETTINGS_FILE]: true,
+    [CREDENTIALS_FILE]: true,
+  });
   return overlay;
 }
 

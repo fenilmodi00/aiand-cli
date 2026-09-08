@@ -1,24 +1,30 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import test, { after, before, describe } from "node:test";
+import test, { describe } from "node:test";
 import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readlinkSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-let dir;
+import { withTestEnv, catalogModel } from "./helpers.mjs";
+
 let nativeHome;
-const originalEnv = { ...process.env };
+const env = withTestEnv("aiand-hermes-test-", (dir) => {
+  process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
+  process.env.AIAND_HOME = join(dir, "home");
+  nativeHome = join(dir, "home", ".hermes");
+  delete process.env.AIAND_API_KEY;
+  // Keep any outer HERMES_HOME out of the picture; tests set it explicitly.
+  delete process.env.HERMES_HOME;
+});
+const home = () => process.env.AIAND_HOME;
 
 const BASE_KEY = "sk-test-hermes-key-not-real";
 const MODEL = "zai-org/glm-5.3";
@@ -27,61 +33,31 @@ const SECOND_MODEL = "zai-org/glm-flash";
 /** Fixture Model[] in the live catalog shape. */
 function catalogModels() {
   return [
-    {
-      id: MODEL,
+    catalogModel(MODEL, {
       name: "GLM 5.3",
-      object: "model",
-      created: 1,
-      owned_by: "zai-org",
-      provider: "zai-org",
       context_window: 128000,
       capabilities: ["chat", "vision"],
-      reasoning_efforts: null,
-      reasoning_effort_default: null,
-      description: null,
-      currency: "usd",
-      input_per_1m: "0.60",
-      output_per_1m: "1.20",
+      input: "0.60",
+      output: "1.20",
       cached_input_per_1m: "0.30",
-    },
-    {
-      id: SECOND_MODEL,
-      name: "GLM Flash",
-      object: "model",
-      created: 1,
       owned_by: "zai-org",
       provider: "zai-org",
+      created: 1,
+    }),
+    catalogModel(SECOND_MODEL, {
+      name: "GLM Flash",
       context_window: 64000,
       capabilities: ["chat"],
-      reasoning_efforts: null,
-      reasoning_effort_default: null,
-      description: null,
-      currency: "usd",
-      input_per_1m: "0.20",
-      output_per_1m: "0.40",
-      cached_input_per_1m: null,
-    },
+      input: "0.20",
+      output: "0.40",
+      owned_by: "zai-org",
+      provider: "zai-org",
+      created: 1,
+    }),
   ];
 }
+const { hermesAdapter } = await import("../dist/agents/hermes.js");
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-hermes-test-"));
-  process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
-  process.env.AIAND_HOME = join(dir, "home");
-  nativeHome = join(dir, "home", ".hermes");
-  delete process.env.AIAND_API_KEY;
-  // Keep any outer HERMES_HOME out of the picture; tests set it explicitly.
-  delete process.env.HERMES_HOME;
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
-});
-
-const { hermesAdapter, argsWithoutRuntimeOverrides } = await import(
-  "../dist/agents/hermes.js"
-);
 
 /** Plant a native Hermes home with the items the acceptance list expects. */
 function plantNativeHome() {
@@ -120,23 +96,6 @@ describe("hermes adapter shape", () => {
   });
 });
 
-describe("args stripping", () => {
-  test("drops --provider/--model/-m and their values, keeps the rest", () => {
-    const out = argsWithoutRuntimeOverrides([
-      "--provider",
-      "anthropic",
-      "--model",
-      "x",
-      "-m",
-      "y",
-      "--provider=other",
-      "--model=z",
-      "--verbose",
-      "hello",
-    ]);
-    assert.deepEqual(out, ["--verbose", "hello"]);
-  });
-});
 
 describe("hermes sessionLaunch", () => {
   test("builds an overlay with symlinked state, no credential symlinks, patched config and plugin", async () => {

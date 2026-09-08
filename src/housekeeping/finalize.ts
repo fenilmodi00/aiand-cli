@@ -5,16 +5,11 @@ import { readFileSync } from "node:fs";
 import { configDir, writeFileAtomic } from "../config.js";
 import { VERSION } from "../api/client.js";
 
-export type Migration = {
-  id: string;
-  run: () => Promise<string | void>;
-};
 
 type FinalizeState = {
   lastVersion: string;
 };
 
-const DEFAULT_MIGRATIONS: Migration[] = [];
 
 function finalizePath(): string {
   return join(configDir(), "finalize.json");
@@ -76,26 +71,14 @@ function escapeRe(value: string): string {
 
 /**
  * Run version-gated housekeeping when the installed version changed since the
- * last run: best-effort forward migrations (each failure becomes a note, never
- * aborts), then a "what's new" note from the changelog for the current
- * version. Returns the collected notes; never throws.
+ * last run: a "what's new" note from the changelog for the current version.
+ * Returns the collected notes; never throws.
  */
-export async function finalizeOnVersionChange(opts: { migrations?: Migration[] } = {}): Promise<string[]> {
-  const migrations = opts.migrations ?? DEFAULT_MIGRATIONS;
+export async function finalizeOnVersionChange(): Promise<string[]> {
   const lastVersion = readState();
   if (lastVersion === VERSION) return [];
 
   const notes: string[] = [];
-
-  for (const migration of migrations) {
-    try {
-      const note = await migration.run();
-      if (note) notes.push(note);
-    } catch {
-      notes.push(`Warning: migration "${migration.id}" failed and was skipped.`);
-    }
-  }
-
   try {
     const whatsNew = await releaseNotesForVersion();
     notes.push(...whatsNew);

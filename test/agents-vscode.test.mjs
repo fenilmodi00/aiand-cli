@@ -297,19 +297,29 @@ describe("vscode disable", () => {
 
 describe("vscode enableGuard", () => {
   test("refuses with a CliError (--force hint) when the probe says running", async () => {
-    await assert.rejects(
-      vscodeAdapter.enableGuard({ force: false, isRunning: () => true }),
-      (error) => error instanceof CliError && /--force/.test(error.hint ?? "")
-    );
+    setIdeProbeForTests(() => true);
+    try {
+      await assert.rejects(
+        vscodeAdapter.enableGuard({ force: false }),
+        (error) => error instanceof CliError && /--force/.test(error.hint ?? "")
+      );
+    } finally {
+      setIdeProbeForTests(null);
+    }
   });
 
   test("--force escapes the guard", async () => {
-    // force warn-and-proceeds; must not throw.
-    await vscodeAdapter.enableGuard({ force: true, isRunning: () => true });
+    setIdeProbeForTests(() => true);
+    try {
+      // force warn-and-proceeds; must not throw.
+      await vscodeAdapter.enableGuard({ force: true });
+    } finally {
+      setIdeProbeForTests(null);
+    }
   });
 
   test("no running app → guard is a no-op", async () => {
-    await vscodeAdapter.enableGuard({ force: false, isRunning: () => false });
+    await vscodeAdapter.enableGuard({ force: false });
   });
 });
 

@@ -1,48 +1,15 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 
 /* -------------------------------------------------------------------------- */
 /* Generic IDE `state.vscdb` ItemTable access.                                 */
 /*                                                                            */
 /* Cursor (a VS Code fork) persists app state in an SQLite `state.vscdb`       */
 /* whose `ItemTable(key TEXT, value BLOB)` is a key/value store. These         */
-/* helpers are IDE-agnostic; the Cursor-specific adapter builds on top. Prefer */
-/* node:sqlite (Node >= 22), fall back to the `sqlite3` CLI so the code works  */
-/* on Node 18 too. Both paths are zero-dependency.                             */
+/* helpers are IDE-agnostic; the Cursor-specific adapter builds on top.        */
+/* Uses the built-in node:sqlite module (Node >= 22.5). Zero-dependency.       */
 /* -------------------------------------------------------------------------- */
-
-let NodeSqlite: typeof DatabaseSync | null = null;
-let nodeSqliteChecked = false;
-
-// The `node:sqlite` module is only present on Node >= 22; the `sqlite3` CLI
-// fallback (below) keeps the adapter working on Node 18. That runtime gating
-// is why this stays a dynamic import rather than a static one: a static
-// import would crash older Node versions at load time.
-async function loadNodeSqlite(): Promise<typeof DatabaseSync | null> {
-  if (nodeSqliteChecked) {
-    return NodeSqlite;
-  }
-  nodeSqliteChecked = true;
-  try {
-    // `node:sqlite` emits an ExperimentalWarning on import. It is filtered by
-    // the persistent warning handler installed at the CLI entrypoint —
-    // suppressing it around this import does not work, because
-    // `process.emitWarning` defers to `process.nextTick`, so the warning fires
-    // after any local window here would have closed.
-    const mod = await import("node:sqlite");
-    NodeSqlite = mod.DatabaseSync;
-  } catch {
-    NodeSqlite = null;
-  }
-  return NodeSqlite;
-}
-
-/** Escape a JS string into a SQL string literal body (single quotes doubled). */
-function sqlStringLiteral(s: string): string {
-  return String(s).replace(/'/g, "''");
-}
 
 /**
  * True for "no such table: ItemTable" errors. A missing ItemTable just means no
@@ -59,56 +26,35 @@ function isMissingTableError(error: unknown): boolean {
  * Read a text value from ItemTable by key. Returns "" when the DB file, the
  * ItemTable, or the row is missing. Any other error (corrupt DB, permission
  * denied, I/O failure) propagates so callers don't silently overwrite the
- * user's data. Uses node:sqlite when available; otherwise shells out to
- * `sqlite3` (raw stdout, which round-trips JSON values verbatim).
+ * user's data.
  */
 export async function readItemTableValue(dbPath: string, key: string): Promise<string> {
   if (!dbPath || !existsSync(dbPath)) {
     return "";
   }
 
-  const DatabaseSync = await loadNodeSqlite();
-  if (DatabaseSync) {
-    let db: DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(dbPath, { readOnly: true });
-      const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get(key) as
-        | { value: string | Uint8Array | null }
-        | undefined;
-      const v = row?.value;
-      if (v == null) {
-        return "";
-      }
-      return typeof v === "string" ? v : new TextDecoder().decode(v);
-    } catch (error) {
-      // A missing ItemTable means no value yet; propagate everything else
-      // (corrupt DB, permission denied, ...) so it isn't silently treated as
-      // "absent" and overwritten.
-      if (isMissingTableError(error)) {
-        return "";
-      }
-      throw error;
-    } finally {
-      db?.close();
-    }
-  }
-
-  const result = spawnSync(
-    "sqlite3",
-    [dbPath, `SELECT value FROM ItemTable WHERE key='${sqlStringLiteral(key)}';`],
-    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
-  );
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.status !== 0) {
-    if (isMissingTableError({ message: result.stderr })) {
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT value FROM ItemTable WHERE key = ?").get(key) as
+      | { value: string | Uint8Array | null }
+      | undefined;
+    const v = row?.value;
+    if (v == null) {
       return "";
     }
-    throw new Error(`sqlite3 exited ${result.status}: ${(result.stderr || "").trim()}`);
+    return typeof v === "string" ? v : new TextDecoder().decode(v);
+  } catch (error) {
+    // A missing ItemTable means no value yet; propagate everything else
+    // (corrupt DB, permission denied, ...) so it isn't silently treated as
+    // "absent" and overwritten.
+    if (isMissingTableError(error)) {
+      return "";
+    }
+    throw error;
+  } finally {
+    db?.close();
   }
-  // Raw stdout is the value verbatim plus a trailing newline.
-  return (result.stdout ?? "").replace(/\n$/, "");
 }
 
 /**
@@ -118,79 +64,14 @@ export async function readItemTableValue(dbPath: string, key: string): Promise<s
  */
 export async function ensureItemTable(dbPath: string): Promise<void> {
   mkdirSync(path.dirname(dbPath), { recursive: true });
-  const ddl = "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);";
-  const DatabaseSync = await loadNodeSqlite();
-  if (DatabaseSync) {
-    let db: DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(dbPath);
-      db.exec(ddl);
-    } finally {
-      db?.close();
-    }
-    return;
-  }
-  const result = spawnSync("sqlite3", [dbPath], { input: ddl, encoding: "utf8" });
-  if (result.error) {
-    throw new Error(`sqlite3 failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`sqlite3 exited ${result.status}: ${result.stderr.trim()}`);
-  }
-}
-
-/**
- * Write (insert or replace) a text value into ItemTable by key.
- */
-export async function writeItemTableValue(dbPath: string, key: string, value: string): Promise<void> {
-  const DatabaseSync = await loadNodeSqlite();
-  if (DatabaseSync) {
-    let db: DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(dbPath);
-      db.prepare("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)").run(key, value);
-    } finally {
-      db?.close();
-    }
-    return;
-  }
-
-  const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${sqlStringLiteral(key)}', '${sqlStringLiteral(value)}');`;
-  const result = spawnSync("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
-  if (result.error) {
-    throw new Error(`sqlite3 failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`sqlite3 exited ${result.status}: ${result.stderr.trim()}`);
-  }
-}
-
-/**
- * Delete an ItemTable row by key (no-op if missing).
- */
-export async function deleteItemTableValue(dbPath: string, key: string): Promise<void> {
-  if (!dbPath || !existsSync(dbPath)) {
-    return;
-  }
-  const DatabaseSync = await loadNodeSqlite();
-  if (DatabaseSync) {
-    let db: DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(dbPath);
-      db.prepare("DELETE FROM ItemTable WHERE key = ?").run(key);
-    } finally {
-      db?.close();
-    }
-    return;
-  }
-
-  const result = spawnSync(
-    "sqlite3",
-    [dbPath, `DELETE FROM ItemTable WHERE key='${sqlStringLiteral(key)}';`],
-    { encoding: "utf8" }
-  );
-  if (result.error) {
-    throw new Error(`sqlite3 failed: ${result.error.message}`);
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(dbPath);
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);"
+    );
+  } finally {
+    db?.close();
   }
 }
 
@@ -209,47 +90,26 @@ export async function applyItemTableWrites(
     return;
   }
 
-  const DatabaseSync = await loadNodeSqlite();
-  if (DatabaseSync) {
-    let db: DatabaseSync | undefined;
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(dbPath);
+    const setStmt = db.prepare("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)");
+    const delStmt = db.prepare("DELETE FROM ItemTable WHERE key = ?");
+    db.exec("BEGIN");
     try {
-      db = new DatabaseSync(dbPath);
-      const setStmt = db.prepare("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)");
-      const delStmt = db.prepare("DELETE FROM ItemTable WHERE key = ?");
-      db.exec("BEGIN");
-      try {
-        for (const m of mutations) {
-          if (m.op === "del") {
-            delStmt.run(m.key);
-          } else {
-            setStmt.run(m.key, m.value ?? "");
-          }
+      for (const m of mutations) {
+        if (m.op === "del") {
+          delStmt.run(m.key);
+        } else {
+          setStmt.run(m.key, m.value ?? "");
         }
-        db.exec("COMMIT");
-      } catch (err) {
-        db.exec("ROLLBACK");
-        throw err;
       }
-    } finally {
-      db?.close();
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
     }
-    return;
-  }
-
-  // sqlite3 CLI fallback: batch all statements in one invocation. sqlite3
-  // wraps the whole input in an implicit transaction, so it's atomic too.
-  const sql = mutations
-    .map((m) =>
-      m.op === "del"
-        ? `DELETE FROM ItemTable WHERE key='${sqlStringLiteral(m.key)}';`
-        : `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('${sqlStringLiteral(m.key)}', '${sqlStringLiteral(m.value ?? "")}');`
-    )
-    .join("\n");
-  const result = spawnSync("sqlite3", [dbPath], { input: sql, encoding: "utf8" });
-  if (result.error) {
-    throw new Error(`sqlite3 failed: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw new Error(`sqlite3 exited ${result.status}: ${result.stderr.trim()}`);
+  } finally {
+    db?.close();
   }
 }

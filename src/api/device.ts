@@ -23,7 +23,7 @@ export type TokenResponse = {
 
 type TokenErrorBody = { error: string; error_description?: string };
 
-function devicePost<R>(url: string, body: unknown): Promise<Response> {
+function devicePost(url: string, body: unknown): Promise<Response> {
   return publicRequest(url, {
     method: "POST",
     body: JSON.stringify(body),

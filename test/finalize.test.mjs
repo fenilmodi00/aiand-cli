@@ -1,30 +1,22 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import test, { describe } from "node:test";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { withTestEnv } from "./helpers.mjs";
 
 const { finalizeOnVersionChange } = await import("../dist/housekeeping/finalize.js");
 const { VERSION } = await import("../dist/api/client.js");
 
+const env = withTestEnv("aiand-finalize-", (dir) => {
+  process.env.AIAND_CONFIG_DIR = dir;
+});
+
+const stateFile = () => join(env.dir, "finalize.json");
+const writeState = (lastVersion) =>
+  writeFileSync(stateFile(), JSON.stringify({ lastVersion }) + "\n");
+const readState = () => JSON.parse(readFileSync(stateFile(), "utf8"));
+
 describe("finalizeOnVersionChange", () => {
-  let dir;
-  const originalEnv = { ...process.env };
-
-  before(() => {
-    dir = mkdtempSync(join(tmpdir(), "aiand-finalize-"));
-    process.env.AIAND_CONFIG_DIR = dir;
-  });
-  after(() => {
-    process.env = originalEnv;
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  const stateFile = () => join(dir, "finalize.json");
-  const writeState = (lastVersion) =>
-    writeFileSync(stateFile(), JSON.stringify({ lastVersion }) + "\n");
-  const readState = () => JSON.parse(readFileSync(stateFile(), "utf8"));
-
   test("returns [] when the last recorded version matches", async () => {
     writeState(VERSION);
     const notes = await finalizeOnVersionChange();
@@ -47,38 +39,5 @@ describe("finalizeOnVersionChange", () => {
     assert.ok(first.length > 0);
     const second = await finalizeOnVersionChange();
     assert.deepEqual(second, []);
-  });
-
-  test("a throwing migration is caught into a note and never aborts", async () => {
-    writeState("0.0.0");
-    const notes = await finalizeOnVersionChange({
-      migrations: [
-        {
-          id: "boom",
-          run: async () => {
-            throw new Error("migration exploded");
-          },
-        },
-      ],
-    });
-    assert.ok(
-      notes.some((n) => n.includes("boom") && n.includes("failed")),
-      "expected a failure note, got: " + JSON.stringify(notes)
-    );
-    // The failure did not prevent persisting the new version.
-    assert.equal(readState().lastVersion, VERSION);
-  });
-
-  test("a successful migration's note is surfaced alongside the changelog", async () => {
-    writeState("0.0.0");
-    const notes = await finalizeOnVersionChange({
-      migrations: [
-        {
-          id: "greeting",
-          run: async () => "config shape upgraded",
-        },
-      ],
-    });
-    assert.ok(notes.includes("config shape upgraded"));
   });
 });

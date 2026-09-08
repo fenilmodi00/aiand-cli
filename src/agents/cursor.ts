@@ -119,19 +119,18 @@ export function cursorLocalStatePath(dbPath: string): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Read the applicationUser blob + the OpenAI key cell.
+ * Read the applicationUser blob, normalizing missing/corrupt shapes to an
+ * empty blob with a fresh `aiSettings`.
  * @param {string} dbPath
- * @returns {Promise<{ blob: Record<string, unknown>, openAIKey: string, exists: boolean }>}
+ * @returns {Promise<{ blob: Record<string, unknown> }>}
  */
 export async function readCursorState(
   dbPath: string
-): Promise<{ blob: Record<string, unknown>; openAIKey: string; exists: boolean }> {
+): Promise<{ blob: Record<string, unknown> }> {
   const raw = await readItemTableValue(dbPath, APPLICATION_USER_KEY);
   let blob: Record<string, unknown> = {};
-  let exists = false;
   if (raw) {
     blob = JSON.parse(raw) as Record<string, unknown>;
-    exists = true;
   }
   if (!blob || typeof blob !== "object") {
     blob = {};
@@ -139,8 +138,7 @@ export async function readCursorState(
   if (!blob.aiSettings || typeof blob.aiSettings !== "object") {
     blob.aiSettings = {};
   }
-  const openAIKey = await readCursorOpenAiKey(dbPath);
-  return { blob, openAIKey, exists };
+  return { blob };
 }
 
 /**
@@ -170,7 +168,7 @@ export async function readCursorOpenAiKey(dbPath: string): Promise<string> {
 /* -------------------------------------------------------------------------- */
 
 /** @returns {Record<string, unknown>} a blank aiSettings-shaped object */
-export function emptyAiSettings(): Record<string, unknown> {
+function emptyAiSettings(): Record<string, unknown> {
   return {
     userAddedModels: [],
     modelOverrideEnabled: [],
@@ -544,6 +542,16 @@ async function probe(): Promise<ProbeResult> {
 
 const CURSOR_INSTALL = INSTALL_HINTS.cursor!;
 
+/**
+ * Cursor holds state.vscdb in memory while running and rewrites it on exit,
+ * clobbering anything written underneath it — so both `on` and `off` must
+ * land while Cursor is stopped. Guard on every platform; Cursor runs on
+ * linux too.
+ */
+async function cursorQuitGuard(opts: { force: boolean }): Promise<void> {
+  await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", { force: opts.force });
+}
+
 export const cursorAdapter: AgentAdapter = {
   id: "cursor",
   label: "Cursor IDE",
@@ -558,23 +566,10 @@ export const cursorAdapter: AgentAdapter = {
   // No refreshKey: Cursor's API key is a safeStorage-encrypted secret that
   // cannot be swapped surgically — re-running `aiand cursor on` is the
   // refresh path.
-  async enableGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
-    // Cursor holds state.vscdb in memory while running and rewrites it on
-    // exit, clobbering anything written underneath it. Guard on every platform
-    // — Cursor runs on linux too. isRunning is the test seam.
-    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", {
-      force: opts.force,
-      ...(opts.isRunning ? { isRunning: opts.isRunning } : {}),
-    });
-  },
-  async offGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
-    // The byte-for-byte restore lands on disk; a running Cursor rewrites the
-    // DB from memory on exit and would undo it.
-    await assertIdeStopped(CURSOR_SPEC, "Cursor IDE", {
-      force: opts.force,
-      ...(opts.isRunning ? { isRunning: opts.isRunning } : {}),
-    });
-  },
+  enableGuard: cursorQuitGuard,
+  // The byte-for-byte restore lands on disk; a running Cursor rewrites the
+  // DB from memory on exit and would undo it.
+  offGuard: cursorQuitGuard,
   async disable(): Promise<void> {
     // The engine restores the snapshotted DB byte-for-byte when a manifest
     // exists; this strip only fires for the forced-off/no-manifest case and

@@ -1,67 +1,41 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import test, { describe } from "node:test";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { tmpdir } from "node:os";
 
-let dir;
-const originalEnv = { ...process.env };
+import { withTestEnv, catalogModel } from "./helpers.mjs";
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-grok-test-"));
+withTestEnv("aiand-grok-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   delete process.env.AIAND_API_KEY;
 });
 
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
-});
-
 const {
   grokAdapter,
   buildGrokModelCatalog,
-  grokArgsWithoutOverrides,
   sanitizeGrokEnv,
 } = await import("../dist/agents/grok.js");
 
+
 function fixtureModels() {
   return [
-    {
-      id: "zai-org/glm-5.3",
+    catalogModel("zai-org/glm-5.3", {
       name: "GLM 5.3",
-      object: "model",
-      created: 0,
-      owned_by: "zai",
-      provider: "zai",
       context_window: 100000,
       capabilities: ["text"],
       reasoning_efforts: ["minimal", "low", "medium"],
       reasoning_effort_default: "medium",
-      description: null,
-      currency: "usd",
-      input_per_1m: "1",
-      output_per_1m: "2",
-      cached_input_per_1m: null,
-    },
-    {
-      id: "vision-model",
+      owned_by: "zai",
+      provider: "zai",
+    }),
+    catalogModel("vision-model", {
       name: "Vision",
-      object: "model",
-      created: 0,
-      owned_by: "x",
-      provider: "x",
       context_window: 50000,
       capabilities: ["text", "vision"],
-      reasoning_efforts: null,
-      reasoning_effort_default: null,
-      description: null,
-      currency: "usd",
-      input_per_1m: "1",
-      output_per_1m: "1",
-      cached_input_per_1m: null,
-    },
+      owned_by: "x",
+      provider: "x",
+    }),
   ];
 }
 
@@ -121,37 +95,12 @@ describe("buildGrokModelCatalog", () => {
   });
 });
 
-describe("grokArgsWithoutOverrides", () => {
-  test("strips --model / -m value forms", () => {
-    const out = grokArgsWithoutOverrides([
-      "chat",
-      "--model",
-      "zai-org/glm-5.3",
-      "-m",
-      "vision-model",
-    ]);
-    assert.deepEqual(out, ["chat"]);
-  });
-
-  test("strips --model=/--model and short -m<value> forms", () => {
-    assert.deepEqual(
-      grokArgsWithoutOverrides(["--model=zai-org/glm-5.3", "-mvision-model", "hi"]),
-      ["hi"]
-    );
-  });
-
-  test("keeps unrelated flags and preserves order", () => {
-    const out = grokArgsWithoutOverrides(["--safe", "-m", "x", "--debug", "--model=y"]);
-    assert.deepEqual(out, ["--safe", "--debug"]);
-  });
-});
-
 describe("sanitizeGrokEnv", () => {
   test("blank and missing GROK_HOME are dropped, real value kept", () => {
     assert.equal("GROK_HOME" in sanitizeGrokEnv({}), false);
     assert.equal("GROK_HOME" in sanitizeGrokEnv({ GROK_HOME: "   " }), false);
     assert.equal("GROK_HOME" in sanitizeGrokEnv({ GROK_HOME: "" }), false);
-    assert.equal(sanitizeGrokEnv({ GROK_HOME: "/home/u/.grok" }).GROK_HOME, "/home/u/.grok");
+    assert.equal(sanitizeGrokEnv({ GROK_HOME: "~u/.grok" }).GROK_HOME, "~u/.grok");
   });
 });
 

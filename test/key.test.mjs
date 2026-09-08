@@ -1,44 +1,15 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
+import test, { describe } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { withTestEnv } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 const BIN = join(dirname(import.meta.dirname), "dist", "index.js");
 
-let dir;
-const originalEnv = { ...process.env };
-
-/**
- * Seed a pasted-key credential (no refresh_token, so openSession never
- * rotates/network-calls) in the plaintext tier of the temp config dir.
- */
-function seedCredential(profile, key) {
-  writeFileSync(join(dir, "credentials.json"), JSON.stringify({
-    [profile]: { origin: "paste", storage: "plaintext", user: { id: "u1", email: "a@b.c" } },
-  }) + "\n");
-  writeFileSync(
-    join(dir, "credentials-plaintext.json"),
-    JSON.stringify({ [profile]: JSON.stringify({ access_token: key }) }) + "\n"
-  );
-}
-
-const runCli = async (args, env = {}) => {
-  try {
-    const { stdout, stderr } = await execFileAsync(process.execPath, [BIN, ...args], {
-      env: { ...process.env, ...env },
-    });
-    return { code: 0, stdout, stderr };
-  } catch (error) {
-    return { code: error.code ?? 1, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
-  }
-};
-
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-key-test-"));
+const env = withTestEnv("aiand-key-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
   process.env.AIAND_CONFIG_DIR = dir;
   process.env.AIAND_KEY_STORAGE = "plaintext";
@@ -49,10 +20,30 @@ before(() => {
   process.env.CI = "1"; // keep housekeeping lines off the stderr path
 });
 
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
-});
+/**
+ * Seed a pasted-key credential (no refresh_token, so openSession never
+ * rotates/network-calls) in the plaintext tier of the temp config dir.
+ */
+function seedCredential(profile, key) {
+  writeFileSync(join(env.dir, "credentials.json"), JSON.stringify({
+    [profile]: { origin: "paste", storage: "plaintext", user: { id: "u1", email: "a@b.c" } },
+  }) + "\n");
+  writeFileSync(
+    join(env.dir, "credentials-plaintext.json"),
+    JSON.stringify({ [profile]: JSON.stringify({ access_token: key }) }) + "\n"
+  );
+}
+
+const runCli = async (args, extraEnv = {}) => {
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [BIN, ...args], {
+      env: { ...process.env, ...extraEnv },
+    });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    return { code: error.code ?? 1, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+  }
+};
 
 describe("aiand key export", () => {
   test("signed-out non-interactive run exits 2 with the NotLoggedInError message", async () => {

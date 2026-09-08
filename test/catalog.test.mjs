@@ -1,53 +1,25 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import test, { describe } from "node:test";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-let dir;
-const originalEnv = { ...process.env };
+import { withTestEnv, catalogModel } from "./helpers.mjs";
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-catalog-test-"));
+withTestEnv("aiand-catalog-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   delete process.env.AIAND_BASE_URL;
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
 });
 
 const catalog = await import("../dist/agents/catalog.js");
 
 // Model objects shaped exactly like GET /v1/models returns.
 const fixtureModels = [
-  makeModel("openai/gpt-5", { input: "1.20", output: "10.00", capabilities: ["tools"] }),
-  makeModel("zai-org/glm-5.3", { input: "0.60", output: "2.20", capabilities: ["tools"] }),
-  makeModel("google/gemma-4-31b-it", { input: "0.05", output: "0.20", capabilities: ["vision"] }),
-  makeModel("deepseek-ai/r1", { input: "0.40", output: "1.60", capabilities: ["tool-calling"] }),
-  makeModel("qwen/qwen3.8-27b", { input: "0.30", output: "1.00", capabilities: ["tool_calling"] }),
+  catalogModel("openai/gpt-5", { input: "1.20", output: "10.00", capabilities: ["tools"] }),
+  catalogModel("zai-org/glm-5.3", { input: "0.60", output: "2.20", capabilities: ["tools"] }),
+  catalogModel("google/gemma-4-31b-it", { input: "0.05", output: "0.20", capabilities: ["vision"] }),
+  catalogModel("deepseek-ai/r1", { input: "0.40", output: "1.60", capabilities: ["tool-calling"] }),
+  catalogModel("qwen/qwen3.8-27b", { input: "0.30", output: "1.00", capabilities: ["tool_calling"] }),
 ];
-
-function makeModel(id, { input, output, capabilities }) {
-  return {
-    id,
-    name: id,
-    object: "model",
-    created: 0,
-    owned_by: "aiand",
-    provider: "aiand",
-    context_window: 128000,
-    capabilities,
-    reasoning_efforts: null,
-    reasoning_effort_default: null,
-    description: null,
-    currency: "usd",
-    input_per_1m: input,
-    output_per_1m: output,
-    cached_input_per_1m: null,
-  };
-}
 
 describe("resolveDefault", () => {
   test("prefers the curated order that exists in the live catalog", () => {
@@ -80,7 +52,7 @@ describe("resolveSlots", () => {
   });
 
   test("treats missing capability info as tool-capable", () => {
-    const unknown = [makeModel("a/model", { input: "1.00", output: "2.00", capabilities: [] })];
+    const unknown = [catalogModel("a/model", { input: "1.00", output: "2.00", capabilities: [] })];
     assert.deepEqual(catalog.resolveSlots(unknown), {
       opus: "a/model",
       sonnet: "a/model",
@@ -92,7 +64,7 @@ describe("resolveSlots", () => {
 describe("getCatalog cache", () => {
   test("a fresh cache short-circuits the network", async () => {
     mkdirSync(process.env.AIAND_CONFIG_DIR, { recursive: true });
-    const cachedList = [makeModel("cached/only-model", { input: "1", output: "2", capabilities: ["tools"] })];
+    const cachedList = [catalogModel("cached/only-model", { input: "1", output: "2", capabilities: ["tools"] })];
     writeFileSync(
       join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"),
       JSON.stringify({
@@ -107,7 +79,7 @@ describe("getCatalog cache", () => {
       throw new Error("network must not be touched when the cache is fresh");
     };
     try {
-      const models = await catalog.getCatalog("https://api.aiand.com", null);
+      const models = await catalog.getCatalog("https://api.aiand.com");
       assert.equal(models.length, 1);
       assert.equal(models[0].id, "cached/only-model");
     } finally {
@@ -116,7 +88,7 @@ describe("getCatalog cache", () => {
   });
 
   test("a failed fetch falls back to a stale cache", async () => {
-    const cachedList = [makeModel("stale/model", { input: "1", output: "2", capabilities: ["tools"] })];
+    const cachedList = [catalogModel("stale/model", { input: "1", output: "2", capabilities: ["tools"] })];
     writeFileSync(
       join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"),
       JSON.stringify({
@@ -131,7 +103,7 @@ describe("getCatalog cache", () => {
       throw new Error("connection refused");
     };
     try {
-      const models = await catalog.getCatalog("https://api.aiand.com", null);
+      const models = await catalog.getCatalog("https://api.aiand.com");
       assert.equal(models[0].id, "stale/model");
     } finally {
       globalThis.fetch = originalFetch;
@@ -147,7 +119,7 @@ describe("getCatalog cache", () => {
     };
     try {
       await assert.rejects(
-        () => catalog.getCatalog("https://api.aiand.com", null),
+        () => catalog.getCatalog("https://api.aiand.com"),
         (error) => {
           assert.equal(error.name, "CliError");
           assert.match(error.message, /model catalog/);
@@ -162,17 +134,17 @@ describe("getCatalog cache", () => {
 });
 
 describe("withContextTag", () => {
-  const big = makeModel("big/model", { input: "1", output: "2", capabilities: ["tools"] });
+  const big = catalogModel("big/model", { input: "1", output: "2", capabilities: ["tools"] });
   big.context_window = 1_048_576;
 
-  const boundaryMillion = makeModel("million/model", {
+  const boundaryMillion = catalogModel("million/model", {
     input: "1",
     output: "2",
     capabilities: ["tools"],
   });
   boundaryMillion.context_window = 1_000_000;
 
-  const justUnder = makeModel("under/model", {
+  const justUnder = catalogModel("under/model", {
     input: "1",
     output: "2",
     capabilities: ["tools"],

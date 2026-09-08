@@ -108,14 +108,14 @@ export function isIdeRunning(spec: QuitGuardSpec): boolean {
 /**
  * Refuse to write while the app is running (it would clobber the write on
  * exit). TTY gets a confirm; scripts get a CliError naming --force; --force
- * itself warns and proceeds. `isRunning` is injectable for tests.
+ * itself warns and proceeds.
  */
 export async function assertIdeStopped(
   spec: QuitGuardSpec,
   label: string,
-  opts: { force?: boolean; isRunning?: () => boolean } = {}
+  opts: { force?: boolean } = {}
 ): Promise<void> {
-  const running = opts.isRunning ? opts.isRunning() : isIdeRunning(spec);
+  const running = isIdeRunning(spec);
   if (!running) return;
 
   if (opts.force) {

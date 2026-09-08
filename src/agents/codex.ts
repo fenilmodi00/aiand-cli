@@ -11,8 +11,6 @@ import { readTextIfExists } from "./managed-file.js";
 import { applyFirstRunDefaults, patchRouting, tomlString } from "./toml.js";
 import type { AgentAdapter, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
-/** Status note shown when Codex routing is live (shared config + cache). */
-export const CODEX_SHARED_NOTE = "Shared by the Codex CLI and ChatGPT Desktop.";
 
 const MANIFEST_BASE_URL = "https://api.aiand.com/v1";
 
@@ -103,26 +101,11 @@ function inspectConfig(configText: string): { active: boolean; model: string | n
   return { active, model };
 }
 
-/**
- * ChatGPT Desktop quit-guard core, exported so tests can drive the
- * rejection/force/not-running paths on any platform without touching global
- * process state. `isRunning` lets tests inject a probe instead of stubbing
- * the real process scan (assertIdeStopped's own injection seam).
- */
-export async function chatgptQuitGuard(
-  opts: { force: boolean; isRunning?: () => boolean } = { force: false }
-): Promise<void> {
-  await assertIdeStopped(CHATGPT_DESKTOP_SPEC, "ChatGPT Desktop", {
-    force: opts.force,
-    isRunning: opts.isRunning,
-  });
-}
-
 export const codexAdapter: AgentAdapter = {
   id: "codex",
   label: "Codex CLI",
   bin: "codex",
-  install: INSTALL_HINTS.codex ?? { command: "npm install -g @openai/codex", url: "https://github.com/openai/codex" },
+  install: INSTALL_HINTS.codex!,
   aliases: ["chatgpt"],
 
   detect() {
@@ -132,22 +115,25 @@ export const codexAdapter: AgentAdapter = {
   /**
    * Refuse to write ~/.codex/config.toml while ChatGPT Desktop is running:
    * it shares that config and rewrites it on exit, silently clobbering the
-   * write. Calls the exported chatgptQuitGuard so the guard logic is
-   * testable on every platform (the platform gate lives here, not in the
-   * helper — injecting isRunning must still exercise the rejection path).
+   * write. Linux has no ChatGPT Desktop build, so the guard is a no-op
+   * there.
    */
-  async enableGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
+  async enableGuard(opts: { force: boolean }): Promise<void> {
     if (process.platform !== "darwin" && process.platform !== "win32") return;
-    await chatgptQuitGuard(opts);
+    await assertIdeStopped(CHATGPT_DESKTOP_SPEC, "ChatGPT Desktop", {
+      force: opts.force,
+    });
   },
 
   /**
    * `off` restores the shared config.toml byte-for-byte; a running ChatGPT
    * Desktop would rewrite it from memory on exit and undo the restore.
    */
-  async offGuard(opts: { force: boolean; isRunning?: () => boolean }): Promise<void> {
+  async offGuard(opts: { force: boolean }): Promise<void> {
     if (process.platform !== "darwin" && process.platform !== "win32") return;
-    await chatgptQuitGuard(opts);
+    await assertIdeStopped(CHATGPT_DESKTOP_SPEC, "ChatGPT Desktop", {
+      force: opts.force,
+    });
   },
 
   managedFiles() {

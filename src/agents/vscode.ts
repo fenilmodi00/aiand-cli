@@ -13,7 +13,7 @@ import {
   encryptSecret,
   isSecretEncryptionAvailable,
 } from "./cursor-secret.js";
-import { applyItemTableWrites, ensureItemTable, readItemTableValue, writeItemTableValue } from "./vscdb.js";
+import { applyItemTableWrites, ensureItemTable, readItemTableValue } from "./vscdb.js";
 import type { AgentAdapter, DetectResult, EnableInput, GuardOptions, ProbeResult } from "./types.js";
 import type { Model } from "../api/models.js";
 
@@ -55,13 +55,13 @@ const VSCODE_FOLDER = "Code";
 export const VSCODE_MODEL_URL = "https://api.aiand.com/v1";
 
 /** Provider display name aiand writes. */
-export const VSCODE_PROVIDER_NAME = "ai&";
+const VSCODE_PROVIDER_NAME = "ai&";
 
 /** Secret id prefix that marks a provider as aiand-owned. */
 export const VSCODE_SECRET_PREFIX = "chat.lm.secret.aiand-";
 
 /** The output-token cap VS Code uses for a model (the catalog has no field). */
-export const VSCODE_MAX_OUTPUT_TOKENS = 16384;
+const VSCODE_MAX_OUTPUT_TOKENS = 16384;
 
 /* -------------------------------------------------------------------------- */
 /* Path resolution                                                            */
@@ -115,11 +115,6 @@ function userDirPaths(jsonPath: string): { dbPath: string; localStatePath: strin
 /** @param {string} jsonPath @returns {string} the state.vscdb path */
 export function vscodeStateDbPath(opts: { home?: string; vscodePath?: string } = {}): string {
   return userDirPaths(chatLanguageModelsPath(opts)).dbPath;
-}
-
-/** @param {string} jsonPath @returns {string} the `Local State` path */
-export function vscodeLocalStatePath(opts: { home?: string; vscodePath?: string } = {}): string {
-  return userDirPaths(chatLanguageModelsPath(opts)).localStatePath;
 }
 
 /** @param {string} secretId @returns {string} the `secret://<id>` ItemTable key */
@@ -374,7 +369,9 @@ async function enable(
 
   await ensureItemTable(dbPath);
   const encrypted = encryptSecret(input.apiKey, { localStatePath });
-  await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
+  await applyItemTableWrites(dbPath, [
+    { op: "set", key: secretStorageKey(secretId), value: encrypted },
+  ]);
 
   const models = computeModels(existing, input.catalog);
   const next = addAiandProvider(arr, { secretId, models });
@@ -470,10 +467,7 @@ export const vscodeAdapter: AgentAdapter = {
     // VS Code holds state.vscdb in memory while running and rewrites it on
     // exit, clobbering anything written underneath it. Guard only `on`;
     // `disable` must always work so our secrets never linger.
-    await assertIdeStopped(VSCODE_SPEC, "VS Code", {
-      force: opts.force,
-      ...(opts.isRunning ? { isRunning: opts.isRunning } : {}),
-    });
+    await assertIdeStopped(VSCODE_SPEC, "VS Code", { force: opts.force });
   },
   disable,
 };

@@ -24,7 +24,6 @@ export type AgentOnOptions = {
   model?: string;
   force?: boolean;
   slots?: Record<string, string>;
-  json?: boolean;
   profile?: string;
   baseUrl?: string;
 };
@@ -113,7 +112,7 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
   }
 
   const profile = resolveProfile(opts.profile);
-  const catalog = await getCatalog(opts.baseUrl ?? profile.apiUrl, null);
+  const catalog = await getCatalog(opts.baseUrl ?? profile.apiUrl);
 
   let model: string;
   if (opts.model) {

@@ -33,10 +33,6 @@ export function plainHex(hex: string): StyleFn {
   return wrap(fgHex(hex), RESET);
 }
 
-export function dim(): StyleFn {
-  return wrap("\x1b[2m", "\x1b[22m");
-}
-
 export function boldWhite(): StyleFn {
   return wrap("\x1b[1m\x1b[97m", `${RESET}\x1b[22m`);
 }
@@ -45,11 +41,6 @@ export type Theme = {
   color: boolean;
   brand: StyleFn;
   muted: StyleFn;
-  interactive: StyleFn;
-  success: StyleFn;
-  warn: StyleFn;
-  error: StyleFn;
-  heading: StyleFn;
   spark: StyleFn;
   burst: StyleFn;
   core: StyleFn;
@@ -57,12 +48,6 @@ export type Theme = {
   ember: StyleFn;
   /** Open sequences for nested banner rendering (reopen after child close). */
   opens: Record<string, string>;
-  symbols: {
-    success: string;
-    warn: string;
-    error: string;
-    info: string;
-  };
 };
 
 /**
@@ -78,39 +63,19 @@ export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme
       color: false,
       brand: plain,
       muted: plain,
-      interactive: plain,
-      success: plain,
-      warn: plain,
-      error: plain,
-      heading: plain,
       spark: plain,
       burst: plain,
       core: plain,
       trail: plain,
       ember: plain,
       opens: {},
-      symbols: {
-        success: "*",
-        warn: "!",
-        error: "x",
-        info: ">",
-      },
     };
   }
-
-  const cyan = plainHex("#22D3EE");
-  const yellow = plainHex("#EAB308");
-  const red = plainHex("#EF4444");
 
   return {
     color: true,
     brand: plainHex(BRAND.red),
-    muted: dim(),
-    interactive: cyan,
-    success: cyan,
-    warn: yellow,
-    error: red,
-    heading: boldWhite(),
+    muted: wrap("\x1b[2m", "\x1b[22m"),
     spark: plainHex(BRAND.glow),
     burst: plainHex(BRAND.mid),
     core: boldWhite(),
@@ -124,12 +89,6 @@ export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme
       ember: fgHex(BRAND.rose),
       brand: fgHex(BRAND.red),
       fuse: "\x1b[2m",
-    },
-    symbols: {
-      success: "\u2713",
-      warn: "!",
-      error: "\u2717",
-      info: "\u2192",
     },
   };
 }

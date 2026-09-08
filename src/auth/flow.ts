@@ -31,120 +31,21 @@ import {
   type ResolvedProfile,
 } from "../config.js";
 import { rebakeAgentKeys, type RebakeNote } from "../agents/rebake.js";
-import { revokeTokens } from "../api/device.js";
+import { revokeTokens, startDeviceAuthorization, verificationUrl, pollForToken } from "../api/device.js";
 
-type Style = {
-  bold(s: string): string;
-  dim(s: string): string;
-  red(s: string): string;
-  green(s: string): string;
-  yellow(s: string): string;
-  blue(s: string): string;
-  magenta(s: string): string;
-  cyan(s: string): string;
-};
-
-/** Injectable seams for every auth flow. Each maps to the module-level
- * default when omitted; tests swap only the slice they exercise. */
-export type AuthDeps = {
-  deviceApi?: {
-    startDeviceAuthorization(authUrl: string): Promise<device.DeviceCodeResponse>;
-    verificationUrl(authUrl: string, device: device.DeviceCodeResponse): string;
-    pollForToken(
-      authUrl: string,
-      device: device.DeviceCodeResponse,
-      options?: device.PollOptions
-    ): Promise<device.TokenResponse>;
-  };
-  api?: {
-    openSession(profile: ResolvedProfile): Promise<Session>;
-    getUser(session: Session): Promise<AccountUser>;
-    listOrgs(session: Session): Promise<AccountOrg[]>;
-    validateKey(key: string, authUrl: string): Promise<AccountUser>;
-  };
-  store?: {
-    saveCredential(profile: string, credential: LoadedCredential): Promise<void>;
-    loadCredential(profile: string): Promise<LoadedCredential | null>;
-    clearCredential(profile: string): Promise<void>;
-  };
-  config?: {
-    loadConfig(): Config;
-    saveConfig(config: Config): void;
-    updateProfile(name: string, patch: Partial<Profile>): void;
-    resolveProfile(override?: string): ResolvedProfile;
-    maskKey(key: string): string;
-  };
-  rebake?: (apiKey: string) => Promise<RebakeNote[]>;
-  revoke?: (authUrl: string, token: string) => Promise<boolean>;
-  ui?: {
-    out(line?: string): void;
-    err(line?: string): void;
-    style: Style;
-    fields(pairs: [string, string][]): void;
-    link(url: string): string;
-    spinner(text: string): { stop(final?: string): void };
-    confirm(message: string, options?: { default?: boolean }): Promise<boolean>;
-    isInteractive(): boolean;
-    copyToClipboard(text: string): Promise<boolean>;
-    openBrowserAware(url: string, options?: { remote?: boolean }): "opened" | "remote";
-    isRemoteContext(): boolean;
-  };
-};
-
-type ResolvedDeps = {
-  deviceApi: NonNullable<AuthDeps["deviceApi"]>;
-  api: NonNullable<AuthDeps["api"]>;
-  store: NonNullable<AuthDeps["store"]>;
-  config: NonNullable<AuthDeps["config"]>;
-  rebake: (apiKey: string) => Promise<RebakeNote[]>;
-  revoke: (authUrl: string, token: string) => Promise<boolean>;
-  ui: NonNullable<AuthDeps["ui"]>;
-};
-
-function resolvedDeps(deps: AuthDeps): ResolvedDeps {
-  return {
-    deviceApi: {
-      startDeviceAuthorization: device.startDeviceAuthorization,
-      verificationUrl: device.verificationUrl,
-      pollForToken: device.pollForToken,
-      ...deps.deviceApi,
-    },
-    api: { openSession, getUser, listOrgs, validateKey, ...deps.api },
-    store: { saveCredential, loadCredential, clearCredential, ...deps.store },
-    config: { loadConfig, saveConfig, updateProfile, resolveProfile, maskKey, ...deps.config },
-    rebake: deps.rebake ?? rebakeAgentKeys,
-    revoke: deps.revoke ?? revokeTokens,
-    ui: {
-      out,
-      err,
-      style,
-      fields,
-      link,
-      spinner,
-      confirm,
-      isInteractive,
-      copyToClipboard,
-      openBrowserAware,
-      isRemoteContext,
-      ...deps.ui,
-    },
-  };
-}
-
-function printRebakeNotes(d: ResolvedDeps, notes: RebakeNote[]): void {
+function printRebakeNotes(notes: RebakeNote[]): void {
   for (const note of notes) {
-    d.ui.err(d.ui.style.dim(`[${note.agent}] ${note.note}`));
+    err(style.dim(`[${note.agent}] ${note.note}`));
   }
 }
 
 /** Promote a freshly-signed-in profile to the active one when it is not. */
-function activateProfile(name: string, cfg: ResolvedDeps["config"]): void {
-  cfg.updateProfile(name, {});
-  if (cfg.loadConfig().profile !== name) {
-    cfg.saveConfig({ ...cfg.loadConfig(), profile: name });
+function activateProfile(name: string): void {
+  updateProfile(name, {});
+  if (loadConfig().profile !== name) {
+    saveConfig({ ...loadConfig(), profile: name });
   }
 }
-
 /** Map a credential's origin to the wire/source string both status and
  * whoami emit. Shared classification lives here so the two commands cannot
  * drift. */
@@ -188,11 +89,9 @@ export type Identity = {
  * present it. */
 export async function probeIdentity(
   profileOverride?: string,
-  local = false,
-  deps: AuthDeps = {}
+  local = false
 ): Promise<Identity> {
-  const d = resolvedDeps(deps);
-  const profile = d.config.resolveProfile(profileOverride);
+  const profile = resolveProfile(profileOverride);
   let session: Session | null = null;
   let user: AccountUser | null = null;
   let org: AccountOrg | null = null;
@@ -200,15 +99,15 @@ export async function probeIdentity(
   let cached: LoadedCredential | null = null;
 
   try {
-    session = await d.api.openSession(profile);
-    cached = await d.store.loadCredential(profile.name);
+    session = await openSession(profile);
+    cached = await loadCredential(profile.name);
     if (local) {
       user = cached?.user ?? null;
       org = cached?.org ?? null;
       orgs = cached?.org ? [cached.org] : [];
     } else {
-      orgs = await d.api.listOrgs(session);
-      user = await d.api.getUser(session);
+      orgs = await listOrgs(session);
+      user = await getUser(session);
       org = orgs[0] ?? null;
     }
   } catch (error) {
@@ -231,19 +130,13 @@ export type AuthStatus = {
 export type AuthStatusOptions = {
   profile?: string;
   local?: boolean;
-  deps?: AuthDeps;
 };
 
 /** The auth half of `aiand status`: identity, masked key, key source, and the
  * storage tier holding the secret. Uses the shared probe so whoami classifies
  * identically. */
 export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStatus> {
-  const d = resolvedDeps(opts.deps ?? {});
-  const { profile, session, user, org, cached } = await probeIdentity(
-    opts.profile,
-    opts.local,
-    opts.deps
-  );
+  const { profile, session, user, org, cached } = await probeIdentity(opts.profile, opts.local);
 
   if (!session) {
     return {
@@ -264,7 +157,7 @@ export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStat
     profile: profile.name,
     email: user?.email ?? cached?.user?.email ?? null,
     org: org?.name ?? cached?.org?.name ?? null,
-    key: d.config.maskKey(session.token),
+    key: maskKey(session.token),
     source: credential ? classifySource(credential.origin) : "AIAND_API_KEY",
     storage: storage !== null ? storageLabel(storage) : null,
   };
@@ -274,99 +167,91 @@ export type DeviceLoginOptions = {
   profile?: string;
   noBrowser?: boolean;
   json?: boolean;
-  deps?: AuthDeps;
 };
 
 /** Mint an org-scoped API key via a browser device-code approval, persist the
  * credential, promote the profile, and rebake the key into active agents. */
 export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> {
-  const d = resolvedDeps(opts.deps ?? {});
-  const profile = d.config.resolveProfile(opts.profile);
+  const profile = resolveProfile(opts.profile);
 
-  const deviceStart = await d.deviceApi.startDeviceAuthorization(profile.authUrl);
-  const url = d.deviceApi.verificationUrl(profile.authUrl, deviceStart);
+  const deviceStart = await startDeviceAuthorization(profile.authUrl);
+  const url = verificationUrl(profile.authUrl, deviceStart);
 
-  const remote = d.ui.isRemoteContext();
+  const remote = isRemoteContext();
 
-  d.ui.out();
-  d.ui.out(
-    `  ${d.ui.style.dim("Your code ")}  ${d.ui.style.bold(d.ui.style.cyan(deviceStart.user_code))}`
-  );
-  d.ui.out(`  ${d.ui.style.dim("Approve at")}  ${d.ui.link(url)}`);
-  d.ui.out();
+  out();
+  out(`  ${style.dim("Your code ")}  ${style.bold(style.cyan(deviceStart.user_code))}`);
+  out(`  ${style.dim("Approve at")}  ${link(url)}`);
+  out();
 
   if (opts.noBrowser) {
-    d.ui.err(d.ui.style.dim("Open the URL above to continue."));
+    err(style.dim("Open the URL above to continue."));
   } else if (remote) {
-    d.ui.err(
-      d.ui.style.dim(
-        "No browser can open from here (SSH/WSL) -- open the URL above to continue."
-      )
-    );
-    if (d.ui.isInteractive() && (await d.ui.copyToClipboard(url))) {
-      d.ui.err(d.ui.style.dim("Copied the approval URL to your clipboard."));
+    err(style.dim("No browser can open from here (SSH/WSL) -- open the URL above to continue."));
+    if (isInteractive() && (await copyToClipboard(url))) {
+      err(style.dim("Copied the approval URL to your clipboard."));
     }
-  } else if (d.ui.openBrowserAware(url) === "remote") {
-    d.ui.err(d.ui.style.dim("Could not open a browser -- open the URL above to continue."));
+  } else if (openBrowserAware(url) === "remote") {
+    err(style.dim("Could not open a browser -- open the URL above to continue."));
   }
 
   const controller = new AbortController();
   const onInterrupt = () => controller.abort();
   process.once("SIGINT", onInterrupt);
 
-  const spin = d.ui.spinner("Waiting for approval in the browser...");
+  const spin = spinner("Waiting for approval in the browser...");
   let tokens: device.TokenResponse;
   try {
-    tokens = await d.deviceApi.pollForToken(profile.authUrl, deviceStart, {
+    tokens = await pollForToken(profile.authUrl, deviceStart, {
       signal: controller.signal,
       onSlowDown: (interval) =>
-        d.ui.err(d.ui.style.dim(`Server asked us to back off; polling every ${interval}s.`)),
+        err(style.dim(`Server asked us to back off; polling every ${interval}s.`)),
     });
   } finally {
     spin.stop();
     process.removeListener("SIGINT", onInterrupt);
   }
 
-  await d.store.saveCredential(profile.name, {
+  await saveCredential(profile.name, {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
     origin: "device",
   });
 
-  activateProfile(profile.name, d.config);
+  activateProfile(profile.name);
 
-  const session = await d.api.openSession(d.config.resolveProfile(profile.name));
-  const [user, orgs] = await Promise.all([d.api.getUser(session), d.api.listOrgs(session)]);
+  const session = await openSession(resolveProfile(profile.name));
+  const [user, orgs] = await Promise.all([getUser(session), listOrgs(session)]);
   const org = orgs[0];
-  const stored = await d.store.loadCredential(profile.name);
+  const stored = await loadCredential(profile.name);
   if (!stored) throw new CliError("Session vanished while signing in.");
-  await d.store.saveCredential(profile.name, {
+  await saveCredential(profile.name, {
     ...stored,
     user,
     ...(org ? { org } : {}),
   });
 
-  const notes = await d.rebake(session.token);
-  printRebakeNotes(d, notes);
+  const notes = await rebakeAgentKeys(session.token);
+  printRebakeNotes(notes);
 
   if (opts.json) {
-    return d.ui.out(
+    return out(
       JSON.stringify(
-        { profile: profile.name, user, org: org ?? null, key: d.config.maskKey(session.token) },
+        { profile: profile.name, user, org: org ?? null, key: maskKey(session.token) },
         null,
         2
       )
     );
   }
 
-  d.ui.out(d.ui.style.green("Signed in."));
-  d.ui.out();
-  d.ui.fields([
-    ["email", user.email || d.ui.style.dim("unknown")],
-    ["org", org ? `${org.name} ${d.ui.style.dim(`(${org.id})`)}` : d.ui.style.dim("none")],
+  out(style.green("Signed in."));
+  out();
+  fields([
+    ["email", user.email || style.dim("unknown")],
+    ["org", org ? `${org.name} ${style.dim(`(${org.id})`)}` : style.dim("none")],
     ["profile", profile.name],
-    ["key", d.ui.style.dim(d.config.maskKey(session.token))],
+    ["key", style.dim(maskKey(session.token))],
   ]);
 }
 
@@ -379,7 +264,6 @@ export type PasteLoginOptions = {
   /** `--paste`: prompt interactively (masked input). */
   interactive?: boolean;
   json?: boolean;
-  deps?: AuthDeps;
 };
 
 function readPastedKey(opts: PasteLoginOptions): Promise<string> {
@@ -424,34 +308,33 @@ async function readPastedKeyStdin(): Promise<string> {
 /** Validate an existing key against the API (401 → rejected), store it as a
  * pasted credential, promote the profile, and rebake active agents. */
 export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
-  const d = resolvedDeps(opts.deps ?? {});
-  const profile = d.config.resolveProfile(opts.profile);
+  const profile = resolveProfile(opts.profile);
 
   const key = await readPastedKey(opts);
-  const user = await d.api.validateKey(key, profile.authUrl);
-  await d.store.saveCredential(profile.name, {
+  const user = await validateKey(key, profile.authUrl);
+  await saveCredential(profile.name, {
     access_token: key,
     origin: "paste",
     user,
   });
-  const stored = await d.store.loadCredential(profile.name);
+  const stored = await loadCredential(profile.name);
   const storage = stored?.storage ?? "file";
 
-  activateProfile(profile.name, d.config);
+  activateProfile(profile.name);
 
   if (opts.json) {
-    return d.ui.out(
+    return out(
       JSON.stringify({ profile: profile.name, source: "pasted-key", storage }, null, 2)
     );
   }
 
-  const notes = await d.rebake(key);
-  printRebakeNotes(d, notes);
+  const notes = await rebakeAgentKeys(key);
+  printRebakeNotes(notes);
 
-  d.ui.out(d.ui.style.green("Signed in with a pasted key."));
-  d.ui.out();
-  d.ui.fields([
-    ["email", user.email || d.ui.style.dim("unknown")],
+  out(style.green("Signed in with a pasted key."));
+  out();
+  fields([
+    ["email", user.email || style.dim("unknown")],
     ["profile", profile.name],
     ["source", "pasted key"],
     ["storage", storage],
@@ -463,26 +346,24 @@ export type LogoutOptions = {
   revoke?: boolean;
   keepRemote?: boolean;
   json?: boolean;
-  deps?: AuthDeps;
 };
 
 /** End this machine's session: clear the local credential and, for a
  * device-minted key, revoke it server-side (unless --keep-remote keeps it). */
 export async function logout(opts: LogoutOptions = {}): Promise<void> {
-  const d = resolvedDeps(opts.deps ?? {});
-  const profile = d.config.resolveProfile(opts.profile);
-  const credential = await d.store.loadCredential(profile.name);
+  const profile = resolveProfile(opts.profile);
+  const credential = await loadCredential(profile.name);
 
   if (!credential) {
     if (process.env.AIAND_API_KEY) {
-      d.ui.out(
-        d.ui.style.dim(
+      out(
+        style.dim(
           `Profile "${profile.name}" was not signed in. The AIAND_API_KEY environment variable still applies until it is unset.`
         )
       );
       return;
     }
-    d.ui.out(d.ui.style.dim(`Profile "${profile.name}" was not signed in.`));
+    out(style.dim(`Profile "${profile.name}" was not signed in.`));
     return;
   }
 
@@ -501,23 +382,23 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     keepRemote = true;
   } else if (!keepRemote) {
     if (opts.revoke) {
-      revoked = await d.revoke(profile.authUrl, credential.refresh_token ?? credential.access_token);
-    } else if (d.ui.isInteractive()) {
-      const yes = await d.ui.confirm("Revoke the ai& key this machine minted?", { default: true });
+      revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
+    } else if (isInteractive()) {
+      const yes = await confirm("Revoke the ai& key this machine minted?", { default: true });
       if (yes) {
-        revoked = await d.revoke(profile.authUrl, credential.refresh_token ?? credential.access_token);
+        revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
       } else {
         keepRemote = true;
       }
     } else {
-      revoked = await d.revoke(profile.authUrl, credential.refresh_token ?? credential.access_token);
+      revoked = await revokeTokens(profile.authUrl, credential.refresh_token ?? credential.access_token);
     }
   }
 
-  await d.store.clearCredential(profile.name);
+  await clearCredential(profile.name);
 
   if (opts.json) {
-    return d.ui.out(
+    return out(
       JSON.stringify(
         { profile: profile.name, revoked, source: pasted ? "pasted-key" : "device-login" },
         null,
@@ -526,16 +407,12 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     );
   }
 
-  d.ui.out(d.ui.style.green(`Signed out of "${profile.name}".`));
+  out(style.green(`Signed out of "${profile.name}".`));
   if (pasted) {
-    d.ui.out(
-      d.ui.style.dim(
-        "The pasted key was removed locally; it is still valid in the console."
-      )
-    );
+    out(style.dim("The pasted key was removed locally; it is still valid in the console."));
   } else if (!revoked && !keepRemote) {
-    d.ui.out(
-      d.ui.style.dim(
+    out(
+      style.dim(
         "The server could not be reached, so the key was only removed locally. Revoke it in the console if this machine is untrusted."
       )
     );

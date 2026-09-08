@@ -33,7 +33,7 @@ import type {
 
 const GROK_MAX_COMPLETION_TOKENS = 8192;
 
-export type GrokCatalogEntry = {
+type GrokCatalogEntry = {
   id: string;
   model: string;
   name: string;
@@ -45,7 +45,7 @@ export type GrokCatalogEntry = {
   user_selectable: true;
 };
 
-export type GrokModelCatalog = {
+type GrokModelCatalog = {
   object: "list";
   data: GrokCatalogEntry[];
 };
@@ -74,7 +74,7 @@ export function buildGrokModelCatalog(models: Model[]): GrokModelCatalog {
   };
 }
 
-export type GrokCatalogServer = {
+type GrokCatalogServer = {
   modelsListUrl: string;
   origin: string;
   close: () => Promise<void>;
@@ -184,38 +184,11 @@ export function buildGrokLaunchEnvironment({
   });
 }
 
-/**
- * Strip user `--model`/`-m` overrides so the launch model (resolved from the
- * live catalog, validated by the launcher) always wins.
- */
-export function grokArgsWithoutOverrides(args: string[]): string[] {
-  const sanitized: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === undefined) {
-      continue;
-    }
-    if (arg === "--model" || arg === "-m") {
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith("--model=") || (arg.startsWith("-m") && arg.length > 2)) {
-      continue;
-    }
-    sanitized.push(arg);
-  }
-  return sanitized;
-}
-
 export const grokAdapter: AgentAdapter = {
   id: "grok",
   label: "Grok Build",
   bin: "grok",
-  install:
-    INSTALL_HINTS.grok ?? {
-      command: "curl -fsSL https://x.ai/cli/install.sh | bash",
-      url: "https://github.com/xai-org/grok-build",
-    },
+  install: INSTALL_HINTS.grok!,
   launcherOnly: true,
 
   detect() {

@@ -141,52 +141,6 @@ export function linuxSecretServiceReachable(): boolean {
   return secretServiceReachableMemo;
 }
 
-/**
- * On Linux, Electron `safeStorage` (and thus Cursor) only encrypts when
- * a Secret Service implementation (libsecret/gnome-keyring/kwallet) is
- * available to hold the master password. Without it, Chromium falls back to
- * the hardcoded "peanuts" password — i.e. the stored secret is **obfuscated,
- * not encrypted**. Detect that so we can report it. Memoized because platform
- * and Secret Service availability do not change mid-process and this is called
- * a few times per on/status run.
- */
-export function linuxSafeStorageIsObfuscatedFallback(): boolean {
-  if (process.platform !== "linux") {
-    return false;
-  }
-  return !linuxSecretServiceReachable();
-}
-
-/**
- * Whether a Linux safeStorage ciphertext JSON blob was produced with the
- * basic_text ("peanuts") backend (v10) rather than a keyring master password (v11).
- */
-export function linuxEncryptUsesBasicTextBackend(encryptedJson: string): boolean {
-  if (process.platform !== "linux" || plaintextMode()) {
-    return false;
-  }
-  try {
-    const parsed = JSON.parse(encryptedJson) as { data?: unknown };
-    if (!parsed || !Array.isArray(parsed.data)) {
-      return false;
-    }
-    const blob = Buffer.from(parsed.data as number[]);
-    return blob.length >= 3 && blob.subarray(0, 3).toString("latin1") === "v10";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Electron app name for the variant. Cursor's keychain item is "Cursor Safe
- * Storage".
- * @param {"cursor"} variant
- * @returns {string}
- */
-function appNameFor(variant: "cursor"): string {
-  return "Cursor";
-}
-
 /* -------------------------------------------------------------------------- */
 /* OSCrypt AES (macOS + Linux)                                                 */
 /* -------------------------------------------------------------------------- */
@@ -240,12 +194,6 @@ export function aesDecrypt(
  * used to re-prompt until the user chose "Always Allow".
  */
 const macMasterPasswordCache = new Map<string, string>();
-
-/** Test seam: clear cached macOS Safe Storage master passwords. */
-export function resetMacMasterPasswordCacheForTests(): void {
-  macMasterPasswordCache.clear();
-}
-
 /**
  * Read the Safe Storage master password from the macOS login keychain.
  * @param {"cursor"} variant
@@ -256,7 +204,7 @@ function macReadMasterPassword(variant: "cursor"): string {
   if (macMasterPasswordCache.has(cacheKey)) {
     return macMasterPasswordCache.get(cacheKey) ?? "";
   }
-  const service = `${appNameFor(variant)} Safe Storage`;
+  const service = `Cursor Safe Storage`;
   const r = spawnSync("security", ["find-generic-password", "-s", service, "-w"], {
     encoding: "utf8",
   });
@@ -351,7 +299,7 @@ function linuxPythonOsCryptV2PasswordLookup(application: string): string {
  * @returns {string[]}
  */
 function linuxApplicationNameCandidates(variant: "cursor"): string[] {
-  const app = appNameFor(variant);
+  const app = "Cursor";
   return [...new Set([app.toLowerCase(), app])];
 }
 
@@ -371,7 +319,7 @@ function linuxReadMasterPassword(
   variant: "cursor",
   { forEncrypt = false } = {}
 ): string {
-  const app = appNameFor(variant);
+  const app = "Cursor";
   const service = `${app} Safe Storage`;
   for (const application of linuxApplicationNameCandidates(variant)) {
     const appPw =
@@ -697,7 +645,7 @@ export function isSecretEncryptionAvailable({ variant, localStatePath }: SecretO
  * @returns {string}
  */
 export function secretEncryptionUnavailableMessage(variant: "cursor"): string {
-  const app = appNameFor(variant);
+  const app = "Cursor";
   const platform = os.platform();
   if (platform === "darwin") {
     return `Could not read ${app}'s "${app} Safe Storage" key from the login Keychain, so the API key can't be stored where ${app} reads it. Open ${app} once (it creates this key on first launch) and retry.`;

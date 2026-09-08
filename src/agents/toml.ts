@@ -97,7 +97,7 @@ export function patchRouting(raw: string, { providerId, baseUrl, modelId, catalo
     `model = "${modelId}"`,
   ].join("\n");
   const tablesBlock = [
-    `[model_providers.${providerId}]`,
+    CODEX_PROVIDER_TABLE_HEADER,
     `name = "ai&"`,
     `base_url = "${baseUrl}"`,
     `wire_api = "responses"`,

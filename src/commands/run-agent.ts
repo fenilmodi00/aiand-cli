@@ -146,7 +146,7 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   const profile = resolveProfile(split.profile);
-  const catalog = await getCatalog(split.baseUrl ?? profile.apiUrl, null);
+  const catalog = await getCatalog(split.baseUrl ?? profile.apiUrl);
 
   // --model validated against the live catalog, else let the adapter fall back
   // to its own default. OpenCode is the one adapter whose session config NEEDS

@@ -139,36 +139,5 @@ export function renderBannerLine(line: string, theme: Theme): string {
   if (!theme.color) {
     return stripBannerMarkup(line);
   }
-
-  const styles: Record<string, (text: string) => string> = {
-    spark: theme.spark,
-    burst: theme.burst,
-    core: theme.core,
-    trail: theme.trail,
-    ember: theme.ember,
-    brand: theme.brand,
-    fuse: theme.muted,
-  };
-
-  if (Object.keys(theme.opens).length > 0) {
-    return renderBannerNodes(parseBannerMarkup(line), theme.opens, null);
-  }
-
-  return renderBannerNodesFallback(parseBannerMarkup(line), styles);
-}
-
-function renderBannerNodesFallback(
-  nodes: BannerNode[],
-  styles: Record<string, (text: string) => string>
-): string {
-  return nodes
-    .map((node) => {
-      if (typeof node === "string") {
-        return node;
-      }
-      const inner = renderBannerNodesFallback(node.children, styles);
-      const style = styles[node.tag];
-      return style ? style(inner) : inner;
-    })
-    .join("");
+  return renderBannerNodes(parseBannerMarkup(line), theme.opens, null);
 }

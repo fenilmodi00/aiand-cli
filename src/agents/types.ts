@@ -38,8 +38,8 @@ export type SessionLaunch = {
   cleanup?: () => Promise<void>;
 };
 
-/** Options for the pre-write guards; `isRunning` is the test seam. */
-export type GuardOptions = { force: boolean; isRunning?: () => boolean };
+/** Options for the pre-write guards. */
+export type GuardOptions = { force: boolean };
 
 export type AgentAdapter = {
   id: string; // short: "claude", "codex", ...

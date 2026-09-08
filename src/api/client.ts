@@ -3,7 +3,6 @@ import { ApiError, CliError, NotLoggedInError } from "../cli/errors.js";
 import {
   loadCredential,
   saveCredential,
-  maskKey,
   type ResolvedProfile,
   type Credential,
   type LoadedCredential,
@@ -13,7 +12,6 @@ import { rotateTokens } from "./device.js";
 const ROTATE_BEFORE_SECONDS = 60 * 60 * 24 * 3;
 
 export const HEADERS = {
-  ORG_ID: "X-Org-ID",
   METRICS: "X-Aiand-Metrics",
   MODEL: "X-Model",
   COST: "X-Cost",
@@ -83,7 +81,7 @@ export type RequestOptions = {
   signal?: AbortSignal;
 };
 
-export function buildUrl(baseUrl: string, path: string, query?: RequestOptions["query"]): string {
+function buildUrl(baseUrl: string, path: string, query?: RequestOptions["query"]): string {
   const url = new URL(baseUrl + path);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -144,13 +142,13 @@ export async function publicJson<T>(url: string): Promise<T> {
  * can branch on status/error bodies before unwrapping.
  */
 export async function publicRequest(url: string, init: RequestInit = {}): Promise<Response> {
-  const { body, headers, ...rest } = init;
+  const { headers, ...rest } = init;
   return fetchOrFail(url, {
     ...rest,
     headers: {
       Accept: "application/json",
       "User-Agent": userAgent(),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...(rest.body !== undefined ? { "Content-Type": "application/json" } : {}),
       ...(headers as Record<string, string>),
     },
   });
@@ -227,4 +225,3 @@ export const VERSION: string = (() => {
   }
 })();
 
-export { maskKey };

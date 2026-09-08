@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { CliError } from "../cli/errors.js";
 import { configDir, writeFileAtomic } from "../config.js";
 import { listModels, type Model } from "../api/models.js";
-import type { Session } from "../api/client.js";
 
 const CATALOG_CACHE_FILE = "model-catalog.json";
 const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
@@ -66,12 +65,12 @@ function isFresh(cache: CatalogCache, baseUrl: string): boolean {
  * A fresh cache short-circuits the network entirely; a failed fetch falls
  * back to a stale cache before giving up.
  */
-export async function getCatalog(baseUrl: string, session: Session | null): Promise<Model[]> {
+export async function getCatalog(baseUrl: string): Promise<Model[]> {
   const cached = await readCache();
   if (cached && isFresh(cached, baseUrl)) return cached.models;
 
   try {
-    const models = await listModels(session, baseUrl);
+    const models = await listModels(null, baseUrl);
     const next: CatalogCache = { fetchedAt: Date.now(), baseUrl, models };
     await writeFileAtomic(catalogCachePath(), `${JSON.stringify(next, null, 2)}\n`, {
       mode: 0o600,

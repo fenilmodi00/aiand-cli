@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
-import { after, before, describe, test } from "node:test";
+import { describe, test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
+import { withTestEnv } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 const BIN = join(dirname(import.meta.dirname), "dist", "index.js");
@@ -26,13 +21,12 @@ printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
 exit 42
 `;
 
-let dir, home, cfg, binDir;
+let home, cfg, binDir;
 let stubCli;
 
 function model(id) {
   return {
     id,
-    name: id,
     object: "model",
     created: 1,
     owned_by: "fixture",
@@ -67,8 +61,7 @@ function plantMarkerStub(name) {
   return path;
 }
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-runagent-"));
+const env = withTestEnv("aiand-runagent-", (dir) => {
   home = join(dir, "home");
   cfg = join(dir, "cfg");
   binDir = join(dir, "bin");
@@ -87,14 +80,14 @@ before(() => {
   );
 
   // One capture dir per subprocess run, created fresh inside each test.
-  stubCli = (args, env, captureRoot) => {
+  stubCli = (args, extraEnv, captureRoot) => {
     const envWithPaths = {
       AIAND_HOME: home,
       AIAND_CONFIG_DIR: cfg,
       AIAND_API_KEY: "sk-test-aiand",
       PATH: `${binDir}:${process.env.PATH}`,
       AIAND_CAPTURE: join(captureRoot, "capture"),
-      ...env,
+      ...extraEnv,
     };
     return execFileAsync("node", [BIN, "run-agent", ...args], {
       env: envWithPaths,
@@ -103,10 +96,6 @@ before(() => {
       (e) => ({ code: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" })
     );
   };
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
 });
 
 describe("run-agent launcher", () => {
@@ -185,14 +174,14 @@ describe("run-agent launcher", () => {
   });
 
   test("no agent name -> CliError usage hint", async () => {
-    const { code, stderr } = await stubCli([], {}, dir);
+    const { code, stderr } = await stubCli([], {}, env.dir);
     assert.equal(code, 1);
     assert.match(stderr, /run-agent needs a coding agent name/i);
     assert.match(stderr, /aiand run-agent claude -- --version/i);
   });
 
   test("unknown agent -> CliError listing agents", async () => {
-    const { code, stderr } = await stubCli(["not-an-agent"], {}, dir);
+    const { code, stderr } = await stubCli(["not-an-agent"], {}, env.dir);
     assert.equal(code, 1);
     assert.match(stderr, /Unknown agent "not-an-agent"/);
     assert.match(stderr, /Agents:/);

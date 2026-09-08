@@ -4,10 +4,9 @@ import { style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 
 /**
- * Interactive prompt primitives: arrow-key single select, space-to-toggle
- * checkbox, and an incremental type-to-filter search. All three drive a shared
- * raw-mode render/keypress loop and accept injectable input/output streams so
- * they can be exercised without a real terminal.
+ * Interactive prompt primitive: a space-to-toggle checkbox that drives a
+ * shared raw-mode render/keypress loop and accepts injectable input/output
+ * streams so it can be exercised without a real terminal.
  */
 
 const HIDE_CURSOR = "\x1b[?25l";
@@ -20,8 +19,6 @@ const POINTER = "\u203a";
 export const KEY = Object.freeze({
   UP: "\x1b[A",
   DOWN: "\x1b[B",
-  RIGHT: "\x1b[C",
-  LEFT: "\x1b[D",
   ESC: "\x1b",
   CTRL_C: "\x03",
   ENTER_CR: "\r",
@@ -62,32 +59,6 @@ function fitWidth(line: string, width: number): string {
     return line;
   }
   return `${plain.slice(0, Math.max(0, width - 1))}…`;
-}
-
-/**
- * Split a raw input chunk into key sequences: CSI escape sequences (arrows,
- * etc.) come out whole; everything else char-by-char.
- */
-export function* splitKeys(chunk: string): Generator<string> {
-  let i = 0;
-  while (i < chunk.length) {
-    if (chunk[i] === "\x1b" && chunk[i + 1] === "[") {
-      let j = i + 2;
-      while (j < chunk.length && !(chunk[j]! >= "@" && chunk[j]! <= "~")) {
-        j += 1;
-      }
-      if (j < chunk.length) {
-        yield chunk.slice(i, j + 1);
-        i = j + 1;
-      } else {
-        yield chunk.slice(i);
-        break;
-      }
-    } else {
-      yield chunk[i]!;
-      i += 1;
-    }
-  }
 }
 
 /** Buffers incomplete CSI sequences across input chunks. */
@@ -283,23 +254,6 @@ function isEnter(seq: string): boolean {
   return seq === KEY.ENTER_CR || seq === KEY.ENTER_LF;
 }
 
-function isBackspace(seq: string): boolean {
-  return seq === KEY.BACKSPACE_DEL || seq === KEY.BACKSPACE_BS;
-}
-
-function isPrintable(seq: string): boolean {
-  return seq.length === 1 && seq >= " " && seq !== "\x7f";
-}
-
-/** 1-based menu shortcut; returns the choice index or -1. */
-function choiceIndexFromDigit(seq: string, length: number): number {
-  if (seq.length !== 1 || seq < "1" || seq > "9") {
-    return -1;
-  }
-  const idx = Number(seq) - 1;
-  return idx < length ? idx : -1;
-}
-
 /** Visible slice of `items` keeping `index` inside a `pageSize` window. */
 function windowFor(items: readonly unknown[], index: number, pageSize: number): { start: number; end: number } {
   if (items.length <= pageSize) {
@@ -336,68 +290,6 @@ function renderRows<T>({
 
 function summaryLine(output: PromptOutput, message: string, answer: string): void {
   output.write(`${style.cyan(OK)} ${message} ${style.bold(answer)}\n`);
-}
-
-/**
- * Arrow-key single select over labeled choices. Digits 1-9 pick directly;
- * Enter confirms the highlighted row; Esc/q cancels (returns empty string).
- */
-export async function promptSelect({
-  message,
-  choices,
-  pageSize = 10,
-  initialIndex = 0,
-  input,
-  output = process.stdout,
-}: {
-  message: string;
-  choices: Choice[];
-  pageSize?: number;
-  initialIndex?: number;
-  input?: PromptInput;
-  output?: PromptOutput;
-}): Promise<string> {
-  let index = Math.min(Math.max(0, initialIndex), Math.max(0, choices.length - 1));
-
-  const value = await runPrompt<Choice | null>({
-    input,
-    output,
-    renderLines: () => [
-      style.bold(`${POINTER} ${message}`),
-      ...renderRows({
-        items: choices,
-        index,
-        pageSize,
-        renderRow: (choice, active) =>
-          active ? `${style.cyan(POINTER)} ${choice.label}` : `  ${choice.label}`,
-      }),
-      style.dim("↑/↓ move · 1-9 select · Enter confirm · Esc cancel"),
-    ],
-    onKey: (seq) => {
-      if (seq === KEY.UP) {
-        index = (index - 1 + choices.length) % choices.length;
-      } else if (seq === KEY.DOWN) {
-        index = (index + 1) % choices.length;
-      } else if (isEnter(seq)) {
-        return { done: true, value: choices[index] ?? null };
-      } else {
-        const picked = choiceIndexFromDigit(seq, choices.length);
-        if (picked >= 0) {
-          return { done: true, value: choices[picked] ?? null };
-        }
-      }
-      if (seq === KEY.ESC || seq === "q") {
-        return { done: true, value: null };
-      }
-      return undefined;
-    },
-  });
-
-  if (value === null) {
-    return "";
-  }
-  summaryLine(output, message, value.label);
-  return value.value;
 }
 
 /**
@@ -468,94 +360,4 @@ export async function promptCheckbox({
   const names = choices.filter((_, i) => checked[i]).map((choice) => choice.label);
   summaryLine(output, message, names.join(", "));
   return value;
-}
-
-/**
- * Incremental type-to-filter select: printable keys narrow `items` live via
- * `filter`, arrows move, Enter picks the highlighted row. Returns the chosen
- * value, or empty string on Esc.
- */
-export async function promptSearch<T>({
-  message,
-  items,
-  filter,
-  toChoice,
-  pageSize = 10,
-  input,
-  output = process.stdout,
-}: {
-  message: string;
-  items: T[];
-  filter: (items: T[], term: string) => T[];
-  toChoice: (item: T) => Choice;
-  pageSize?: number;
-  input?: PromptInput;
-  output?: PromptOutput;
-}): Promise<string> {
-  let term = "";
-  let index = 0;
-  let matches = items;
-
-  const refilter = () => {
-    matches = filter(items, term);
-    index = Math.min(index, Math.max(0, matches.length - 1));
-  };
-
-  const value = await runPrompt<T | null>({
-    input,
-    output,
-    renderLines: () => {
-      const lines = [style.bold(`${POINTER} ${message} ${term}${style.cyan("▏")}`)];
-      if (matches.length === 0) {
-        lines.push(style.dim("  (no matches — Backspace to widen)"));
-      } else {
-        lines.push(
-          ...renderRows({
-            items: matches,
-            index,
-            pageSize,
-            renderRow: (item, active) => {
-              const choice = toChoice(item);
-              return active
-                ? `${style.cyan(POINTER)} ${choice.label}`
-                : `  ${choice.label}`;
-            },
-          })
-        );
-        const detail = toChoice(matches[index] as T).hint;
-        if (detail) {
-          lines.push(style.dim(`  ${detail}`));
-        }
-      }
-      lines.push(style.dim("Type to filter · ↑/↓ move · Enter select · Esc cancel"));
-      return lines;
-    },
-    onKey: (seq) => {
-      if (seq === KEY.UP && matches.length > 0) {
-        index = (index - 1 + matches.length) % matches.length;
-      } else if (seq === KEY.DOWN && matches.length > 0) {
-        index = (index + 1) % matches.length;
-      } else if (isEnter(seq)) {
-        if (matches.length > 0) {
-          return { done: true, value: matches[index] ?? null };
-        }
-      } else if (seq === KEY.ESC) {
-        return { done: true, value: null };
-      } else if (isBackspace(seq)) {
-        term = term.slice(0, -1);
-        refilter();
-      } else if (isPrintable(seq)) {
-        term += seq;
-        refilter();
-      }
-      return undefined;
-    },
-  });
-
-  if (value === null) {
-    return "";
-  }
-  const choice = toChoice(value);
-  summaryLine(output, message, choice.label);
-  return choice.value;
 }

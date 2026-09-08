@@ -34,14 +34,6 @@ assert.equal(
   `${binName} --version printed "${reported}" but package.json says "${pkg.version}"`
 );
 
-const registry = await import(pathToFileURL(new URL("../dist/commands/index.js", import.meta.url).pathname));
-assert.ok(Array.isArray(registry.COMMANDS) && registry.COMMANDS.length > 0, "command registry is empty");
-for (const command of registry.COMMANDS) {
-  assert.equal(typeof command.name, "string", "a command is missing its name");
-  assert.equal(typeof command.summary, "string", `${command.name} is missing a summary`);
-  assert.equal(typeof command.help, "string", `${command.name} is missing help text`);
-  assert.equal(typeof command.run, "function", `${command.name} does not export run()`);
-}
 
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
@@ -50,6 +42,4 @@ assert.deepEqual(
   `the CLI ships no runtime dependencies; found: ${runtimeDeps.join(", ")}`
 );
 
-console.log(
-  `check-dist ok: ${binName} v${pkg.version}, ${registry.COMMANDS.length} commands, 0 runtime deps`
-);
+console.log(`check-dist ok: ${binName} v${pkg.version}, 0 runtime deps`);

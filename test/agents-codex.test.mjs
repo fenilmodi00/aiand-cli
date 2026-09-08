@@ -1,35 +1,24 @@
 import assert from "node:assert/strict";
-import test, { after, before, describe } from "node:test";
+import test, { describe } from "node:test";
 import {
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 
-let dir;
-const originalEnv = { ...process.env };
+import { withTestEnv, catalogModel } from "./helpers.mjs";
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-codex-test-"));
+const env = withTestEnv("aiand-codex-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   process.env.AIAND_HOME = join(dir, "home");
-});
-
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
 });
 
 const { patchRouting, stripRouting, applyFirstRunDefaults, tomlString } = await import(
   "../dist/agents/toml.js"
 );
-const { CliError } = await import("../dist/cli/errors.js");
-const { codexAdapter, codexModelCatalogJson, chatgptQuitGuard, CODEX_SHARED_NOTE } = await import(
+const { codexAdapter, codexModelCatalogJson } = await import(
   "../dist/agents/codex.js"
 );
 
@@ -54,42 +43,29 @@ function plantedConfig() {
 
 function fixtureModels() {
   return [
-    {
-      id: "zai-org/glm-5.3",
+    catalogModel("zai-org/glm-5.3", {
       name: "GLM 5.3",
-      object: "model",
-      created: 0,
-      owned_by: "zai",
-      provider: "zai",
+      input: "1",
+      output: "2",
       context_window: 100000,
       capabilities: ["text"],
       reasoning_efforts: ["minimal", "low", "medium"],
       reasoning_effort_default: "medium",
-      description: null,
-      currency: "usd",
-      input_per_1m: "1",
-      output_per_1m: "2",
-      cached_input_per_1m: null,
-    },
-    {
-      id: "vision-model",
+      owned_by: "zai",
+      provider: "zai",
+    }),
+    catalogModel("vision-model", {
       name: "Vision",
-      object: "model",
-      created: 0,
-      owned_by: "x",
-      provider: "x",
+      input: "1",
+      output: "1",
       context_window: 50000,
       capabilities: ["text", "vision"],
-      reasoning_efforts: null,
-      reasoning_effort_default: null,
-      description: null,
-      currency: "usd",
-      input_per_1m: "1",
-      output_per_1m: "1",
-      cached_input_per_1m: null,
-    },
+      owned_by: "x",
+      provider: "x",
+    }),
   ];
 }
+
 
 const CATALOG_PATH = `${home()}/.codex/aiand-models.json`;
 
@@ -291,36 +267,6 @@ describe("codex adapter", () => {
     });
     assert.ok(launch.args.includes('model="zai-org/glm-5.3"'));
     assert.equal(launch.env.AIAND_CODEX_AUTH_TOKEN, "sk-launch-1");
-  });
-
-  test("CODEX_SHARED_NOTE is exported", () => {
-    assert.equal(typeof CODEX_SHARED_NOTE, "string");
-    assert.ok(CODEX_SHARED_NOTE.length > 0);
-  });
-});
-
-describe("chatgptQuitGuard", () => {
-  // Tests drive the guard through chatgptQuitGuard's injected isRunning
-  // probe (assertIdeStopped's own seam), so the rejection/force/not-running
-  // paths run on every platform — the adapter's darwin/win32-only gate that
-  // returns early on linux is intentionally not part of this block.
-  test("running + no force rejects with a CliError hinting --force (non-interactive)", async () => {
-    await assert.rejects(
-      chatgptQuitGuard({ force: false, isRunning: () => true }),
-      (error) => {
-        assert.ok(error instanceof CliError);
-        assert.match(error.hint ?? "", /--force/);
-        return true;
-      }
-    );
-  });
-
-  test("running + force resolves without throwing", async () => {
-    await chatgptQuitGuard({ force: true, isRunning: () => true });
-  });
-
-  test("not running resolves without throwing", async () => {
-    await chatgptQuitGuard({ force: false, isRunning: () => false });
   });
 });
 

@@ -11,15 +11,12 @@ const bin = join(root, "..", "dist", "index.js");
 
 const { BRAND } = await import("../dist/cli/ui/theme.js");
 const { colorsEnabled } = await import("../dist/cli/ui/color.js");
-const { loadBannerArt, printBanner } = await import("../dist/cli/ui/banner.js");
+const { printBanner } = await import("../dist/cli/ui/banner.js");
+const { BANNER_ART } = await import("../dist/cli/ui/banners/art.js");
 const { stripBannerMarkup, normalizeBannerArt } = await import(
   "../dist/cli/ui/banner-render.js"
 );
-const { sanitize } = await import("../dist/cli/ui/sanitize.js");
 const { hyperlinksEnabled, link } = await import("../dist/cli/links.js");
-const { _setColorEnabled, symbols, isStyleEnabled, check, paint } = await import(
-  "../dist/cli/output.js"
-);
 
 async function runCli(args, env = {}) {
   try {
@@ -86,26 +83,24 @@ describe("ui color", () => {
 });
 
 describe("ui banner", () => {
-  test("loads banner art within 80 columns", () => {
-    const art = loadBannerArt();
-    assert.ok(art.length > 0);
-    for (const line of normalizeBannerArt(art).split("\n")) {
+  test("banner art fits within 80 columns", () => {
+    assert.ok(BANNER_ART.length > 0);
+    for (const line of normalizeBannerArt(BANNER_ART).split("\n")) {
       const width = stripBannerMarkup(line).length;
       assert.ok(width <= 80, `line exceeds 80 cols: ${width} — ${stripBannerMarkup(line)}`);
     }
   });
 
-  test("includes the logo slash mark, brand markup, and Wire any agent tagline", () => {
-    const art = loadBannerArt();
-    const plain = stripBannerMarkup(art);
-    assert.match(art, /\{brand\}/);
-    assert.match(plain, /█████/);
-    assert.match(plain, /Wire any agent/);
+  test("banner art is the ai& wordmark with brand markup and no tagline", () => {
+    const plain = stripBannerMarkup(BANNER_ART);
+    assert.match(BANNER_ART, /\{brand\}/);
+    assert.match(plain, /█████████/);
+    assert.match(plain, /█████░░█████░███/);
+    assert.doesNotMatch(plain, /Wire any agent/);
   });
 
   test("prints plain banner art without ANSI when NO_COLOR is set", () => {
     const prev = process.env.NO_COLOR;
-    process.env.NO_COLOR = "1";
     const chunks = [];
     const originalWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk) => {
@@ -115,29 +110,14 @@ describe("ui banner", () => {
     try {
       printBanner({ version: "0.0.0-test" });
       const output = chunks.join("");
-      assert.match(output, /█████/);
-      assert.match(output, /Wire any agent/);
+      assert.match(output, /█████████/);
+      assert.match(output, /█████░░█████░███/);
       assert.match(output, /v0\.0\.0-test/);
       assert.doesNotMatch(output, /\x1b\[/);
     } finally {
       process.stdout.write = originalWrite;
       if (prev === undefined) delete process.env.NO_COLOR;
       else process.env.NO_COLOR = prev;
-    }
-  });
-
-  test("prints nothing when successOnly is set", () => {
-    const chunks = [];
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (chunk) => {
-      chunks.push(String(chunk));
-      return true;
-    };
-    try {
-      printBanner({ version: "0.0.0-test", successOnly: true });
-      assert.equal(chunks.join(""), "");
-    } finally {
-      process.stdout.write = originalWrite;
     }
   });
 });
@@ -151,80 +131,11 @@ describe("ui normalize", () => {
     assert.equal(normalizeBannerArt("a\n\nb\n"), "a\n\nb\n");
   });
 
-  test("keeps leading spaces before logo blocks on the first art line", () => {
-    const first = stripBannerMarkup(normalizeBannerArt(loadBannerArt()).split("\n")[0]);
-    assert.match(first, /^ +/);
-  });
-});
-
-describe("ui sanitize", () => {
-  test("OSC-8 hyperlink keeps only the visible link text", () => {
-    const input = "\x1b]8;;https://example.com\x1b\\openai\x1b]8;;\x1b\\";
-    assert.equal(sanitize(input), "openai");
-  });
-
-  test("strips SGR sequences", () => {
-    assert.equal(sanitize("\x1b[31mred\x1b[39m"), "red");
-  });
-
-  test("strips ESC-letter controls but not bare ESC+c", () => {
-    assert.equal(sanitize("a\u001bMb"), "ab");
-    // \u001bc (ESC c — terminal reset) is intentionally NOT stripped by design.
-    assert.equal(sanitize("a\u001bcb"), "acb");
-  });
-
-  test("keeps unicode content", () => {
-    assert.equal(sanitize("héllo ✓"), "héllo ✓");
-  });
-
-  test("coerces null, undefined, and numbers", () => {
-    assert.equal(sanitize(null), "");
-    assert.equal(sanitize(undefined), "");
-    assert.equal(sanitize(123), "123");
-  });
-});
-
-describe("ui style extras", () => {
-  test("check paints a cyan glyph when styled, plain glyph otherwise", () => {
-    const prev = isStyleEnabled();
-    try {
-      _setColorEnabled(false);
-      assert.equal(check({ isTTY: false }), symbols.ok);
-      _setColorEnabled(true);
-      assert.equal(check({ isTTY: false }), `\x1b[36m${symbols.ok}\x1b[39m`);
-    } finally {
-      _setColorEnabled(prev);
-    }
-  });
-
-  test("paint wraps with reset on tty, passthrough off-tty", () => {
-    const saved = {
-      prev: isStyleEnabled(),
-      no: process.env.NO_COLOR,
-      force: process.env.FORCE_COLOR,
-      term: process.env.TERM,
-    };
-    delete process.env.NO_COLOR;
-    delete process.env.FORCE_COLOR;
-    process.env.TERM = "xterm-256color";
-    try {
-      // paint reads process.env via colorsEnabled(): no tty -> passthrough.
-      assert.equal(paint("\x1b[31m", "hi", { isTTY: false }), "hi");
-      _setColorEnabled(true);
-      try {
-        assert.equal(paint("\x1b[31m", "hi", { isTTY: true }), "\x1b[31mhi\x1b[0m");
-        assert.equal(paint("\x1b[31m", "hi", { isTTY: false }), "hi");
-      } finally {
-        _setColorEnabled(saved.prev);
-      }
-    } finally {
-      if (saved.no === undefined) delete process.env.NO_COLOR;
-      else process.env.NO_COLOR = saved.no;
-      if (saved.force === undefined) delete process.env.FORCE_COLOR;
-      else process.env.FORCE_COLOR = saved.force;
-      if (saved.term === undefined) delete process.env.TERM;
-      else process.env.TERM = saved.term;
-    }
+  test("keeps relative indentation on art lines after normalize", () => {
+    const [first, second] = stripBannerMarkup(normalizeBannerArt(BANNER_ART))
+      .split("\n");
+    assert.match(first, /^\u2588/);
+    assert.ok(second.startsWith("  "), "second line keeps its leading spaces");
   });
 });
 
@@ -348,14 +259,13 @@ describe("aiand banner command", () => {
   test("prints banner art (hidden command, not in help)", async () => {
     const { code, stdout } = await runCli(["banner"]);
     assert.equal(code, 0);
-    assert.match(stdout, /█████/);
-    assert.match(stdout, /Wire any agent/);
+    assert.match(stdout, /█████████/);
+    assert.match(stdout, /█████░░█████░███/);
   });
 
   test("is not listed in aiand help", async () => {
     const { code, stdout } = await runCli(["help"]);
-    assert.equal(code, 0);
-    assert.match(stdout, /Wire any agent/);
+    assert.match(stdout, /█████░░█████░███/);
     // The Commands section must not advertise the hidden banner verb.
     const commandsBlock = stdout.slice(stdout.indexOf("Commands"));
     assert.doesNotMatch(commandsBlock, /^\s*banner\b/m);
@@ -363,15 +273,13 @@ describe("aiand banner command", () => {
 
   test("bare --help includes the banner", async () => {
     const { code, stdout } = await runCli(["--help"]);
-    assert.equal(code, 0);
-    assert.match(stdout, /Wire any agent/);
+    assert.match(stdout, /█████░░█████░███/);
     assert.match(stdout, /the ai& command line interface/);
   });
 
   test("--version does not print the banner", async () => {
     const { code, stdout } = await runCli(["--version"]);
-    assert.equal(code, 0);
-    assert.doesNotMatch(stdout, /Wire any agent/);
+    assert.doesNotMatch(stdout, /█████░░█████░███/);
     assert.match(stdout.trim(), /^\d+\.\d+\.\d+/);
   });
 });

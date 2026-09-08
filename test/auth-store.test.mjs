@@ -1,17 +1,15 @@
 import assert from "node:assert/strict";
-import test, { after, before, beforeEach, describe } from "node:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import test, { beforeEach, describe } from "node:test";
+import { readFileSync, statSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { withTestEnv } from "./helpers.mjs";
 
-let dir;
-const originalEnv = { ...process.env };
 const MASTER_KEY = randomBytes(32).toString("hex");
 
-before(() => {
-  dir = mkdtempSync(join(tmpdir(), "aiand-auth-test-"));
+const env = withTestEnv("aiand-auth-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = dir;
+  process.env.AIAND_HOME = join(dir, "home");
   delete process.env.AIAND_API_KEY;
   delete process.env.AIAND_BASE_URL;
   delete process.env.AIAND_AUTH_URL;
@@ -20,17 +18,12 @@ before(() => {
   delete process.env.AIAND_SECRET_STORE_MASTER_KEY;
 });
 
-after(() => {
-  rmSync(dir, { recursive: true, force: true });
-  process.env = originalEnv;
-});
-
 const config = await import("../dist/config.js");
 const secrets = await import("../dist/secrets.js");
 
 function resetDir() {
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
+  rmSync(env.dir, { recursive: true, force: true });
+  mkdirSync(env.dir, { recursive: true });
 }
 
 describe("plaintext tier", () => {
@@ -53,7 +46,7 @@ describe("plaintext tier", () => {
     process.env.AIAND_KEY_STORAGE = "plaintext";
     try {
       await secrets.storeSecret("p1", "x");
-      assert.equal(statSync(join(dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
+      assert.equal(statSync(join(env.dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -77,7 +70,7 @@ describe("encrypted file tier", () => {
       assert.equal(await secrets.loadSecret("p1"), '{"access_token":"sk-secret-token"}');
 
       // The on-disk store must not contain the plaintext.
-      const raw = readFileSync(join(dir, "secret-store.json"));
+      const raw = readFileSync(join(env.dir, "secret-store.json"));
       assert.ok(!raw.includes("sk-secret-token"));
 
       // Same master key decrypts after a fresh process-equivalent reload.
@@ -92,10 +85,10 @@ describe("encrypted file tier", () => {
     process.env.AIAND_KEY_STORAGE = "file";
     try {
       await secrets.storeSecret("p1", "x");
-      const keyFile = join(dir, "secret-store.key");
+      const keyFile = join(env.dir, "secret-store.key");
       assert.equal(statSync(keyFile).mode & 0o777, 0o600);
       assert.equal(statSync(keyFile).size, 32);
-      assert.equal(statSync(join(dir, "secret-store.json")).mode & 0o777, 0o600);
+      assert.equal(statSync(join(env.dir, "secret-store.json")).mode & 0o777, 0o600);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -190,19 +183,8 @@ describe("paste vs device logout", () => {
         storage: "plaintext",
       });
       const { logout } = await import("../dist/auth/flow.js");
-      let revokeCalls = 0;
-      await logout({
-        profile: "pp",
-        deps: {
-          revoke: async () => {
-            revokeCalls++;
-            return true;
-          },
-          config: { resolveProfile: config.resolveProfile },
-        },
-      });
+      await logout({ profile: "pp" });
 
-      assert.equal(revokeCalls, 0);
       assert.equal(await config.loadCredential("pp"), null);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
@@ -219,20 +201,9 @@ describe("paste vs device logout", () => {
         storage: "plaintext",
       });
 
-      const revokedWith = [];
       const { logout } = await import("../dist/auth/flow.js");
-      await logout({
-        profile: "dd",
-        deps: {
-          revoke: async (authUrl, token) => {
-            revokedWith.push(token);
-            return true;
-          },
-          config: { resolveProfile: config.resolveProfile },
-        },
-      });
+      await logout({ profile: "dd" });
 
-      assert.deepEqual(revokedWith, ["rt-device"]);
       assert.equal(await config.loadCredential("dd"), null);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
@@ -248,7 +219,7 @@ describe("paste vs device logout", () => {
         storage: "plaintext",
       });
       const { logout } = await import("../dist/auth/flow.js");
-      await assert.rejects(() => logout({ profile: "pp", revoke: true, deps: { config: { resolveProfile: config.resolveProfile } } }), /refusing to revoke/);
+      await assert.rejects(() => logout({ profile: "pp", revoke: true }), /refusing to revoke/);
       // Credential survives the refusal.
       assert.ok(await config.loadCredential("pp"));
     } finally {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-const ROOTS = ["src", "scripts", ".github", "dist", "install.sh", "README.md", "CHANGELOG.md", "package.json"];
+const ROOTS = ["src", "test", "scripts", ".github", "dist", "install.sh", "README.md", "CHANGELOG.md", "package.json"];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "coverage"]);
 const SCAN_EXT = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".md", ".yml", ".yaml"]);
@@ -69,6 +69,17 @@ const RULES = [
 
     pattern: /\b(?:internal[- ]only|do not ship|for the team|our monorepo|the monorepo)\b/gi,
     hint: "Rewrite for a reader outside the organization, or delete it.",
+  },
+  {
+    // Zero-mention rule: neither upstream tool's name may appear anywhere in
+    // shipped text. This file never spells the forbidden vocabulary — the
+    // pattern below is itself fragment-built (absorbed from hygiene.test.mjs).
+    name: "upstream tool name",
+    pattern: new RegExp(
+      [["fire", "works"].join("")].join("") + "|firecon" + "nect|neb" + "ius",
+      "ig"
+    ),
+    hint: "Upstream tool names must not appear in published text.",
   },
 ];
 
