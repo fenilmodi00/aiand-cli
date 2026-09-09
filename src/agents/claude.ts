@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { agentHome, writeFileAtomic } from "../config.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { resolveDefault, withContextTag } from "./catalog.js";
-import { deepEqual, readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
+import { readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 
 /**
@@ -177,7 +178,7 @@ async function enable(input: EnableInput): Promise<{ model: string; filesWritten
 
   // Idempotency guard: a re-`on` whose computed settings already match the
   // file skips the rewrite entirely (keeps the first snapshot authoritative).
-  if (!deepEqual(current, next)) {
+  if (!isDeepStrictEqual(current, next)) {
     await writeFileAtomic(settingsPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
   }
 

@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { agentHome, configDir, writeFileAtomic } from "../config.js";
-import { deepEqual, readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
+import { readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 import { err } from "../cli/output.js";
 
@@ -241,7 +242,7 @@ async function enable(
 
   // Idempotency guard: a re-`on` whose computed config already matches the
   // file skips the rewrite entirely (keeps the first snapshot authoritative).
-  if (!deepEqual(current, next)) {
+  if (!isDeepStrictEqual(current, next)) {
     // 0600 — the config carries a literal session key.
     await writeFileAtomic(opencodeConfigPath(), `${JSON.stringify(next, null, 2)}\n`, {
       mode: 0o600,

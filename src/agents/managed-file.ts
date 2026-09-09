@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 
 import { CliError } from "../cli/errors.js";
 
@@ -75,32 +76,10 @@ export async function readJsonOrEmpty(
 }
 
 /**
- * Structural deep-equality that ignores object key order, used to skip a
- * redundant rewrite on an idempotent re-`on`. Arrays and scalars compare
- * positionally/strictly.
- */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj).sort();
-  const bKeys = Object.keys(bObj).sort();
-  if (aKeys.length !== bKeys.length) return false;
-  for (let i = 0; i < aKeys.length; i++) {
-    const aKey = aKeys[i];
-    const bKey = bKeys[i];
-    if (aKey === undefined || bKey === undefined || aKey !== bKey) return false;
-    if (!deepEqual(aObj[aKey], bObj[bKey])) return false;
-  }
-  return true;
-}
-
-/**
  * Idempotent key swap for a managed config: read → if the extracted key
  * already matches, no-op → else apply and write. Unifies the refreshKey shape
- * across adapters on a single `===` check for the key field (structural
- * deepEqual is unnecessary once the key itself differs).
+ * across adapters on a single `===` check for the key field (a structural
+ * comparison is unnecessary once the key itself differs).
  *
  * `read` returns `null` when there is nothing to patch (missing/empty file).
  */

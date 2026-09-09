@@ -1,9 +1,8 @@
-import { createTheme } from "./theme.js";
+import { createTheme, type Theme } from "./theme.js";
 import { normalizeBannerArt, renderBannerLine } from "./banner-render.js";
 import { BANNER_ART } from "./banners/art.js";
 
-function styledBannerLines(art: string): string {
-  const theme = createTheme(process.stdout);
+function styledBannerLines(art: string, theme: Theme): string {
   return normalizeBannerArt(art)
     .split("\n")
     .map((line) => renderBannerLine(line, theme))
@@ -11,10 +10,10 @@ function styledBannerLines(art: string): string {
 }
 
 export function printBanner(options: { version?: string } = {}): void {
-  process.stdout.write(`${styledBannerLines(BANNER_ART)}\n`);
+  const theme = createTheme(process.stdout);
+  process.stdout.write(`${styledBannerLines(BANNER_ART, theme)}\n`);
 
   if (options.version) {
-    const theme = createTheme(process.stdout);
     process.stdout.write(`${theme.muted(`v${options.version}`)}\n`);
   }
 }

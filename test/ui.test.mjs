@@ -9,7 +9,6 @@ const execFileAsync = promisify(execFile);
 const root = dirname(fileURLToPath(import.meta.url));
 const bin = join(root, "..", "dist", "index.js");
 
-const { BRAND } = await import("../dist/cli/ui/theme.js");
 const { colorsEnabled } = await import("../dist/cli/ui/color.js");
 const { printBanner } = await import("../dist/cli/ui/banner.js");
 const { BANNER_ART } = await import("../dist/cli/ui/banners/art.js");
@@ -28,16 +27,6 @@ async function runCli(args, env = {}) {
     return { code: e.code ?? 1, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
   }
 }
-
-describe("ui tokens", () => {
-  test("exports ai& brand reds from the site palette", () => {
-    assert.equal(BRAND.red, "#C70007");
-    assert.equal(BRAND.glow, "#D84D51");
-    assert.equal(BRAND.deep, "#7B0004");
-    assert.equal(BRAND.mid, "#A30006");
-    assert.equal(BRAND.rose, "#B19A9C");
-  });
-});
 
 describe("ui color", () => {
   test("disables color when NO_COLOR is set", () => {

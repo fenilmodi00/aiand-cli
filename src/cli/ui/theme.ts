@@ -6,10 +6,6 @@ export const RESET = "\x1b[39m";
 /** ai& brand — banner art and truecolor theme (from aiand.com). */
 export const BRAND = {
   red: "#C70007",
-  glow: "#D84D51",
-  deep: "#7B0004",
-  mid: "#A30006",
-  rose: "#B19A9C",
 } as const;
 
 export function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -33,19 +29,10 @@ export function plainHex(hex: string): StyleFn {
   return wrap(fgHex(hex), RESET);
 }
 
-export function boldWhite(): StyleFn {
-  return wrap("\x1b[1m\x1b[97m", `${RESET}\x1b[22m`);
-}
-
 export type Theme = {
   color: boolean;
   brand: StyleFn;
   muted: StyleFn;
-  spark: StyleFn;
-  burst: StyleFn;
-  core: StyleFn;
-  trail: StyleFn;
-  ember: StyleFn;
 };
 
 /**
@@ -57,26 +44,12 @@ export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme
 
   if (!color) {
     const plain = (text: string) => text;
-    return {
-      color: false,
-      brand: plain,
-      muted: plain,
-      spark: plain,
-      burst: plain,
-      core: plain,
-      trail: plain,
-      ember: plain,
-    };
+    return { color: false, brand: plain, muted: plain };
   }
 
   return {
     color: true,
     brand: plainHex(BRAND.red),
     muted: wrap("\x1b[2m", "\x1b[22m"),
-    spark: plainHex(BRAND.glow),
-    burst: plainHex(BRAND.mid),
-    core: boldWhite(),
-    trail: plainHex(BRAND.deep),
-    ember: plainHex(BRAND.rose)
   };
 }

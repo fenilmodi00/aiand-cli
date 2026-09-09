@@ -1,6 +1,6 @@
 import { type Theme } from "./theme.js";
 
-const MARKUP_TAGS = ["spark", "burst", "core", "trail", "ember", "brand", "fuse"] as const;
+const MARKUP_TAGS = ["brand"] as const;
 
 const TAG_PATTERN = new RegExp(`\\{(/?)(${MARKUP_TAGS.join("|")})\\}`, "g");
 

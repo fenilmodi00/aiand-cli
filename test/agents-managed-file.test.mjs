@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CliError } from "../dist/cli/errors.js";
-import { deepEqual, readJsonOrEmpty, readTextIfExists } from "../dist/agents/managed-file.js";
+import { readJsonOrEmpty, readTextIfExists } from "../dist/agents/managed-file.js";
 
 let dir;
 const originalEnv = { ...process.env };
@@ -69,13 +69,4 @@ describe("managed-file read side", () => {
     );
   });
 
-  test("deepEqual ignores key order and compares arrays positionally", () => {
-    assert.equal(deepEqual({ a: 1, b: 2 }, { b: 2, a: 1 }), true);
-    assert.equal(deepEqual([1, 2], [1, 2]), true);
-    assert.equal(deepEqual([1, 2], [2, 1]), false);
-    assert.equal(deepEqual({ a: [1, 2] }, { a: [1, 2] }), true);
-    assert.equal(deepEqual({ a: 1 }, { a: 2 }), false);
-    assert.equal(deepEqual(null, null), true);
-    assert.equal(deepEqual({ a: 1 }, { a: 1, b: 2 }), false);
-  });
 });
