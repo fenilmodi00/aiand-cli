@@ -10,14 +10,6 @@ export type BrowserFlowResult =
   | { ok: true; tokens: TokenResponse }
   | { ok: false; failure: string; fatal: boolean; unsupported?: boolean };
 
-function base64url(bytes: Buffer): string {
-  return bytes
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
 const SUCCESS_HTML =
   "<!doctype html><title>Signed in</title>" +
   '<body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">' +
@@ -54,8 +46,8 @@ export type SignInOptions = {
 /**
  * Browser sign-in: authorization code + PKCE against the gateway, the
  * redirect caught on a loopback HTTP listener. Falls back to the device flow
- * via the `{ok: false, unsupported}` result when the server has no authorize
- * endpoint (pre-flight 404/501).
+ * via the `{ok: false, unsupported}` result when the server does not answer
+ * the paramless authorize probe with 400 (pre-flight allowlist).
  */
 export async function signInViaLocalhostCallback(
   opts: SignInOptions,
@@ -63,8 +55,11 @@ export async function signInViaLocalhostCallback(
   const { authUrl, signal } = opts;
   const onStatus = opts.onStatus ?? (() => {});
 
-  // Pre-flight: a 404/501 on /auth/authorize means no browser support; any
-  // other status (including 400 on the empty probe) proceeds.
+  // The gateway's authorize page answers a paramless GET with exactly 400
+  // once it exists (agreed contract; the aiand-auth-mock implements it).
+  // Production today answers 401 and unknown routes answer 404/501 — any
+  // non-400 means browser sign-in is unavailable here and the CLI silently
+  // falls back to the device flow.
   let preflight: Response;
   try {
     preflight = await publicRequest(`${authUrl}/auth/authorize`, {
@@ -73,7 +68,7 @@ export async function signInViaLocalhostCallback(
   } catch (error) {
     return { ok: false, failure: (error as Error).message, fatal: false };
   }
-  if (preflight.status === 404 || preflight.status === 501) {
+  if (preflight.status !== 400) {
     return {
       ok: false,
       failure: "Browser sign-in is not supported by this server.",
@@ -85,11 +80,9 @@ export async function signInViaLocalhostCallback(
   if (signal?.aborted)
     return { ok: false, failure: "Login cancelled.", fatal: false };
 
-  const verifier = base64url(randomBytes(32));
-  const state = base64url(randomBytes(16));
-  const codeChallenge = base64url(
-    createHash("sha256").update(verifier).digest(),
-  );
+  const verifier = randomBytes(32).toString("base64url");
+  const state = randomBytes(16).toString("base64url");
+  const codeChallenge = createHash("sha256").update(verifier).digest().toString("base64url");
 
   type CallbackOutcome = { code: string } | { failure: string; fatal: boolean };
   let redirectUri = "";

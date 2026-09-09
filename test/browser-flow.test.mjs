@@ -41,8 +41,9 @@ function stubServer(mode) {
       state.authorizeParams.push(Object.fromEntries(url.searchParams));
       if (mode === "unsupported") return reply(404, { error: "not found" });
       // Paramless GET is the CLI's pre-flight probe; only real authorize
-      // requests (which carry state) get the 302.
-      if (!requestState) return reply(200, { ok: true });
+      // requests (which carry state) get the 302. The contract says the
+      // paramless probe answers exactly 400.
+      if (!requestState) return reply(400, { error: "authorize needs params" });
       const target = new URL(redirectUri);
       if (mode === "denied") {
         target.searchParams.set("error", "access_denied");
