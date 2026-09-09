@@ -5,9 +5,17 @@ All notable changes to this project will be documented in this file.
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-09
 
 ### Added
+
+- Browser sign-in as the default interactive login: `aiand login` on a
+  terminal opens the browser at the gateway's authorize page and catches the
+  redirect on a loopback port (authorization-code + PKCE). Multi-org accounts
+  pick their organization with an arrow-key prompt; minted keys are labeled
+  `aiand@<hostname>` so the console key list names the machine. Until the
+  gateway ships the authorize page the CLI detects it with a paramless probe
+  and silently uses the device-code flow.
 
 - Device sign-in degrades to key paste: when the device flow fails for
   infrastructure reasons (service unreachable, HTTP error, code expired
