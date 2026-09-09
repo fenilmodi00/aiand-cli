@@ -36,8 +36,6 @@ export type SignInOptions = {
   keyName?: string;
   /** Opens the authorize URL; resolves true when a browser handled it. */
   open?: (url: string) => Promise<boolean>;
-  /** Callback port; default 0 = pick an ephemeral one. */
-  port?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
   onStatus?: (line: string) => void;
@@ -154,7 +152,7 @@ export async function signInViaLocalhostCallback(
     signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      server.listen(opts.port ?? 0, "127.0.0.1", () => {
+      server.listen(0, "127.0.0.1", () => {
         const address = server.address();
         const actualPort =
           typeof address === "object" && address ? address.port : 0;

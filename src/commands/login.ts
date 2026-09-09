@@ -35,10 +35,10 @@ export async function run(argv: string[]): Promise<void> {
   const pasteMode = bool(parsed, "paste") || str(parsed, "api-key") !== undefined || bool(parsed, "with-token");
   const profile = resolveProfile(str(parsed, "profile"));
 
-  if (!bool(parsed, "force") && (await loadCredential(profile.name))) {
+  const existing = await loadCredential(profile.name);
+  if (!bool(parsed, "force") && existing) {
     if (isInteractive()) {
-      const existing = await loadCredential(profile.name);
-      const email = existing?.user?.email ?? "unknown";
+      const email = existing.user?.email ?? "unknown";
       const again = await confirm(`Profile ${profile.name} is already signed in as ${email}. Sign in again?`, {
         default: false,
       });

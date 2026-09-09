@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { ApiError, CliError, NotLoggedInError } from "../cli/errors.js";
+import { CliError, NotLoggedInError } from "../cli/errors.js";
 import { openSession, type Session } from "../api/client.js";
 import {
   getUser,
@@ -12,7 +12,6 @@ import {
   signInViaLocalhostCallback,
   type BrowserFlowResult,
 } from "./browser.js";
-import * as device from "../api/device.js";
 import { readSecret, confirm, isInteractive } from "../cli/prompt.js";
 import { readStdin } from "../cli/stdin.js";
 import { openBrowser } from "../cli/browser.js";
@@ -32,15 +31,14 @@ import {
   saveConfig,
   saveCredential,
   updateProfile,
-  type Config,
   type Credential,
   type LoadedCredential,
-  type Profile,
   type ResolvedProfile,
 } from "../config.js";
 import { rebakeAgentKeys, type RebakeNote } from "../agents/rebake.js";
 import {
   type DeviceCodeResponse,
+  type TokenResponse,
   revokeTokens,
   startDeviceAuthorization,
   verificationUrl,
@@ -234,7 +232,7 @@ export async function deviceLogin(
   process.once("SIGINT", onInterrupt);
 
   const spin = spinner("Waiting for approval in the browser...");
-  let tokens: device.TokenResponse;
+  let tokens: TokenResponse;
   try {
     tokens = await pollForToken(profile.authUrl, deviceStart, {
       signal: controller.signal,
@@ -354,7 +352,7 @@ async function pickOrg(
 
 async function completeSignIn(
   profile: ResolvedProfile,
-  tokens: device.TokenResponse,
+  tokens: TokenResponse,
   opts: { json?: boolean; input?: PromptInput; output?: PromptOutput },
 ): Promise<void> {
   await saveCredential(profile.name, {
