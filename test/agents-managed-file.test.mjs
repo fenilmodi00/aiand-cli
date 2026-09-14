@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CliError } from "../dist/cli/errors.js";
-import { readJsonOrEmpty, readTextIfExists } from "../dist/agents/managed-file.js";
+import { parseJsonc, readJsonOrEmpty, readTextIfExists } from "../dist/agents/managed-file.js";
 
 let dir;
 const originalEnv = { ...process.env };
@@ -68,5 +68,26 @@ describe("managed-file read side", () => {
         )
     );
   });
+});
 
+describe("parseJsonc", () => {
+  test("keeps ,} and ,] sequences inside string values", () => {
+    // Global trailing-comma regex would corrupt these; the scan must be
+    // string-aware the same way comment stripping is.
+    assert.deepEqual(parseJsonc('{"pattern":",}","other":",]"}'), {
+      pattern: ",}",
+      other: ",]",
+    });
+  });
+
+  test("strips trailing commas after comments", () => {
+    assert.deepEqual(parseJsonc('{\n  "a": 1, // keep\n  "b": [2,],\n}\n'), {
+      a: 1,
+      b: [2],
+    });
+  });
+
+  test("unclosed block comment yields SyntaxError from JSON.parse", () => {
+    assert.throws(() => parseJsonc('{ "a": 1 /* never closed'), SyntaxError);
+  });
 });

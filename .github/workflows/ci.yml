@@ -20,6 +20,11 @@ jobs:
       - run: npm test
         env:
           AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
+      - run: node --test test/e2e-live.test.mjs
+        if: success() || failure()
+        continue-on-error: true
+        env:
+          AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:public

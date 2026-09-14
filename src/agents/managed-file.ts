@@ -27,6 +27,82 @@ export async function readTextIfExists(file: string): Promise<string> {
     throw error;
   }
 }
+/**
+ * Parse JSONC (comments + trailing commas) the way OpenCode does — its docs
+ * promise "both JSON and JSONC" for opencode.json, so a user's commented
+ * config must not wedge `on`. Stdlib-only: one string-aware scan strips line
+ * and block comments and trailing commas, then JSON.parse. Not a general
+ * JSONC parser — ponytail: quotes + escapes so a `//` or `,}` inside a string
+ * literal survives; JSON.stringify output (all we ever write) needs none of
+ * this.
+ */
+export function parseJsonc(text: string): unknown {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const next = text[i + 1];
+    if (escaped) {
+      out += char;
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (char === "\\") {
+        out += char;
+        escaped = true;
+      } else {
+        if (char === '"') inString = false;
+        out += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      out += char;
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i++; // consume the trailing slash; safe at EOF (loop exit leaves i past end)
+      continue;
+    }
+    // Trailing comma: drop `,` when the next non-ws / non-comment token is
+    // `]` or `}`. Lookahead skips whitespace and comments so `,\n // c\n}`
+    // still strips; string values never reach here.
+    if (char === ",") {
+      let j = i + 1;
+      while (j < text.length) {
+        const c = text[j];
+        const n = text[j + 1];
+        if (c === " " || c === "\t" || c === "\r" || c === "\n") {
+          j++;
+          continue;
+        }
+        if (c === "/" && n === "/") {
+          while (j < text.length && text[j] !== "\n") j++;
+          continue;
+        }
+        if (c === "/" && n === "*") {
+          j += 2;
+          while (j < text.length && !(text[j] === "*" && text[j + 1] === "/")) j++;
+          j += 2;
+          continue;
+        }
+        break;
+      }
+      if (text[j] === "]" || text[j] === "}") continue;
+    }
+    out += char;
+  }
+  return JSON.parse(out);
+}
 
 /**
  * The single source of the `X is not valid JSON.` CliError for managed config

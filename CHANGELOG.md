@@ -23,6 +23,34 @@ breaking changes while the command surface settles.
   AF_UNIX sockets) had its piped context silently dropped by `run` and its
   key rejected by `login --with-token`. Sockets are accepted now.
 
+- `run-agent --base-url` goes through the same https-or-loopback check as
+  every other command, before any session or catalog work (`--help` still
+  wins over a bad URL).
+- Ownership Marker: `opencode on` stamps `x-aiand: true` in `opencode.json`,
+  and probe/disable/refreshKey treat a config as ours only when the marker
+  is present (plus an `sk-` key and https/loopback URL). Marker-only — no
+  prod-URL legacy path. A foreign provider named `aiand` can no longer read
+  active and be deleted by `off` or `logout`.
+- `opencode.json` reads accept JSONC: OpenCode documents comments and
+  trailing commas for the file, so a commented config no longer blocks
+  `on`/`status`. Trailing-comma stripping is string-aware (a `,}` inside a
+  string value is preserved).
+- Atomic writes follow symlinks instead of replacing them: dotfile-managed
+  configs (stow/chezmoi) keep their link through `on`/`off`.
+- `run-agent` scrubs `AIAND_API_KEY` from the child environment — the
+  adapter's own injection carries the key, so a leaked env var would hand
+  it to every process the agent spawns.
+- Profile names are validated at the trust boundary: `__proto__` and other
+  prototype keys can no longer silently drop credential metadata.
+- The plaintext secret store rides the atomic writer, and
+  `AIAND_SECRET_STORE_MASTER_KEY` is validated as 64 hex characters rather
+  than 64 characters of anything.
+
+- macOS keychain writes no longer put the secret in the child's argv: the
+  command rides `security -i` stdin, counts only when the readback matches
+  byte-for-byte, and falls back to the argv form otherwise — never worse
+  than before, invisible to `ps` whenever interactive mode takes.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

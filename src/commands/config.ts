@@ -81,7 +81,7 @@ function paths(parsed: ReturnType<typeof parse>): void {
   ]);
 }
 
-function set(args: string[]): void {
+async function set(args: string[]): Promise<void> {
   const [key, ...valueParts] = args;
   const value = valueParts.join(" ");
   if (!key || !value) {
@@ -97,14 +97,14 @@ function set(args: string[]): void {
   switch (key) {
     case "api-url":
       assertHttpsBaseUrl(value);
-      updateProfile(name, { apiUrl: value });
+      await updateProfile(name, { apiUrl: value });
       break;
     case "auth-url":
       assertHttpsBaseUrl(value);
-      updateProfile(name, { authUrl: value });
+      await updateProfile(name, { authUrl: value });
       break;
     case "model":
-      updateProfile(name, { model: value });
+      await updateProfile(name, { model: value });
       break;
     default:
       throw new CliError(`"${key}" is not a settable key.`, {
@@ -135,7 +135,7 @@ async function profiles(parsed: ReturnType<typeof parse>): Promise<void> {
   }
 }
 
-function use(name: string | undefined): void {
+async function use(name: string | undefined): Promise<void> {
   if (!name) {
     throw new CliError("Which profile?", { hint: "aiand config use <profile>" });
   }
@@ -144,6 +144,6 @@ function use(name: string | undefined): void {
     config.profiles[name] = {};
   }
   config.profile = name;
-  saveConfig(config);
+  await saveConfig(config);
   out(style.green(`Using profile "${name}".`));
 }

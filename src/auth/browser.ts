@@ -22,12 +22,19 @@ const FAILURE_HTML =
 
 /** Every response closes the connection: a lingering keep-alive socket would
  * outlive server.close() and hang the flow. */
-function respond(res: ServerResponse, success: boolean): void {
+function respond(
+  res: ServerResponse,
+  success: boolean,
+  onFlushed?: () => void
+): void {
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     Connection: "close",
   });
-  res.end(success ? SUCCESS_HTML : FAILURE_HTML);
+  // The deny/error page must reach the browser before settle() tears the
+  // listener down — closeAllConnections() can destroy a socket whose write
+  // is still queued, leaving the user a blank tab.
+  res.end(success ? SUCCESS_HTML : FAILURE_HTML, onFlushed);
 }
 
 export type SignInOptions = {
@@ -109,25 +116,35 @@ export async function signInViaLocalhostCallback(
     server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       const known = req.method === "GET" && url.pathname === "/";
-      respond(res, known);
-      if (!known || settled) return;
-      // A forged or foreign callback (wrong/absent state) gets a polite page
-      // but must never settle the wait.
-      if (url.searchParams.get("state") !== state) return;
-      const code = url.searchParams.get("code");
-      if (code) return settle({ code });
-      const error = url.searchParams.get("error");
-      if (error === "access_denied") {
-        return settle({
+      // The page is chosen before settling so a Deny click renders the
+      // failure page. A forged callback (wrong/absent state) or a stray
+      // path (favicon, probe) gets the polite landing page but never
+      // settles the wait.
+      const stateOk = known && url.searchParams.get("state") === state;
+      const code = stateOk ? url.searchParams.get("code") : null;
+      const error = stateOk ? url.searchParams.get("error") : null;
+      let success = true;
+      let pending: CallbackOutcome | null = null;
+      if (code) {
+        pending = { code };
+      } else if (error === "access_denied") {
+        success = false;
+        pending = {
           failure: "Sign-in was cancelled in the browser.",
           fatal: true,
-        });
-      }
-      if (error)
-        return settle({
+        };
+      } else if (error) {
+        success = false;
+        pending = {
           failure: `Sign-in failed in the browser (${error}).`,
           fatal: false,
-        });
+        };
+      }
+      // Settle only after the page is flushed, so teardown never races the
+      // browser actually receiving it.
+      respond(res, success, () => {
+        if (pending && !settled) settle(pending);
+      });
     });
 
     server.on("error", (error: NodeJS.ErrnoException) => {
@@ -155,7 +172,7 @@ export async function signInViaLocalhostCallback(
         const address = server.address();
         const actualPort =
           typeof address === "object" && address ? address.port : 0;
-        redirectUri = `http://localhost:${actualPort}`;
+        redirectUri = `http://127.0.0.1:${actualPort}`;
         const params = new URLSearchParams({
           client_id: CLIENT_ID,
           response_type: "code",

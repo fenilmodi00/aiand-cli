@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # aiand one-line installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
 #
 # Clones (or fast-forward updates) the CLI into ~/.aiand/cli, builds it with
 # the project's own toolchain, and drops an `aiand` launcher on PATH via
@@ -16,7 +16,7 @@
 #   AIAND_INSTALL_VERBOSE=1              show full npm output
 set -euo pipefail
 
-DEFAULT_SOURCE="https://github.com/fenilmodi00/aiand-cli.git"
+DEFAULT_SOURCE="https://github.com/aiandlabs/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
 INSTALL_DIR="${AIAND_DIR:-${HOME}/.aiand/cli}"
 MIN_NODE_MAJOR=22
@@ -158,10 +158,31 @@ ensure_durable_source() {
       return
     fi
     install_note "Local changes blocked a fast-forward update; reinstalling ${INSTALL_DIR} from scratch."
-    rm -rf "${INSTALL_DIR}"
+    # AIAND_DIR can point anywhere (even $HOME), so only delete a proven
+    # aiand checkout — never wipe an unrelated directory. This function runs
+    # inside $(...) so install_note alone would die with the subshell: echo
+    # the failure too, then exit 1 to abort the assignment in main (set -e).
+    if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -q '"name": "@aiand/cli"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+      rm -rf "${INSTALL_DIR}"
+    else
+      install_note "${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely"
+      echo "Error: ${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely" >&2
+      exit 1
+    fi
   else
     install_progress "Downloading aiand..."
-    rm -rf "${INSTALL_DIR}"
+    # Same guard on the fresh-clone path: a pre-existing unrelated directory
+    # (e.g. AIAND_DIR=~) must fail safely instead of being wiped. A missing
+    # or empty directory is a fresh target, not a victim — clone into it.
+    if [[ -e "${INSTALL_DIR}" && -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null)" ]]; then
+      if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -q '"name": "@aiand/cli"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+        rm -rf "${INSTALL_DIR}"
+      else
+        install_note "${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely"
+        echo "Error: ${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely" >&2
+        exit 1
+      fi
+    fi
   fi
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   git clone --quiet --depth 1 "${SOURCE}" "${INSTALL_DIR}"

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { configDir, writeFileAtomic } from "./fsutil.js";
@@ -64,11 +64,49 @@ async function run(
   return promise;
 }
 
+/**
+ * The command line handed to `security -i` on stdin, so the secret never
+ * appears in the child's argv (same-user `ps` can read argv for the child's
+ * lifetime). `security` has no stdin flag for the password itself; the -i
+ * mode reads whole commands from stdin. POSIX single-quoting keeps the blob
+ * one token under a shell-like tokenizer; under a plain whitespace tokenizer
+ * the quotes stay literal, the readback in keychainSet then mismatches, and
+ * the argv fallback runs — correct either way, argv-exposed only there.
+ */
+export function securityInteractiveSetCommand(account: string, secret: string): string {
+  const quoted = `'${secret.replace(/'/g, `'\\''`)}'`;
+  return `add-generic-password -s ${SERVICE} -a ${account} -U -w ${quoted}\n`;
+}
+
 async function keychainSet(account: string, secret: string): Promise<void> {
-  const result =
-    process.platform === "darwin"
-      ? await run("security", ["add-generic-password", "-s", SERVICE, "-a", account, "-w", secret, "-U"])
-      : await run("secret-tool", ["store", `--service=${SERVICE}`, `--account=${account}`], secret);
+  if (process.platform === "darwin") {
+    // Interactive exit codes are unreliable, so the -i write counts only when
+    // the readback matches byte-for-byte; a mismatch or an unreadable
+    // keychain falls back to the argv form, which storeSecret verifies the
+    // same way. -U updates an existing item, so a quote-mangled -i attempt
+    // is replaced, never duplicated.
+    await run("security", ["-i"], securityInteractiveSetCommand(account, secret));
+    try {
+      if ((await keychainGet(account)) === secret) return;
+    } catch {
+      // Locked keyring or failed parse — the argv retry below decides.
+    }
+    const result = await run("security", [
+      "add-generic-password",
+      "-s",
+      SERVICE,
+      "-a",
+      account,
+      "-w",
+      secret,
+      "-U",
+    ]);
+    if (result.code !== 0) {
+      throw new Error(`${keychainTool()} could not store the secret (exit ${result.code}).`);
+    }
+    return;
+  }
+  const result = await run("secret-tool", ["store", "--label=aiand", "service", SERVICE, "account", account], secret);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not store the secret (exit ${result.code}).`);
   }
@@ -78,7 +116,7 @@ async function keychainGet(account: string): Promise<string> {
   const result =
     process.platform === "darwin"
       ? await run("security", ["find-generic-password", "-s", SERVICE, "-a", account, "-w"])
-      : await run("secret-tool", ["lookup", `--service=${SERVICE}`, `--account=${account}`]);
+      : await run("secret-tool", ["lookup", "service", SERVICE, "account", account]);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not read the secret (exit ${result.code}).`);
   }
@@ -89,7 +127,7 @@ async function keychainDelete(account: string): Promise<void> {
   const result =
     process.platform === "darwin"
       ? await run("security", ["delete-generic-password", "-s", SERVICE, "-a", account])
-      : await run("secret-tool", ["clear", `--service=${SERVICE}`, `--account=${account}`]);
+      : await run("secret-tool", ["clear", "service", SERVICE, "account", account]);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not delete the secret (exit ${result.code}).`);
   }
@@ -119,7 +157,7 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
   if (tier === "plaintext") {
     const map = readPlaintextMap();
     map[profile] = blob;
-    writePlaintextMap(map);
+    await writePlaintextMap(map);
     return "plaintext";
   }
   if (tier === "file") {
@@ -164,7 +202,7 @@ export async function deleteSecret(profile: string, recordedTier?: Tier): Promis
     const map = readPlaintextMap();
     if (!(profile in map)) return;
     delete map[profile];
-    writePlaintextMap(map);
+    await writePlaintextMap(map);
     return;
   }
   if (tier === "file") {
@@ -203,7 +241,7 @@ const secretsFilePath = (): string => join(configDir(), "secret-store.json");
 async function getKeyMaterial(): Promise<Buffer> {
   const envKey = process.env.AIAND_SECRET_STORE_MASTER_KEY;
   if (envKey) {
-    if (envKey.length !== 64) {
+    if (!/^[0-9a-fA-F]{64}$/.test(envKey)) {
       throw new CliError("AIAND_SECRET_STORE_MASTER_KEY must be 64 hex characters (32 bytes).");
     }
     return Buffer.from(envKey, "hex");
@@ -294,8 +332,6 @@ function readPlaintextMap(): SecretMap {
   }
 }
 
-function writePlaintextMap(map: SecretMap): void {
-  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(plaintextPath(), JSON.stringify(map, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(plaintextPath(), 0o600);
+async function writePlaintextMap(map: SecretMap): Promise<void> {
+  await writeFileAtomic(plaintextPath(), JSON.stringify(map, null, 2) + "\n", { mode: 0o600 });
 }

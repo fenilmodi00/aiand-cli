@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { getCatalog, resolveDefault, validateCatalogModel } from "../agents/catalog.js";
 import { requireSessionKey } from "../auth/session.js";
@@ -112,6 +112,7 @@ export async function run(argv: string[]): Promise<void> {
     out(help);
     return;
   }
+  if (split.baseUrl !== undefined) assertHttpsBaseUrl(split.baseUrl);
 
   const agentName = split.agent;
   if (!agentName) {
@@ -162,17 +163,24 @@ export async function run(argv: string[]): Promise<void> {
   const launch = await adapter.sessionLaunch({ apiKey: session.key, model, catalog, baseUrl: split.baseUrl });
 
   // Child env = inherited, minus everything the adapter wants cleared, plus
-  // the adapter's injected keys.
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of launch.clear) delete env[key];
+  // The adapter's own injection carries the key; a leaked AIAND_API_KEY would hand it to every process the agent spawns.
+  delete env.AIAND_API_KEY;
   Object.assign(env, launch.env);
 
   try {
-    const { status, signal } = await spawnChild(
-      adapter.bin,
-      [...(launch.args ?? []), ...split.passthrough],
-      { env, stdio: "inherit", shell: process.platform === "win32" }
-    );
+    // Windows: shell:true with an args array mangles spaces and &, so route
+    // through cmd.exe with each token quoted instead of using shell:true.
+    const forwardArgs = [...(launch.args ?? []), ...split.passthrough];
+    const { status, signal } =
+      process.platform === "win32"
+        ? await spawnChild(
+            "cmd.exe",
+            ["/d", "/s", "/c", [adapter.bin, ...forwardArgs].map((token) => `"${token.replace(/"/g, '\\"')}"`).join(" ")],
+            { env, stdio: "inherit" }
+          )
+        : await spawnChild(adapter.bin, forwardArgs, { env, stdio: "inherit" });
     // Propagate the child's exit. Never process.exit here — the runtime flushes
     // stdio before the shell reads the code, and the dispatcher preserves
     // process.exitCode.

@@ -14,7 +14,7 @@ Requires Node.js 22+, git, and npm. Clones into `~/.aiand/cli`, builds, and
 puts `aiand` on PATH via `~/.local/bin` (re-run to update):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
 aiand login
 aiand init
 ```

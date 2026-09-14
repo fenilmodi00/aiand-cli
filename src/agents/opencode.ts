@@ -6,8 +6,8 @@ import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
 import { resolveDefault } from "./catalog.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
-import { agentHome, configDir, writeFileAtomic } from "../config.js";
-import { readJsonOrEmpty, swapKeyInConfig } from "./managed-file.js";
+import { agentHome, configDir, isLoopbackHost, writeFileAtomic } from "../config.js";
+import { notValidJsonError, parseJsonc, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 import { err } from "../cli/output.js";
 
@@ -16,6 +16,8 @@ export const OPENCODE_BASE_URL = "https://api.aiand.com/v1";
 
 /** Provider id in the OpenCode config — the "aiand/" model ref prefix too. */
 const OPENCODE_PROVIDER_ID = "aiand";
+/** Ownership marker aiand stamps on configs it writes, so off/logout strip surgically. */
+const OPENCODE_MARKER_KEY = "x-aiand";
 
 /**
  * One model entry inside `provider.aiand.models`. Built from a live ai&
@@ -123,6 +125,10 @@ export function buildOpencodeConfig({
     // models are pure clutter here). disabled_providers takes priority over
     // enabled_providers, so this stays effective either way.
     disabled_providers: ["opencode"],
+    // Ownership marker: proves aiand wrote this config. A foreign provider
+    // that merely reuses the "aiand" name lacks it, so probe reads it
+    // inactive and off/logout leave it untouched.
+    [OPENCODE_MARKER_KEY]: true,
   };
 }
 
@@ -184,47 +190,84 @@ function opencodeBaseURL(baseUrl?: string): string {
   return base ? `${base}/v1` : OPENCODE_BASE_URL;
 }
 
-async function probe(): Promise<ProbeResult> {
-  let provider: Record<string, unknown> | undefined;
-  let model: string | null = null;
+/**
+ * Ownership predicate: is this opencode.json ours? True only when the
+ * `x-aiand` marker we stamp on every write is present, the `aiand` provider
+ * has an `sk-` apiKey, and the baseURL is https or loopback http. Marker-only
+ * (no prod-URL legacy path): this is the first shipped PR, so dual ownership
+ * rules would be upgrade debt with no users to protect. A foreign provider
+ * that merely reuses the "aiand" name lacks the marker, so it reads inactive
+ * forever — off/logout can never delete it. A marked config with a garbage
+ * URL still reads inactive (never throw).
+ */
+function configIsOurs(parsed: Record<string, unknown>): boolean {
+  if (parsed[OPENCODE_MARKER_KEY] !== true) return false;
+  const provider = parsed.provider as Record<string, Record<string, unknown>> | undefined;
+  const aiand = provider?.[OPENCODE_PROVIDER_ID] as
+    | { options?: { baseURL?: unknown; apiKey?: unknown } }
+    | undefined;
+  const baseURL = aiand?.options?.baseURL;
+  const apiKey = aiand?.options?.apiKey;
+  if (typeof baseURL !== "string" || typeof apiKey !== "string" || !apiKey.startsWith("sk-")) {
+    return false;
+  }
   try {
-    const parsed = JSON.parse(await readFile(opencodeConfigPath(), "utf8")) as {
-      provider?: Record<string, Record<string, unknown>>;
-      model?: string;
-    };
-    provider = parsed.provider;
-    const rootModel = typeof parsed.model === "string" ? parsed.model : "";
-    if (rootModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
-      model = rootModel.slice(OPENCODE_PROVIDER_ID.length + 1);
+    const url = new URL(baseURL);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (url.protocol === "https:") return true;
+    return isLoopbackHost(url.hostname.replace(/^\[|\]$/g, ""));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Tolerant read of opencode.json: OpenCode accepts JSONC, so parse with
+ * comments + trailing commas stripped. Missing file is {} (probe before any
+ * write); top-level non-objects are {} so a partial file can't wedge the
+ * write; syntax errors surface as CliError with the standard opencode
+ * recovery hint. Writes stay strict JSON.stringify (JSONC on read only).
+ */
+async function readOpencodeConfig(): Promise<Record<string, unknown>> {
+  const path = opencodeConfigPath();
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  try {
+    const parsed: unknown = parseJsonc(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw notValidJsonError(
+        path,
+        "Fix it by hand, or delete it and run aiand opencode on again."
+      );
     }
+    throw error;
+  }
+}
+
+async function probe(): Promise<ProbeResult> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = await readOpencodeConfig();
   } catch {
     // Missing or invalid config → inactive, never a crash (a file mid-edit
     // shouldn't wedge `opencode status`).
-    provider = undefined;
-    model = null;
+    return { active: false, model: null };
   }
-  const aiand = provider?.[OPENCODE_PROVIDER_ID] as
-    | { options?: { baseURL?: unknown } }
-    | undefined;
-  const baseURL = aiand?.options?.baseURL;
-  // Prod default, loopback dev gateways, and staging/custom `--base-url`
-  // origins all count as ai& routing (only our enable() writes this
-  // block). Missing/garbage → inactive, never a throw.
-  let active = false;
-  if (typeof baseURL === "string") {
-    try {
-      if (baseURL.startsWith(new URL(OPENCODE_BASE_URL).origin)) active = true;
-      else {
-        const parsed = new URL(baseURL);
-        const http = parsed.protocol === "http:" || parsed.protocol === "https:";
-        const host = parsed.hostname.replace(/^\[|\]$/g, "");
-        const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
-        active = http && (loopback || parsed.protocol === "https:");
-      }
-    } catch {
-      active = false;
-    }
+  const rootModel = typeof parsed.model === "string" ? parsed.model : "";
+  let model: string | null = null;
+  if (rootModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
+    model = rootModel.slice(OPENCODE_PROVIDER_ID.length + 1);
   }
+  const active = configIsOurs(parsed);
   return {
     active,
     // True ai& routing, read from the real file: the model is whatever the
@@ -236,7 +279,7 @@ async function probe(): Promise<ProbeResult> {
 async function enable(
   input: EnableInput
 ): Promise<{ model: string; filesWritten: string[] }> {
-  const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
+  const current = await readOpencodeConfig();
 
   const models = await getApiModels(input.baseUrl);
 
@@ -295,12 +338,51 @@ export const opencodeAdapter: AgentAdapter = {
   probe,
   enable,
   async disable(): Promise<void> {
-    // Nothing beyond manifest restore: the engine restores the snapshotted
-    // config byte-for-byte, and there is no aiand-owned side file of ours to
-    // clean up. A no-op is the whole contract.
-    return Promise.resolve();
+    // Strip only what enable() owns, after the manifest restore: the `aiand`
+    // provider, an `aiand/…` root model ref, the lockdown keys, and our
+    // `x-aiand` marker. Gated on configIsOurs — a foreign provider that
+    // merely reuses the "aiand" name survives `off` and `logout` untouched.
+    // Missing/garbage config is a no-op, never a throw — `off` stays exit 0.
+    let current: Record<string, unknown>;
+    try {
+      current = await readOpencodeConfig();
+    } catch {
+      return;
+    }
+    if (!configIsOurs(current)) return;
+    let changed = false;
+    const provider = current.provider;
+    if (provider && typeof provider === "object" && !Array.isArray(provider)) {
+      if (OPENCODE_PROVIDER_ID in (provider as Record<string, unknown>)) {
+        delete (provider as Record<string, unknown>)[OPENCODE_PROVIDER_ID];
+        changed = true;
+      }
+    }
+    if (
+      typeof current.model === "string" &&
+      current.model.startsWith(`${OPENCODE_PROVIDER_ID}/`)
+    ) {
+      delete current.model;
+      changed = true;
+    }
+    if (isDeepStrictEqual(current.enabled_providers, [OPENCODE_PROVIDER_ID])) {
+      delete current.enabled_providers;
+      changed = true;
+    }
+    if (isDeepStrictEqual(current.disabled_providers, ["opencode"])) {
+      delete current.disabled_providers;
+      changed = true;
+    }
+    if (OPENCODE_MARKER_KEY in current) {
+      delete current[OPENCODE_MARKER_KEY];
+      changed = true;
+    }
+    if (!changed) return;
+    // 0600 — the surviving file may still carry secrets we preserved.
+    await writeFileAtomic(opencodeConfigPath(), `${JSON.stringify(current, null, 2)}\n`, {
+      mode: 0o600,
+    });
   },
-
   /**
    * Swap ONLY the `provider.aiand.options.apiKey` literal in an already-active
    * opencode.json, preserving the model ref, the full provider model map, and
@@ -311,7 +393,10 @@ export const opencodeAdapter: AgentAdapter = {
     await swapKeyInConfig({
       apiKey: input.apiKey,
       read: async () => {
-        const current = await readJsonOrEmpty(opencodeConfigPath(), "opencode");
+        // Only patch configs we own: a foreign `aiand`-named provider (no
+        // marker, foreign URL) must keep its own key untouched.
+        const current = await readOpencodeConfig();
+        if (!configIsOurs(current)) return null;
         const provider = current.provider as Record<string, Record<string, unknown>> | undefined;
         const aiand = provider?.[OPENCODE_PROVIDER_ID] as
           | { options?: { apiKey?: unknown } }

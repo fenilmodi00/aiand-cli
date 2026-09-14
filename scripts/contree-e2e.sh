@@ -53,7 +53,7 @@ echo "sandbox e2e: image $IMAGE, session $SESSION, harness $HARNESS"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-tar -czf "$tmp/payload.tar.gz" dist package.json "$HARNESS"
+tar -czf "$tmp/payload.tar.gz" dist CHANGELOG.md package.json "$HARNESS"
 
 # --- ConTree session dance -------------------------------------------------
 

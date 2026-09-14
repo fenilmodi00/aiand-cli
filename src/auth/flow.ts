@@ -35,6 +35,7 @@ import {
   type LoadedCredential,
   type ResolvedProfile,
 } from "../config.js";
+import { AGENTS } from "../agents/registry.js";
 import { rebakeAgentKeys, type RebakeNote } from "../agents/rebake.js";
 import {
   type DeviceCodeResponse,
@@ -52,10 +53,10 @@ function printRebakeNotes(notes: RebakeNote[]): void {
 }
 
 /** Promote a freshly-signed-in profile to the active one when it is not. */
-function activateProfile(name: string): void {
-  updateProfile(name, {});
+async function activateProfile(name: string): Promise<void> {
+  await updateProfile(name, {});
   if (loadConfig().profile !== name) {
-    saveConfig({ ...loadConfig(), profile: name });
+    await saveConfig({ ...loadConfig(), profile: name });
   }
 }
 /** Map a credential's origin to the wire/source string both status and
@@ -361,7 +362,7 @@ async function completeSignIn(
     origin: "device",
   });
 
-  activateProfile(profile.name);
+  await activateProfile(profile.name);
 
   const session = await openSession(resolveProfile(profile.name));
   const [user, orgs] = await Promise.all([getUser(session), listOrgs(session)]);
@@ -493,7 +494,7 @@ export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
   });
   const storage = stored.storage ?? "file";
 
-  activateProfile(profile.name);
+  await activateProfile(profile.name);
 
   if (opts.json) {
     const notes = await rebakeAgentKeys(key);
@@ -577,6 +578,30 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     }
   } else {
     revoked = await revokeTokens(profile.authUrl, revokeToken);
+  }
+
+  // Inverse of the login rebake: strip aiand-owned writes from every active
+  // agent before the credential is gone, so no baked key lingers on disk.
+  // Best-effort per adapter — a strip failure is a stderr hint, never fatal.
+  for (const adapter of AGENTS) {
+    if (adapter.launcherOnly) continue;
+    if (typeof adapter.disable !== "function") continue;
+    let active = false;
+    try {
+      active = (await adapter.probe()).active;
+    } catch {
+      continue;
+    }
+    if (!active) continue;
+    try {
+      await adapter.disable();
+    } catch (error) {
+      err(
+        style.dim(
+          `[${adapter.id}] Could not strip its key: ${(error as Error).message ?? String(error)} Re-run \`aiand ${adapter.id} off\`.`
+        )
+      );
+    }
   }
 
   await clearCredential(profile.name);
