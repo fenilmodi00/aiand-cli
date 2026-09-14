@@ -69,8 +69,11 @@ function resolveNames(names: string[]): AgentAdapter[] {
   const unknown: string[] = [];
   for (const name of names) {
     const adapter = findAgent(name);
-    if (adapter && !resolved.includes(adapter)) resolved.push(adapter);
-    else unknown.push(name);
+    if (!adapter) {
+      unknown.push(name);
+    } else if (!resolved.includes(adapter)) {
+      resolved.push(adapter);
+    }
   }
   if (unknown.length > 0) {
     throw new CliError(`Unknown agent(s): ${unknown.join(", ")}.`, {

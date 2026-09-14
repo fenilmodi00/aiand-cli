@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { CliError, NotLoggedInError } from "../cli/errors.js";
+import { ApiError, CliError, NotLoggedInError } from "../cli/errors.js";
 import { openSession, type Session } from "../api/client.js";
 import {
   getUser,
@@ -96,12 +96,22 @@ export type Identity = {
   org: AccountOrg | null;
   orgs: AccountOrg[];
   cached: LoadedCredential | null;
+  /** False when the gateway could not verify the key (connection refused,
+   * 5xx). whoami rethrows probeError; status reports the outage as its own
+   * state instead of throwing, so scripts never mistake it for signed-out. */
+  reachable: boolean;
+  /** The gateway failure behind reachable=false; null when reachable. */
+  probeError: ApiError | null;
 };
 
 /** The shared sign-in probe: resolve the profile, open a session, and fetch
  * identity/orgs (or the cached copy under --local). A signed-out profile
- * returns `session: null` rather than throwing, so callers decide how to
- * present it. */
+ * returns `session: null` (with `reachable: true`) rather than throwing, so
+ * callers decide how to present it. A gateway failure (connection refused,
+ * 5xx) returns `reachable: false` with the ApiError in `probeError` instead
+ * of throwing, so status can report the outage without failing scripts.
+ * Anything else — a rejected key (401), corrupt local state, Ctrl-C —
+ * still throws for the caller to surface loudly. */
 export async function probeIdentity(
   profileOverride?: string,
   local = false,
@@ -112,15 +122,28 @@ export async function probeIdentity(
   let org: AccountOrg | null = null;
   let orgs: AccountOrg[] = [];
   let cached: LoadedCredential | null = null;
+  let reachable = true;
+  let probeError: ApiError | null = null;
 
   try {
-    session = await openSession(profile);
-    cached = await loadCredential(profile.name);
     if (local) {
+      // Cached-only: never touch the network. openSession rotates device
+      // tokens near expiry, so build the session straight from the stored
+      // credential instead of opening one.
+      const fromEnv = process.env.AIAND_API_KEY;
+      cached = await loadCredential(profile.name);
+      if (fromEnv) {
+        session = { profile, token: fromEnv, credential: null };
+      } else {
+        if (!cached) throw new NotLoggedInError();
+        session = { profile, token: cached.access_token, credential: cached };
+      }
       user = cached?.user ?? null;
       org = cached?.org ?? null;
       orgs = cached?.org ? [cached.org] : [];
     } else {
+      session = await openSession(profile);
+      cached = await loadCredential(profile.name);
       [orgs, user] = await Promise.all([listOrgs(session), getUser(session)]);
       const cachedOrg = cached?.org;
       org =
@@ -129,14 +152,34 @@ export async function probeIdentity(
           : (orgs[0] ?? null);
     }
   } catch (error) {
-    if (!(error instanceof NotLoggedInError)) throw error;
+    if (error instanceof NotLoggedInError) {
+      // Signed out: fall through with session null; reachable stays true.
+    } else if (
+      error instanceof ApiError &&
+      (error.status === 0 || error.status >= 500)
+    ) {
+      // Gateway unreachable or erroring: report it, don't throw, so status
+      // can name the outage without failing scripts that gate on it.
+      reachable = false;
+      probeError = error;
+    } else {
+      throw error;
+    }
   }
 
-  return { profile, session, user, org, orgs, cached };
+  return { profile, session, user, org, orgs, cached, reachable, probeError };
 }
 
+/** The auth half of status --json: identity, masked key, key source, and the
+ * storage tier holding the secret. Three states, kept distinct so scripts
+ * can gate without false-failing during an outage: verified (signed_in and
+ * reachable), signed_out (!signed_in, reachable), unreachable (!reachable —
+ * the key could not be verified, not proven absent). */
 export type AuthStatus = {
   signed_in: boolean;
+  /** False when the gateway could not be reached to verify the key. status
+   * prints its own outage line and exits 0; whoami rethrows instead. */
+  reachable: boolean;
   profile: string;
   email: string | null;
   org: string | null;
@@ -156,14 +199,15 @@ export type AuthStatusOptions = {
 export async function authStatus(
   opts: AuthStatusOptions = {},
 ): Promise<AuthStatus> {
-  const { profile, session, user, org, cached } = await probeIdentity(
+  const { profile, session, user, org, cached, reachable } = await probeIdentity(
     opts.profile,
     opts.local,
   );
 
-  if (!session) {
+  if (!reachable || !session) {
     return {
       signed_in: false,
+      reachable,
       profile: profile.name,
       email: null,
       org: null,
@@ -177,6 +221,7 @@ export async function authStatus(
   const storage = credential ? (cached?.storage ?? null) : null;
   return {
     signed_in: true,
+    reachable,
     profile: profile.name,
     email: user?.email ?? cached?.user?.email ?? null,
     org: org?.name ?? cached?.org?.name ?? null,
@@ -224,7 +269,7 @@ export async function deviceLogin(
   );
   out(`  ${style.dim("Approve at")}  ${link(url)}`);
   out();
-  if (!openBrowser(url))
+  if (!(await openBrowser(url)))
     err(style.dim("Could not open a browser -- open the URL above to continue."));
 
   const controller = new AbortController();

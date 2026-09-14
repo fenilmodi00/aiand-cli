@@ -205,7 +205,7 @@ export async function loadCredential(profile: string): Promise<LoadedCredential 
   const entry = all[profile];
   if (!entry) return null;
 
-  const blob = await secrets.loadSecret(profile);
+  const blob = await secrets.loadSecret(profile, entry.storage);
   let pair: { access_token?: string; refresh_token?: string };
   if (!blob) return null;
   try {

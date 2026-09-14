@@ -90,4 +90,8 @@ describe("parseJsonc", () => {
   test("unclosed block comment yields SyntaxError from JSON.parse", () => {
     assert.throws(() => parseJsonc('{ "a": 1 /* never closed'), SyntaxError);
   });
+
+  test("trailing unterminated block comment is rejected, not swallowed", () => {
+    assert.throws(() => parseJsonc('{"theme":"system"} /*'), SyntaxError);
+  });
 });

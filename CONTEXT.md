@@ -45,6 +45,12 @@ snapshot, including the case where a managed file did not exist before.
 **status** - report an agent's actual routing state by probing its real
 config files. Never trusts the CLI's own bookkeeping. _Avoid:_ flag check.
 
+**Reachable** - whether the gateway could be contacted to verify the key.
+`aiand status` reports three auth states — signed in, signed out,
+unreachable — and keeps them distinct so a script gating on the exit code
+never mistakes an outage for a sign-out. `whoami` treats unreachable as a
+hard failure instead.
+
 **Managed file** - a config file an adapter reads or writes. Edits are
 surgical: unrelated keys and sections always survive an aiand write.
 
@@ -54,6 +60,12 @@ inactive `on` re-captures. _Avoid:_ backup, checkpoint.
 
 **Marker** - a recognizable ownership signature inside a managed file. aiand
 stamps its own so `off` can strip surgically.
+
+**uninstall** - `bash install.sh uninstall`: restore every aiand-routed agent
+(`init --off`), then remove the launcher and the `~/.aiand/cli` checkout.
+Aborts before deleting anything if a restore fails; profiles, credentials,
+and snapshots are always kept. The removal target must canonicalize to a
+path strictly inside HOME.
 
 **Launcher** - `aiand run-agent <agent>`: run one agent process with routing
 injected into its environment or a throwaway overlay, leaving user files
@@ -83,12 +95,15 @@ active profile's credential. Every API call goes through one.
 **Browser sign-in** - the default interactive sign-in: authorization code
 + PKCE against the gateway, redirect caught on a loopback port. A preflight
 `GET /auth/authorize` decides the path: 404/501 (no browser flow) falls
-back to device login, any other answer attempts the browser. Falls back
-to device login on remote/headless terminals too.
+back to device login, any other answer attempts the browser. A recoverable
+browser failure falls back to device login too (browser-side cancels and
+Ctrl-C still abort); a missing browser opener only prints the authorization
+URL and waits.
 
-**Device login** - the fallback sign-in for remote and non-interactive
-terminals: the OAuth device authorization grant against the gateway, which
-mints an org-scoped key for this machine.
+**Device login** - the fallback sign-in for unsupported gateways,
+recoverable browser failures, and non-interactive terminals: the OAuth
+device authorization grant against the gateway, which mints an org-scoped
+key for this machine.
 
 **Minted key** - a key this CLI itself created (device login). Logout may
 revoke a minted key server-side by posting its refresh token. _Avoid:_

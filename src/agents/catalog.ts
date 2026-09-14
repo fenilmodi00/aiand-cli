@@ -41,6 +41,7 @@ async function readCache(): Promise<CatalogCache | null> {
     return JSON.parse(raw) as CatalogCache;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return null;
     throw error;
   }
 }
@@ -68,7 +69,7 @@ export async function getCatalog(baseUrl: string): Promise<Model[]> {
     });
     return models;
   } catch (error) {
-    if (cached) return cached.models;
+    if (cached?.baseUrl === baseUrl) return cached.models;
     throw new CliError("Could not reach the model catalog.", {
       hint: "Check your network and retry.",
       // Preserve the underlying detail (401, rate limit, DNS) for the CLI

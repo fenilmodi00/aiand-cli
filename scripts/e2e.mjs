@@ -1,5 +1,5 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,7 +64,7 @@ function writeOfflineApiMap(cfgDir) {
 // binary, and CLI helpers. No network, no live gateway.
 function tmpEnv() {
   const S = join("/tmp", "aiand-e2e");
-  execSync(`rm -rf ${S}`);
+  rmSync(S, { recursive: true, force: true });
   const home = join(S, "home");
   mkdirSync(join(home, ".config", "opencode"), { recursive: true });
   const cfg = join(S, "cfg");
@@ -101,12 +101,13 @@ function tmpEnv() {
 const { S, cfg, bin, home, configPath, BEFORE, env } = tmpEnv();
 
 function cli(args) {
-  return execSync(`node ${DIST} ${args}`, { env, encoding: "utf8" });
+  // All call sites pass space-separated flags with no quoted values.
+  return execFileSync(process.execPath, [DIST, ...args.split(" ")], { env, encoding: "utf8" });
 }
 
 function cliOrNull(args) {
   try {
-    return { ok: true, out: execSync(`node ${DIST} ${args}`, { env, encoding: "utf8" }), err: "" };
+    return { ok: true, out: execFileSync(process.execPath, [DIST, ...args.split(" ")], { env, encoding: "utf8" }), err: "" };
   } catch (error) {
     return { ok: false, out: "", err: String(error.stderr ?? error.message ?? "") };
   }
@@ -177,7 +178,7 @@ const capture = join(S, "capture");
 const launchEnv = { ...env, AIAND_CAPTURE: capture };
 let launchCode = 42;
 try {
-  execSync(`node ${DIST} run-agent opencode -- --version`, { env: launchEnv, encoding: "utf8" });
+  execFileSync(process.execPath, [DIST, "run-agent", "opencode", "--", "--version"], { env: launchEnv, encoding: "utf8" });
   launchCode = 0;
 } catch (error) {
   launchCode = error.status ?? 42;
@@ -202,6 +203,57 @@ check(
   "registry ships exactly opencode",
   JSON.stringify(agentIds) === JSON.stringify(["opencode"]),
   JSON.stringify(agentIds)
+);
+
+// --- uninstall (offline: fake launcher + fake checkout) ---------------------
+// Rewire one agent, then run the real `install.sh uninstall` against the
+// sandbox HOME. The fake launcher delegates to this dist so `init --off`
+// exercises the real restore path; the fake checkout stands in for
+// ~/.aiand/cli. Asserts: agents restored byte-identical, launcher gone,
+// checkout gone, config dir still present.
+cli("opencode on --json");
+const fakeCheckout = join(home, ".aiand", "cli");
+mkdirSync(fakeCheckout, { recursive: true });
+writeFileSync(join(fakeCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }));
+const launcherDir = join(home, ".local", "bin");
+mkdirSync(launcherDir, { recursive: true });
+const fakeLauncher = join(launcherDir, "aiand");
+writeFileSync(fakeLauncher, `#!/bin/sh\nexec "${process.execPath}" "${DIST}" "$@"\n`);
+chmodSync(fakeLauncher, 0o755);
+const aiandConfigDir = join(home, ".config", "aiand");
+mkdirSync(aiandConfigDir, { recursive: true });
+writeFileSync(join(aiandConfigDir, "sentinel"), "keep");
+let uninstallOk = true;
+let uninstallDetail = "";
+try {
+  uninstallDetail = execFileSync("bash", [join(ROOT, "install.sh"), "uninstall"], {
+    // Scrub the installer's own knobs: an AIAND_DIR exported in the dev
+    // shell would become the rm -rf target inside the sandboxed uninstall.
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: undefined,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  }).trim().split("\n").pop() ?? "";
+} catch (error) {
+  uninstallOk = false;
+  uninstallDetail = String(error.message ?? error).split("\n")[0];
+}
+check("uninstall exits zero", uninstallOk, uninstallDetail);
+check(
+  "uninstall restores opencode.json byte-identical",
+  BEFORE.equals(readFileSync(configPath)),
+  `before=${BEFORE.length}B after=${readFileSync(configPath).length}B`
+);
+check("uninstall removes the launcher", !existsSync(fakeLauncher), fakeLauncher);
+check("uninstall removes the checkout", !existsSync(fakeCheckout), fakeCheckout);
+check(
+  "uninstall keeps profiles/credentials/snapshots",
+  existsSync(join(aiandConfigDir, "sentinel")) && existsSync(cfg),
+  aiandConfigDir
 );
 
 console.log(results.join("\n"));

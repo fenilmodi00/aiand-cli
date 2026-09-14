@@ -6,6 +6,7 @@ import {
   getCatalog,
   resolveDefault,
   validateCatalogModel,
+  visionLabel,
 } from "./catalog.js";
 import type { AgentAdapter } from "./types.js";
 
@@ -117,12 +118,22 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     baseUrl: opts.baseUrl ?? profile.apiUrl,
   });
 
+  // The wired model warns when it is text-only and can't take images. The
+  // literal "native" names no catalog model and never warns.
+  const warnings: string[] = [];
+  if (written.model !== "native") {
+    const entry = catalog.find((model) => model.id === written.model);
+    if (entry && visionLabel(entry) === "text-only") {
+      warnings.push(`${written.model} is text-only and can't take images.`);
+    }
+  }
+
   return {
     agent: adapter.id,
     state: "on",
     model: written.model,
     files: written.filesWritten,
-    warnings: [],
+    warnings,
   };
 
 }

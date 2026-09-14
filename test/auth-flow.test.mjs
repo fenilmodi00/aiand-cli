@@ -677,3 +677,76 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
     }
   });
 });
+
+describe("auth probe three states (verified / signed_out / unreachable)", () => {
+  /** A loopback port nothing listens on: bind, read the port, close it, so
+   * the gateway dial fails fast with ECONNREFUSED (ApiError status 0). */
+  async function deadLoopbackPort() {
+    const doomed = createServer();
+    doomed.listen(0, "127.0.0.1");
+    await new Promise((resolve) => doomed.once("listening", resolve));
+    const port = doomed.address().port;
+    await new Promise((resolve) => doomed.close(resolve));
+    return port;
+  }
+
+  test("verified: stored key + live gateway resolves identity", async () => {
+    await config.saveCredential("default", {
+      access_token: "sk-minted",
+      refresh_token: "rt-minted",
+      expires_at: Math.floor(Date.now() / 1000) + 2592000,
+      origin: "device",
+      storage: "plaintext",
+      user: { id: "u1", email: "dev@example.com" },
+      org: { id: "org_1", name: "First" },
+    });
+    state.orgs = [{ id: "org_1", name: "First" }];
+    const identity = await flow.probeIdentity("default");
+    assert.equal(identity.reachable, true);
+    assert.equal(identity.probeError, null);
+    assert.ok(identity.session);
+    assert.equal(identity.user.email, "dev@example.com");
+    const status = await flow.authStatus({ profile: "default" });
+    assert.equal(status.signed_in, true);
+    assert.equal(status.reachable, true);
+  });
+
+  test("signed_out: no credential resolves a null session but stays reachable", async () => {
+    const identity = await flow.probeIdentity("default");
+    assert.equal(identity.session, null);
+    assert.equal(identity.reachable, true);
+    const status = await flow.authStatus({ profile: "default" });
+    assert.equal(status.signed_in, false);
+    assert.equal(status.reachable, true);
+  });
+
+  test("unreachable: dead gateway port surfaces reachable=false instead of throwing", async () => {
+    await config.saveCredential("default", {
+      access_token: "sk-abc123",
+      origin: "paste",
+      user: { id: "u1", email: "paste@example.com" },
+      org: { id: "org_1", name: "First" },
+    });
+    const dead = await deadLoopbackPort();
+    process.env.AIAND_BASE_URL = `http://127.0.0.1:${dead}`;
+    process.env.AIAND_AUTH_URL = `http://127.0.0.1:${dead}`;
+    const identity = await flow.probeIdentity("default");
+    assert.equal(identity.reachable, false);
+    assert.ok(identity.probeError);
+    assert.equal(identity.probeError.status, 0);
+    const status = await flow.authStatus({ profile: "default" });
+    assert.equal(status.signed_in, false);
+    assert.equal(status.reachable, false);
+  });
+
+  test("rejected key (401) still throws instead of reporting unreachable", async () => {
+    await config.saveCredential("default", {
+      access_token: "sk-bad",
+      origin: "paste",
+      user: { id: "u1", email: "paste@example.com" },
+      org: { id: "org_1", name: "First" },
+    });
+    state.orgs = [{ id: "org_1", name: "First" }];
+    await assert.rejects(flow.probeIdentity("default"), /rejected/);
+  });
+});

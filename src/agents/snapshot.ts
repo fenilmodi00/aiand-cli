@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { configDir, writeFileAtomic } from "../config.js";
@@ -61,7 +61,10 @@ async function readManifest(agentId: string): Promise<BackupManifest | null> {
 export async function snapshotFiles(agentId: string, files: string[]): Promise<string> {
   const dir = backupDir(agentId);
   const snapshotDir = join(dir, snapshotStamp(new Date()));
-  await mkdir(snapshotDir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  await mkdir(snapshotDir, { mode: 0o700 });
+  await chmod(snapshotDir, 0o700);
 
   const entries: BackupEntry[] = [];
   for (const file of files) {

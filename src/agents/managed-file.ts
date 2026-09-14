@@ -70,7 +70,10 @@ export function parseJsonc(text: string): unknown {
     if (char === "/" && next === "*") {
       i += 2;
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
-      i++; // consume the trailing slash; safe at EOF (loop exit leaves i past end)
+      if (i >= text.length) {
+        throw new SyntaxError("Unterminated block comment");
+      }
+      i++; // consume the trailing slash
       continue;
     }
     // Trailing comma: drop `,` when the next non-ws / non-comment token is

@@ -176,8 +176,8 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
   }
 }
 
-export async function loadSecret(profile: string): Promise<string | null> {
-  const tier = await detectTier();
+export async function loadSecret(profile: string, recordedTier?: Tier): Promise<string | null> {
+  const tier = recordedTier ?? (await detectTier());
   if (tier === "plaintext") {
     return readPlaintextMap()[profile] ?? null;
   }

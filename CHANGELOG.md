@@ -9,6 +9,34 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Uninstall: `bash install.sh uninstall` turns every aiand-routed agent
+  `off` first (aborting before deleting anything when a restore fails, so
+  snapshots stay retryable), then removes the launcher and the `~/.aiand/cli`
+  checkout. Profiles, credentials, and snapshots under `~/.config/aiand` are
+  intentionally kept. `--force` (or `AIAND_UNINSTALL_FORCE=1`) skips the
+  restore for broken installs; the removal target is canonicalized and
+  refused unless it sits strictly inside `~/.aiand` under HOME.
+- Flag did-you-mean: a mistyped flag now prints `Did you mean --profile?`
+  alongside the parse error, using the same nearest-match threshold as
+  unknown-command suggestions.
+- Mock-gateway test harness: a loopback-only HTTP double
+  (`test/mock-gateway.mjs`) drives the built CLI against scripted 429
+  (Retry-After), 401-refresh-then-200, and happy-path identity responses, so
+  the API client's error paths have direct coverage without the live gateway.
+- CI now smoke-tests `install.sh` itself: the installer job runs the real
+  script into an isolated HOME from the checkout copy and asserts the
+  launcher reports the PR's version.
+
+### Changed
+
+- `aiand status` distinguishes three auth states: signed in (exit 0),
+  not signed in (exit 1), and gateway unreachable (exit 0 with a distinct
+  `reachable: false` field in `--json`), so scripts gating on the exit code
+  no longer false-fail during an outage. `--json` gains the `reachable`
+  field; `whoami` still fails loudly on an unreachable gateway.
+
+### Added
+
 - Sandbox E2E harness `scripts/sbx-test.mjs`: the full command matrix
   against the live gateway in an isolated VM, with an offline
   `--smoke` subset and a `--plan` mode that lists the matrix without running

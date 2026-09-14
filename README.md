@@ -19,6 +19,14 @@ aiand login
 aiand init
 ```
 
+Uninstall restores every aiand-routed agent first (aborting without deleting
+anything if a restore fails), then removes the launcher and the checkout.
+Profiles, credentials, and agent snapshots under `~/.config/aiand` are kept:
+
+```bash
+bash ~/.aiand/cli/install.sh uninstall
+```
+
 ## Install from source
 
 Requires Node.js 22+.
@@ -69,8 +77,9 @@ aiand status             # who is signed in, where the key lives, whether openco
 
 The baked key comes from the active session (`--profile` honored), and the
 model default resolves from the live `/v1/models` catalog, so a retired
-model id is never written. `on` refuses to touch a config another tool
-manages — pass `--force` to override. Snapshots of the pre-existing config
+model id is never written. `on` preserves unrelated providers already in
+the config and stamps its block with an `x-aiand` ownership marker, so
+`off` strips only what aiand wrote. Snapshots of the pre-existing config
 live under `~/.config/aiand/backups/` and are removed by `off`.
 Pass `native` as `--model` to leave the model unpinned so the agent's own
 default wins.
@@ -82,7 +91,11 @@ mints an **organization-scoped API key for this machine** — the same kind of
 `sk-` key the console issues — labeled `aiand@<hostname>` so the console key
 list names the machine. A probe of `GET /auth/authorize` runs first: 404/501
 means the gateway has no browser flow, and the CLI continues with a device
-code instead (so do no opener, SSH, and WSL):
+code instead. A recoverable browser failure (timeout, port in use, rejected
+exchange — not a browser-side cancel or Ctrl-C) falls back to a device code
+too; when no browser opener is available the CLI prints the authorization
+URL and waits for the callback.
+Non-interactive runs skip the browser and use a device code directly:
 
 ```
   Your code   BCDF-GHJK
@@ -224,12 +237,17 @@ Once a day on a TTY the CLI prints an update tip when npm carries a newer `@aian
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Request or usage error (the message says which) |
+| `1` | Request or usage error (the message says which); `aiand status` uses it for "not signed in" |
 | `2` | Not signed in, or the session could not be refreshed |
 | `3` | Login denied in the browser |
 | `70` | A bug in the CLI — the stack trace is printed |
 | `127` | Unknown command or missing agent binary |
 | `130` | Interrupted (e.g. Ctrl-C during `run` / `login`) |
+
+`aiand status` is the exception: it exits 0 when signed in or when the gateway
+cannot be reached to verify the key (`reachable: false` in `--json`), and 1
+only when the profile is signed out — so scripts gating on it do not
+false-fail during an outage.
 
 ## Contributing
 

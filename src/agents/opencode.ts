@@ -135,10 +135,10 @@ export function buildOpencodeConfig({
 /**
  * Derive one OpenCode model entry from a live `Model`. There is no output-token
  * field on Model, so limit.output mirrors context_window (a serverless cap the
- * gateway enforces, and the only signal we have). Cost is per 1M-token price
- * scaled to OpenCode's per-token unit (per_1m/1000). Modalities are derived
- * from the capability list (vision→image, video→video, document→pdf on top of
- * the always-present text).
+ * gateway enforces, and the only signal we have). Cost is the per 1M-token price
+ * from the catalog, which matches OpenCode's per-million cost unit.
+ * Modalities are derived from the capability list (vision→image, video→video,
+ * document→pdf on top of the always-present text).
  */
 function modelEntryFromCatalog(model: Model): OpencodeModelEntry {
   const caps = model.capabilities;
@@ -147,7 +147,7 @@ function modelEntryFromCatalog(model: Model): OpencodeModelEntry {
   if (caps.includes("video")) input.push("video");
   if (caps.includes("document")) input.push("pdf");
   const price = (value: string | null): number =>
-    Number.parseFloat(value ?? "0") / 1000;
+    Number.parseFloat(value ?? "0");
   return {
     name: model.name,
     attachment: caps.includes("vision") || caps.includes("attachment"),
@@ -365,12 +365,24 @@ export const opencodeAdapter: AgentAdapter = {
       delete current.model;
       changed = true;
     }
-    if (isDeepStrictEqual(current.enabled_providers, [OPENCODE_PROVIDER_ID])) {
-      delete current.enabled_providers;
+    if (
+      Array.isArray(current.enabled_providers) &&
+      current.enabled_providers.includes(OPENCODE_PROVIDER_ID)
+    ) {
+      const remaining = current.enabled_providers.filter(
+        (entry) => entry !== OPENCODE_PROVIDER_ID
+      );
+      if (remaining.length > 0) current.enabled_providers = remaining;
+      else delete current.enabled_providers;
       changed = true;
     }
-    if (isDeepStrictEqual(current.disabled_providers, ["opencode"])) {
-      delete current.disabled_providers;
+    if (
+      Array.isArray(current.disabled_providers) &&
+      current.disabled_providers.includes("opencode")
+    ) {
+      const remaining = current.disabled_providers.filter((entry) => entry !== "opencode");
+      if (remaining.length > 0) current.disabled_providers = remaining;
+      else delete current.disabled_providers;
       changed = true;
     }
     if (OPENCODE_MARKER_KEY in current) {

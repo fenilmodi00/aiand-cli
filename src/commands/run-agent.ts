@@ -96,13 +96,13 @@ function splitInvocation(argv: string[]): Invocation {
 
 function takeValue(head: string[], i: number, name: string): string {
   const value = head[i + 1];
-  if (value === undefined) throw new CliError(`--${name} needs a value.`);
+  if (value === undefined) throw new CliError(`${name} needs a value.`);
   return value;
 }
 
 function inlineValue(token: string, name: string): string {
   const value = token.slice(name.length + 1);
-  if (!value) throw new CliError(`--${name} needs a value.`);
+  if (!value) throw new CliError(`${name} needs a value.`);
   return value;
 }
 
@@ -172,12 +172,16 @@ export async function run(argv: string[]): Promise<void> {
   try {
     // Windows: shell:true with an args array mangles spaces and &, so route
     // through cmd.exe with each token quoted instead of using shell:true.
+    // MSVC CRT quoting: escape each " as \" with preceding backslashes doubled,
+    // and double trailing backslashes so the closing quote is not escaped.
+    // %...% cannot be escaped in cmd — kept literal; expands only if an env
+    // var of that exact name exists.
     const forwardArgs = [...(launch.args ?? []), ...split.passthrough];
     const { status, signal } =
       process.platform === "win32"
         ? await spawnChild(
             "cmd.exe",
-            ["/d", "/s", "/c", [adapter.bin, ...forwardArgs].map((token) => `"${token.replace(/"/g, '\\"')}"`).join(" ")],
+            ["/d", "/s", "/c", [adapter.bin, ...forwardArgs].map((token) => `"${token.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`).join(" ")],
             { env, stdio: "inherit" }
           )
         : await spawnChild(adapter.bin, forwardArgs, { env, stdio: "inherit" });

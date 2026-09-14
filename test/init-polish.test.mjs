@@ -179,6 +179,7 @@ test("init opencode wires on; init --off opencode and opencode off restore byte-
 
 test("init --all wires the detected agent", async () => {
   plantOpencodeStub();
+  mkdirSync(dirname(settingsPath()), { recursive: true });
   writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
   // Hermetic PATH: stubs + which + node only. System-wide agent binaries
   // (a dev machine or CI image with real installs, possibly sharing a dir

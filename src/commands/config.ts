@@ -4,6 +4,7 @@ import { CliError } from "../cli/errors.js";
 import {
   activeProfileName,
   assertHttpsBaseUrl,
+  assertSafeProfileName,
   configPath,
   credentialsPath,
   loadConfig,
@@ -139,6 +140,7 @@ async function use(name: string | undefined): Promise<void> {
   if (!name) {
     throw new CliError("Which profile?", { hint: "aiand config use <profile>" });
   }
+  assertSafeProfileName(name);
   const config = loadConfig();
   if (!config.profiles[name]) {
     config.profiles[name] = {};

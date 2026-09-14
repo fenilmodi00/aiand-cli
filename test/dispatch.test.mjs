@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -195,7 +196,8 @@ describe("dispatch subprocess", () => {
         ["status", "--json"],
         { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
       );
-      assert.equal(code, 0);
+      // Signed-out is a script gate: exit 1, body still parses.
+      assert.equal(code, 1);
       const parsed = JSON.parse(stdout);
       assert.ok(parsed.auth && typeof parsed.auth === "object");
       assert.ok(Array.isArray(parsed.agents));
@@ -330,6 +332,137 @@ describe("engine: not signed in", () => {
       process.env.AIAND_CONFIG_DIR = savedCfg;
       if (savedKey !== undefined) process.env.AIAND_API_KEY = savedKey;
       if (savedBase !== undefined) process.env.AIAND_BASE_URL = savedBase;
+    }
+  });
+});
+
+// --- Flag suggestions ---
+describe("flag suggestions", () => {
+  test("status --profle suggests --profile and exits nonzero", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const { code, stderr } = await runCli(["status", "--profle"], {
+        AIAND_HOME: join(spy, "h"),
+        AIAND_CONFIG_DIR: join(spy, "c"),
+      });
+      assert.notEqual(code, 0);
+      assert.match(stderr, /Did you mean --profile\?/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("status --zzzqqq keeps the generic hint", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const { code, stderr } = await runCli(["status", "--zzzqqq"], {
+        AIAND_HOME: join(spy, "h"),
+        AIAND_CONFIG_DIR: join(spy, "c"),
+      });
+      assert.notEqual(code, 0);
+      assert.match(stderr, /Run the command with --help to see its flags/);
+      assert.doesNotMatch(stderr, /Did you mean/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- status exit codes ---
+describe("status exit codes", () => {
+  /** A loopback gateway that fails every identity call with 500, exercising
+   * the unreachable path; the sibling auth-flow test covers the refused
+   * connection (dead port) half instead. */
+  function failingGateway() {
+    const server = createServer((req, res) => {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "gateway is down" }));
+    });
+    return server;
+  }
+
+  test("signed-out status --json exits 1 with reachable=true", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "";
+      const { code, stdout } = await runCli(
+        ["status", "--json"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 1);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.auth.signed_in, false);
+      assert.equal(parsed.auth.reachable, true);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("unreachable gateway exits 0 with reachable=false (no false failure)", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    const server = failingGateway();
+    server.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const dead = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "sk-test-not-real";
+      env.AIAND_BASE_URL = dead;
+      env.AIAND_AUTH_URL = dead;
+      const { code, stdout } = await runCli(
+        ["status", "--json"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 0);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.auth.signed_in, false);
+      assert.equal(parsed.auth.reachable, false);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("unreachable gateway prose names the outage and exits 0", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    const server = failingGateway();
+    server.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const dead = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "sk-test-not-real";
+      env.AIAND_BASE_URL = dead;
+      env.AIAND_AUTH_URL = dead;
+      const { code, stdout, stderr } = await runCli(
+        ["status"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 0);
+      assert.match(stdout, /Gateway unreachable/);
+      assert.match(stderr, /Check your network/);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("signed-out prose exits 1", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "";
+      const { code, stdout } = await runCli(
+        ["status"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 1);
+      assert.match(stdout, /Not signed in/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
     }
   });
 });

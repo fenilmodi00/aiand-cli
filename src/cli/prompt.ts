@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { CliError } from "./errors.js";
 import { KEY, type PromptInput, type PromptOutput } from "./select.js";
 
 /**
@@ -60,13 +61,14 @@ export async function readSecret(
 
   let value = "";
   try {
-    value = await new Promise<string>((resolve) => {
+    value = await new Promise<string>((resolve, reject) => {
       const onData = (chunk: string) => {
         for (const char of chunk) {
           if (char === KEY.CTRL_C) {
             input.removeListener("data", onData);
             output.write("^C\n");
-            process.exit(130);
+            reject(new CliError("Cancelled.", { exitCode: 130 }));
+            return;
           }
           if (char === "\r" || char === "\n") {
             input.removeListener("data", onData);

@@ -121,9 +121,10 @@ main()
   .then((code) => {
     // A command (run-agent) may set process.exitCode to propagate a child's
     // exit status without process.exit-ing (so stdio flushes); honor it when
-    // the command itself did not return a nonzero code.
+    // the command itself did not return a nonzero code. Assign exitCode and
+    // let the process end naturally — process.exit() can drop piped output.
     const finalCode = code !== 0 ? code : (process.exitCode ?? 0);
-    process.exit(finalCode);
+    process.exitCode = finalCode;
   })
   .catch((error: unknown) => {
     if (error instanceof CliError) {

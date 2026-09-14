@@ -127,10 +127,7 @@ export async function requestJson<T>(session: Session, options: RequestOptions):
 }
 
 export async function publicJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetchOrFail(url, {
-    ...init,
-    headers: { Accept: "application/json", "User-Agent": userAgent() },
-  });
+  const response = await publicRequest(url, init);
   if (!response.ok) throw await toApiError(response);
   return (await response.json()) as T;
 }

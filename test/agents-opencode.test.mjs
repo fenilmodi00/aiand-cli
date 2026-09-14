@@ -581,10 +581,10 @@ describe("opencode sessionLaunch", () => {
     assert.equal(glm.reasoning, true);
     assert.equal(glm.tool_call, true);
     assert.equal(glm.limit.context, 1048576);
-    // cost = per_1m / 1000
-    assert.equal(glm.cost.input, 0.001);
-    assert.equal(glm.cost.output, 0.004);
-    assert.equal(glm.cost.cache_read, 0.0003);
+    // cost = per-million price from the catalog
+    assert.equal(glm.cost.input, 1);
+    assert.equal(glm.cost.output, 4);
+    assert.equal(glm.cost.cache_read, 0.3);
     // vision model gets attachment + image modality
     const vision = config.provider.aiand.models["vision-model"];
     assert.equal(vision.attachment, true);
