@@ -496,6 +496,8 @@ export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
   activateProfile(profile.name);
 
   if (opts.json) {
+    const notes = await rebakeAgentKeys(key);
+    printRebakeNotes(notes);
     return out(
       JSON.stringify(
         { profile: profile.name, source: "pasted-key", storage },

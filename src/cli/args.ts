@@ -1,4 +1,5 @@
 import { parseArgs, type ParseArgsConfig } from "node:util";
+import { assertHttpsBaseUrl } from "../config.js";
 import { CliError } from "./errors.js";
 
 type OptionsConfig = NonNullable<ParseArgsConfig["options"]>;
@@ -32,7 +33,10 @@ export function parse(argv: string[], options: OptionsConfig = {}): Parsed {
   }
 
   const baseUrl = parsed.values["base-url"];
-  if (typeof baseUrl === "string") process.env.AIAND_BASE_URL = baseUrl;
+  if (typeof baseUrl === "string") {
+    assertHttpsBaseUrl(baseUrl);
+    process.env.AIAND_BASE_URL = baseUrl;
+  }
 
   return parsed;
 }

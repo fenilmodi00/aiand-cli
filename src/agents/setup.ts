@@ -48,10 +48,10 @@ export type AgentStatusResult = {
 };
 
 /**
- * Turn an agent on: resolve a session key, detect the binary, snapshot when
- * inactive, resolve model/slots from the live catalog, then let the adapter
- * write its config. An already-active probe skips the snapshot so a re-`on`
- * keeps the first pre-aiand backup.
+ * Turn an agent on: resolve a session key, detect the binary, resolve
+ * model/slots from the live catalog, snapshot when inactive, then let the
+ * adapter write its config. An already-active probe skips the snapshot so
+ * a re-`on` keeps the first pre-aiand backup.
  */
 export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}): Promise<AgentOnResult> {
   // Launcher-only adapters have no persistent wiring: their config strategy
@@ -79,15 +79,6 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
   if (adapter.enableGuard) {
     await adapter.enableGuard({ force: opts.force ?? false });
   }
-  const managed = adapter.managedFiles();
-  // Idempotency: a re-`on` while already routed keeps the first backup
-  // (probe.active), and every inactive `on` re-snapshots so the manifest
-  // always matches the pre-aiand state — including after an `off` that left
-  // a stale manifest behind. An aiand-routed config is never its own backup:
-  // active probes skip the snapshot entirely.
-  if (!probe.active) {
-    await snapshotFiles(adapter.id, managed);
-  }
 
   const profile = resolveProfile(opts.profile);
   const catalog = await getCatalog(opts.baseUrl ?? profile.apiUrl);
@@ -106,6 +97,15 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
   const slots: Record<string, string> = { ...opts.slots };
   for (const [slot, value] of Object.entries(opts.slots ?? {})) {
     if (value !== "native") validateCatalogModel(catalog, value, `--${slot}`);
+  }
+  const managed = adapter.managedFiles();
+  // Idempotency: a re-`on` while already routed keeps the first backup
+  // (probe.active), and every inactive `on` re-snapshots so the manifest
+  // always matches the pre-aiand state — including after an `off` that left
+  // a stale manifest behind. An aiand-routed config is never its own backup:
+  // active probes skip the snapshot entirely.
+  if (!probe.active) {
+    await snapshotFiles(adapter.id, managed);
   }
 
   const written = await adapter.enable({

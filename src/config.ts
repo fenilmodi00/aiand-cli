@@ -111,14 +111,15 @@ export function resolveProfile(override?: string): ResolvedProfile {
   const stored = loadConfig().profiles[name] ?? { ...DEFAULT_PROFILE };
   const base = process.env.AIAND_BASE_URL;
 
-  return {
-    ...stored,
-    name,
-    authUrl: trimSlash(
-      process.env.AIAND_AUTH_URL ?? base ?? stored.authUrl ?? DEFAULT_BASE_URL
-    ),
-    apiUrl: trimSlash(base ?? stored.apiUrl ?? DEFAULT_BASE_URL),
-  };
+  const authUrl = trimSlash(
+    process.env.AIAND_AUTH_URL ?? base ?? stored.authUrl ?? DEFAULT_BASE_URL
+  );
+  const apiUrl = trimSlash(base ?? stored.apiUrl ?? DEFAULT_BASE_URL);
+  // Every path funnels through here, so the final URLs are validated here.
+  assertHttpsBaseUrl(authUrl);
+  assertHttpsBaseUrl(apiUrl);
+
+  return { ...stored, name, authUrl, apiUrl };
 }
 
 export function updateProfile(name: string, patch: Partial<Profile>): void {
@@ -128,6 +129,33 @@ export function updateProfile(name: string, patch: Partial<Profile>): void {
 }
 
 const trimSlash = (url: string): string => url.replace(/\/+$/, "");
+const LOOPBACK_HOSTS: Record<string, true> = {
+  localhost: true,
+  "127.0.0.1": true,
+  "::1": true,
+  "[::1]": true,
+};
+
+/**
+ * Base URLs carry API keys, so plain http is rejected except on loopback
+ * (local test servers). resolveProfile validates the final URLs; --base-url
+ * and `config set` check early through this same helper.
+ */
+export function assertHttpsBaseUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new CliError(`Base URL must be an absolute https URL (got "${url}").`, {
+      hint: "Use https, or http only for loopback (localhost, 127.0.0.1, ::1).",
+    });
+  }
+  if (parsed.protocol === "https:") return;
+  if (parsed.protocol === "http:" && LOOPBACK_HOSTS[parsed.hostname.toLowerCase()]) return;
+  throw new CliError(`Base URL must use https (got "${url}").`, {
+    hint: "Use https, or http only for loopback (localhost, 127.0.0.1, ::1).",
+  });
+}
 
 type StoredCredential = Credential & Partial<LoadedCredential>;
 
@@ -175,8 +203,9 @@ export async function loadCredential(profile: string): Promise<LoadedCredential 
 
 export async function clearCredential(profile: string): Promise<void> {
   const all = await loadAllCredentials();
+  const recorded = all[profile]?.storage;
   delete all[profile];
-  await secrets.deleteSecret(profile);
+  await secrets.deleteSecret(profile, recorded);
   if (Object.keys(all).length === 0) {
     try {
       unlinkSync(credentialsPath());

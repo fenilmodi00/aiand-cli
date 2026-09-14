@@ -24,7 +24,7 @@ export function detectBinary(bin: string): DetectResult {
  */
 export const INSTALL_HINTS: Record<string, { command: string; url: string }> = {
   opencode: {
-    command: "npm install -g opencode-ai@latest",
+    command: "npm install -g opencode-ai@1.18.30",
     url: "https://opencode.ai",
   },
 };

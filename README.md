@@ -118,7 +118,9 @@ encrypted file under `~/.config/aiand/`, or (only when asked for via
 metadata, and older all-in-one credentials are migrated automatically. The key lives for
 30 days and is rotated automatically when a command runs inside the last 3 days of its
 life — or immediately if the server rejects it. `aiand status` reports which tier holds
-the secret.
+the secret. The file tier keeps its `secret-store.key` next to `secret-store.json`: it is
+defence-in-depth against a casual read, not encryption-at-rest against anyone who can
+read the config dir.
 
 For CI and scripts, skip the login entirely and set `AIAND_API_KEY`. Nothing is written to
 disk in that mode.
@@ -189,7 +191,8 @@ Profiles keep separate credentials, so `--profile work` and `--profile personal`
 signed into different organizations at once.
 
 The API endpoint defaults to `https://api.aiand.com`. To point the CLI elsewhere, pass
-`--base-url` for one command, set `AIAND_BASE_URL`, or store it on a profile:
+`--base-url` for one command, set `AIAND_BASE_URL`, or store it on a profile — base URLs
+must be `https`, except `http` on loopback for local testing:
 
 ```bash
 aiand config set api-url http://127.0.0.1:8080

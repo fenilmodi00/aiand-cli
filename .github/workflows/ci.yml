@@ -15,11 +15,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm install -g opencode-ai@latest
+      - run: npm install -g opencode-ai@1.18.30
       - run: npm run lint
       - run: npm test
         env:
-          AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
+          AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:public

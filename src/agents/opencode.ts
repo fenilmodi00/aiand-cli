@@ -174,6 +174,16 @@ const OPENCODE_OPTIONS: OpencodeProviderOptions = {
   baseURL: OPENCODE_BASE_URL,
 };
 
+/**
+ * Gateway base URL OpenCode dials: `--base-url` (trailing slashes trimmed) +
+ * `/v1`, defaulting to the prod constant when no override is given. Shared
+ * by enable() and sessionLaunch() so the two can never drift.
+ */
+function opencodeBaseURL(baseUrl?: string): string {
+  const base = (baseUrl ?? "").replace(/\/+$/, "");
+  return base ? `${base}/v1` : OPENCODE_BASE_URL;
+}
+
 async function probe(): Promise<ProbeResult> {
   let provider: Record<string, unknown> | undefined;
   let model: string | null = null;
@@ -197,7 +207,24 @@ async function probe(): Promise<ProbeResult> {
     | { options?: { baseURL?: unknown } }
     | undefined;
   const baseURL = aiand?.options?.baseURL;
-  const active = typeof baseURL === "string" && baseURL.startsWith("https://api.aiand.com");
+  // Prod default, loopback dev gateways, and staging/custom `--base-url`
+  // origins all count as ai& routing (only our enable() writes this
+  // block). Missing/garbage → inactive, never a throw.
+  let active = false;
+  if (typeof baseURL === "string") {
+    try {
+      if (baseURL.startsWith(new URL(OPENCODE_BASE_URL).origin)) active = true;
+      else {
+        const parsed = new URL(baseURL);
+        const http = parsed.protocol === "http:" || parsed.protocol === "https:";
+        const host = parsed.hostname.replace(/^\[|\]$/g, "");
+        const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1";
+        active = http && (loopback || parsed.protocol === "https:");
+      }
+    } catch {
+      active = false;
+    }
+  }
   return {
     active,
     // True ai& routing, read from the real file: the model is whatever the
@@ -217,7 +244,7 @@ async function enable(
     apiKey: input.apiKey,
     model: input.model,
     models,
-    options: OPENCODE_OPTIONS,
+    options: { ...OPENCODE_OPTIONS, baseURL: opencodeBaseURL(input.baseUrl) },
   });
   // Replace only the `aiand` provider, preserving any foreign providers the
   // user already configured.
@@ -327,7 +354,7 @@ export const opencodeAdapter: AgentAdapter = {
       apiKey: input.apiKey,
       model,
       models: modelsFromCatalog(input.catalog),
-      options: OPENCODE_OPTIONS,
+      options: { ...OPENCODE_OPTIONS, baseURL: opencodeBaseURL(input.baseUrl) },
     });
     return {
       env: {

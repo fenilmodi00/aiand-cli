@@ -48,10 +48,14 @@ export async function writeFileAtomic(
   data: string | Uint8Array,
   options: { mode?: number } = {}
 ): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  // mkdir mode only covers newly created dirs — tighten a pre-existing 0755
+  // dir best-effort; never fail the write for this.
+  await chmod(dir, 0o700).catch(() => {});
   const targetMode = options.mode ?? (await existingFileMode(filePath));
   const tempPath = join(
-    dirname(filePath),
+    dir,
     `.${process.pid}-${randomBytes(6).toString("hex")}.tmp`
   );
   try {

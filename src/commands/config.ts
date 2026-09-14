@@ -2,6 +2,8 @@ import { parse, bool, str } from "../cli/args.js";
 import { fields, json, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 import {
+  activeProfileName,
+  assertHttpsBaseUrl,
   configPath,
   credentialsPath,
   loadConfig,
@@ -88,13 +90,17 @@ function set(args: string[]): void {
     });
   }
 
-  const name = resolveProfile().name;
+  // activeProfileName, not resolveProfile: a stored http URL must stay fixable
+  // via `config set` instead of throwing before the new value lands.
+  const name = activeProfileName();
 
   switch (key) {
     case "api-url":
+      assertHttpsBaseUrl(value);
       updateProfile(name, { apiUrl: value });
       break;
     case "auth-url":
+      assertHttpsBaseUrl(value);
       updateProfile(name, { authUrl: value });
       break;
     case "model":

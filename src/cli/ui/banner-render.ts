@@ -5,7 +5,7 @@ const MARKUP_TAGS = ["brand"] as const;
 const TAG_PATTERN = new RegExp(`\\{(/?)(${MARKUP_TAGS.join("|")})\\}`, "g");
 
 /** Split keeps `{tag}`/`{/tag}` tokens as separate parts. */
-const TAG_SPLIT = new RegExp(`(\\{/?(${MARKUP_TAGS.join("|")})\\})`, "u");
+const TAG_SPLIT = new RegExp(`(\\{/?(?:${MARKUP_TAGS.join("|")})\\})`, "u");
 
 /** Strip {tag} markup for plain-text / NO_COLOR output. */
 export function stripBannerMarkup(line: string): string {

@@ -36,13 +36,12 @@ export function withTestEnv(prefix, setup) {
 }
 
 /**
- * Standard EnableInput fixture. apiKey defaults to the AIAND_API_KEY the
- * file's setup() sets (matching the old per-file BASE_KEY constants);
+ * Standard EnableInput fixture. apiKey defaults to the literal "sk-test-key";
  * override per test as before. `home` is read lazily at call time.
  */
 export function enableInput(overrides = {}) {
   return {
-    apiKey: process.env.AIAND_API_KEY ?? "sk-test-key",
+    apiKey: "sk-test-key",
     model: "zai-org/glm-5.3",
     slots: {},
     catalog: [],

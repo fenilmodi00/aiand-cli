@@ -158,8 +158,8 @@ export async function loadSecret(profile: string): Promise<string | null> {
   }
 }
 
-export async function deleteSecret(profile: string): Promise<void> {
-  const tier = await detectTier();
+export async function deleteSecret(profile: string, recordedTier?: Tier): Promise<void> {
+  const tier = recordedTier ?? (await detectTier());
   if (tier === "plaintext") {
     const map = readPlaintextMap();
     if (!(profile in map)) return;
@@ -178,6 +178,19 @@ export async function deleteSecret(profile: string): Promise<void> {
     await keychainDelete(profile);
   } catch {
     // already absent — deleting a missing secret is a no-op
+  }
+  // A keychain write that fails its readback falls back to the encrypted
+  // file (see storeSecret), so a keychain-recorded profile can still leave
+  // a blob in secret-store.json — remove that residue too. Best-effort:
+  // the keychain delete above is the primary result.
+  try {
+    const store = await readStore();
+    if (profile in store) {
+      delete store[profile];
+      await writeStore(store);
+    }
+  } catch {
+    // unreadable/missing store means no residue to remove
   }
 }
 
