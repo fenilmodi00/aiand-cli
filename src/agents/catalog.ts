@@ -116,4 +116,18 @@ export function resolveDefault(models: Model[], profileModel?: string): string {
   return first.id;
 }
 
+/**
+ * Effective model for one-shot inference: an explicit --model flag wins
+ * as-is, otherwise resolve through the live catalog (profile model when
+ * still listed, else the curated default).
+ */
+export async function resolveEffectiveModel(
+  flag: string | undefined,
+  baseUrl: string,
+  profileModel?: string
+): Promise<string> {
+  if (flag !== undefined) return flag;
+  return resolveDefault(await getCatalog(baseUrl), profileModel);
+}
+
 

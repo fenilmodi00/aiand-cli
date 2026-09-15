@@ -1,9 +1,9 @@
-// Standalone test double for the gateway's identity + token endpoints, run as
-// its OWN process by test/client-errors.test.mjs via the withMockGateway
-// helper. It must be a separate process (not an in-test-process server)
-// because specs drive the CLI with execFile, and a shared local server keeps
-// the child from hanging on a blocked parent event loop. Zero dependencies,
-// node:http only.
+// Standalone test double for the gateway's identity + token + catalog +
+// chat-completions endpoints, run as its OWN process by test helpers via
+// withMockGateway. It must be a separate process (not an in-test-process
+// server) because specs drive the CLI with execFile, and a shared local
+// server keeps the child from hanging on a blocked parent event loop. Zero
+// dependencies, node:http only.
 //
 // Route selection is by path prefix so each test picks a behavior through
 // AIAND_BASE_URL (the client builds URLs as baseUrl + path, so a prefix in
@@ -18,6 +18,9 @@
 // Response shapes match src/api/account.ts (/api/user, /api/orgs) and
 // src/api/device.ts rotateTokens (/auth/device/token) exactly, and the 429
 // headers match src/api/client.ts HEADERS.RATE_LIMIT_POLICY plus Retry-After.
+// /v1/models returns a small catalog that includes the curated preferred
+// default (zai-org/glm-5.3). POST /v1/chat/completions echoes the request
+// model so run/chat default-resolution tests can assert what the CLI sent.
 //
 // Standalone use: `node test/mock-gateway.mjs --port 0` prints one JSON line
 // {"port":<actual>} on stdout and serves until killed.
@@ -31,6 +34,34 @@ const HAPPY_USER = { id: "u1", email: "happy@example.com" };
 const HAPPY_ORGS = [{ id: "org_1", name: "Happy Org" }];
 const REFRESH_USER = { id: "u1", email: "refreshed@example.com" };
 const REFRESH_ORGS = [{ id: "org_1", name: "Refreshed Org" }];
+
+function catalogModel(id) {
+  return {
+    id,
+    name: id,
+    object: "model",
+    created: 0,
+    owned_by: "aiand",
+    provider: "aiand",
+    context_window: 128000,
+    capabilities: ["tools"],
+    reasoning_efforts: null,
+    reasoning_effort_default: null,
+    description: null,
+    currency: "usd",
+    input_per_1m: "1",
+    output_per_1m: "1",
+    cached_input_per_1m: null,
+  };
+}
+
+// openai/gpt-5 first so a wrong "first catalog entry" default is distinguishable
+// from resolveDefault's curated preference for zai-org/glm-5.3.
+const CATALOG = [
+  catalogModel("openai/gpt-5"),
+  catalogModel("zai-org/glm-5.3"),
+  catalogModel("deepseek-ai/r1"),
+];
 
 function reply(res, status, body, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -48,6 +79,15 @@ function reply429(res) {
 
 function reply401(res) {
   reply(res, 401, { error: "unauthorized" });
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => resolve(raw));
+    req.on("error", reject);
+  });
 }
 
 /** Split an optional /stub/<scenario> prefix off the pathname. */
@@ -84,9 +124,7 @@ const server = createServer((req, res) => {
     if (scenario === "401") return reply401(res);
     // Token rotation: always mint the same key so concurrent refresh retries
     // (the CLI fires user+orgs in parallel) converge on one credential.
-    let raw = "";
-    req.on("data", (chunk) => (raw += chunk));
-    req.on("end", () => {
+    void readBody(req).then(() => {
       if (res.writableEnded) return;
       reply(res, 200, {
         access_token: NEW_ACCESS,
@@ -101,7 +139,35 @@ const server = createServer((req, res) => {
   if (rest === "/v1/models") {
     if (scenario === "429") return reply429(res);
     if (scenario === "401") return reply401(res);
-    return reply(res, 200, { object: "list", data: [] });
+    return reply(res, 200, { object: "list", data: CATALOG });
+  }
+
+  if (rest === "/v1/chat/completions" && req.method === "POST") {
+    if (scenario === "429") return reply429(res);
+    if (scenario === "401") return reply401(res);
+    void readBody(req).then((raw) => {
+      if (res.writableEnded) return;
+      let model = "";
+      try {
+        model = JSON.parse(raw).model ?? "";
+      } catch {
+        model = "";
+      }
+      reply(res, 200, {
+        id: "chatcmpl-mock",
+        object: "chat.completion",
+        model,
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: `echo:${model}` },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    });
+    return;
   }
 
   reply(res, 404, { error: "not found" });

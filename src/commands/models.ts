@@ -86,7 +86,7 @@ export async function run(argv: string[]): Promise<void> {
     style.dim(
       `${models.length} model${models.length === 1 ? "" : "s"}. ` +
         (session ? "" : "Priced in USD -- sign in to see your billing currency. ") +
-        `Pass model "auto" to let ai& pick per request.`
+        `Pass -m auto to let ai& pick per request when your account supports it.`
     )
   );
 }

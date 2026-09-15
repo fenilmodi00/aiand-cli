@@ -9,7 +9,7 @@ const VERBS: Verb[] = ["on", "off", "status"];
 
 function agentHelp(adapter: AgentAdapter): string {
   const flags = [
-    "  --model <id>           model to route (default: auto)",
+    "  --model <id>           model to route (default: catalog preferred)",
     "  --force                overwrite a config another tool manages",
     "      --json              machine-readable output",
     "      --profile <name>    use a stored profile",
