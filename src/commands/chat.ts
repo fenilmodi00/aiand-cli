@@ -3,6 +3,7 @@ import { parse, bool, int, float, str } from "../cli/args.js";
 import { err, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 import { resolveProfile } from "../config.js";
+import { resolveEffectiveModel } from "../agents/catalog.js";
 import { openSession } from "../api/client.js";
 import {
   streamChatCompletion,
@@ -18,12 +19,16 @@ Usage
   aiand chat [options]
 
 Options
-  -m, --model <id>           model to call (default: auto)
+  -m, --model <id>           model to call (default: catalog preferred)
       --system <text>        system prompt for the session
       --max-tokens <n>
       --temperature <n>
       --reasoning-effort <l>
       --show-reasoning       stream reasoning tokens
+
+Omitting -m resolves a concrete catalog model (profile model when still listed,
+else the curated preferred default). Pass -m auto to let ai& choose per request
+when your account supports it.
 
 In-session commands
   /model <id>     switch model for the next turn
@@ -53,7 +58,11 @@ export async function run(argv: string[]): Promise<void> {
   const profile = resolveProfile(str(parsed, "profile"));
   const session = await openSession(profile);
 
-  let model = str(parsed, "model") ?? profile.model ?? "auto";
+  let model = await resolveEffectiveModel(
+    str(parsed, "model"),
+    profile.apiUrl,
+    profile.model
+  );
   let system = str(parsed, "system");
   const showReasoning = bool(parsed, "show-reasoning");
   const maxTokens = int(parsed, "max-tokens");

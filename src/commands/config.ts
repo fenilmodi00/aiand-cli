@@ -67,7 +67,7 @@ async function show(parsed: ReturnType<typeof parse>): Promise<void> {
     ["profile", profile.name],
     ["api url", profile.apiUrl],
     ["auth url", profile.authUrl],
-    ["model", profile.model ?? style.dim("auto")],
+    ["model", profile.model ?? style.dim("catalog preferred")],
     ["signed in", signedIn ? style.green("yes") : style.dim("no")],
   ]);
 }
@@ -87,7 +87,7 @@ async function set(args: string[]): Promise<void> {
   const value = valueParts.join(" ");
   if (!key || !value) {
     throw new CliError("Both a key and a value are required.", {
-      hint: "For example: aiand config set model auto",
+      hint: "For example: aiand config set model zai-org/glm-5.3",
     });
   }
 

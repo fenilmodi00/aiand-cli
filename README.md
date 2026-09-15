@@ -172,9 +172,10 @@ No content. The token budget was spent reasoning (40 reasoning tokens) before an
 was written. Raise --max-tokens, or pick a model that reasons more briefly.
 ```
 
-Model `auto` lets ai& choose per request, and the choice appears in the footer. Where it
-is not enabled for an account, name a model with `-m` or set a default with
-`aiand config set model <id>`.
+Omitting `-m` resolves a concrete catalog model — the profile model when it is still
+listed, otherwise the curated preferred default from the live catalog. Pass `-m auto`
+to let ai& choose per request when your account supports it; the choice appears in the
+footer. Pin any catalog id with `-m` or `aiand config set model <id>`.
 
 ### logs and usage
 
