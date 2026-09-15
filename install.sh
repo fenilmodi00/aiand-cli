@@ -66,6 +66,25 @@ node_meets_minimum() {
   [[ "${major}" =~ ^[0-9]+$ ]] && ((major >= MIN_NODE_MAJOR))
 }
 
+# True iff package.json's top-level `name` is @aiand/cli. A grep for the
+# string would also match nested keys (e.g. metadata.name), which is not
+# enough identity for rm -rf.
+is_aiand_cli_package() {
+  local pkg="${1:-}"
+  [[ -f "${pkg}" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  node -e '
+    const fs = require("fs");
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    } catch {
+      process.exit(1);
+    }
+    process.exit(parsed && parsed.name === "@aiand/cli" ? 0 : 1);
+  ' -- "${pkg}" 2>/dev/null
+}
+
 print_tool_instructions() {
   echo "Install ${1} and rerun this installer." >&2
   echo >&2
@@ -153,8 +172,7 @@ ensure_toolchain() {
 # Echo the source checkout to install from: the local repo when this script
 # runs from one, otherwise a clone/update of SOURCE under INSTALL_DIR.
 ensure_durable_source() {
-  if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/package.json" ]] \
-    && grep -q '"name": "@aiand/cli"' "${SCRIPT_DIR}/package.json" 2>/dev/null; then
+  if [[ -n "${SCRIPT_DIR}" ]] && is_aiand_cli_package "${SCRIPT_DIR}/package.json"; then
     printf '%s\n' "${SCRIPT_DIR}"
     return
   fi
@@ -170,7 +188,7 @@ ensure_durable_source() {
     # so the user recovers with explicit action. This function runs inside
     # $(...) so install_note alone would die with the subshell: echo the
     # failure too, then exit 1 to abort the assignment in main (set -e).
-    if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -q '"name": "@aiand/cli"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+    if is_aiand_cli_package "${INSTALL_DIR}/package.json"; then
       echo "Error: failed to fast-forward update ${INSTALL_DIR}; your checkout was left untouched. Commit, stash, or discard your local changes (or move ${INSTALL_DIR} aside) and re-run the installer." >&2
       exit 1
     else
@@ -185,7 +203,7 @@ ensure_durable_source() {
     # Require explicit user action before any replacement. A missing or
     # empty directory is a fresh target — clone into it.
     if [[ -e "${INSTALL_DIR}" && -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null)" ]]; then
-      if [[ -f "${INSTALL_DIR}/package.json" ]] && grep -q '"name": "@aiand/cli"' "${INSTALL_DIR}/package.json" 2>/dev/null; then
+      if is_aiand_cli_package "${INSTALL_DIR}/package.json"; then
         echo "Error: ${INSTALL_DIR} already exists; your checkout was left untouched. Move or remove it and re-run the installer to reinstall from scratch." >&2
         exit 1
       else
@@ -336,8 +354,7 @@ uninstall_cli() {
   # Identity before any delete: a --force uninstall whose AIAND_DIR is
   # HOME-bounded but not an @aiand/cli checkout must leave the launcher.
   if [[ -e "${checkout}" ]]; then
-    if [[ ! -f "${checkout}/package.json" ]] \
-      || ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"@aiand/cli"' "${checkout}/package.json" 2>/dev/null; then
+    if ! is_aiand_cli_package "${checkout}/package.json"; then
       echo "Error: ${checkout} is not an aiand checkout; it was left untouched. Remove it manually if you are sure." >&2
       exit 1
     fi

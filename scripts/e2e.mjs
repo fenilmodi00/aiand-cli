@@ -282,5 +282,45 @@ check("uninstall refuses a non-checkout AIAND_DIR", decoyRefused, decoyDetail.sp
 check("uninstall left the non-checkout directory", existsSync(join(decoy, "keep.txt")), decoy);
 check("uninstall left the launcher after refused decoy", existsSync(fakeLauncher), fakeLauncher);
 
+const nestedDecoy = join(home, "NestedDecoy");
+mkdirSync(nestedDecoy, { recursive: true });
+writeFileSync(join(nestedDecoy, "keep.txt"), "keep");
+writeFileSync(
+  join(nestedDecoy, "package.json"),
+  JSON.stringify({ name: "other", metadata: { name: "@aiand/cli" } }, null, 2)
+);
+let nestedRefused = false;
+let nestedDetail = "";
+try {
+  execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--force"], {
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: nestedDecoy,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  });
+} catch (error) {
+  nestedDetail = String(error.stderr ?? error.message ?? error);
+  nestedRefused = nestedDetail.includes("not an aiand checkout");
+}
+check(
+  "uninstall refuses nested-name decoy package.json",
+  nestedRefused,
+  nestedDetail.split("\n")[0]
+);
+check(
+  "uninstall left the nested-name decoy directory",
+  existsSync(join(nestedDecoy, "keep.txt")),
+  nestedDecoy
+);
+check(
+  "uninstall left the launcher after nested-name decoy",
+  existsSync(fakeLauncher),
+  fakeLauncher
+);
+
 console.log(results.join("\n"));
 console.log(results.every((r) => r.startsWith("PASS")) ? "E2E: ALL PASS" : "E2E: FAILURES PRESENT");
