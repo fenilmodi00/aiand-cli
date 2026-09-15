@@ -147,7 +147,8 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   const profile = resolveProfile(split.profile);
-  const catalog = await getCatalog(split.baseUrl ?? profile.apiUrl);
+  const baseUrl = split.baseUrl ?? profile.apiUrl;
+  const catalog = await getCatalog(baseUrl);
 
   // --model validated against the live catalog, else let the adapter fall back
   // to its own default. OpenCode is the one adapter whose session config NEEDS
@@ -160,7 +161,7 @@ export async function run(argv: string[]): Promise<void> {
     model = resolveDefault(catalog);
   }
 
-  const launch = await adapter.sessionLaunch({ apiKey: session.key, model, catalog, baseUrl: split.baseUrl });
+  const launch = await adapter.sessionLaunch({ apiKey: session.key, model, catalog, baseUrl });
 
   // Child env = inherited, minus everything the adapter wants cleared, plus
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -170,21 +171,13 @@ export async function run(argv: string[]): Promise<void> {
   Object.assign(env, launch.env);
 
   try {
-    // Windows: shell:true with an args array mangles spaces and &, so route
-    // through cmd.exe with each token quoted instead of using shell:true.
-    // MSVC CRT quoting: escape each " as \" with preceding backslashes doubled,
-    // and double trailing backslashes so the closing quote is not escaped.
-    // %...% cannot be escaped in cmd — kept literal; expands only if an env
-    // var of that exact name exists.
+    // Spawn the agent binary with an argument array on every platform. Joining
+    // tokens into `cmd.exe /c` re-parses user passthrough as shell text.
     const forwardArgs = [...(launch.args ?? []), ...split.passthrough];
-    const { status, signal } =
-      process.platform === "win32"
-        ? await spawnChild(
-            "cmd.exe",
-            ["/d", "/s", "/c", [adapter.bin, ...forwardArgs].map((token) => `"${token.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`).join(" ")],
-            { env, stdio: "inherit" }
-          )
-        : await spawnChild(adapter.bin, forwardArgs, { env, stdio: "inherit" });
+    const { status, signal } = await spawnChild(adapter.bin, forwardArgs, {
+      env,
+      stdio: "inherit",
+    });
     // Propagate the child's exit. Never process.exit here — the runtime flushes
     // stdio before the shell reads the code, and the dispatcher preserves
     // process.exitCode.

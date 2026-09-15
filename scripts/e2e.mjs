@@ -214,7 +214,7 @@ check(
 cli("opencode on --json");
 const fakeCheckout = join(home, ".aiand", "cli");
 mkdirSync(fakeCheckout, { recursive: true });
-writeFileSync(join(fakeCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }));
+writeFileSync(join(fakeCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }, null, 2));
 const launcherDir = join(home, ".local", "bin");
 mkdirSync(launcherDir, { recursive: true });
 const fakeLauncher = join(launcherDir, "aiand");
@@ -255,6 +255,32 @@ check(
   existsSync(join(aiandConfigDir, "sentinel")) && existsSync(cfg),
   aiandConfigDir
 );
+
+const decoy = join(home, "Documents");
+mkdirSync(decoy, { recursive: true });
+writeFileSync(join(decoy, "keep.txt"), "keep");
+writeFileSync(fakeLauncher, `#!/bin/sh\nexec "${process.execPath}" "${DIST}" "$@"\n`);
+chmodSync(fakeLauncher, 0o755);
+let decoyRefused = false;
+let decoyDetail = "";
+try {
+  execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--force"], {
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: decoy,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  });
+} catch (error) {
+  decoyDetail = String(error.stderr ?? error.message ?? error);
+  decoyRefused = decoyDetail.includes("not an aiand checkout");
+}
+check("uninstall refuses a non-checkout AIAND_DIR", decoyRefused, decoyDetail.split("\n")[0]);
+check("uninstall left the non-checkout directory", existsSync(join(decoy, "keep.txt")), decoy);
+check("uninstall left the launcher after refused decoy", existsSync(fakeLauncher), fakeLauncher);
 
 console.log(results.join("\n"));
 console.log(results.every((r) => r.startsWith("PASS")) ? "E2E: ALL PASS" : "E2E: FAILURES PRESENT");

@@ -208,6 +208,7 @@ export async function signInViaLocalhostCallback(
   try {
     response = await publicRequest(`${authUrl}/auth/device/token`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         grant_type: "authorization_code",
         code: outcome.code,

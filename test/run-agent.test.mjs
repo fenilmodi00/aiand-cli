@@ -286,6 +286,44 @@ describe("run-agent launcher", () => {
     });
   });
 
+  test("omitted --base-url passes the profile apiUrl into sessionLaunch", async () => {
+    plantStub("opencode");
+    const custom = "https://gw.example.test";
+    writeFileSync(
+      join(cfg, "config.json"),
+      JSON.stringify({ profile: "default", profiles: { default: { apiUrl: custom } } })
+    );
+    writeFileSync(
+      join(cfg, "model-catalog.json"),
+      JSON.stringify({
+        fetchedAt: Date.now(),
+        baseUrl: custom,
+        models: [model("aiand/glm-5.3"), model("aiand/other")],
+      })
+    );
+    const capture = mkdtempSync(join(tmpdir(), "aiand-cap-"));
+    try {
+      const { code } = await stubCli(["opencode"], {}, capture);
+      assert.equal(code, 42);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const match = envText.match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
+      assert.ok(match, "OPENCODE_CONFIG_CONTENT in child env");
+      const config = JSON.parse(match[1]);
+      assert.equal(config.provider?.aiand?.options?.baseURL, `${custom}/v1`);
+    } finally {
+      writeFileSync(join(cfg, "config.json"), JSON.stringify({ profile: "default", profiles: {} }));
+      writeFileSync(
+        join(cfg, "model-catalog.json"),
+        JSON.stringify({
+          fetchedAt: Date.now(),
+          baseUrl: "https://api.aiand.com",
+          models: [model("aiand/glm-5.3"), model("aiand/other")],
+        })
+      );
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("child env scrubs AIAND_API_KEY but keeps the adapter injection", async () => {
     // stubCli always sets AIAND_API_KEY in the parent env; the launcher must
     // not forward it — the adapter's own injection carries the key instead.

@@ -141,15 +141,10 @@ export async function publicJson<T>(url: string, init: RequestInit = {}): Promis
  */
 export async function publicRequest(url: string, init: RequestInit = {}): Promise<Response> {
   const { headers, ...rest } = init;
-  return fetchOrFail(url, {
-    ...rest,
-    headers: {
-      Accept: "application/json",
-      "User-Agent": userAgent(),
-      ...(rest.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(headers as Record<string, string>),
-    },
-  });
+  const merged = new Headers(headers);
+  if (!merged.has("Accept")) merged.set("Accept", "application/json");
+  if (!merged.has("User-Agent")) merged.set("User-Agent", userAgent());
+  return fetchOrFail(url, { ...rest, headers: merged });
 }
 
 async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {

@@ -35,10 +35,28 @@ function catalogCachePath(): string {
   return join(configDir(), CATALOG_CACHE_FILE);
 }
 
+function parseCache(value: unknown): CatalogCache | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.fetchedAt !== "number" || !Number.isFinite(record.fetchedAt)) return null;
+  if (typeof record.baseUrl !== "string" || record.baseUrl.length === 0) return null;
+  if (!Array.isArray(record.models)) return null;
+  const models: Model[] = [];
+  for (const entry of record.models) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const model = entry as Record<string, unknown>;
+    if (typeof model.id !== "string" || model.id.length === 0) return null;
+    if (!Array.isArray(model.capabilities)) return null;
+    if (!model.capabilities.every((cap) => typeof cap === "string")) return null;
+    models.push(entry as Model);
+  }
+  return { fetchedAt: record.fetchedAt, baseUrl: record.baseUrl, models };
+}
+
 async function readCache(): Promise<CatalogCache | null> {
   try {
     const raw = await readFile(catalogCachePath(), "utf8");
-    return JSON.parse(raw) as CatalogCache;
+    return parseCache(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     if (error instanceof SyntaxError) return null;

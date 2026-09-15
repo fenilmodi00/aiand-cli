@@ -333,6 +333,16 @@ uninstall_cli() {
     fi
   fi
 
+  # Identity before any delete: a --force uninstall whose AIAND_DIR is
+  # HOME-bounded but not an @aiand/cli checkout must leave the launcher.
+  if [[ -e "${checkout}" ]]; then
+    if [[ ! -f "${checkout}/package.json" ]] \
+      || ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"@aiand/cli"' "${checkout}/package.json" 2>/dev/null; then
+      echo "Error: ${checkout} is not an aiand checkout; it was left untouched. Remove it manually if you are sure." >&2
+      exit 1
+    fi
+  fi
+
   rm -f "${launcher}"
   if [[ -e "${checkout}" ]]; then
     rm -rf "${checkout}"
