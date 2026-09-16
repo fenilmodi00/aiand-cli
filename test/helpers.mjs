@@ -77,3 +77,56 @@ export function catalogModel(
     ...rest,
   };
 }
+
+/**
+ * Run test/mock-gateway.mjs as its own process and yield { port, url, kill }
+ * to `fn`, killing the server and awaiting its exit in a finally. A separate
+ * process — not an in-test-process server — because specs drive the CLI via
+ * child processes, which a blocked parent event loop could never answer.
+ * Imports stay inside so existing helpers above are untouched.
+ */
+export async function withMockGateway(fn) {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const gateway = fileURLToPath(new URL("./mock-gateway.mjs", import.meta.url));
+  const child = spawn(process.execPath, [gateway, "--port", "0"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  // 'close' fires after stdio drains even when spawn emits only 'error'
+  // (no 'exit' in that case); await it so cleanup never hangs.
+  const closed = new Promise((resolve) => child.once("close", resolve));
+  const kill = () => {
+    child.kill();
+  };
+  try {
+    const port = await new Promise((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => {
+        reject(new Error("mock gateway did not print its port in time"));
+      }, 10000);
+      timer.unref();
+      const fail = (cause) => {
+        clearTimeout(timer);
+        reject(cause);
+      };
+      child.on("error", fail);
+      child.on("exit", (code) => fail(new Error(`mock gateway exited early (code ${code}): ${out}`)));
+      child.stdout.on("data", (chunk) => {
+        out += String(chunk);
+        const newline = out.indexOf("\n");
+        if (newline !== -1) {
+          clearTimeout(timer);
+          try {
+            resolve(JSON.parse(out.slice(0, newline)).port);
+          } catch {
+            fail(new Error(`mock gateway printed a bad port line: ${out.slice(0, newline)}`));
+          }
+        }
+      });
+    });
+    await fn({ port, url: `http://127.0.0.1:${port}`, kill });
+  } finally {
+    kill();
+    await closed;
+  }
+}

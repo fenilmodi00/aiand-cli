@@ -95,6 +95,35 @@ describe("getCatalog cache", () => {
     }
   });
 
+  test("malformed-but-valid JSON cache is a miss, not a TypeError", async () => {
+    mkdirSync(process.env.AIAND_CONFIG_DIR, { recursive: true });
+    writeFileSync(
+      join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"),
+      JSON.stringify({
+        fetchedAt: Date.now(),
+        baseUrl: "https://api.aiand.com",
+        models: { not: "an-array" },
+      })
+    );
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("connection refused");
+    };
+    try {
+      await assert.rejects(
+        () => catalog.getCatalog("https://api.aiand.com"),
+        (error) => {
+          assert.equal(error.name, "CliError");
+          assert.match(error.message, /model catalog/);
+          return true;
+        }
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("a failed fetch with no cache throws a CliError with a hint", async () => {
     rmSync(join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"), { force: true });
 

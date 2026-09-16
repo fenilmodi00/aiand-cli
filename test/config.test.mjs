@@ -38,8 +38,8 @@ describe("endpoint resolution", () => {
     assert.equal(profile.authUrl, config.DEFAULT_BASE_URL);
   });
 
-  test("a stored profile overrides the default", () => {
-    config.updateProfile("default", { apiUrl: "https://stored.example" });
+  test("a stored profile overrides the default", async () => {
+    await config.updateProfile("default", { apiUrl: "https://stored.example" });
     assert.equal(config.resolveProfile().apiUrl, "https://stored.example");
   });
 
@@ -122,6 +122,27 @@ describe("profiles", () => {
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
+  });
+  test("saveCredential rejects a __proto__ profile name", async () => {
+    await assert.rejects(
+      () => config.saveCredential("__proto__", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
+  });
+
+  test("updateProfile rejects a __proto__ profile name", async () => {
+    await assert.rejects(() => config.updateProfile("__proto__", { authUrl: "https://x.example" }), /not allowed/);
+  });
+
+  test("saveCredential rejects constructor and toString profile names", async () => {
+    await assert.rejects(
+      () => config.saveCredential("constructor", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
+    await assert.rejects(
+      () => config.saveCredential("toString", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
   });
 });
 

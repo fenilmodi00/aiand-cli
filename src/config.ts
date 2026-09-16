@@ -1,11 +1,5 @@
 import { join } from "node:path";
-import {
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-  chmodSync,
-  unlinkSync,
-} from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { CliError } from "./cli/errors.js";
 import { agentHome, configDir, writeFileAtomic } from "./fsutil.js";
 import * as secrets from "./secrets.js";
@@ -67,11 +61,10 @@ function readJson<T>(path: string): T | null {
   }
 }
 
-function writeJson(path: string, value: unknown, mode: number): void {
-  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode });
-
-  chmodSync(path, mode);
+async function writeJson(path: string, value: unknown, mode: number): Promise<void> {
+  // writeFileAtomic mkdirs 0700 and preserves/re-tightens the mode, so every
+  // metadata write lands whole — readers never see a truncated file.
+  await writeFileAtomic(path, JSON.stringify(value, null, 2) + "\n", { mode });
 }
 
 export function loadConfig(): Config {
@@ -82,17 +75,38 @@ export function loadConfig(): Config {
   };
 }
 
-export function saveConfig(config: Config): void {
-  writeJson(configPath(), config, 0o600);
+export async function saveConfig(config: Config): Promise<void> {
+  await writeJson(configPath(), config, 0o600);
 }
 
 export function activeProfileName(override?: string): string {
   return override ?? process.env.AIAND_PROFILE ?? loadConfig().profile;
 }
+/**
+ * Profile names become keys in credentials.json, file-store accounts, and
+ * keychain account strings. `__proto__` (and friends) would route through
+ * the Object.prototype setter and silently drop stored metadata, so unsafe
+ * names are rejected at the trust boundary: saveCredential / updateProfile.
+ */
+export function assertSafeProfileName(name: string): void {
+  if (
+    name.length === 0 ||
+    name !== name.trim() ||
+    name.startsWith(".") ||
+    /[/\\:*?"<>|]/.test(name) ||
+    Object.hasOwn(Object.prototype, name)
+  ) {
+    throw new CliError(`Profile name "${name}" is not allowed.`, {
+      hint: "Use a plain name: letters, digits, dashes, dots, and underscores.",
+    });
+  }
+}
+
 export async function saveCredential(
   profile: string,
   credential: LoadedCredential
 ): Promise<void> {
+  assertSafeProfileName(profile);
   const blob = JSON.stringify({ access_token: credential.access_token, refresh_token: credential.refresh_token });
   // storeSecret decides the tier (env override → keychain probe → file) and
   // returns which one it actually used; metadata records that same tier so a
@@ -102,7 +116,7 @@ export async function saveCredential(
   const { access_token: _at, refresh_token: _rt, ...meta } = credential;
   const all = await loadAllCredentials();
   all[profile] = { ...meta, storage };
-  writeJson(credentialsPath(), all, 0o600);
+  await writeJson(credentialsPath(), all, 0o600);
 }
 export type ResolvedProfile = Profile & { name: string; authUrl: string; apiUrl: string };
 
@@ -122,19 +136,26 @@ export function resolveProfile(override?: string): ResolvedProfile {
   return { ...stored, name, authUrl, apiUrl };
 }
 
-export function updateProfile(name: string, patch: Partial<Profile>): void {
+export async function updateProfile(name: string, patch: Partial<Profile>): Promise<void> {
+  assertSafeProfileName(name);
   const config = loadConfig();
   config.profiles[name] = { ...DEFAULT_PROFILE, ...config.profiles[name], ...patch };
-  saveConfig(config);
+  await saveConfig(config);
 }
 
 const trimSlash = (url: string): string => url.replace(/\/+$/, "");
-const LOOPBACK_HOSTS: Record<string, true> = {
+// Static lookup table, read ONLY through Object.hasOwn: a plain `host in
+// table` / index check resolves through Object.prototype, so hostnames like
+// "constructor" wrongly passed as loopback. Exported for adapters that
+// apply the same loopback policy (opencode's probe) — one definition, so
+// the list can never drift between the two.
+export const LOOPBACK_HOSTS: Record<string, true> = {
   localhost: true,
   "127.0.0.1": true,
   "::1": true,
-  "[::1]": true,
 };
+export const isLoopbackHost = (host: string): boolean =>
+  Object.hasOwn(LOOPBACK_HOSTS, host.toLowerCase());
 
 /**
  * Base URLs carry API keys, so plain http is rejected except on loopback
@@ -151,7 +172,7 @@ export function assertHttpsBaseUrl(url: string): void {
     });
   }
   if (parsed.protocol === "https:") return;
-  if (parsed.protocol === "http:" && LOOPBACK_HOSTS[parsed.hostname.toLowerCase()]) return;
+  if (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname.replace(/^\[|\]$/g, ""))) return;
   throw new CliError(`Base URL must use https (got "${url}").`, {
     hint: "Use https, or http only for loopback (localhost, 127.0.0.1, ::1).",
   });
@@ -174,7 +195,7 @@ export async function loadAllCredentials(): Promise<Record<string, StoredCredent
     }
   }
   if (migrated) {
-    writeJson(credentialsPath(), all, 0o600);
+    await writeJson(credentialsPath(), all, 0o600);
   }
   return all;
 }
@@ -184,7 +205,7 @@ export async function loadCredential(profile: string): Promise<LoadedCredential 
   const entry = all[profile];
   if (!entry) return null;
 
-  const blob = await secrets.loadSecret(profile);
+  const blob = await secrets.loadSecret(profile, entry.storage);
   let pair: { access_token?: string; refresh_token?: string };
   if (!blob) return null;
   try {
@@ -214,7 +235,7 @@ export async function clearCredential(profile: string): Promise<void> {
     }
     return;
   }
-  writeJson(credentialsPath(), all, 0o600);
+  await writeJson(credentialsPath(), all, 0o600);
 }
 
 export function maskKey(key: string): string {

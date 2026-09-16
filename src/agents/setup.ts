@@ -1,19 +1,20 @@
 import { agentHome, resolveProfile } from "../config.js";
 import { CliError } from "../cli/errors.js";
 import { requireSessionKey } from "../auth/session.js";
-import { snapshotFiles, restoreSnapshot } from "./snapshot.js";
+import { snapshotFiles, hasSnapshot } from "./snapshot.js";
 import {
   getCatalog,
   resolveDefault,
   validateCatalogModel,
+  visionLabel,
 } from "./catalog.js";
 import type { AgentAdapter } from "./types.js";
 
 /**
  * The agent on/off/status verbs. `agentOn` wires an adapter to ai& (after a
- * pre-aiand snapshot), `agentOff` restores the pre-aiand bytes and strips
- * aiand-owned side files, and `agentStatus` reads the ground-truth config
- * state (on/off) without trusting any local bookkeeping.
+ * pre-aiand snapshot), `agentOff` subtracts what aiand added, and
+ * `agentStatus` reads the ground-truth config state (on/off) without
+ * trusting any local bookkeeping. The snapshot backs `restore --force`, not `off`.
  */
 
 export type AgentOnOptions = {
@@ -51,7 +52,7 @@ export type AgentStatusResult = {
  * Turn an agent on: resolve a session key, detect the binary, resolve
  * model/slots from the live catalog, snapshot when inactive, then let the
  * adapter write its config. An already-active probe skips the snapshot so
- * a re-`on` keeps the first pre-aiand backup.
+ * a re-`on` keeps the first pre-aiand capture.
  */
 export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}): Promise<AgentOnResult> {
   // Launcher-only adapters have no persistent wiring: their config strategy
@@ -99,59 +100,61 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     if (value !== "native") validateCatalogModel(catalog, value, `--${slot}`);
   }
   const managed = adapter.managedFiles();
-  // Idempotency: a re-`on` while already routed keeps the first backup
-  // (probe.active), and every inactive `on` re-snapshots so the manifest
-  // always matches the pre-aiand state — including after an `off` that left
-  // a stale manifest behind. An aiand-routed config is never its own backup:
-  // active probes skip the snapshot entirely.
-  if (!probe.active) {
+  // Idempotency: a re-`on` while already routed skips the snapshot so the
+  // first pre-aiand capture stays authoritative. An inactive `on` snapshots
+  // only when none exists — never overwrite a capture with leftover keys.
+  if (!probe.active && !(await hasSnapshot(adapter.id))) {
     await snapshotFiles(adapter.id, managed);
   }
 
   const written = await adapter.enable({
     apiKey: session.key,
     model,
+    pinModel: Boolean(opts.model) && opts.model !== "native",
     slots,
     catalog,
     home: agentHome(),
     baseUrl: opts.baseUrl ?? profile.apiUrl,
   });
 
+  // The wired model warns when it is text-only and can't take images. The
+  // literal "native" names no catalog model and never warns.
+  const warnings: string[] = [...(written.warnings ?? [])];
+  if (written.model !== "native") {
+    const entry = catalog.find((model) => model.id === written.model);
+    if (entry && visionLabel(entry) === "text-only") {
+      warnings.push(`${written.model} is text-only and can't take images.`);
+    }
+  }
+
   return {
     agent: adapter.id,
     state: "on",
     model: written.model,
     files: written.filesWritten,
-    warnings: [],
+    warnings,
   };
 
 }
 
 /**
- * Turn an agent off: restore the pre-aiand bytes from the manifest (or report
- * that nothing was ours to begin with), then let the adapter clean up any
- * aiand-owned side files. Exit 0 either way.
+ * Turn an agent off: subtract marked aiand keys. The snapshot is not replayed
+ * here — it backs `aiand restore --force`. Exit 0 either way.
  */
 export async function agentOff(adapter: AgentAdapter, opts: { force?: boolean } = {}): Promise<AgentOffResult> {
-  // The restore must land on disk while the owning app is NOT running — it
-  // rewrites the config from memory on exit and would undo the restore.
+  // GUI adapters refuse while the app holds the file in memory.
   if (adapter.offGuard) {
     await adapter.offGuard({ force: opts.force ?? false });
   }
-  const restored = await restoreSnapshot(adapter.id);
-  if (!restored) {
-    // No manifest, but the config may still carry orphaned aiand routing
-    // (e.g. the backup was deleted). The adapter's strip path removes only
-    // what it owns; a genuinely untouched config still reports the friendly
-    // nothing-to-turn-off note.
-    const probe = await adapter.probe();
-    if (probe.active) {
-      await adapter.disable();
-      return { agent: adapter.id, state: "off" };
-    }
+
+  const result = (await adapter.disable()) ?? { stripped: false };
+  const notes = result.notes?.filter(Boolean) ?? [];
+  if (!result.stripped && notes.length === 0) {
     return { agent: adapter.id, state: "off", note: "Already your own config — nothing to turn off." };
   }
-  await adapter.disable();
+  if (notes.length > 0) {
+    return { agent: adapter.id, state: "off", note: notes.join(" ") };
+  }
   return { agent: adapter.id, state: "off" };
 }
 

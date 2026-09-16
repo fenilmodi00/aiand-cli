@@ -106,8 +106,12 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    const data = await publicJson<{ version?: string }>(REGISTRY_URL, { signal: controller.signal });
-    clearTimeout(timer);
+    let data: { version?: string };
+    try {
+      data = await publicJson<{ version?: string }>(REGISTRY_URL, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     const latest = data?.version;
     if (typeof latest !== "string") throw new Error("registry response missing version");
     const payload: UpdateCache = { checkedAt: now(), ok: true, latest };

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # aiand one-line installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
+#   bash install.sh uninstall [--force]
 #
 # Clones (or fast-forward updates) the CLI into ~/.aiand/cli, builds it with
 # the project's own toolchain, and drops an `aiand` launcher on PATH via
@@ -9,14 +10,21 @@
 # Nothing under ~/.config/aiand (profiles, credentials, agent snapshots) is
 # ever touched — updating the CLI never unwires your agents.
 #
+# `uninstall` turns every aiand-routed agent `off` first (via the installed
+# CLI's `aiand init --off`, aborting before deleting anything when a restore
+# fails so snapshots stay retryable), then removes the launcher and the
+# checkout. Profiles, credentials, and snapshots under ~/.config/aiand are
+# intentionally kept.
+#
 # Knobs (environment only; no flags):
 #   AIAND_SOURCE=https://…|/local/path   where to clone from
 #   AIAND_DIR=~/.aiand/cli               where the source lives
 #   AIAND_SKIP_BUILD=1                   reuse the existing dist/ build
 #   AIAND_INSTALL_VERBOSE=1              show full npm output
+#   AIAND_UNINSTALL_FORCE=1              on uninstall, skip the agent restore
 set -euo pipefail
 
-DEFAULT_SOURCE="https://github.com/fenilmodi00/aiand-cli.git"
+DEFAULT_SOURCE="https://github.com/aiandlabs/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
 INSTALL_DIR="${AIAND_DIR:-${HOME}/.aiand/cli}"
 MIN_NODE_MAJOR=22
@@ -56,6 +64,43 @@ node_meets_minimum() {
   local major
   major="$(node_major_version)"
   [[ "${major}" =~ ^[0-9]+$ ]] && ((major >= MIN_NODE_MAJOR))
+}
+
+# True iff package.json's top-level `name` is @aiand/cli. A grep for the
+# string would also match nested keys (e.g. metadata.name), which is not
+# enough identity for rm -rf.
+is_aiand_cli_package() {
+  local pkg="${1:-}"
+  [[ -f "${pkg}" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  node -e '
+    const fs = require("fs");
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    } catch {
+      process.exit(1);
+    }
+    process.exit(parsed && parsed.name === "@aiand/cli" ? 0 : 1);
+  ' -- "${pkg}" 2>/dev/null
+}
+
+# True iff the installer recorded this checkout as its own (or it is the
+# default-path checkout from before markers existed). Ownership metadata, not
+# the package name, authorizes rm -rf: any @aiand/cli-named source checkout
+# cloned by hand under $HOME/src would otherwise be deletable via AIAND_DIR.
+OWNERSHIP_MARKER=".aiand-installer-owned"
+is_installer_owned() {
+  local dir="${1:-}"
+  [[ -f "${dir}/${OWNERSHIP_MARKER}" ]] && return 0
+  [[ "${dir}" == "${HOME}"/.aiand/cli ]] && is_aiand_cli_package "${dir}/package.json"
+}
+
+# Best-effort: a read-only checkout must never fail an install over the
+# marker — uninstall falls back to refusing, which errs toward keeping files.
+mark_installer_owned() {
+  local dir="${1:-}"
+  printf 'aiand-cli installer ownership marker\n' >"${dir}/${OWNERSHIP_MARKER}" 2>/dev/null || true
 }
 
 print_tool_instructions() {
@@ -145,8 +190,7 @@ ensure_toolchain() {
 # Echo the source checkout to install from: the local repo when this script
 # runs from one, otherwise a clone/update of SOURCE under INSTALL_DIR.
 ensure_durable_source() {
-  if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/package.json" ]] \
-    && grep -q '"name": "@aiand/cli"' "${SCRIPT_DIR}/package.json" 2>/dev/null; then
+  if [[ -n "${SCRIPT_DIR}" ]] && is_aiand_cli_package "${SCRIPT_DIR}/package.json"; then
     printf '%s\n' "${SCRIPT_DIR}"
     return
   fi
@@ -157,17 +201,41 @@ ensure_durable_source() {
       printf '%s\n' "${INSTALL_DIR}"
       return
     fi
-    install_note "Local changes blocked a fast-forward update; reinstalling ${INSTALL_DIR} from scratch."
-    rm -rf "${INSTALL_DIR}"
+    # A failed fast-forward (local commits, local changes, or a transient
+    # fetch error) must never delete the checkout: leave it on disk and fail
+    # so the user recovers with explicit action. This function runs inside
+    # $(...) so install_note alone would die with the subshell: echo the
+    # failure too, then exit 1 to abort the assignment in main (set -e).
+    if is_aiand_cli_package "${INSTALL_DIR}/package.json"; then
+      echo "Error: failed to fast-forward update ${INSTALL_DIR}; your checkout was left untouched. Commit, stash, or discard your local changes (or move ${INSTALL_DIR} aside) and re-run the installer." >&2
+      exit 1
+    else
+      install_note "${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely"
+      echo "Error: ${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely" >&2
+      exit 1
+    fi
   else
     install_progress "Downloading aiand..."
-    rm -rf "${INSTALL_DIR}"
+    # A pre-existing non-empty directory (e.g. AIAND_DIR=~) must fail safely
+    # instead of being wiped — even when it looks like an aiand checkout.
+    # Require explicit user action before any replacement. A missing or
+    # empty directory is a fresh target — clone into it.
+    if [[ -e "${INSTALL_DIR}" && -n "$(ls -A "${INSTALL_DIR}" 2>/dev/null)" ]]; then
+      if is_aiand_cli_package "${INSTALL_DIR}/package.json"; then
+        echo "Error: ${INSTALL_DIR} already exists; your checkout was left untouched. Move or remove it and re-run the installer to reinstall from scratch." >&2
+        exit 1
+      else
+        install_note "${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely"
+        echo "Error: ${INSTALL_DIR} is not an aiand checkout; cloning into it failed safely" >&2
+        exit 1
+      fi
+    fi
   fi
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   git clone --quiet --depth 1 "${SOURCE}" "${INSTALL_DIR}"
+  mark_installer_owned "${INSTALL_DIR}"
   printf '%s\n' "${INSTALL_DIR}"
 }
-
 ensure_build() {
   local source_dir="$1"
   if [[ "${AIAND_SKIP_BUILD:-}" == "1" && -f "${source_dir}/dist/index.js" ]]; then
@@ -249,8 +317,88 @@ EOF
 
   add_bin_dir_to_path
 }
+uninstall_cli() {
+  # `bash install.sh uninstall [--force]`: turn every aiand-routed agent
+  # `off` first (aborting before deleting anything when off fails so
+  # snapshots stay retryable), then remove the launcher and the checkout.
+  # Profiles, credentials, and snapshots under ~/.config/aiand are kept.
+  # --force (or AIAND_UNINSTALL_FORCE=1) skips the agent teardown for broken
+  # installs where no working launcher remains.
+  local force=0 arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --force) force=1 ;;
+      *)
+        echo "Usage: bash install.sh [uninstall [--force]]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  if [[ "${AIAND_UNINSTALL_FORCE:-}" == "1" ]]; then
+    force=1
+  fi
+
+  local launcher="${HOME}/.local/bin/aiand"
+  local checkout="${AIAND_DIR:-${HOME}/.aiand/cli}"
+  # AIAND_DIR is user-controlled: canonicalize before comparing (an exact
+  # string compare would let "$HOME/", "$HOME//", or "//" — the same
+  # directories spelled differently — straight through to rm -rf), then
+  # refuse HOME itself, /, and anything outside HOME.
+  checkout="$(cd "${checkout}" 2>/dev/null && pwd -P)" \
+    || checkout="$(cd "$(dirname "${checkout}")" 2>/dev/null && pwd -P)/$(basename "${checkout}")"
+  if [[ "${checkout}" == "/" || "${checkout}" == "${HOME}" || "${checkout}" == "${HOME}/" ]]; then
+    echo "Error: refusing to remove ${checkout}; unset AIAND_DIR and re-run." >&2
+    exit 1
+  fi
+  if [[ "${checkout}" != "${HOME}"/* ]]; then
+    echo "Error: refusing to remove ${checkout}; it is outside ${HOME}." >&2
+    exit 1
+  fi
+
+
+  # Identity before any agent teardown AND before any delete: the checkout
+  # must be an @aiand/cli package this installer owns (marker file, or the
+  # default-path checkout from before markers existed). A hand-cloned
+  # source checkout under $HOME must never be rm -rf'ed via AIAND_DIR.
+  if [[ -e "${checkout}" ]] && ! is_aiand_cli_package "${checkout}/package.json"; then
+    echo "Error: ${checkout} is not an aiand checkout; it was left untouched. Remove it manually if you are sure." >&2
+    exit 1
+  fi
+  if [[ -e "${checkout}" ]] && ! is_installer_owned "${checkout}"; then
+    echo "Error: ${checkout} is not an installer-owned checkout; it was left untouched. Uninstall the installer's checkout (default ~/.aiand/cli) or remove ${checkout} manually." >&2
+    exit 1
+  fi
+
+  if ((force == 0)); then
+    if [[ -x "${launcher}" ]]; then
+      install_progress "Turning agents off..."
+      if ! "${launcher}" init --off; then
+        echo "Error: agent teardown failed; nothing was deleted. Fix the failure and re-run, or bypass it with --force (AIAND_UNINSTALL_FORCE=1)." >&2
+        exit 1
+      fi
+    else
+      echo "Error: no working aiand launcher at ${launcher}; nothing was deleted. Re-run with --force to remove files without turning agents off." >&2
+      exit 1
+    fi
+  fi
+
+
+  rm -f "${launcher}"
+  if [[ -e "${checkout}" ]]; then
+    rm -rf "${checkout}"
+  fi
+  rmdir "${HOME}/.aiand" 2>/dev/null || true
+  echo "Removed ${launcher} and ${checkout}."
+  echo "Kept profiles, credentials, and agent snapshots under ${HOME}/.config/aiand."
+}
+
 
 main() {
+  if [[ "${1:-}" == "uninstall" ]]; then
+    shift
+    uninstall_cli "$@"
+    return
+  fi
   ensure_toolchain
   local source_dir
   source_dir="$(ensure_durable_source)"

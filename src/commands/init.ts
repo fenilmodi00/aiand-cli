@@ -1,4 +1,4 @@
-import { bool, parse } from "../cli/args.js";
+import { bool, parse, str } from "../cli/args.js";
 import { json, out, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 import { isInteractive } from "../cli/prompt.js";
@@ -17,15 +17,16 @@ Usage
   aiand init --off               turn off every aiand-routed agent
   aiand init --off <agent> [...] turn off specific agents
   aiand init --json              machine-readable per-agent results
+  aiand init --profile <name>    wire using a stored profile's key
 
-Wiring an agent is the same as \`aiand <agent> on\`: it backs up the current
+Wiring an agent is the same as \`aiand <agent> on\`: it snapshots the current
 config, refuses configs another tool manages (pass --force to overwrite),
-and points the agent at ai&.`;
+and points the agent at ai&. \`off\` subtracts aiand routing; it does not restore the snapshot.`;
 
 type InitResult = { agent: string; state: "on" | "off"; note?: string; model?: string };
 
-async function wireOn(adapter: AgentAdapter): Promise<InitResult> {
-  const result = await agentOn(adapter, {});
+async function wireOn(adapter: AgentAdapter, opts: { profile?: string } = {}): Promise<InitResult> {
+  const result = await agentOn(adapter, { profile: opts.profile });
   return { agent: result.agent, state: result.state, model: result.model };
 }
 
@@ -43,12 +44,13 @@ export async function run(argv: string[]): Promise<void> {
   if (bool(parsed, "help")) return out(help);
 
   const jsonOut = bool(parsed, "json");
+  const profile = str(parsed, "profile");
 
   if (bool(parsed, "off")) return runOff(parsed.positionals, jsonOut, bool(parsed, "force"));
 
   const named = parsed.positionals;
   if (bool(parsed, "all") || named.length > 0) {
-    if (named.length > 0) return runOnAll(resolveNames(named), jsonOut);
+    if (named.length > 0) return runOnAll(resolveNames(named), jsonOut, [], profile);
     // Batch wiring skips launcher-only adapters: `on` is
     // refused for them by the engine, so including them would abort the
     // whole batch. They are reported, not wired.
@@ -56,12 +58,13 @@ export async function run(argv: string[]): Promise<void> {
     return runOnAll(
       detected.filter((adapter) => !adapter.launcherOnly),
       jsonOut,
-      detected.filter((adapter) => adapter.launcherOnly)
+      detected.filter((adapter) => adapter.launcherOnly),
+      profile
     );
   }
 
   // Bare `aiand init` (interactive): pick from installed agents.
-  return runInteractive(jsonOut);
+  return runInteractive(jsonOut, profile);
 }
 
 function resolveNames(names: string[]): AgentAdapter[] {
@@ -69,8 +72,11 @@ function resolveNames(names: string[]): AgentAdapter[] {
   const unknown: string[] = [];
   for (const name of names) {
     const adapter = findAgent(name);
-    if (adapter && !resolved.includes(adapter)) resolved.push(adapter);
-    else unknown.push(name);
+    if (!adapter) {
+      unknown.push(name);
+    } else if (!resolved.includes(adapter)) {
+      resolved.push(adapter);
+    }
   }
   if (unknown.length > 0) {
     throw new CliError(`Unknown agent(s): ${unknown.join(", ")}.`, {
@@ -91,7 +97,8 @@ async function detectedInstalled(): Promise<{ adapter: AgentAdapter; installed: 
 async function runOnAll(
   targets: AgentAdapter[],
   jsonOut: boolean,
-  skipped: AgentAdapter[] = []
+  skipped: AgentAdapter[] = [],
+  profile?: string
 ): Promise<void> {
   if (targets.length === 0 && skipped.length === 0) {
     if (jsonOut) return json({ agents: [], message: "No coding agents detected on this machine." });
@@ -102,7 +109,7 @@ async function runOnAll(
 
   const results: InitResult[] = [];
   for (const adapter of targets) {
-    results.push(await wireOn(adapter));
+    results.push(await wireOn(adapter, { profile }));
   }
   for (const adapter of skipped) {
     results.push({
@@ -147,7 +154,7 @@ async function registeredRouted(): Promise<AgentAdapter[]> {
   return routed;
 }
 
-async function runInteractive(jsonOut: boolean): Promise<void> {
+async function runInteractive(jsonOut: boolean, profile?: string): Promise<void> {
   const detected = await detectedInstalled();
   const missingNames = AGENTS.filter((a) => !detected.some((d) => d.adapter.id === a.id)).map(
     (a) => a.id
@@ -212,7 +219,7 @@ async function runInteractive(jsonOut: boolean): Promise<void> {
     });
   }
   for (const adapter of targets) {
-    const result = await wireOn(adapter);
+    const result = await wireOn(adapter, { profile });
     out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
   }
 }

@@ -125,7 +125,7 @@ describe("signInViaLocalhostCallback", () => {
     assert.equal(params.code_challenge_method, "S256");
     assert.match(params.code_challenge, /^[A-Za-z0-9_-]{43}$/);
     assert.match(params.state, /^[A-Za-z0-9_-]{22}$/);
-    assert.match(params.redirect_uri, /^http:\/\/localhost:\d+$/);
+    assert.match(params.redirect_uri, /^http:\/\/127\.0\.0\.1:\d+$/);
     assert.equal(params.key_name, "aiand@testhost");
 
     // Exchange carried the code and a valid base64url verifier.
@@ -225,15 +225,32 @@ describe("signInViaLocalhostCallback", () => {
     await new Promise((resolve) => server.once("listening", resolve));
     authUrl = `http://127.0.0.1:${server.address().port}`;
 
+    // The Deny click must render the failure page, not the signed-in page.
+    // The flow settles the moment the deny page flushes, so the seam's own
+    // fetch chain may still be mid-await; track it and wait below before
+    // asserting what the "browser" received.
+    let deniedPage = "";
+    let opened = Promise.resolve(false);
     const result = await browser.signInViaLocalhostCallback({
       authUrl,
-      open: browserOpener(),
+      open: (url) => {
+        opened = (async () => {
+          const res = await fetch(url, { redirect: "manual" });
+          assert.equal(res.status, 302);
+          deniedPage = await (await fetch(res.headers.get("location"))).text();
+          return true;
+        })();
+        return opened;
+      },
     });
+    await opened;
     assert.deepEqual(result, {
       ok: false,
       failure: "Sign-in was cancelled in the browser.",
       fatal: true,
     });
+    assert.match(deniedPage, /Sign-in did not complete/);
+    assert.doesNotMatch(deniedPage, /Signed in/);
     assert.equal(state.tokenBodies.length, 0);
   });
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
@@ -73,6 +73,7 @@ describe("piped stdin across stdio shapes", () => {
       assert.equal(r.code, 2, `expected NotLoggedIn, got ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /Not logged in/);
     } finally {
+      closeSync(fd);
       rmSync(dir, { recursive: true, force: true });
     }
   });

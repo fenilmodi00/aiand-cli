@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { CliError } from "./errors.js";
 import { KEY, type PromptInput, type PromptOutput } from "./select.js";
 
 /**
@@ -36,16 +37,21 @@ export async function readSecret(
     if (input.isTTY && process.platform === "win32") {
       output.write("Note: input is visible on Windows.\n");
     }
-    const line = (
-      await createInterface({
-        // Unchecked cast: FakeInput tests satisfy the readline shape but not
-        // the full ReadableStream surface.
-        input: input as unknown as NodeJS.ReadableStream,
-        output: output as unknown as NodeJS.WritableStream,
-      }).question(prompt)
-    ).trim();
-    if (!allowEmpty && !line) throw new Error("Input required");
-    return line;
+    // Same try/finally shape as readLineVisible: a leaked interface keeps
+    // stdin open after a paste login and hangs the process.
+    const rl = createInterface({
+      // Unchecked cast: FakeInput tests satisfy the readline shape but not
+      // the full ReadableStream surface.
+      input: input as unknown as NodeJS.ReadableStream,
+      output: output as unknown as NodeJS.WritableStream,
+    });
+    try {
+      const line = (await rl.question(prompt)).trim();
+      if (!allowEmpty && !line) throw new Error("Input required");
+      return line;
+    } finally {
+      rl.close();
+    }
   }
 
   output.write(prompt);
@@ -55,13 +61,14 @@ export async function readSecret(
 
   let value = "";
   try {
-    value = await new Promise<string>((resolve) => {
+    value = await new Promise<string>((resolve, reject) => {
       const onData = (chunk: string) => {
         for (const char of chunk) {
           if (char === KEY.CTRL_C) {
             input.removeListener("data", onData);
             output.write("^C\n");
-            process.exit(130);
+            reject(new CliError("Cancelled.", { exitCode: 130 }));
+            return;
           }
           if (char === "\r" || char === "\n") {
             input.removeListener("data", onData);

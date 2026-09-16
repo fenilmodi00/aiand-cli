@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
-import { chmod, mkdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
+
 
 /**
  * Read-only on-disk state machinery shared by the config layer, secrets
@@ -38,9 +39,11 @@ async function existingFileMode(filePath: string): Promise<number | undefined> {
  * Write a file atomically: write to a temp file in the same directory, then
  * rename over the target. On POSIX the rename is atomic, so readers (e.g.
  * OpenCode loading opencode.json) never observes a truncated file even if
- * this process is killed mid-write. When `mode` is omitted, an existing
- * target's permissions are preserved rather than replaced by the process
- * umask's default. The single atomic writer in the repo — the secrets store
+ * this process is killed mid-write. Writes follow symlinks to the real file
+ * instead of replacing the link, so dotfile-managed setups (stow/chezmoi)
+ * survive aiand writes. When `mode` is omitted, the resolved target's
+ * permissions are preserved rather than replaced by the process umask's
+ * default. The single atomic writer in the repo — the secrets store
  * (Buffer ciphertext) and every adapter config ride on it.
  */
 export async function writeFileAtomic(
@@ -53,23 +56,56 @@ export async function writeFileAtomic(
   // mkdir mode only covers newly created dirs — tighten a pre-existing 0755
   // dir best-effort; never fail the write for this.
   await chmod(dir, 0o700).catch(() => {});
-  const targetMode = options.mode ?? (await existingFileMode(filePath));
+  // Follow the whole symlink chain so rename(2) lands on the real file
+  // instead of replacing the link. Only ENOENT falls back to filePath:
+  // a fresh path isn't a symlink, and replacing a broken link with the
+  // regular file is the correct recovery. Any other error (EACCES, ELOOP)
+  // fails closed — a fallback there could rename over a symlink we could
+  // not resolve.
+  let real = filePath;
+  try {
+    real = await realpath(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const realDir = dirname(real);
+  const targetMode = options.mode ?? (await existingFileMode(real));
   const tempPath = join(
-    dir,
+    realDir,
     `.${process.pid}-${randomBytes(6).toString("hex")}.tmp`
   );
   try {
-    if (targetMode !== undefined) {
-      await writeFile(tempPath, data, { mode: targetMode });
-    } else {
-      await writeFile(tempPath, data);
+    const handle = await open(tempPath, "w", targetMode ?? 0o600);
+    try {
+      await handle.writeFile(data);
+      await handle.sync();
+    } finally {
+      await handle.close();
     }
-    await rename(tempPath, filePath);
+    await rename(tempPath, real);
+    // rename is atomic but not durable: flush the file before (handle.sync
+    // above) and the directory entry after, so a crash cannot lose the write.
+    // ponytail: dir fsync via a throwaway fd, best-effort — some filesystems
+    // (e.g. network mounts) reject directory fsync with EINVAL.
+    if (process.platform !== "win32") {
+      // Best-effort: some filesystems (network mounts) reject directory
+      // fsync with EINVAL — skip durability there rather than fail the write.
+      try {
+        const dirFd = await open(realDir, "r");
+        try {
+          await dirFd.sync();
+        } finally {
+          await dirFd.close();
+        }
+      } catch {
+        // durability unavailable on this filesystem
+      }
+    }
   } catch (error) {
     await unlink(tempPath).catch(() => {});
     throw error;
   }
   if (targetMode !== undefined) {
-    await chmod(filePath, targetMode);
+    await chmod(real, targetMode);
   }
 }

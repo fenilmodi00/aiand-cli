@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { getCatalog, resolveDefault, validateCatalogModel } from "../agents/catalog.js";
 import { requireSessionKey } from "../auth/session.js";
@@ -96,13 +96,13 @@ function splitInvocation(argv: string[]): Invocation {
 
 function takeValue(head: string[], i: number, name: string): string {
   const value = head[i + 1];
-  if (value === undefined) throw new CliError(`--${name} needs a value.`);
+  if (value === undefined) throw new CliError(`${name} needs a value.`);
   return value;
 }
 
 function inlineValue(token: string, name: string): string {
   const value = token.slice(name.length + 1);
-  if (!value) throw new CliError(`--${name} needs a value.`);
+  if (!value) throw new CliError(`${name} needs a value.`);
   return value;
 }
 
@@ -112,6 +112,7 @@ export async function run(argv: string[]): Promise<void> {
     out(help);
     return;
   }
+  if (split.baseUrl !== undefined) assertHttpsBaseUrl(split.baseUrl);
 
   const agentName = split.agent;
   if (!agentName) {
@@ -146,7 +147,8 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   const profile = resolveProfile(split.profile);
-  const catalog = await getCatalog(split.baseUrl ?? profile.apiUrl);
+  const baseUrl = split.baseUrl ?? profile.apiUrl;
+  const catalog = await getCatalog(baseUrl);
 
   // --model validated against the live catalog, else let the adapter fall back
   // to its own default. OpenCode is the one adapter whose session config NEEDS
@@ -159,20 +161,23 @@ export async function run(argv: string[]): Promise<void> {
     model = resolveDefault(catalog);
   }
 
-  const launch = await adapter.sessionLaunch({ apiKey: session.key, model, catalog, baseUrl: split.baseUrl });
+  const launch = await adapter.sessionLaunch({ apiKey: session.key, model, catalog, baseUrl });
 
   // Child env = inherited, minus everything the adapter wants cleared, plus
-  // the adapter's injected keys.
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of launch.clear) delete env[key];
+  // The adapter's own injection carries the key; a leaked AIAND_API_KEY would hand it to every process the agent spawns.
+  delete env.AIAND_API_KEY;
   Object.assign(env, launch.env);
 
   try {
-    const { status, signal } = await spawnChild(
-      adapter.bin,
-      [...(launch.args ?? []), ...split.passthrough],
-      { env, stdio: "inherit", shell: process.platform === "win32" }
-    );
+    // Spawn the agent binary with an argument array on every platform. Joining
+    // tokens into `cmd.exe /c` re-parses user passthrough as shell text.
+    const forwardArgs = [...(launch.args ?? []), ...split.passthrough];
+    const { status, signal } = await spawnChild(adapter.bin, forwardArgs, {
+      env,
+      stdio: "inherit",
+    });
     // Propagate the child's exit. Never process.exit here — the runtime flushes
     // stdio before the shell reads the code, and the dispatcher preserves
     // process.exitCode.

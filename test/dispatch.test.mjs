@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -48,10 +49,34 @@ function makeFixture(home) {
     },
     enable: async (input) => {
       mkdirSync(dirname(file()), { recursive: true });
-      writeFileSync(file(), JSON.stringify({ aiand: true, model: input.model }));
+      let current = {};
+      try {
+        current = JSON.parse(readFileSync(file(), "utf8"));
+      } catch {
+        // missing file is a first-time on
+      }
+      writeFileSync(file(), `${JSON.stringify({ ...current, aiand: true, model: input.model })}\n`);
       return { model: input.model, filesWritten: [file()] };
     },
-    disable: async () => {},
+    disable: async () => {
+      const path = file();
+      let raw;
+      try {
+        raw = readFileSync(path, "utf8");
+      } catch {
+        return { stripped: false };
+      }
+      let cfg;
+      try {
+        cfg = JSON.parse(raw);
+      } catch {
+        return { stripped: false };
+      }
+      if (cfg.aiand !== true) return { stripped: false };
+      delete cfg.aiand;
+      writeFileSync(path, `${JSON.stringify(cfg)}\n`);
+      return { stripped: true };
+    },
   };
 }
 
@@ -195,7 +220,8 @@ describe("dispatch subprocess", () => {
         ["status", "--json"],
         { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
       );
-      assert.equal(code, 0);
+      // Signed-out is a script gate: exit 1, body still parses.
+      assert.equal(code, 1);
       const parsed = JSON.parse(stdout);
       assert.ok(parsed.auth && typeof parsed.auth === "object");
       assert.ok(Array.isArray(parsed.agents));
@@ -242,7 +268,7 @@ describe("engine: fixture adapter", () => {
     assert.ok(registry.findAgent("fixture-agent"));
   });
 
-  test("off restores byte-identical content", async () => {
+  test("off subtracts aiand keys and keeps the user's", async () => {
     cleanFixture();
     const original = '{"permissions":{"allow":["Bash*"]}}\n';
     plant(original);
@@ -250,7 +276,9 @@ describe("engine: fixture adapter", () => {
     assert.notEqual(readFileSync(join(home, ".fixture", "config.json"), "utf8"), original);
     const off = await eng.agentOff(makeFixture(home));
     assert.equal(off.state, "off");
-    assert.equal(readFileSync(join(home, ".fixture", "config.json"), "utf8"), original);
+    const after = JSON.parse(readFileSync(join(home, ".fixture", "config.json"), "utf8"));
+    assert.equal(after.aiand, undefined);
+    assert.deepEqual(after.permissions, { allow: ["Bash*"] });
   });
 
   test("agentOn with no binary prints an install hint and exits 127", async () => {
@@ -293,19 +321,21 @@ describe("engine: fixture adapter", () => {
     assert.equal(status.installed, true);
   });
 
-  test("idempotent second on keeps the first backup", async () => {
+  test("second on keeps the first snapshot; off keeps edits; restore --force rewinds", async () => {
     cleanFixture();
     const original = '{"original":true}\n';
+    const file = join(home, ".fixture", "config.json");
     plant(original);
-    await eng.agentOn(makeFixture(home)); // backup A = original
-    // user edits the now-aiand file; second on must not re-snapshot
-    writeFileSync(
-      join(home, ".fixture", "config.json"),
-      JSON.stringify({ aiand: true, model: "touched" })
-    );
+    await eng.agentOn(makeFixture(home));
+    writeFileSync(file, JSON.stringify({ aiand: true, model: "touched", extra: 1 }));
     await eng.agentOn(makeFixture(home));
     await eng.agentOff(makeFixture(home));
-    assert.equal(readFileSync(join(home, ".fixture", "config.json"), "utf8"), original);
+    const afterOff = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(afterOff.aiand, undefined);
+    assert.equal(afterOff.extra, 1);
+    const { restoreSnapshot } = await import("../dist/agents/snapshot.js");
+    assert.equal(await restoreSnapshot("fixture-agent", [file]), true);
+    assert.equal(readFileSync(file, "utf8"), original);
   });
 });
 
@@ -330,6 +360,137 @@ describe("engine: not signed in", () => {
       process.env.AIAND_CONFIG_DIR = savedCfg;
       if (savedKey !== undefined) process.env.AIAND_API_KEY = savedKey;
       if (savedBase !== undefined) process.env.AIAND_BASE_URL = savedBase;
+    }
+  });
+});
+
+// --- Flag suggestions ---
+describe("flag suggestions", () => {
+  test("status --profle suggests --profile and exits nonzero", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const { code, stderr } = await runCli(["status", "--profle"], {
+        AIAND_HOME: join(spy, "h"),
+        AIAND_CONFIG_DIR: join(spy, "c"),
+      });
+      assert.notEqual(code, 0);
+      assert.match(stderr, /Did you mean --profile\?/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("status --zzzqqq keeps the generic hint", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const { code, stderr } = await runCli(["status", "--zzzqqq"], {
+        AIAND_HOME: join(spy, "h"),
+        AIAND_CONFIG_DIR: join(spy, "c"),
+      });
+      assert.notEqual(code, 0);
+      assert.match(stderr, /Run the command with --help to see its flags/);
+      assert.doesNotMatch(stderr, /Did you mean/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+});
+
+// --- status exit codes ---
+describe("status exit codes", () => {
+  /** A loopback gateway that fails every identity call with 500, exercising
+   * the unreachable path; the sibling auth-flow test covers the refused
+   * connection (dead port) half instead. */
+  function failingGateway() {
+    const server = createServer((req, res) => {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "gateway is down" }));
+    });
+    return server;
+  }
+
+  test("signed-out status --json exits 1 with reachable=true", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "";
+      const { code, stdout } = await runCli(
+        ["status", "--json"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 1);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.auth.signed_in, false);
+      assert.equal(parsed.auth.reachable, true);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("unreachable gateway exits 0 with reachable=false (no false failure)", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    const server = failingGateway();
+    server.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const dead = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "sk-test-not-real";
+      env.AIAND_BASE_URL = dead;
+      env.AIAND_AUTH_URL = dead;
+      const { code, stdout } = await runCli(
+        ["status", "--json"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 0);
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.auth.signed_in, false);
+      assert.equal(parsed.auth.reachable, false);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("unreachable gateway prose names the outage and exits 0", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    const server = failingGateway();
+    server.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server.once("listening", resolve));
+    const dead = `http://127.0.0.1:${server.address().port}`;
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "sk-test-not-real";
+      env.AIAND_BASE_URL = dead;
+      env.AIAND_AUTH_URL = dead;
+      const { code, stdout, stderr } = await runCli(
+        ["status"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 0);
+      assert.match(stdout, /Gateway unreachable/);
+      assert.match(stderr, /Check your network/);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(spy, { recursive: true, force: true });
+    }
+  });
+
+  test("signed-out prose exits 1", async () => {
+    const spy = mkdtempSync(join(SPY_ROOT, "aiand-spy-"));
+    try {
+      const env = { ...process.env };
+      env.AIAND_API_KEY = "";
+      const { code, stdout } = await runCli(
+        ["status"],
+        { ...env, AIAND_HOME: join(spy, "h"), AIAND_CONFIG_DIR: join(spy, "c") }
+      );
+      assert.equal(code, 1);
+      assert.match(stdout, /Not signed in/);
+    } finally {
+      rmSync(spy, { recursive: true, force: true });
     }
   });
 });

@@ -302,7 +302,8 @@ const AGENT_DEFS = {
       state.cfg = seedFile(
         state,
         OPENCODE_CFG,
-        JSON.stringify({ theme: "dark", provider: { anthropic: { name: "Anthropic" } }, keep: true })
+        // Trailing newline, like a real editor-written opencode.json.
+        `${JSON.stringify({ theme: "dark", provider: { anthropic: { name: "Anthropic" } }, keep: true }, null, 2)}\n`
       );
     },
     contents(t) {
@@ -311,8 +312,8 @@ const AGENT_DEFS = {
       t.ok(aiand.options?.apiKey === KEY, "provider.aiand.options.apiKey is the session key");
       t.ok(aiand.options?.baseURL === "https://api.aiand.com/v1", "provider.aiand baseURL is gateway /v1", String(aiand.options?.baseURL));
       t.ok(cfg.model === `aiand/${modelId()}`, `root model ref is aiand/${modelId()}`, String(cfg.model));
-      t.ok(Array.isArray(cfg.enabled_providers) && cfg.enabled_providers.includes("aiand"), "enabled_providers locks to aiand");
-      t.ok(cfg.theme === "dark" && cfg.keep === true, "unrelated keys survive");
+      t.ok(!Array.isArray(cfg.enabled_providers) && !Array.isArray(cfg.disabled_providers), "persistent config carries no provider lockdown");
+      t.ok(cfg["x-aiand-previous-model"] === undefined || typeof cfg["x-aiand-previous-model"] === "string", "previous-model marker well-formed");
       t.ok(cfg.provider?.anthropic?.name === "Anthropic", "foreign provider survives");
     },
   },

@@ -7,7 +7,50 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Changed
+
+- Subtractive `off`: `aiand <agent> off` removes exactly what aiand added
+  and keeps the user's own edits. It never replays the pre-aiand snapshot —
+  that is break-glass `aiand restore <agent> --force` (refused without
+  `--force`). `restore` only copies or deletes paths in the adapter's
+  managed files, and only from inside that agent's snapshot directory.
+- `opencode on` no longer writes `enabled_providers` / `disabled_providers`
+  into `opencode.json` — hiding the user's other providers was hostile. The
+  provider lockdown stays on `run-agent` only, where the one-run inline
+  config is thrown away with the process.
+- `opencode on` sets a root `model` only when the file has none, or when
+  `--model` is passed (not `native`). `off` strips what we added; a
+  `provider.aiand` block or model the user edited is left in place, and
+  `off` says so. A config file we created is deleted when nothing else
+  remains; a user-created file is not.
+- `aiand init` honors `--profile` (same as the per-agent verbs) for batch
+  wiring, interactive wiring, and `--all`.
+- `aiand status` distinguishes three auth states: signed in (exit 0),
+  not signed in (exit 1), and gateway unreachable (exit 0 with a distinct
+  `reachable: false` field in `--json`), so scripts gating on the exit code
+  no longer false-fail during an outage. `--json` gains the `reachable`
+  field; `whoami` still fails loudly on an unreachable gateway.
+
 ### Added
+
+
+- Uninstall: `bash install.sh uninstall` turns every aiand-routed agent
+  `off` first (aborting before deleting anything when off fails, so
+  snapshots stay retryable), then removes the launcher and the `~/.aiand/cli`
+  checkout. Profiles, credentials, and snapshots under `~/.config/aiand` are
+  intentionally kept. `--force` (or `AIAND_UNINSTALL_FORCE=1`) skips the
+  agent teardown for broken installs; the removal target is canonicalized and
+  refused unless it sits strictly inside HOME.
+- Flag did-you-mean: a mistyped flag now prints `Did you mean --profile?`
+  alongside the parse error, using the same nearest-match threshold as
+  unknown-command suggestions.
+- Mock-gateway test harness: a loopback-only HTTP double
+  (`test/mock-gateway.mjs`) drives the built CLI against scripted 429
+  (Retry-After), 401-refresh-then-200, and happy-path identity responses, so
+  the API client's error paths have direct coverage without the live gateway.
+- CI now smoke-tests `install.sh` itself: the installer job runs the real
+  script into an isolated HOME from the checkout copy and asserts the
+  launcher reports the PR's version.
 
 - Sandbox E2E harness `scripts/sbx-test.mjs`: the full command matrix
   against the live gateway in an isolated VM, with an offline
@@ -22,6 +65,34 @@ breaking changes while the command surface settles.
   socketpair stdio (notably Node's own `child_process`, whose pipes are
   AF_UNIX sockets) had its piped context silently dropped by `run` and its
   key rejected by `login --with-token`. Sockets are accepted now.
+
+- `run-agent --base-url` goes through the same https-or-loopback check as
+  every other command, before any session or catalog work (`--help` still
+  wins over a bad URL).
+- Ownership Marker: `opencode on` stamps `x-aiand: true` in `opencode.json`,
+  and probe/disable/refreshKey treat a config as ours only when the marker
+  is present (plus an `sk-` key and https/loopback URL). Marker-only — no
+  prod-URL legacy path. A foreign provider named `aiand` can no longer read
+  active and be deleted by `off` or `logout`.
+- `opencode.json` reads accept JSONC: OpenCode documents comments and
+  trailing commas for the file, so a commented config no longer blocks
+  `on`/`status`. Trailing-comma stripping is string-aware (a `,}` inside a
+  string value is preserved).
+- Atomic writes follow symlinks instead of replacing them: dotfile-managed
+  configs (stow/chezmoi) keep their link through `on`/`off`.
+- `run-agent` scrubs `AIAND_API_KEY` from the child environment — the
+  adapter's own injection carries the key, so a leaked env var would hand
+  it to every process the agent spawns.
+- Profile names are validated at the trust boundary: `__proto__` and other
+  prototype keys can no longer silently drop credential metadata.
+- The plaintext secret store rides the atomic writer, and
+  `AIAND_SECRET_STORE_MASTER_KEY` is validated as 64 hex characters rather
+  than 64 characters of anything.
+
+- macOS keychain writes no longer put the secret in the child's argv: the
+  command rides `security -i` stdin, counts only when the readback matches
+  byte-for-byte, and falls back to the argv form otherwise — never worse
+  than before, invisible to `ps` whenever interactive mode takes.
 
 ## [0.2.0] - 2026-09-09
 

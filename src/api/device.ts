@@ -27,6 +27,7 @@ type TokenErrorBody = { error: string; error_description?: string };
 function devicePost(url: string, body: unknown): Promise<Response> {
   return publicRequest(url, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }

@@ -29,21 +29,6 @@ const writeCache = (payload) => writeFileSync(cachePath(), JSON.stringify(payloa
 const readCache = () => JSON.parse(readFileSync(cachePath(), "utf8"));
 const hour = 60 * 60 * 1000;
 
-/** Stub the registry fetch for the duration of `fn`, counting calls. */
-async function withFetch(impl, fn) {
-  let fetchCalls = 0;
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (...args) => {
-    fetchCalls += 1;
-    return impl(...args);
-  };
-  try {
-    return await fn(fetchCalls ? undefined : undefined, () => fetchCalls);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-}
-
 describe("compareVersions (dotted-integer, same-length padded)", () => {
   test("newer > older", () => {
     assert.ok(compareVersions("1.2.3", "1.2.2") > 0);
@@ -118,8 +103,19 @@ describe("checkForUpdate", () => {
 
   test("no refetch during failure retry window (1h)", async () => {
     writeCache({ checkedAt: Date.now(), ok: false });
-    const info = await checkForUpdate();
-    assert.equal(info, null);
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      throw new Error("must not fetch inside the retry window");
+    };
+    try {
+      const info = await checkForUpdate();
+      assert.equal(fetchCalls, 0);
+      assert.equal(info, null);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   test("refetches after the failure retry window", async () => {

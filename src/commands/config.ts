@@ -4,6 +4,7 @@ import { CliError } from "../cli/errors.js";
 import {
   activeProfileName,
   assertHttpsBaseUrl,
+  assertSafeProfileName,
   configPath,
   credentialsPath,
   loadConfig,
@@ -66,7 +67,7 @@ async function show(parsed: ReturnType<typeof parse>): Promise<void> {
     ["profile", profile.name],
     ["api url", profile.apiUrl],
     ["auth url", profile.authUrl],
-    ["model", profile.model ?? style.dim("auto")],
+    ["model", profile.model ?? style.dim("catalog preferred")],
     ["signed in", signedIn ? style.green("yes") : style.dim("no")],
   ]);
 }
@@ -81,12 +82,12 @@ function paths(parsed: ReturnType<typeof parse>): void {
   ]);
 }
 
-function set(args: string[]): void {
+async function set(args: string[]): Promise<void> {
   const [key, ...valueParts] = args;
   const value = valueParts.join(" ");
   if (!key || !value) {
     throw new CliError("Both a key and a value are required.", {
-      hint: "For example: aiand config set model auto",
+      hint: "For example: aiand config set model zai-org/glm-5.3",
     });
   }
 
@@ -97,14 +98,14 @@ function set(args: string[]): void {
   switch (key) {
     case "api-url":
       assertHttpsBaseUrl(value);
-      updateProfile(name, { apiUrl: value });
+      await updateProfile(name, { apiUrl: value });
       break;
     case "auth-url":
       assertHttpsBaseUrl(value);
-      updateProfile(name, { authUrl: value });
+      await updateProfile(name, { authUrl: value });
       break;
     case "model":
-      updateProfile(name, { model: value });
+      await updateProfile(name, { model: value });
       break;
     default:
       throw new CliError(`"${key}" is not a settable key.`, {
@@ -135,15 +136,16 @@ async function profiles(parsed: ReturnType<typeof parse>): Promise<void> {
   }
 }
 
-function use(name: string | undefined): void {
+async function use(name: string | undefined): Promise<void> {
   if (!name) {
     throw new CliError("Which profile?", { hint: "aiand config use <profile>" });
   }
+  assertSafeProfileName(name);
   const config = loadConfig();
   if (!config.profiles[name]) {
     config.profiles[name] = {};
   }
   config.profile = name;
-  saveConfig(config);
+  await saveConfig(config);
   out(style.green(`Using profile "${name}".`));
 }

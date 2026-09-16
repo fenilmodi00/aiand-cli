@@ -1,5 +1,5 @@
-import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, copyFile, mkdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { configDir, writeFileAtomic } from "../config.js";
 
@@ -14,6 +14,17 @@ type BackupEntry = {
 type BackupManifest = {
   createdAt: string;
   files: BackupEntry[];
+  added?: AddedState;
+};
+
+/** Values enable() added so subtractive off can leave hand-edited ones. */
+export type AddedState = {
+  model?: string;
+  previousModel?: string;
+  providerAiand?: unknown;
+  created?: boolean;
+  /** enable() left a pre-existing foreign provider.aiand block untouched. */
+  leftForeignProvider?: boolean;
 };
 
 function backupDir(agentId: string): string {
@@ -61,7 +72,10 @@ async function readManifest(agentId: string): Promise<BackupManifest | null> {
 export async function snapshotFiles(agentId: string, files: string[]): Promise<string> {
   const dir = backupDir(agentId);
   const snapshotDir = join(dir, snapshotStamp(new Date()));
-  await mkdir(snapshotDir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  await mkdir(snapshotDir, { mode: 0o700 });
+  await chmod(snapshotDir, 0o700);
 
   const entries: BackupEntry[] = [];
   for (const file of files) {
@@ -88,24 +102,44 @@ export async function snapshotFiles(agentId: string, files: string[]): Promise<s
   return snapshotDir;
 }
 
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
 /**
  * Restore every snapshotted file byte-for-byte (or delete files that did not
  * exist before we touched them), then drop the manifest and snapshot copies.
  * Returns false when there is no manifest — the config was never ours.
+ *
+ * `allowedFiles` (the adapter's managedFiles) is required at the command
+ * boundary so a tampered latest.json cannot copy or delete arbitrary paths.
+ * Copy sources must also sit inside this agent's snapshot directory.
  */
-export async function restoreSnapshot(agentId: string): Promise<boolean> {
+export async function restoreSnapshot(agentId: string, allowedFiles: string[] = []): Promise<boolean> {
   const manifest = await readManifest(agentId);
   if (!manifest) return false;
 
+  const snapRoot = await realpath(backupDir(agentId));
+  const allowed = new Set(allowedFiles.map((file) => resolve(file)));
+
   for (const entry of manifest.files) {
+    const dest = resolve(entry.path);
+    if (!allowed.has(dest)) {
+      throw new Error(`Snapshot restore refused a path that is not a managed file: ${entry.path}`);
+    }
     if (entry.existed) {
       if (!entry.backupPath) {
-        throw new Error(`Backup manifest is missing backupPath for ${entry.path}.`);
+        throw new Error(`Snapshot manifest is missing backupPath for ${entry.path}.`);
       }
-      await mkdir(join(entry.path, ".."), { recursive: true });
-      await copyFile(entry.backupPath, entry.path);
+      const src = await realpath(entry.backupPath);
+      if (!isInside(snapRoot, src)) {
+        throw new Error(`Snapshot copy is outside the snapshot directory: ${entry.backupPath}`);
+      }
+      await mkdir(dirname(dest), { recursive: true });
+      await copyFile(src, dest);
     } else {
-      await rm(entry.path, { force: true });
+      await rm(dest, { force: true });
     }
   }
 
@@ -115,4 +149,41 @@ export async function restoreSnapshot(agentId: string): Promise<boolean> {
 
 export async function hasSnapshot(agentId: string): Promise<boolean> {
   return (await readManifest(agentId)) !== null;
+}
+
+async function writeManifest(agentId: string, manifest: BackupManifest): Promise<void> {
+  await writeFileAtomic(join(backupDir(agentId), MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
+export async function recordAddedState(agentId: string, added: AddedState): Promise<void> {
+  const dir = backupDir(agentId);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  await writeFileAtomic(join(dir, "added.json"), `${JSON.stringify(added, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  const manifest = await readManifest(agentId);
+  if (!manifest) return;
+  manifest.added = added;
+  await writeManifest(agentId, manifest);
+}
+
+export async function getAddedState(agentId: string): Promise<AddedState | null> {
+  try {
+    return JSON.parse(await readFile(join(backupDir(agentId), "added.json"), "utf8")) as AddedState;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const manifest = await readManifest(agentId);
+  return manifest?.added ?? null;
+}
+
+/** True when the snapshot recorded that this path did not exist before enable. */
+export async function fileCreatedByUs(agentId: string, path: string): Promise<boolean> {
+  const manifest = await readManifest(agentId);
+  if (!manifest) return false;
+  const dest = resolve(path);
+  return manifest.files.some((entry) => resolve(entry.path) === dest && entry.existed === false);
 }

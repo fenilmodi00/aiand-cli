@@ -14,9 +14,17 @@ Requires Node.js 22+, git, and npm. Clones into `~/.aiand/cli`, builds, and
 puts `aiand` on PATH via `~/.local/bin` (re-run to update):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
 aiand login
 aiand init
+```
+
+Uninstall turns every aiand-routed agent off first (aborting without deleting
+anything if the teardown fails), then removes the launcher and the checkout.
+Profiles, credentials, and agent snapshots under `~/.config/aiand` are kept:
+
+```bash
+bash ~/.aiand/cli/install.sh uninstall
 ```
 
 ## Install from source
@@ -38,6 +46,7 @@ node dist/index.js --help    # or `npm link` to get `aiand` on PATH
 | `aiand key export` | Print the active session key to stdout |
 | `aiand <agent> on\|off\|status` | Wire a coding agent to ai& — see below |
 | `aiand init` | Detect installed agents and wire them in batch |
+| `aiand restore <agent> --force` | Break-glass restore of the pre-aiand snapshot |
 | `aiand run-agent <agent>` | Launch an agent on ai& for one session only |
 | `aiand status` | Sign-in state plus every agent's wiring |
 | `aiand run <prompt>` | One prompt, streamed to stdout |
@@ -53,15 +62,16 @@ its own flags.
 
 ## Agent setup
 
-Point OpenCode at ai& without hand-copying env vars. `on` writes OpenCode's
+Point OpenCode at ai& without hand-copying env vars. `on` adds to OpenCode's
 own native config, so a stock `opencode` just works afterwards. `off`
-restores the previous state byte for byte, including files that did not
-exist before. `run-agent` is the one-session launcher: it injects routing
+removes exactly what aiand added and leaves your own edits in place.
+`run-agent` is the one-session launcher: it injects routing
 into one process's environment without persistent config.
 ```bash
 aiand opencode on        # provider entry in ~/.config/opencode/opencode.json
 aiand opencode status    # ground truth from the agent's real config files
-aiand opencode off       # byte-for-byte restore of whatever was there before
+aiand opencode off       # subtract what aiand added, keep your edits
+aiand restore opencode --force  # break-glass byte-for-byte snapshot restore
 aiand init               # detect the installed agent, ask whether to wire it
 aiand run-agent opencode -- …  # one-session launch
 aiand status             # who is signed in, where the key lives, whether opencode is on
@@ -69,11 +79,12 @@ aiand status             # who is signed in, where the key lives, whether openco
 
 The baked key comes from the active session (`--profile` honored), and the
 model default resolves from the live `/v1/models` catalog, so a retired
-model id is never written. `on` refuses to touch a config another tool
-manages — pass `--force` to override. Snapshots of the pre-existing config
-live under `~/.config/aiand/backups/` and are removed by `off`.
-Pass `native` as `--model` to leave the model unpinned so the agent's own
-default wins.
+model id is never written. `on` preserves unrelated providers already in
+the config and stamps its block with an `x-aiand` ownership marker, so
+`off` strips only what aiand wrote. `on` sets a root model only when you
+do not already have one; pass `--model` to switch, or `native` to leave
+the agent's own default. Snapshots of the pre-existing config
+live under `~/.config/aiand/backups/` and back `restore --force`.
 
 ## Signing in
 
@@ -82,7 +93,11 @@ mints an **organization-scoped API key for this machine** — the same kind of
 `sk-` key the console issues — labeled `aiand@<hostname>` so the console key
 list names the machine. A probe of `GET /auth/authorize` runs first: 404/501
 means the gateway has no browser flow, and the CLI continues with a device
-code instead (so do no opener, SSH, and WSL):
+code instead. A recoverable browser failure (timeout, port in use, rejected
+exchange — not a browser-side cancel or Ctrl-C) falls back to a device code
+too; when no browser opener is available the CLI prints the authorization
+URL and waits for the callback.
+Non-interactive runs skip the browser and use a device code directly:
 
 ```
   Your code   BCDF-GHJK
@@ -159,9 +174,10 @@ No content. The token budget was spent reasoning (40 reasoning tokens) before an
 was written. Raise --max-tokens, or pick a model that reasons more briefly.
 ```
 
-Model `auto` lets ai& choose per request, and the choice appears in the footer. Where it
-is not enabled for an account, name a model with `-m` or set a default with
-`aiand config set model <id>`.
+Omitting `-m` resolves a concrete catalog model — the profile model when it is still
+listed, otherwise the curated preferred default from the live catalog. Pass `-m auto`
+to let ai& choose per request when your account supports it; the choice appears in the
+footer. Pin any catalog id with `-m` or `aiand config set model <id>`.
 
 ### logs and usage
 
@@ -224,12 +240,17 @@ Once a day on a TTY the CLI prints an update tip when npm carries a newer `@aian
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Request or usage error (the message says which) |
+| `1` | Request or usage error (the message says which); `aiand status` uses it for "not signed in" |
 | `2` | Not signed in, or the session could not be refreshed |
 | `3` | Login denied in the browser |
 | `70` | A bug in the CLI — the stack trace is printed |
 | `127` | Unknown command or missing agent binary |
 | `130` | Interrupted (e.g. Ctrl-C during `run` / `login`) |
+
+`aiand status` is the exception: it exits 0 when signed in or when the gateway
+cannot be reached to verify the key (`reachable: false` in `--json`), and 1
+only when the profile is signed out — so scripts gating on it do not
+false-fail during an outage.
 
 ## Contributing
 
