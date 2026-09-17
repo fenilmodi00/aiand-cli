@@ -17,6 +17,6 @@ CLI-error coverage: `test/mock-gateway.mjs` (loopback HTTP double) plus
 coverage. `install.sh uninstall` is covered offline in `scripts/e2e.mjs`;
 its rm -rf target must stay canonicalized and HOME-bounded.
 
-Issues live as GitHub issues on fenilmodi00/aiand-cli, managed via the `gh` CLI.
+Issues live as GitHub issues on aiandlabs/aiand-cli, managed via the `gh` CLI.
 Domain vocabulary, agent-wiring rules, and ADR locations: `CONTEXT.md` at the repo root — use its words exactly.
 

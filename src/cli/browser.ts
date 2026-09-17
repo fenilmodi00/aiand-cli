@@ -1,26 +1,31 @@
 import { spawn } from "node:child_process";
 
-/** How long a non-zero opener exit must arrive to count as spawn failure.
- * A real browser stays open far longer; xdg-open / open that cannot find a
- * handler typically exit in a few milliseconds. */
-const QUICK_FAIL_MS = 50;
+/** How long to wait for an opener exit code before assuming it launched and
+ * stayed open (real browsers outlive login). */
+const LAUNCH_OK_MS = 2000;
 
 /** Open a URL in the default browser. Resolves false when no opener exists
- * (e.g. a bare WSL install); callers print the URL instead. Does not wait
- * for the opener process to exit — a successful spawn is enough. */
+ * (e.g. a bare WSL install); callers print the URL instead. Waits for a
+ * quick nonzero exit (missing handler); otherwise treats a still-running
+ * opener as success after LAUNCH_OK_MS. */
 export function openBrowser(url: string): Promise<boolean> {
+  // Never `cmd /c start`: cmd re-parses `& | ^ < >` after Node quoting, so a
+  // server-controlled URL would be a command-injection shape on Windows.
+  // rundll32 FileProtocolHandler takes the URL as one argv entry.
   const [command, args] =
     process.platform === "darwin"
       ? ["open", [url]]
       : process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
+        ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
         : ["xdg-open", [url]];
 
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let launchTimer: NodeJS.Timeout | undefined;
     const settle = (ok: boolean) => {
       if (settled) return;
       settled = true;
+      if (launchTimer) clearTimeout(launchTimer);
       resolve(ok);
     };
 
@@ -35,24 +40,16 @@ export function openBrowser(url: string): Promise<boolean> {
       return;
     }
 
-    const quick = setTimeout(() => {
+    launchTimer = setTimeout(() => {
       child.unref();
       settle(true);
-    }, QUICK_FAIL_MS);
+    }, LAUNCH_OK_MS);
 
-    child.once("error", () => {
-      clearTimeout(quick);
-      settle(false);
-    });
+    child.once("error", () => settle(false));
     child.once("close", (code) => {
       if (settled) return;
-      clearTimeout(quick);
-      if (code === 0) {
-        child.unref();
-        settle(true);
-        return;
-      }
-      settle(false);
+      child.unref();
+      settle(code === 0);
     });
   });
 }

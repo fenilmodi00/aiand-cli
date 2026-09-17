@@ -112,8 +112,10 @@ device authorization grant against the gateway, which mints an org-scoped
 key for this machine.
 
 **Minted key** - a key this CLI itself created (device login). Logout may
-revoke a minted key server-side by posting its refresh token. _Avoid:_
-generated key.
+revoke a minted key server-side by posting its refresh token; it also strips
+the baked key from active agent configs on this machine. Whether the minted
+`sk-` remains valid on the gateway after the refresh token is revoked is the
+server's contract. _Avoid:_ generated key.
 
 **Pasted key** - a key the user supplied (`--paste`, `--with-token`) and
 the CLI validated before storing. Logout clears it

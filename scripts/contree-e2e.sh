@@ -57,7 +57,8 @@ echo "sandbox e2e: image $IMAGE, session $SESSION, harness $HARNESS"
 # --- Payload ---------------------------------------------------------------
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+keyfile=""
+trap 'rm -rf "$tmp"; [ -n "$keyfile" ] && rm -f "$keyfile"' EXIT
 
 tar -czf "$tmp/payload.tar.gz" -C "$REPO_ROOT" dist CHANGELOG.md package.json "$HARNESS"
 
@@ -76,10 +77,16 @@ contree -S "$SESSION" tag aiand-sbx:e2e
 
 # --- Full run (disposable; exit code captured without tripping set -e) ------
 
+keyfile="$(mktemp)"
+chmod 600 "$keyfile"
+printf 'export AIAND_API_KEY=%q\n' "$AIAND_API_KEY" >"$keyfile"
+contree -S "$SESSION" file cp "$keyfile" /root/.aiand-api-key-env:m0600
+rm -f "$keyfile"
+
 rc=0
 contree -S "$SESSION" -o plain run --disposable -t 1200 \
-  -e AIAND_API_KEY="$AIAND_API_KEY" -e NO_COLOR=1 -e CI=1 \
-  -- node /work/scripts/sbx-test.mjs /work/dist/index.js || rc=$?
+  -e NO_COLOR=1 -e CI=1 \
+  -- bash -lc 'set -a; . /root/.aiand-api-key-env; set +a; node /work/scripts/sbx-test.mjs /work/dist/index.js' || rc=$?
 
 if [ "$rc" -eq 0 ]; then
   echo "sandbox e2e: PASS (0)"

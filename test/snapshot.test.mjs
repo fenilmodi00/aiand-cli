@@ -66,6 +66,16 @@ describe("snapshot manifest", () => {
     assert.equal(await snapshot.restoreSnapshot("nonexistent-agent"), false);
   });
 
+  test("discardSnapshot removes a manifest and backup copies", async () => {
+    const home = process.env.AIAND_HOME;
+    const file = join(home, "discard-me.json");
+    writeFileSync(file, "original\n");
+    await snapshot.snapshotFiles("discard-agent", [file]);
+    assert.equal(await snapshot.hasSnapshot("discard-agent"), true);
+    await snapshot.discardSnapshot("discard-agent");
+    assert.equal(await snapshot.hasSnapshot("discard-agent"), false);
+  });
+
   test("restore refuses a path that is not a managed file", async () => {
     const home = process.env.AIAND_HOME;
     const managed = join(home, "managed.json");

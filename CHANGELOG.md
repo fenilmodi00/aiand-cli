@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-17
 
 ### Changed
 
@@ -32,7 +32,6 @@ breaking changes while the command surface settles.
   field; `whoami` still fails loudly on an unreachable gateway.
 
 ### Added
-
 
 - Uninstall: `bash install.sh uninstall` turns every aiand-routed agent
   `off` first (aborting before deleting anything when off fails, so
@@ -94,7 +93,6 @@ breaking changes while the command surface settles.
   byte-for-byte, and falls back to the argv form otherwise — never worse
   than before, invisible to `ps` whenever interactive mode takes.
 
-## [0.2.0] - 2026-09-09
 
 ### Added
 

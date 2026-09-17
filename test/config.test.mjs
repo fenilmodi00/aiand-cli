@@ -231,3 +231,19 @@ describe("malformed config", () => {
     assert.throws(() => config.loadConfig(), /not valid JSON/);
   });
 });
+
+const cmd = await import("../dist/commands/config.js");
+
+describe("config set --profile", () => {
+  test("writes the named profile instead of default", async () => {
+    resetCredentialState();
+    await config.saveConfig({
+      profile: "default",
+      profiles: { default: {}, work: {} },
+    });
+    await cmd.run(["set", "model", "picked", "--profile", "work"]);
+    const stored = config.loadConfig();
+    assert.equal(stored.profiles.work.model, "picked");
+    assert.equal(stored.profiles.default?.model, undefined);
+  });
+});

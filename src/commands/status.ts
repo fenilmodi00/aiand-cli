@@ -55,15 +55,6 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   if (!auth.signed_in) {
-    if (process.env.AIAND_API_KEY) {
-      fields([
-        ["profile", auth.profile],
-        ["source", style.dim("AIAND_API_KEY")],
-      ]);
-      printAgents(agents);
-      process.exitCode = 1;
-      return;
-    }
     out(style.yellow("Not signed in."));
     err(style.dim("Run `aiand login` first."));
     printAgents(agents);

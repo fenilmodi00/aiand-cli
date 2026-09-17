@@ -28,6 +28,8 @@ DEFAULT_SOURCE="https://github.com/aiandlabs/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
 INSTALL_DIR="${AIAND_DIR:-${HOME}/.aiand/cli}"
 MIN_NODE_MAJOR=22
+MIN_NODE_MINOR=5
+MIN_NODE_VERSION="${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}"
 INSTALL_NOTES=()
 
 # When install.sh is piped (curl | bash), BASH_SOURCE[0] is unset; fall
@@ -56,14 +58,14 @@ print_install_notes() {
   done
 }
 
-node_major_version() {
-  node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo "0"
-}
-
 node_meets_minimum() {
-  local major
-  major="$(node_major_version)"
-  [[ "${major}" =~ ^[0-9]+$ ]] && ((major >= MIN_NODE_MAJOR))
+  local version major minor
+  version="$(node -p "process.versions.node" 2>/dev/null || echo "0.0.0")"
+  major="${version%%.*}"
+  minor="${version#*.}"
+  minor="${minor%%.*}"
+  [[ "${major}" =~ ^[0-9]+$ && "${minor}" =~ ^[0-9]+$ ]] || return 1
+  ((major > MIN_NODE_MAJOR || (major == MIN_NODE_MAJOR && minor >= MIN_NODE_MINOR)))
 }
 
 # True iff package.json's top-level `name` is @aiand/cli. A grep for the
@@ -91,9 +93,10 @@ is_aiand_cli_package() {
 # cloned by hand under $HOME/src would otherwise be deletable via AIAND_DIR.
 OWNERSHIP_MARKER=".aiand-installer-owned"
 is_installer_owned() {
-  local dir="${1:-}"
+  local dir="${1:-}" home_real
+  home_real="$(cd "${HOME}" 2>/dev/null && pwd -P || printf '%s' "${HOME}")"
   [[ -f "${dir}/${OWNERSHIP_MARKER}" ]] && return 0
-  [[ "${dir}" == "${HOME}"/.aiand/cli ]] && is_aiand_cli_package "${dir}/package.json"
+  [[ "${dir}" == "${home_real}/.aiand/cli" ]] && is_aiand_cli_package "${dir}/package.json"
 }
 
 # Best-effort: a read-only checkout must never fail an install over the
@@ -107,7 +110,7 @@ print_tool_instructions() {
   echo "Install ${1} and rerun this installer." >&2
   echo >&2
   echo "Options:" >&2
-  echo "  - https://nodejs.org/en/download (Node.js ${MIN_NODE_MAJOR}+, ships with npm)" >&2
+  echo "  - https://nodejs.org/en/download (Node.js ${MIN_NODE_VERSION}+, ships with npm)" >&2
   echo "  - nvm: https://github.com/nvm-sh/nvm#installing-and-updating" >&2
   if command -v apt-get >/dev/null 2>&1; then
     echo "  - NodeSource on Debian/Ubuntu (review the setup script before running it):" >&2
@@ -147,9 +150,9 @@ ensure_toolchain() {
     if command -v node >/dev/null 2>&1; then
       local current
       current="$(node -p "process.versions.node" 2>/dev/null || echo "unknown")"
-      echo "Node.js ${MIN_NODE_MAJOR}+ is required (found ${current})." >&2
+      echo "Node.js ${MIN_NODE_VERSION}+ is required (found ${current})." >&2
     else
-      echo "Node.js ${MIN_NODE_MAJOR}+ is required to build the CLI." >&2
+      echo "Node.js ${MIN_NODE_VERSION}+ is required to build the CLI." >&2
     fi
     if [[ "$(uname -s)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
       # Prompt from the controlling terminal so this works under `curl … | bash`,
@@ -162,18 +165,18 @@ ensure_toolchain() {
         read -r -p "Install Node.js with Homebrew now? [y/N] " install_node
       fi
       if [[ ! "${install_node}" =~ ^[Yy]$ ]]; then
-        print_tool_instructions "Node.js ${MIN_NODE_MAJOR}+"
+        print_tool_instructions "Node.js ${MIN_NODE_VERSION}+"
         exit 1
       fi
       echo "Installing Node.js with Homebrew..."
       brew install node
       if ! node_meets_minimum; then
-        echo "Node.js ${MIN_NODE_MAJOR}+ is still required after install." >&2
-        print_tool_instructions "Node.js ${MIN_NODE_MAJOR}+"
+        echo "Node.js ${MIN_NODE_VERSION}+ is still required after install." >&2
+        print_tool_instructions "Node.js ${MIN_NODE_VERSION}+"
         exit 1
       fi
     else
-      print_tool_instructions "Node.js ${MIN_NODE_MAJOR}+"
+      print_tool_instructions "Node.js ${MIN_NODE_VERSION}+"
       exit 1
     fi
   fi
@@ -306,7 +309,7 @@ install_cli_launcher() {
 NODE_BIN="\${AIAND_NODE_BIN:-${node_bin}}"
 [ -x "\$NODE_BIN" ] || NODE_BIN="\$(command -v node 2>/dev/null)"
 if [ -z "\$NODE_BIN" ] || ! [ -x "\$NODE_BIN" ]; then
-  echo "aiand: Node.js was not found. Install Node ${MIN_NODE_MAJOR}+ and re-run the aiand installer." >&2
+  echo "aiand: Node.js was not found. Install Node ${MIN_NODE_VERSION}+ and re-run the aiand installer." >&2
   exit 1
 fi
 # --disable-warning silences node's ExperimentalWarning for node:sqlite; the
@@ -338,20 +341,22 @@ uninstall_cli() {
     force=1
   fi
 
-  local launcher="${HOME}/.local/bin/aiand"
-  local checkout="${AIAND_DIR:-${HOME}/.aiand/cli}"
+  local home_real launcher checkout
+  home_real="$(cd "${HOME}" 2>/dev/null && pwd -P || printf '%s' "${HOME}")"
+  launcher="${home_real}/.local/bin/aiand"
+  checkout="${AIAND_DIR:-${home_real}/.aiand/cli}"
   # AIAND_DIR is user-controlled: canonicalize before comparing (an exact
   # string compare would let "$HOME/", "$HOME//", or "//" — the same
   # directories spelled differently — straight through to rm -rf), then
   # refuse HOME itself, /, and anything outside HOME.
   checkout="$(cd "${checkout}" 2>/dev/null && pwd -P)" \
     || checkout="$(cd "$(dirname "${checkout}")" 2>/dev/null && pwd -P)/$(basename "${checkout}")"
-  if [[ "${checkout}" == "/" || "${checkout}" == "${HOME}" || "${checkout}" == "${HOME}/" ]]; then
+  if [[ "${checkout}" == "/" || "${checkout}" == "${home_real}" || "${checkout}" == "${home_real}/" ]]; then
     echo "Error: refusing to remove ${checkout}; unset AIAND_DIR and re-run." >&2
     exit 1
   fi
-  if [[ "${checkout}" != "${HOME}"/* ]]; then
-    echo "Error: refusing to remove ${checkout}; it is outside ${HOME}." >&2
+  if [[ "${checkout}" != "${home_real}"/* ]]; then
+    echo "Error: refusing to remove ${checkout}; it is outside ${home_real}." >&2
     exit 1
   fi
 

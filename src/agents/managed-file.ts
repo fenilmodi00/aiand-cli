@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { isDeepStrictEqual } from "node:util";
 
 import { CliError } from "../cli/errors.js";
 
@@ -32,11 +31,12 @@ export async function readTextIfExists(file: string): Promise<string> {
  * promise "both JSON and JSONC" for opencode.json, so a user's commented
  * config must not wedge `on`. Stdlib-only: one string-aware scan strips line
  * and block comments and trailing commas, then JSON.parse. Not a general
- * JSONC parser — ponytail: quotes + escapes so a `//` or `,}` inside a string
+ * JSONC parser — quotes + escapes so a `//` or `,}` inside a string
  * literal survives; JSON.stringify output (all we ever write) needs none of
  * this.
  */
 export function parseJsonc(text: string): unknown {
+  if (text.startsWith("\uFEFF")) text = text.slice(1);
   let out = "";
   let inString = false;
   let escaped = false;
@@ -299,11 +299,15 @@ function skipObject(text: string, i: number): { end: number; props: Map<string, 
   throw new SyntaxError("Unterminated object");
 }
 
-
 function locate(
   text: string,
-  path: string[]
-): { parentStart: number; parentEnd: number; parent: Map<string, PropLoc>; prop: PropLoc | undefined } {
+  path: string[],
+): {
+  parentStart: number;
+  parentEnd: number;
+  parent: Map<string, PropLoc>;
+  prop: PropLoc | undefined;
+} {
   let parentStart = skipTrivia(text, 0);
   if (path.length === 0) throw new Error("jsonc path must not be empty");
   let { end: parentEnd, props: parent } = skipObject(text, parentStart);
@@ -335,6 +339,11 @@ function renderValue(value: unknown, indent: string): string {
   return raw.replace(/\n/g, `\n${indent}`);
 }
 
+function withBom(text: string, fn: (body: string) => string): string {
+  const bom = text.startsWith("\uFEFF");
+  return (bom ? "\uFEFF" : "") + fn(bom ? text.slice(1) : text);
+}
+
 /**
  * Set `path` to `value` in JSONC object text. Missing parents along the path
  * are created as objects. Existing values at `path` are replaced in place.
@@ -342,14 +351,15 @@ function renderValue(value: unknown, indent: string): string {
  */
 export function jsoncSet(text: string, path: string[], value: unknown): string {
   if (path.length === 0) throw new Error("jsoncSet path must not be empty");
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    let built: unknown = value;
-    for (let i = path.length - 1; i >= 0; i--) {
-      built = { [path[i]!]: built };
+  return withBom(text, (text) => {
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      let built: unknown = value;
+      for (let i = path.length - 1; i >= 0; i--) {
+        built = { [path[i]!]: built };
+      }
+      return `${JSON.stringify(built, null, 2)}\n`;
     }
-    return `${JSON.stringify(built, null, 2)}\n`;
-  }
 
   // Create missing parent objects from the left.
   for (let depth = 0; depth < path.length - 1; depth++) {
@@ -389,6 +399,7 @@ export function jsoncSet(text: string, path: string[], value: unknown): string {
   }
   const anchor = last?.valueEnd ?? close;
   return `${text.slice(0, anchor)},\n${indent}"${key}": ${rendered}${text.slice(anchor)}`;
+  });
 }
 
 /**
@@ -397,18 +408,15 @@ export function jsoncSet(text: string, path: string[], value: unknown): string {
  */
 export function jsoncDelete(text: string, path: string[]): string {
   if (path.length === 0 || text.trim().length === 0) return text;
-  let loc: ReturnType<typeof locate>;
+  return withBom(text, (text) => {
+  let loc;
   try {
     loc = locate(text, path);
   } catch {
     return text;
   }
-  const { parentStart, parentEnd, parent, prop } = loc;
+  const { prop } = loc;
   if (!prop) return text;
-
-  if (parent.size === 1) {
-    return text.slice(0, parentStart + 1) + text.slice(parentEnd - 1);
-  }
 
   // Include the indent/newline that prefixes the key so we drop the whole line.
   let from = prop.keyStart;
@@ -422,4 +430,5 @@ export function jsoncDelete(text: string, path: string[]): string {
     return text.slice(0, prop.commaBefore) + text.slice(prop.valueEnd);
   }
   return text.slice(0, from) + text.slice(prop.valueEnd);
+  });
 }

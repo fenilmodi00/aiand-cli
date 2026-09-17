@@ -26,12 +26,12 @@ jobs:
       - run: npm test
         env:
           AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
-      - run: node --test test/e2e-live.test.mjs
-        if: success() || failure()
-        continue-on-error: true
-        env:
-          AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
+      # The live e2e (test/e2e-live.test.mjs) runs inside `npm test` above
+      # with the same key and skips itself without key+binary (fork PRs stay
+      # green). No separate continue-on-error step: it can never fail
+      # anything, so it must not exist as a fake signal.
       - run: npm run build
+      - run: node scripts/e2e.mjs
       - run: npm run check:dist
       - run: npm run check:public
   installer:

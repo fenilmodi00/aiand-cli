@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
+import { CliError } from "../dist/cli/errors.js";
 import { createKeyParser, promptCheckbox, promptSelect, KEY } from "../dist/cli/select.js";
 
 /**
@@ -197,4 +198,38 @@ test("promptSelect: initial preselects the matching row", async () => {
 test("promptSelect: empty choices returns null without prompting", async () => {
   const input = new FakeInput({ tty: false });
   assert.equal(await promptSelect({ message: "Pick", choices: [], input }), null);
+});
+
+test("promptSelect: stdin end rejects and restores the terminal", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptSelect({
+    message: "Which org?",
+    choices: [{ value: "org_1", label: "Acme" }],
+    input,
+    output,
+  });
+  queueMicrotask(() => input.end());
+  await assert.rejects(promise, (error) => {
+    assert.ok(error instanceof CliError);
+    assert.match(error.message, /Input ended/);
+    return true;
+  });
+  assert.equal(input.raw, false);
+  assert.match(output.text, /\x1b\[\?25h/);
+});
+
+test("promptCheckbox: renders choice hints", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptCheckbox({
+    message: "Which agents?",
+    choices: [{ value: "opencode", label: "OpenCode", hint: "recommended" }],
+    input,
+    output,
+  });
+  await Promise.resolve();
+  input.send(KEY.ENTER_CR);
+  await promise;
+  assert.match(output.text, /recommended/);
 });

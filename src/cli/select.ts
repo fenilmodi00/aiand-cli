@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { style } from "../cli/output.js";
+import { clipToWidth, style } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
 
 /**
@@ -44,21 +44,6 @@ export interface PromptInput {
 export interface PromptOutput {
   write(chunk: string): void;
   columns?: number;
-}
-
-const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_PATTERN, "");
-}
-
-/** Truncate to the terminal width; drops styling on lines that overflow. */
-function fitWidth(line: string, width: number): string {
-  const plain = stripAnsi(line);
-  if (plain.length <= width) {
-    return line;
-  }
-  return `${plain.slice(0, Math.max(0, width - 1))}…`;
 }
 
 /** Buffers incomplete CSI sequences across input chunks. */
@@ -156,7 +141,7 @@ export async function runPrompt<T>({
     if (closed) return;
     // `|| 80`, not `?? 80` — a PTY can report columns as 0.
     const width = Math.max(20, output.columns || 80);
-    const lines = renderLines().map((line) => fitWidth(line, width));
+    const lines = renderLines().map((line) => clipToWidth(line, width));
     let frame = prevLines > 0 ? `\x1b[${prevLines}A\r` : "\r";
     frame += lines.map((line) => `${CLEAR_LINE}${line}`).join("\n");
     if (lines.length < prevLines) {
@@ -175,7 +160,8 @@ export async function runPrompt<T>({
   const restoreTerminal = () => {
     output.write(SHOW_CURSOR);
     input.setRawMode(false);
-    input.pause();
+    // Do not pause stdin: a later piped read (login --with-token) or
+    // confirm() would hang on a paused stream. resume() is idempotent.
   };
 
   draw();
@@ -184,7 +170,7 @@ export async function runPrompt<T>({
     const parser = createKeyParser();
     let escFlush: ReturnType<typeof setImmediate> | null = null;
 
-    return await new Promise<T>((resolve) => {
+    return await new Promise<T>((resolve, reject) => {
       const stop = () => {
         if (escFlush) {
           clearImmediate(escFlush);
@@ -205,6 +191,7 @@ export async function runPrompt<T>({
         }
         const result = onKey(seq);
         if (result?.done) {
+          closed = true;
           stop();
           resolve(result.value);
           return true;
@@ -238,7 +225,17 @@ export async function runPrompt<T>({
         }
       };
 
-      const onEnd = () => flushPendingEsc();
+      const onEnd = () => {
+        flushPendingEsc();
+        if (closed) return;
+        closed = true;
+        stop();
+        reject(
+          new CliError("Input ended.", {
+            hint: "This prompt needs an interactive terminal.",
+          }),
+        );
+      };
 
       input.on("data", onData);
       input.on("end", onEnd);
@@ -331,9 +328,10 @@ export async function promptCheckbox({
         pageSize,
         renderRow: (choice, active, i) => {
           const box = checked[i] ? style.cyan(`[${OK}]`) : style.dim("[ ]");
+          const hint = choice.hint ? ` ${style.dim(choice.hint)}` : "";
           return active
-            ? `${style.cyan(POINTER)} ${box} ${choice.label}`
-            : `  ${box} ${choice.label}`;
+            ? `${style.cyan(POINTER)} ${box} ${choice.label}${hint}`
+            : `  ${box} ${choice.label}${hint}`;
         },
       }),
       style.dim("Space toggle · Enter confirm · Esc cancel"),
@@ -399,10 +397,12 @@ export async function promptSelect({
         items: choices,
         index,
         pageSize,
-        renderRow: (choice, active) =>
-          active
-            ? `${style.cyan(POINTER)} ${choice.label}`
-            : `  ${choice.label}`,
+        renderRow: (choice, active) => {
+          const hint = choice.hint ? ` ${style.dim(choice.hint)}` : "";
+          return active
+            ? `${style.cyan(POINTER)} ${choice.label}${hint}`
+            : `  ${choice.label}${hint}`;
+        },
       }),
       style.dim("Enter confirm · Esc cancel"),
     ],

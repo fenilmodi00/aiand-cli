@@ -3,6 +3,7 @@ import test, { after, before, describe } from "node:test";
 import {
   chmodSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -14,14 +15,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "../dist/fsutil.js";
+import { configDir, writeFileAtomic } from "../dist/fsutil.js";
 
 let dir;
-
 before(() => {
   dir = mkdtempSync(join(tmpdir(), "aiand-fsutil-test-"));
+  // configDir() must point inside the sandbox: the "chmod under configDir"
+  // test writes through the real configDir() and must never touch ~/.config/aiand.
+  process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
 });
-
 after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
@@ -73,6 +75,26 @@ describe("writeFileAtomic", () => {
     await writeFileAtomic(link, next, { mode: 0o600 });
     assert.equal(lstatSync(link).isSymbolicLink(), true);
     assert.equal(readFileSync(real, "utf8"), next);
+  });
+
+  test("does not chmod third-party parent directories", async () => {
+    const thirdParty = mkdtempSync(join(dir, "third-party-"));
+    chmodSync(thirdParty, 0o755);
+    const target = join(thirdParty, "nested", "config.json");
+    await writeFileAtomic(target, '{"ok":true}\n', { mode: 0o600 });
+    assert.equal(statSync(thirdParty).mode & 0o777, 0o755);
+    assert.equal(readFileSync(target, "utf8"), '{"ok":true}\n');
+  });
+
+  test("chmod 0700 parents under configDir", async () => {
+    const cfgRoot = configDir();
+    const nested = join(cfgRoot, "profiles", "nested");
+    mkdirSync(nested, { recursive: true, mode: 0o755 });
+    chmodSync(nested, 0o755);
+    const target = join(nested, "state.json");
+    await writeFileAtomic(target, '{"ok":true}\n', { mode: 0o600 });
+    assert.equal(statSync(nested).mode & 0o777, 0o700);
+    assert.equal(readFileSync(target, "utf8"), '{"ok":true}\n');
   });
 
   test("replaces a broken symlink with a regular file", async () => {

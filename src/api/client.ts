@@ -7,9 +7,12 @@ import {
   type Credential,
   type LoadedCredential,
 } from "../config.js";
-import { rotateTokens } from "./device.js";
-
 const ROTATE_BEFORE_SECONDS = 60 * 60 * 24 * 3;
+
+const refreshInflight = new Map<
+  string,
+  Promise<{ token: string; credential: LoadedCredential }>
+>();
 
 export const HEADERS = {
   METRICS: "X-Aiand-Metrics",
@@ -59,15 +62,29 @@ async function refresh(
   // Callers guard on refresh_token existing; this is the rotation path only.
   const refreshToken = stored.refresh_token;
   if (!refreshToken) throw new CliError("This credential has no refresh token.");
-  const tokens = await rotateTokens(profile.authUrl, refreshToken);
-  const next: LoadedCredential = {
-    ...stored,
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
-  };
-  await saveCredential(profile.name, next);
-  return { token: next.access_token, credential: next };
+
+  const inflight = refreshInflight.get(profile.name);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    const { rotateTokens } = await import("./device.js");
+    const tokens = await rotateTokens(profile.authUrl, refreshToken);
+    const next: LoadedCredential = {
+      ...stored,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
+    };
+    await saveCredential(profile.name, next);
+    return { token: next.access_token, credential: next };
+  })();
+
+  refreshInflight.set(profile.name, promise);
+  try {
+    return await promise;
+  } finally {
+    refreshInflight.delete(profile.name);
+  }
 }
 
 export type RequestOptions = {
@@ -111,6 +128,11 @@ export async function request(session: Session, options: RequestOptions): Promis
   let response = await send(session.token);
 
   if (response.status === 401 && session.credential?.refresh_token) {
+    if (response.body?.cancel) {
+      await response.body.cancel();
+    } else {
+      await response.arrayBuffer().catch(() => {});
+    }
     const rotated = await refresh(session.profile, session.credential);
     session.token = rotated.token;
     session.credential = rotated.credential;
@@ -156,7 +178,7 @@ async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
     }
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new ApiError(0, `Could not reach ${new URL(url).origin}: ${reason}`, {
-      hint: "Check your network, or point at another environment with --env / AIAND_BASE_URL.",
+      hint: "Check your network, or point at another environment with --base-url / AIAND_BASE_URL.",
     });
   }
 }

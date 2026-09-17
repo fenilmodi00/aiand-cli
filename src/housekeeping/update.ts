@@ -55,26 +55,43 @@ async function writeUpdateCache(payload: UpdateCache): Promise<void> {
   await writeFileAtomic(updateCachePath(), JSON.stringify(payload) + "\n");
 }
 
-function versionParts(version: string): number[] {
-  return String(version)
-    .replace(/^v/, "")
-    .split(".")
-    .map((part) => Number.parseInt(part, 10) || 0);
+function versionCore(version: string): { parts: number[]; prerelease: boolean } {
+  const stripped = String(version).replace(/^v/, "");
+  const dash = stripped.indexOf("-");
+  const core = dash === -1 ? stripped : stripped.slice(0, dash);
+  const parts = core.split(".").map((part) => {
+    const parsed = Number.parseInt(part, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+  return { parts, prerelease: dash !== -1 };
 }
 
 /**
  * Compare two dotted-integer version strings on same-length padded parts
- * (pad the shorter with zeros). Returns >0 when `left` is newer than `right`.
+ * (pad the shorter with zeros). A prerelease is older than the same numeric
+ * release (1.0.0-rc.1 < 1.0.0). Returns >0 when `left` is newer than `right`.
  */
 export function compareVersions(left: string, right: string): number {
-  const leftParts = versionParts(left);
-  const rightParts = versionParts(right);
-  const length = Math.max(leftParts.length, rightParts.length);
+  const leftParts = versionCore(left);
+  const rightParts = versionCore(right);
+  const length = Math.max(leftParts.parts.length, rightParts.parts.length);
   for (let index = 0; index < length; index += 1) {
-    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    const diff = (leftParts.parts[index] ?? 0) - (rightParts.parts[index] ?? 0);
     if (diff !== 0) return diff;
   }
+  if (leftParts.prerelease !== rightParts.prerelease) {
+    return leftParts.prerelease ? -1 : 1;
+  }
   return 0;
+}
+
+function isPrerelease(version: string): boolean {
+  return versionCore(version).prerelease;
+}
+
+function shouldOfferUpdate(latest: string, current: string): boolean {
+  if (isPrerelease(latest) && !isPrerelease(current)) return false;
+  return compareVersions(latest, current) > 0;
 }
 
 /**
@@ -94,7 +111,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (cache?.ok === true) {
     if (now() - checkedAt < CACHE_TTL_MS) {
       // Fresh ok-cache: trust it without touching the network.
-      return cache.latest && compareVersions(cache.latest, VERSION) > 0
+      return typeof cache.latest === "string" && shouldOfferUpdate(cache.latest, VERSION)
         ? { current: VERSION, latest: cache.latest }
         : null;
     }
@@ -116,7 +133,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     if (typeof latest !== "string") throw new Error("registry response missing version");
     const payload: UpdateCache = { checkedAt: now(), ok: true, latest };
     await writeUpdateCache(payload).catch(() => {});
-    return compareVersions(latest, VERSION) > 0
+    return shouldOfferUpdate(latest, VERSION)
       ? { current: VERSION, latest }
       : null;
   } catch {

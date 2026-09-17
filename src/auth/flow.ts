@@ -302,22 +302,19 @@ export async function deviceLogin(
 }
 
 /**
- * The fireconnect degradation: when the device service can't be reached or
- * the code expires before approval, an interactive terminal falls through to
- * pasting a key instead of dead-ending the sign-in. Non-interactive runs
- * (CI, pipes) keep the original error — paste needs a prompt. User-driven
- * outcomes (deny, Ctrl-C, poll expiry) stay fatal so cancellation remains
- * cancellation.
+ * Device-to-paste fallback: when the device service can't be reached, an
+ * interactive terminal may fall through to pasting a key instead of
+ * dead-ending the sign-in. Non-interactive runs (CI, pipes) keep the original
+ * error — paste needs a prompt. User-driven outcomes (deny, Ctrl-C, poll
+ * expiry) stay fatal so cancellation remains cancellation.
  */
-function degradeToPaste(
+async function degradeToPaste(
   error: unknown,
   opts: DeviceLoginOptions,
   doing: string,
 ): Promise<void> {
-  // Ctrl-C (130) and an explicit deny in the browser (3) are user decisions —
-  // keep them fatal. Everything else (network unreachable, 5xx, contract
-  // violations, code expiry) means the device service can't get this user
-  // signed in, so an interactive terminal falls through to pasting a key.
+  // Ctrl-C (130), an explicit deny (3), and poll expiry (also 3) stay fatal.
+  // Network / 5xx may fall through to pasting a key on an interactive terminal.
   if (
     error instanceof CliError &&
     (error.exitCode === 130 || error.exitCode === 3)
@@ -329,6 +326,12 @@ function degradeToPaste(
       `Device sign-in failed while ${doing} (${(error as Error).message}) — paste a key instead.`,
     ),
   );
+  const ok = await confirm("Paste a key instead?", {
+    default: false,
+    input: opts.input,
+    output: opts.output,
+  });
+  if (!ok) throw error;
   return pasteLogin({ ...opts, interactive: true });
 }
 
@@ -511,12 +514,19 @@ async function readPastedKeyStdin(): Promise<string> {
   if (piped === null) {
     throw new CliError("Pipe the key: aiand login --with-token < key.txt");
   }
-  if (!/^sk-/.test(piped)) {
+  const [firstLine = "", ...rest] = piped.split(/\r?\n/);
+  if (rest.some((line) => line.trim() !== "")) {
+    throw new CliError("Pipe a single-line key.", {
+      hint: "aiand login --with-token < key.txt",
+    });
+  }
+  const key = firstLine.trim();
+  if (!/^sk-/.test(key)) {
     throw new CliError('Keys start with "sk-".', {
       hint: "Check the key and try again.",
     });
   }
-  return piped;
+  return key;
 }
 
 /** Validate an existing key against the API (401 → rejected), store it as a

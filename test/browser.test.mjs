@@ -40,6 +40,38 @@ test("browser: openBrowser reports a nonzero opener exit as failure", { skip: pr
   }
 });
 
+test("browser: openBrowser treats a slow exit 0 as success", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "aiand-browser-slow-ok-"));
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  writeFileSync(join(dir, opener), "#!/bin/sh\nsleep 0.1\nexit 0\n");
+  chmodSync(join(dir, opener), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = realPath ? `${dir}:${realPath}` : dir;
+  try {
+    assert.equal(await openBrowser("https://example.com"), true);
+  } finally {
+    if (realPath === undefined) delete process.env.PATH;
+    else process.env.PATH = realPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("browser: openBrowser treats a slow exit 1 as failure", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "aiand-browser-slow-fail-"));
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  writeFileSync(join(dir, opener), "#!/bin/sh\nsleep 0.1\nexit 1\n");
+  chmodSync(join(dir, opener), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = realPath ? `${dir}:${realPath}` : dir;
+  try {
+    assert.equal(await openBrowser("https://example.com"), false);
+  } finally {
+    if (realPath === undefined) delete process.env.PATH;
+    else process.env.PATH = realPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("browser: openBrowser does not wait for a long-lived opener", { skip: process.platform === "win32" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "aiand-browser-live-"));
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
@@ -50,7 +82,7 @@ test("browser: openBrowser does not wait for a long-lived opener", { skip: proce
   try {
     const started = Date.now();
     assert.equal(await openBrowser("https://example.com"), true);
-    assert.ok(Date.now() - started < 2000, "openBrowser waited for the opener lifetime");
+    assert.ok(Date.now() - started <= 2200, "openBrowser waited for the opener lifetime");
   } finally {
     if (realPath === undefined) delete process.env.PATH;
     else process.env.PATH = realPath;

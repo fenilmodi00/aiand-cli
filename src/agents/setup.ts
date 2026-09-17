@@ -1,7 +1,7 @@
-import { agentHome, resolveProfile } from "../config.js";
+import { resolveProfile } from "../config.js";
 import { CliError } from "../cli/errors.js";
 import { requireSessionKey } from "../auth/session.js";
-import { snapshotFiles, hasSnapshot } from "./snapshot.js";
+import { snapshotFiles, hasSnapshot, discardSnapshot } from "./snapshot.js";
 import {
   getCatalog,
   resolveDefault,
@@ -20,7 +20,6 @@ import type { AgentAdapter } from "./types.js";
 export type AgentOnOptions = {
   model?: string;
   force?: boolean;
-  slots?: Record<string, string>;
   profile?: string;
   baseUrl?: string;
 };
@@ -49,8 +48,8 @@ export type AgentStatusResult = {
 };
 
 /**
- * Turn an agent on: resolve a session key, detect the binary, resolve
- * model/slots from the live catalog, snapshot when inactive, then let the
+ * Turn an agent on: resolve a session key, detect the binary, resolve the
+ * model from the live catalog, snapshot when inactive, then let the
  * adapter write its config. An already-active probe skips the snapshot so
  * a re-`on` keeps the first pre-aiand capture.
  */
@@ -95,45 +94,48 @@ export async function agentOn(adapter: AgentAdapter, opts: AgentOnOptions = {}):
     model = resolveDefault(catalog, profile.model);
   }
 
-  const slots: Record<string, string> = { ...opts.slots };
-  for (const [slot, value] of Object.entries(opts.slots ?? {})) {
-    if (value !== "native") validateCatalogModel(catalog, value, `--${slot}`);
-  }
   const managed = adapter.managedFiles();
   // Idempotency: a re-`on` while already routed skips the snapshot so the
   // first pre-aiand capture stays authoritative. An inactive `on` snapshots
   // only when none exists — never overwrite a capture with leftover keys.
+  let snapshottedThisCall = false;
   if (!probe.active && !(await hasSnapshot(adapter.id))) {
     await snapshotFiles(adapter.id, managed);
+    snapshottedThisCall = true;
   }
 
-  const written = await adapter.enable({
-    apiKey: session.key,
-    model,
-    pinModel: Boolean(opts.model) && opts.model !== "native",
-    slots,
-    catalog,
-    home: agentHome(),
-    baseUrl: opts.baseUrl ?? profile.apiUrl,
-  });
-
-  // The wired model warns when it is text-only and can't take images. The
-  // literal "native" names no catalog model and never warns.
-  const warnings: string[] = [...(written.warnings ?? [])];
-  if (written.model !== "native") {
-    const entry = catalog.find((model) => model.id === written.model);
-    if (entry && visionLabel(entry) === "text-only") {
-      warnings.push(`${written.model} is text-only and can't take images.`);
+  try {
+    const written = await adapter.enable({
+      apiKey: session.key,
+      model,
+      pinModel: Boolean(opts.model) && opts.model !== "native",
+      catalog,
+      baseUrl: opts.baseUrl ?? profile.apiUrl,
+    });
+    // The wired model warns when it is text-only and can't take images. The
+    // literal "native" names no catalog model and never warns.
+    const warnings: string[] = [...(written.warnings ?? [])];
+    if (written.model !== "native") {
+      const catalogId = written.model.startsWith("aiand/")
+        ? written.model.slice("aiand/".length)
+        : written.model;
+      const entry = catalog.find((model) => model.id === catalogId);
+      if (entry && visionLabel(entry) === "text-only") {
+        warnings.push(`${written.model} is text-only and can't take images.`);
+      }
     }
-  }
 
-  return {
-    agent: adapter.id,
-    state: "on",
-    model: written.model,
-    files: written.filesWritten,
-    warnings,
-  };
+    return {
+      agent: adapter.id,
+      state: "on",
+      model: written.model,
+      files: written.filesWritten,
+      warnings,
+    };
+  } catch (error) {
+    if (snapshottedThisCall) await discardSnapshot(adapter.id);
+    throw error;
+  }
 
 }
 

@@ -43,7 +43,7 @@ export async function run(argv: string[]): Promise<void> {
     case "path":
       return paths(parsed);
     case "set":
-      return set(rest);
+      return set(rest, parsed);
     case "profiles":
       return profiles(parsed);
     case "use":
@@ -82,7 +82,7 @@ function paths(parsed: ReturnType<typeof parse>): void {
   ]);
 }
 
-async function set(args: string[]): Promise<void> {
+async function set(args: string[], parsed: ReturnType<typeof parse>): Promise<void> {
   const [key, ...valueParts] = args;
   const value = valueParts.join(" ");
   if (!key || !value) {
@@ -93,7 +93,7 @@ async function set(args: string[]): Promise<void> {
 
   // activeProfileName, not resolveProfile: a stored http URL must stay fixable
   // via `config set` instead of throwing before the new value lands.
-  const name = activeProfileName();
+  const name = activeProfileName(str(parsed, "profile"));
 
   switch (key) {
     case "api-url":

@@ -20,13 +20,40 @@ Usage
   aiand init --profile <name>    wire using a stored profile's key
 
 Wiring an agent is the same as \`aiand <agent> on\`: it snapshots the current
-config, refuses configs another tool manages (pass --force to overwrite),
-and points the agent at ai&. \`off\` subtracts aiand routing; it does not restore the snapshot.`;
+config and points the agent at ai&. Pass --force when the app holds config
+in memory (quit-guard escape). \`off\` subtracts aiand routing; it does not restore the snapshot.`;
 
-type InitResult = { agent: string; state: "on" | "off"; note?: string; model?: string };
+type InitResult = {
+  agent: string;
+  state: "on" | "off";
+  note?: string;
+  model?: string;
+  failed?: boolean;
+};
 
-async function wireOn(adapter: AgentAdapter, opts: { profile?: string } = {}): Promise<InitResult> {
-  const result = await agentOn(adapter, { profile: opts.profile });
+
+function noteFromError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function isolateWire(
+  agent: string,
+  fallbackState: "on" | "off",
+  work: () => Promise<InitResult>,
+): Promise<InitResult> {
+  try {
+    return await work();
+  } catch (error) {
+    return { agent, state: fallbackState, note: noteFromError(error), failed: true };
+  }
+}
+
+function failBatchIfNeeded(results: InitResult[]): void {
+  if (results.some((result) => result.failed)) process.exitCode = 1;
+}
+
+async function wireOn(adapter: AgentAdapter, opts: { profile?: string; force?: boolean } = {}): Promise<InitResult> {
+  const result = await agentOn(adapter, { profile: opts.profile, force: opts.force });
   return { agent: result.agent, state: result.state, model: result.model };
 }
 
@@ -49,8 +76,9 @@ export async function run(argv: string[]): Promise<void> {
   if (bool(parsed, "off")) return runOff(parsed.positionals, jsonOut, bool(parsed, "force"));
 
   const named = parsed.positionals;
+  const force = bool(parsed, "force");
   if (bool(parsed, "all") || named.length > 0) {
-    if (named.length > 0) return runOnAll(resolveNames(named), jsonOut, [], profile);
+    if (named.length > 0) return runOnAll(resolveNames(named), jsonOut, [], profile, force);
     // Batch wiring skips launcher-only adapters: `on` is
     // refused for them by the engine, so including them would abort the
     // whole batch. They are reported, not wired.
@@ -59,12 +87,13 @@ export async function run(argv: string[]): Promise<void> {
       detected.filter((adapter) => !adapter.launcherOnly),
       jsonOut,
       detected.filter((adapter) => adapter.launcherOnly),
-      profile
+      profile,
+      force
     );
   }
 
   // Bare `aiand init` (interactive): pick from installed agents.
-  return runInteractive(jsonOut, profile);
+  return runInteractive(jsonOut, profile, force);
 }
 
 function resolveNames(names: string[]): AgentAdapter[] {
@@ -98,7 +127,8 @@ async function runOnAll(
   targets: AgentAdapter[],
   jsonOut: boolean,
   skipped: AgentAdapter[] = [],
-  profile?: string
+  profile?: string,
+  force?: boolean
 ): Promise<void> {
   if (targets.length === 0 && skipped.length === 0) {
     if (jsonOut) return json({ agents: [], message: "No coding agents detected on this machine." });
@@ -109,7 +139,7 @@ async function runOnAll(
 
   const results: InitResult[] = [];
   for (const adapter of targets) {
-    results.push(await wireOn(adapter, { profile }));
+    results.push(await isolateWire(adapter.id, "off", () => wireOn(adapter, { profile, force })));
   }
   for (const adapter of skipped) {
     results.push({
@@ -118,6 +148,7 @@ async function runOnAll(
       note: `launcher-only — use aiand run-agent ${adapter.id}`,
     });
   }
+  failBatchIfNeeded(results);
   if (jsonOut) return json({ agents: results });
   for (const result of results) {
     out(
@@ -136,8 +167,9 @@ async function runOff(names: string[], jsonOut: boolean, force: boolean): Promis
   }
   const results: InitResult[] = [];
   for (const adapter of targets) {
-    results.push(await wireOff(adapter, force));
+    results.push(await isolateWire(adapter.id, "on", () => wireOff(adapter, force)));
   }
+  failBatchIfNeeded(results);
   if (jsonOut) return json({ agents: results });
   for (const result of results) {
     out(result.note ? `  ${style.dim(result.agent)} — ${result.note}` : `  ${style.dim(result.agent)} — off`);
@@ -154,7 +186,7 @@ async function registeredRouted(): Promise<AgentAdapter[]> {
   return routed;
 }
 
-async function runInteractive(jsonOut: boolean, profile?: string): Promise<void> {
+async function runInteractive(jsonOut: boolean, profile?: string, force?: boolean): Promise<void> {
   const detected = await detectedInstalled();
   const missingNames = AGENTS.filter((a) => !detected.some((d) => d.adapter.id === a.id)).map(
     (a) => a.id
@@ -218,8 +250,15 @@ async function runInteractive(jsonOut: boolean, profile?: string): Promise<void>
       hint: "Use space to toggle agents, then Enter to confirm.",
     });
   }
+  const results: InitResult[] = [];
   for (const adapter of targets) {
-    const result = await wireOn(adapter, { profile });
-    out(`  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+    const result = await isolateWire(adapter.id, "off", () => wireOn(adapter, { profile, force }));
+    results.push(result);
+    out(
+      result.note
+        ? `  ${style.dim(result.agent)} — ${result.note}`
+        : `  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`,
+    );
   }
+  failBatchIfNeeded(results);
 }

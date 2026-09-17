@@ -21,10 +21,10 @@ type BackupManifest = {
 export type AddedState = {
   model?: string;
   previousModel?: string;
+  /** File mode opencode.json had before `on` locked it to 0600; disable() restores it. */
+  previousMode?: number;
   providerAiand?: unknown;
   created?: boolean;
-  /** enable() left a pre-existing foreign provider.aiand block untouched. */
-  leftForeignProvider?: boolean;
 };
 
 function backupDir(agentId: string): string {
@@ -149,6 +149,11 @@ export async function restoreSnapshot(agentId: string, allowedFiles: string[] = 
 
 export async function hasSnapshot(agentId: string): Promise<boolean> {
   return (await readManifest(agentId)) !== null;
+}
+
+/** Drop this agent's backup dir (manifest, copies, added.json). Used when enable() fails after a fresh snapshot. */
+export async function discardSnapshot(agentId: string): Promise<void> {
+  await rm(backupDir(agentId), { recursive: true, force: true });
 }
 
 async function writeManifest(agentId: string, manifest: BackupManifest): Promise<void> {

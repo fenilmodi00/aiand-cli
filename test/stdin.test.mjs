@@ -92,4 +92,18 @@ describe("piped stdin across stdio shapes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("login --with-token rejects leftover stdin lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-stdin-test-"));
+    try {
+      const r = await runCli(["login", "--with-token"], {
+        env: childEnv(dir),
+        input: "sk-abc123\nleftover line\n",
+      });
+      assert.equal(r.code, 1, `expected leftover reject, got ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /single-line key/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { chmod, mkdir, open, realpath, rename, stat, unlink } from "node:fs/promises";
 
 
@@ -26,7 +26,15 @@ export function agentHome(): string {
   return process.env.AIAND_HOME || homedir();
 }
 
-async function existingFileMode(filePath: string): Promise<number | undefined> {
+function isUnderConfigDir(dir: string): boolean {
+  const root = resolve(configDir());
+  const target = resolve(dir);
+  if (target === root) return true;
+  const rel = relative(root, target);
+  return rel !== "" && !rel.startsWith("..");
+}
+
+export async function existingFileMode(filePath: string): Promise<number | undefined> {
   try {
     return (await stat(filePath)).mode & 0o777;
   } catch (error) {
@@ -53,9 +61,11 @@ export async function writeFileAtomic(
 ): Promise<void> {
   const dir = dirname(filePath);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  // mkdir mode only covers newly created dirs — tighten a pre-existing 0755
-  // dir best-effort; never fail the write for this.
-  await chmod(dir, 0o700).catch(() => {});
+  // mkdir mode only covers newly created dirs — tighten our own config tree
+  // best-effort; never chmod third-party dirs (e.g. ~/.config/opencode).
+  if (isUnderConfigDir(dir)) {
+    await chmod(dir, 0o700).catch(() => {});
+  }
   // Follow the whole symlink chain so rename(2) lands on the real file
   // instead of replacing the link. Only ENOENT falls back to filePath:
   // a fresh path isn't a symlink, and replacing a broken link with the
@@ -85,8 +95,8 @@ export async function writeFileAtomic(
     await rename(tempPath, real);
     // rename is atomic but not durable: flush the file before (handle.sync
     // above) and the directory entry after, so a crash cannot lose the write.
-    // ponytail: dir fsync via a throwaway fd, best-effort — some filesystems
-    // (e.g. network mounts) reject directory fsync with EINVAL.
+    // Directory fsync after rename via a throwaway fd, best-effort — some
+    // filesystems (e.g. network mounts) reject directory fsync with EINVAL.
     if (process.platform !== "win32") {
       // Best-effort: some filesystems (network mounts) reject directory
       // fsync with EINVAL — skip durability there rather than fail the write.

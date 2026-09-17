@@ -6,7 +6,7 @@ import { configDir, writeFileAtomic } from "../config.js";
 import { listModels, type Model } from "../api/models.js";
 
 const CATALOG_CACHE_FILE = "model-catalog.json";
-const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Whether a catalog model accepts image input. A model is vision-capable when
@@ -72,8 +72,8 @@ function isFresh(cache: CatalogCache, baseUrl: string): boolean {
 
 /**
  * The live /v1/models list, cached for 6h at <configDir>/model-catalog.json.
- * A fresh cache short-circuits the network entirely; a failed fetch falls
- * back to a stale cache before giving up.
+ * A fresh cache short-circuits the network entirely; a failed fetch does not
+ * serve an expired cache.
  */
 export async function getCatalog(baseUrl: string): Promise<Model[]> {
   const cached = await readCache();
@@ -87,12 +87,10 @@ export async function getCatalog(baseUrl: string): Promise<Model[]> {
     });
     return models;
   } catch (error) {
-    if (cached?.baseUrl === baseUrl) return cached.models;
+    if (error instanceof CliError) throw error;
     throw new CliError("Could not reach the model catalog.", {
       hint: "Check your network and retry.",
-      // Preserve the underlying detail (401, rate limit, DNS) for the CLI
-      // error chain while keeping the catalog-specific message.
-      exitCode: error instanceof CliError ? error.exitCode : 1,
+      exitCode: 1,
     });
   }
 }

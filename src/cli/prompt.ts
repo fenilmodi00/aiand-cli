@@ -7,8 +7,14 @@ import { KEY, type PromptInput, type PromptOutput } from "./select.js";
  * Read a single line of visible (echoed) input from stdin. Used by `readSecret`
  * on the non-TTY / Windows path.
  */
-export async function readLineVisible(prompt: string): Promise<string> {
-  const rl = createInterface({ input: stdin, output: stdout });
+export async function readLineVisible(
+  prompt: string,
+  options: { input?: PromptInput; output?: PromptOutput } = {},
+): Promise<string> {
+  const rl = createInterface({
+    input: (options.input ?? stdin) as unknown as NodeJS.ReadableStream,
+    output: (options.output ?? stdout) as unknown as NodeJS.WritableStream,
+  });
   try {
     return await rl.question(prompt);
   } finally {
@@ -90,7 +96,6 @@ export async function readSecret(
     });
   } finally {
     input.setRawMode(false);
-    input.pause();
     output.write("\n");
   }
 
@@ -111,12 +116,23 @@ export function isInteractive(): boolean {
  * Ask a yes/no question. Non-TTY returns the default instead of hanging, so
  * CI gets deterministic behavior for every interactive gate.
  */
-export async function confirm(message: string, options: { default?: boolean } = {}): Promise<boolean> {
+export async function confirm(
+  message: string,
+  options: {
+    default?: boolean;
+    /** Test seam: input stream (defaults to stdin). */
+    input?: PromptInput;
+    /** Test seam: output stream (defaults to stdout). */
+    output?: PromptOutput;
+  } = {},
+): Promise<boolean> {
   const fallback = options.default ?? false;
-  if (!isInteractive()) return fallback;
+  const input = options.input ?? stdin;
+  const interactive = options.input ? input.isTTY : isInteractive();
+  if (!interactive) return fallback;
 
   const hint = fallback ? "[Y/n] " : "[y/N] ";
-  const answer = (await readLineVisible(`${message} ${hint}`)).trim().toLowerCase();
+  const answer = (await readLineVisible(`${message} ${hint}`, options)).trim().toLowerCase();
   if (answer === "") return fallback;
   return answer === "y" || answer === "yes";
 }

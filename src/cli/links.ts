@@ -3,6 +3,14 @@ import { stdout } from "node:process";
 const OSC8_OPEN = (url: string) => `\x1b]8;;${url}\x1b\\`;
 const OSC8_CLOSE = "\x1b]8;;\x1b\\";
 
+/** OSC 8 is closed by ST (`ESC \`), BEL, or C1 ST. Percent-encode those
+ *  so a server-supplied URL cannot break out of the hyperlink region. */
+function escapeOsc8Url(url: string): string {
+  return url.replace(/[\u0000-\u001F\u007F\u009C]/g, (ch) =>
+    encodeURIComponent(ch),
+  );
+}
+
 const KNOWN_SUPPORT = ["iTerm.app", "WezTerm", "vscode", "ghostty", "Hyper", "Tabby"];
 
 type LinkOptions = {
@@ -47,7 +55,7 @@ export function hyperlinksEnabled({
  * nothing.
  */
 export function link(url: string, options: LinkOptions = {}): string {
-  return hyperlinksEnabled(options)
-    ? `${OSC8_OPEN(url)}${url}${OSC8_CLOSE}`
-    : url;
+  if (!hyperlinksEnabled(options)) return url;
+  const safe = escapeOsc8Url(url);
+  return `${OSC8_OPEN(safe)}${safe}${OSC8_CLOSE}`;
 }

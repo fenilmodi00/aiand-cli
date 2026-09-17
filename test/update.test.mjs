@@ -44,6 +44,10 @@ describe("compareVersions (dotted-integer, same-length padded)", () => {
     assert.ok(compareVersions("1.2", "1.1.9") > 0);
     assert.equal(compareVersions("1.2", "1.2.0"), 0);
   });
+  test("a prerelease is older than the matching release", () => {
+    assert.ok(compareVersions("1.0.0-rc.1", "1.0.0") < 0);
+    assert.ok(compareVersions("1.0.0", "1.0.0-rc.1") > 0);
+  });
 });
 
 describe("checkForUpdate", () => {
@@ -51,6 +55,12 @@ describe("checkForUpdate", () => {
     writeCache({ checkedAt: Date.now(), ok: true, latest: newerVersion(VERSION) });
     const info = await checkForUpdate();
     assert.deepEqual(info, { current: VERSION, latest: newerVersion(VERSION) });
+  });
+
+  test("ignores a prerelease on the latest dist-tag when the install is stable", async () => {
+    writeCache({ checkedAt: Date.now(), ok: true, latest: "99.0.0-rc.1" });
+    const info = await checkForUpdate();
+    assert.equal(info, null);
   });
 
   test("returns null when cached latest equals local version", async () => {

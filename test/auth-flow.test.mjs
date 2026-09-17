@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import test, { afterEach, beforeEach, describe } from "node:test";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { KEY } from "../dist/cli/select.js";
+
 
 // Behavioral tests through the real src/auth flow modules (dist build). The
 // device/API seams live behind a localhost stub HTTP server: the profile's
@@ -31,7 +38,7 @@ function stubServer() {
     keyName: null,
     /** /auth/authorize behavior: "redirect" 302s, "missing" 404s. */
     authorizeMode: "redirect",
-    /** When "down", the device endpoints 500 — the fireconnect degradation
+    /** When "down", the device endpoints 500 — the device-to-paste fallback
      * path: service torn down, identity API still serving. */
     deviceMode: "up",
   };
@@ -178,6 +185,7 @@ function captureOutput() {
   };
 }
 
+describe("auth flow integration (serial)", { concurrency: 1 }, () => {
 describe("deviceLogin happy path (real modules, stub server)", () => {
   beforeEach(() => delete process.env.AIAND_API_KEY);
 
@@ -357,6 +365,36 @@ describe("pasteLogin validation (real modules, stub server)", () => {
       assert.ok(
         captured.log.out.join("").includes("Signed in with a pasted key."),
       );
+    } finally {
+      captured.restore();
+    }
+  });
+
+  test("json: true still rebakes agent config keys", async () => {
+    const home = process.env.AIAND_HOME;
+    const configPath = join(home, ".config", "opencode", "opencode.json");
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        provider: {
+          aiand: { options: { baseURL: "https://api.aiand.com/v1", apiKey: "sk-old" } },
+        },
+        model: "aiand/m-default",
+        "x-aiand": true,
+      }) + "\n",
+    );
+
+    const captured = captureOutput();
+    try {
+      await flow.pasteLogin({
+        profile: "default",
+        key: "sk-abc123",
+        json: true,
+      });
+      const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+      assert.equal(cfg.provider.aiand.options.apiKey, "sk-abc123");
+      assert.ok(captured.log.out.join("").includes('"source": "pasted-key"'));
     } finally {
       captured.restore();
     }
@@ -582,7 +620,7 @@ describe("browserLogin (real modules, stub server)", () => {
   });
 });
 
-describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
+describe("deviceLogin degrades to paste (device-to-paste fallback)", () => {
   test("(g) device endpoints down + interactive TTY falls through to the paste prompt and signs in", async () => {
     state.deviceMode = "down";
     const restoreTTY = stubTTY();
@@ -595,12 +633,16 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
         input,
         output,
       });
-      // The paste prompt drives the same raw-mode listener pattern as the
-      // org picker: wait for it, then send a valid key + ENTER.
-      for (let i = 0; i < 3000 && input.listenerCount("data") === 0; i++) {
+      for (let i = 0; i < 3000 && !output.text.includes("Paste a key instead?"); i++) {
         await new Promise((r) => setTimeout(r, 10));
       }
-      assert.ok(input.listenerCount("data") > 0, "paste prompt never started");
+      assert.ok(output.text.includes("Paste a key instead?"), "confirm never appeared");
+      input.send("y");
+      input.send(KEY.ENTER_CR);
+      for (let i = 0; i < 3000 && !output.text.includes("Paste your ai& API key"); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      assert.ok(output.text.includes("Paste your ai& API key"), "paste prompt never started");
       input.send("sk-abc123");
       input.send(KEY.ENTER_CR);
       await login;
@@ -612,6 +654,33 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
       assert.match(errText, /Device sign-in failed while starting/);
       assert.match(errText, /paste a key instead/);
       assert.ok(captured.log.out.join("").includes("Signed in with a pasted key."));
+    } finally {
+      captured.restore();
+      restoreTTY();
+      state.deviceMode = "up";
+    }
+  });
+
+  test("(g2) device endpoints down + confirm no rethrows the original error", async () => {
+    state.deviceMode = "down";
+    const restoreTTY = stubTTY();
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const captured = captureOutput();
+    try {
+      const login = flow.deviceLogin({
+        profile: "default",
+        input,
+        output,
+      });
+      for (let i = 0; i < 3000 && !output.text.includes("Paste a key instead?"); i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      input.send("n");
+      input.send(KEY.ENTER_CR);
+      await assert.rejects(login, /device service|HTTP 5|start a device/i);
+      assert.equal(await config.loadCredential("default"), null);
+      assert.ok(!captured.log.out.join("").includes("Signed in with a pasted key."));
     } finally {
       captured.restore();
       restoreTTY();
@@ -666,6 +735,49 @@ describe("deviceLogin degrades to paste (fireconnect pattern)", () => {
           output: new FakeOutput(),
         }),
         /denied in the browser/,
+      );
+      const errText = captured.log.err.join("");
+      assert.ok(!errText.includes("paste a key instead"));
+      assert.equal(await config.loadCredential("default"), null);
+    } finally {
+      captured.restore();
+      restoreTTY();
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("(i2) poll expiry stays fatal (no paste fallback)", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/auth/device/code")) {
+        return new Response(
+          JSON.stringify({
+            device_code: "dc",
+            user_code: "BCDF-GHJK",
+            verification_uri: "/auth/device?user_code=BCDF-GHJK",
+            verification_uri_complete: "",
+            expires_in: 600,
+            interval: 0,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ error: "expired_token" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const restoreTTY = stubTTY();
+    const captured = captureOutput();
+    try {
+      await assert.rejects(
+        flow.deviceLogin({
+          profile: "default",
+          keyName: "k",
+          input: new FakeInput(),
+          output: new FakeOutput(),
+        }),
+        /expired before it was approved/,
       );
       const errText = captured.log.err.join("");
       assert.ok(!errText.includes("paste a key instead"));
@@ -768,4 +880,5 @@ describe("auth probe three states (verified / signed_out / unreachable)", () => 
     state.orgs = [{ id: "org_1", name: "First" }];
     await assert.rejects(flow.probeIdentity("default"), /rejected/);
   });
+});
 });

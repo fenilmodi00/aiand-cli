@@ -107,4 +107,18 @@ describe("run default model resolution (mock gateway)", () => {
       assert.equal(JSON.parse(stdout).model, "auto");
     });
   });
+
+  test("omitting -m falls back to auto when the catalog is unreachable", async () => {
+    await withMockGateway(async ({ url }) => {
+      const { cfg, home } = freshCfg("catalog-down");
+      const { code, stdout } = await runCli(["run", "--no-stream", "--json", "hi"], {
+        AIAND_CONFIG_DIR: cfg,
+        AIAND_HOME: home,
+        AIAND_API_KEY: "sk-test-not-real",
+        AIAND_BASE_URL: `${url}/stub/catalog-down`,
+      });
+      assert.equal(code, 0);
+      assert.equal(JSON.parse(stdout).model, "auto");
+    });
+  });
 });

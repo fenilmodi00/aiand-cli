@@ -10,7 +10,7 @@ const VERBS: Verb[] = ["on", "off", "status"];
 function agentHelp(adapter: AgentAdapter): string {
   const flags = [
     "  --model <id>           model to route (default: catalog preferred)",
-    "  --force                overwrite a config another tool manages",
+    "  --force                escape quit-guards when the app holds config in memory",
     "      --json              machine-readable output",
     "      --profile <name>    use a stored profile",
     "      --base-url <url>    point at a different API endpoint",
@@ -79,7 +79,6 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
   const result = await agentOn(adapter, {
     model: str(parsed, "model"),
     force: bool(parsed, "force"),
-    slots: {},
     profile: str(parsed, "profile"),
     baseUrl: str(parsed, "base-url"),
   });

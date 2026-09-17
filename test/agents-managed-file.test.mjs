@@ -77,6 +77,10 @@ describe("managed-file read side", () => {
 });
 
 describe("parseJsonc", () => {
+  test("parseJsonc strips a UTF-8 BOM before JSON.parse", () => {
+    assert.deepEqual(parseJsonc("\uFEFF{\"theme\":\"system\"}"), { theme: "system" });
+  });
+
   test("keeps ,} and ,] sequences inside string values", () => {
     // Global trailing-comma regex would corrupt these; the scan must be
     // string-aware the same way comment stripping is.
@@ -103,6 +107,13 @@ describe("parseJsonc", () => {
 });
 
 describe("jsonc surgical edit", () => {
+  test("jsoncDelete of the last key preserves comments inside the object", () => {
+    const original = `{\n  /* keep */\n  "x-aiand": true\n}\n`;
+    const removed = jsoncDelete(original, ["x-aiand"]);
+    assert.match(removed, /keep/);
+    assert.deepEqual(parseJsonc(removed), {});
+  });
+
   test("jsoncSet inserts a key and jsoncDelete removes it, leaving comments and key order", () => {
     const original = `{
   // user comment
@@ -145,6 +156,17 @@ describe("jsonc surgical edit", () => {
     const empty = jsoncDelete(created, ["model"]);
     assert.deepEqual(parseJsonc(empty), {});
   });
+
+  test("jsoncSet and jsoncDelete on a BOM'd object keep editing (no raw SyntaxError)", () => {
+    const original = "\uFEFF{\n  \"theme\": \"system\"\n}\n";
+    const added = jsoncSet(original, ["x-aiand"], true);
+    assert.equal(added.startsWith("\uFEFF"), true);
+    assert.equal(parseJsonc(added).theme, "system");
+    assert.equal(parseJsonc(added)["x-aiand"], true);
+    const removed = jsoncDelete(added, ["x-aiand"]);
+    assert.equal(removed, original);
+  });
+
 });
 
 describe("jsoncSet layout", () => {

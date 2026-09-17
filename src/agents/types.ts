@@ -8,14 +8,11 @@ export type ProbeResult = {
   active: boolean; // aiand routing live, ground truth from real files
   model: string | null;
 };
-
 export type EnableInput = {
   apiKey: string;                       // resolved session key, baked literal
   model: string;                         // resolved default or --model
   pinModel?: boolean;                    // --model was passed (not native): overwrite existing
-  slots: Record<string, string>;         // reserved for future slot-aware adapters
   catalog: Model[];                      // live /v1/models
-  home: string;                          // agentHome()
   baseUrl: string;                       // API origin (api.json fetches)
 };
 
@@ -26,7 +23,7 @@ export type DisableResult = {
 
 /** Everything a one-process session launcher needs to build its injection. */
 export type SessionLaunchInput = {
-  apiKey: string;                        // resolved session key, baked into env/config content
+  apiKey: string;                        // resolved session key; launchers must not put it in the child env
   model: string | undefined;              // --model or the adapter default, catalog-validated
   catalog: Model[];                      // live /v1/models (adapters that build model maps)
   baseUrl?: string;                      // --base-url override; adapters fall back to their default
@@ -65,11 +62,12 @@ export type AgentAdapter = {
   // exit, which would clobber the subtractive strip. Only adapters whose
   // target app holds the config in memory define one.
   sessionLaunch?(input: SessionLaunchInput): Promise<SessionLaunch>;
-  disable(): Promise<void | DisableResult>; // subtract marked aiand writes; never a snapshot rewind
+  disable(): Promise<void | DisableResult>;
+  // ^ Subtract marked aiand writes; never a snapshot rewind.
+  refreshKey?(input: { apiKey: string; home: string }): Promise<void>;
   // ^ Swap ONLY the baked API-key literal in an already-active config, leaving
   // model ids and every unrelated key/byte untouched. Idempotent: a
   // config whose key already matches is a no-op. Adapters that do not persist
   // a plaintext key skip this (re-running `aiand <id> on` is the refresh path).
-  refreshKey?(input: { apiKey: string; home: string }): Promise<void>;
   launcherOnly?: boolean; // adapters with session-only routing: on/off unsupported
 };

@@ -1,12 +1,15 @@
-import { readFile, stat, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type { Model } from "../api/models.js";
 import { publicJson } from "../api/client.js";
-import { resolveDefault } from "./catalog.js";
+import { CATALOG_TTL_MS, resolveDefault } from "./catalog.js";
+import { CliError } from "../cli/errors.js";
 import { detectBinary, INSTALL_HINTS } from "./detect.js";
 import { agentHome, configDir, isLoopbackHost, writeFileAtomic } from "../config.js";
+import { existingFileMode } from "../fsutil.js";
 import { notValidJsonError, parseJsonc, readTextIfExists, jsoncSet, jsoncDelete, swapKeyInConfig } from "./managed-file.js";
 import type { AgentAdapter, DetectResult, DisableResult, EnableInput, ProbeResult, SessionLaunchInput } from "./types.js";
 import { fileCreatedByUs, getAddedState, recordAddedState } from "./snapshot.js";
@@ -19,8 +22,6 @@ export const OPENCODE_BASE_URL = "https://api.aiand.com/v1";
 const OPENCODE_PROVIDER_ID = "aiand";
 /** Ownership marker aiand stamps on configs it writes, so off/logout strip surgically. */
 const OPENCODE_MARKER_KEY = "x-aiand";
-const OPENCODE_PREVIOUS_MODEL_KEY = "x-aiand-previous-model";
-
 
 /**
  * One model entry inside `provider.aiand.models`. Built from a live ai&
@@ -51,21 +52,28 @@ type ApiJsonCache = {
  */
 async function getApiModels(baseUrl: string): Promise<Record<string, OpencodeModelEntry>> {
   const cachePath = join(configDir(), OPENCODE_API_CACHE_FILE);
+  const trimmedBase = (baseUrl ?? "").replace(/\/+$/, "");
   try {
     const api = await publicJson<{ opencode?: { models?: Record<string, OpencodeModelEntry> } }>(
-      `${baseUrl}/v1/api.json`
+      `${trimmedBase}/v1/api.json`
     );
     const models = api.opencode?.models ?? {};
     await writeFileAtomic(
       cachePath,
-      `${JSON.stringify({ fetchedAt: Date.now(), baseUrl, models }, null, 2)}\n`,
+      `${JSON.stringify({ fetchedAt: Date.now(), baseUrl: trimmedBase, models }, null, 2)}\n`,
       { mode: 0o600 }
     );
     return models;
   } catch (error) {
     try {
       const cached = JSON.parse(await readFile(cachePath, "utf8")) as Partial<ApiJsonCache>;
-      if (cached?.baseUrl === baseUrl && cached.models && typeof cached.models === "object") {
+      if (
+        cached?.baseUrl === trimmedBase &&
+        cached.models &&
+        typeof cached.models === "object" &&
+        typeof cached.fetchedAt === "number" &&
+        Date.now() - cached.fetchedAt < CATALOG_TTL_MS
+      ) {
         err("OpenCode model map unreachable; using the last cached map.");
         return cached.models as Record<string, OpencodeModelEntry>;
       }
@@ -200,8 +208,8 @@ function opencodeBaseURL(baseUrl?: string): string {
 
 /**
  * Ownership predicate: is this opencode.json ours? True only when the
- * `x-aiand` marker we stamp on every write is present, the `aiand` provider
- * has an `sk-` apiKey, and the baseURL is https or loopback http. Marker-only
+ * `x-aiand` marker we stamp on every write is present and the `aiand` provider
+ * baseURL is https or loopback http. Marker-only
  * (no prod-URL legacy path): this is the first shipped PR, so dual ownership
  * rules would be upgrade debt with no users to protect. A foreign provider
  * that merely reuses the "aiand" name lacks the marker, so it reads inactive
@@ -215,10 +223,7 @@ function configIsOurs(parsed: Record<string, unknown>): boolean {
     | { options?: { baseURL?: unknown; apiKey?: unknown } }
     | undefined;
   const baseURL = aiand?.options?.baseURL;
-  const apiKey = aiand?.options?.apiKey;
-  if (typeof baseURL !== "string" || typeof apiKey !== "string" || !apiKey.startsWith("sk-")) {
-    return false;
-  }
+  if (typeof baseURL !== "string") return false;
   try {
     const url = new URL(baseURL);
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
@@ -285,16 +290,11 @@ async function probe(): Promise<ProbeResult> {
     return { active: false, model: null };
   }
   const rootModel = typeof parsed.model === "string" ? parsed.model : "";
-  let model: string | null = null;
-  if (rootModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
-    model = rootModel.slice(OPENCODE_PROVIDER_ID.length + 1);
-  }
   const active = configIsOurs(parsed);
   return {
     active,
-    // True ai& routing, read from the real file: the model is whatever the
-    // root `model` ref says once it's ours (aiand/…), null otherwise.
-    model: active ? model : null,
+    // True ai& routing: the effective root model ref whenever the config is ours.
+    model: active && rootModel ? rootModel : null,
   };
 }
 
@@ -331,6 +331,26 @@ async function enable(
     }
   }
 
+  if (
+    current.provider !== undefined &&
+    (typeof current.provider !== "object" || current.provider === null || Array.isArray(current.provider))
+  ) {
+    throw notValidJsonError(
+      path,
+      "Fix it by hand, or delete it and run aiand opencode on again."
+    );
+  }
+
+  const currentProviders = (current.provider ?? {}) as Record<string, unknown>;
+  const existingAiand = currentProviders[OPENCODE_PROVIDER_ID];
+  const foreignAiand = Boolean(existingAiand) && current[OPENCODE_MARKER_KEY] !== true && !configIsOurs(current);
+
+  if (foreignAiand) {
+    throw new CliError("OpenCode already has a provider.aiand block that ai& does not manage.", {
+      hint: "Remove or rename the foreign block by hand, then run aiand opencode on again.",
+    });
+  }
+
   const models = await getApiModels(input.baseUrl);
   const isNative = input.model === "native";
   const built = buildOpencodeConfig({
@@ -341,21 +361,10 @@ async function enable(
   });
   const providerBlock = (built.provider as Record<string, unknown>)[OPENCODE_PROVIDER_ID];
 
-  const currentProviders =
-    current.provider && typeof current.provider === "object" && !Array.isArray(current.provider)
-      ? (current.provider as Record<string, unknown>)
-      : {};
-  const existingAiand = currentProviders[OPENCODE_PROVIDER_ID];
-  const foreignAiand = Boolean(existingAiand) && current[OPENCODE_MARKER_KEY] !== true && !configIsOurs(current);
-
   let text = raw;
   const warnings: string[] = [];
-  if (foreignAiand) {
-    warnings.push("Left an existing provider.aiand block (not ours).");
-  } else {
-    text = jsoncSet(text, ["provider", OPENCODE_PROVIDER_ID], providerBlock);
-    text = jsoncSet(text, [OPENCODE_MARKER_KEY], true);
-  }
+  text = jsoncSet(text, ["provider", OPENCODE_PROVIDER_ID], providerBlock);
+  text = jsoncSet(text, [OPENCODE_MARKER_KEY], true);
 
   const existingModel = typeof current.model === "string" ? current.model : "";
   // The prior on's model record is still live only when the file holds
@@ -377,13 +386,11 @@ async function enable(
     recorded = priorLive ? priorModel : undefined;
     previousModel = priorLive ? prior?.previousModel : undefined;
   } else if (existingModel && !input.pinModel) {
-    warnings.push(`Left your existing model (${existingModel}). Pass --model to switch.`);
+    if (!existingModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
+      warnings.push(`Left your existing model (${existingModel}). Pass --model to switch.`);
+    }
     recorded = priorLive ? priorModel : undefined;
     previousModel = priorLive ? prior?.previousModel : undefined;
-  } else if (foreignAiand) {
-    // Not our config: a model ref written here would carry the aiand/
-    // prefix while off() sees no ownership marker and can never strip it.
-    warnings.push("Left your model because provider.aiand is not ours.");
   } else {
     const nextModel = `${OPENCODE_PROVIDER_ID}/${input.model}`;
     if (existingModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
@@ -401,27 +408,29 @@ async function enable(
 
   // Write text as-is: jsonc edits preserve the tail, so the seed's
   // trailing-newline convention survives on and off byte-for-byte.
+  // A re-on while already routed finds the file at 0600 (our lock). Carry
+  // the first-on recorded mode so off still restores the user's original.
+  const previousMode = prior?.previousMode ?? (await existingFileMode(path)) ?? 0o644;
   if (text !== raw) {
     await writeFileAtomic(path, text, { mode: 0o600 });
   }
-
   // A file our prior on created is still ours when it still carries the
   // marker (no `off` has stripped it since).
   const stillOurs = current[OPENCODE_MARKER_KEY] === true;
   await recordAddedState("opencode", {
     model: recorded,
     previousModel,
-    providerAiand: foreignAiand ? undefined : withoutApiKey(providerBlock),
+    previousMode,
+    providerAiand: withoutApiKey(providerBlock),
     created: created || (prior?.created === true && stillOurs),
-    leftForeignProvider: foreignAiand ? true : undefined,
   });
 
   // Report the model now in effect: what this run wrote, else what the
   // file already had, else the requested default.
   const reportedModel = modelWritten
-    ? input.model
+    ? modelWritten
     : existingModel
-      ? existingModel.slice(existingModel.indexOf("/") + 1) || existingModel
+      ? existingModel
       : input.model;
   return {
     model: reportedModel,
@@ -471,23 +480,20 @@ export const opencodeAdapter: AgentAdapter = {
       typeof provider === "object" &&
       !Array.isArray(provider) &&
       OPENCODE_PROVIDER_ID in (provider as Record<string, unknown>);
-    if (hasAiand && !added?.leftForeignProvider) {
+    if (hasAiand) {
       const currentBlock = (provider as Record<string, unknown>)[OPENCODE_PROVIDER_ID];
       const expected = added?.providerAiand;
       const looksOurs = parsed[OPENCODE_MARKER_KEY] === true || configIsOurs(parsed);
       if (looksOurs) {
-        const liveApiKey = (currentBlock as { options?: { apiKey?: unknown } })?.options?.apiKey;
         const edited =
           expected !== undefined
             ? !isDeepStrictEqual(withoutApiKey(currentBlock), withoutApiKey(expected))
             : parsed[OPENCODE_MARKER_KEY] === true && !configIsOurs(parsed);
         if (edited) {
           notes.push("left provider.aiand because you edited it");
-          if (typeof liveApiKey === "string" && !liveApiKey.startsWith("sk-")) {
-            notes.push("left provider.aiand because the key is no longer an sk- key");
-          }
-        } else if (typeof liveApiKey === "string" && !liveApiKey.startsWith("sk-")) {
-          notes.push("left provider.aiand because the key is no longer an sk- key");
+          // The rest of the block is theirs; the session key is still ours.
+          text = jsoncDelete(text, ["provider", OPENCODE_PROVIDER_ID, "options", "apiKey"]);
+          stripped = true;
         } else {
           text = jsoncDelete(text, ["provider", OPENCODE_PROVIDER_ID]);
           const after = parseJsonc(text) as Record<string, unknown>;
@@ -505,11 +511,6 @@ export const opencodeAdapter: AgentAdapter = {
       text = jsoncDelete(text, [OPENCODE_MARKER_KEY]);
       stripped = true;
     }
-    if (OPENCODE_PREVIOUS_MODEL_KEY in live()) {
-      text = jsoncDelete(text, [OPENCODE_PREVIOUS_MODEL_KEY]);
-      stripped = true;
-    }
-
     const rootModel = typeof live().model === "string" ? (live().model as string) : "";
     const owned = parsed[OPENCODE_MARKER_KEY] === true || configIsOurs(parsed);
     if (added?.model && owned) {
@@ -548,7 +549,8 @@ export const opencodeAdapter: AgentAdapter = {
       if (empty && created) {
         await unlink(path);
       } else {
-        await writeFileAtomic(path, text, { mode: 0o600 });
+        // The key left the file: hand back the mode the user had before on.
+        await writeFileAtomic(path, text, { mode: added?.previousMode ?? 0o644 });
       }
     }
 
@@ -609,13 +611,17 @@ export const opencodeAdapter: AgentAdapter = {
   },
   async sessionLaunch(input: SessionLaunchInput) {
     // Session launches must work with NO prior `on`: the whole config rides
-    // inline via OPENCODE_CONFIG_CONTENT (highest precedence, nothing written
-    // to disk), with the session key baked as the literal options.apiKey.
-    // Resolve a default model from the catalog when the launcher passed none,
-    // because OpenCode needs a concrete `aiand/<id>` root ref.
+    // inline via OPENCODE_CONFIG_CONTENT (highest precedence). The session
+    // key must NOT ride in the child env — every process the agent spawns
+    // would inherit it — so it goes to a throwaway 0600 file and OpenCode's
+    // documented `{file:}` substitution reads it from there. The launcher
+    // always runs `cleanup` after the child exits, which unlinks the file.
     const model = input.model ?? resolveDefault(input.catalog);
+    const dir = await mkdtemp(join(tmpdir(), "aiand-opencode-"));
+    const keyFile = join(dir, "key");
+    await writeFile(keyFile, input.apiKey, { mode: 0o600 });
     const config = buildOpencodeConfig({
-      apiKey: input.apiKey,
+      apiKey: `{file:${keyFile}}`,
       model,
       models: modelsFromCatalog(input.catalog),
       options: { ...OPENCODE_OPTIONS, baseURL: opencodeBaseURL(input.baseUrl) },
@@ -626,6 +632,9 @@ export const opencodeAdapter: AgentAdapter = {
         OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
       },
       clear: [],
+      cleanup: async () => {
+        await rm(dir, { recursive: true, force: true });
+      },
     };
   },
 };

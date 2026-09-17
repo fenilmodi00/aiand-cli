@@ -65,11 +65,16 @@ export async function run(argv: string[]): Promise<void> {
   if (system) messages.push({ role: "system", content: system });
   messages.push({ role: "user", content: prompt });
 
-  const model = await resolveEffectiveModel(
-    str(parsed, "model"),
-    profile.apiUrl,
-    profile.model
-  );
+  const requested = str(parsed, "model");
+  let model: string;
+  try {
+    model = await resolveEffectiveModel(requested, profile.apiUrl, profile.model);
+  } catch (error) {
+    if (requested) throw error;
+    // Cold catalog + no network used to fail the prompt before send.
+    // Unspecified model falls back to gateway `auto`.
+    model = "auto";
+  }
 
   const body: ChatRequest = {
     model,

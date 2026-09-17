@@ -145,12 +145,14 @@ const server = createServer((req, res) => {
   if (rest === "/v1/models") {
     if (scenario === "429") return reply429(res);
     if (scenario === "401") return reply401(res);
+    if (scenario === "catalog-down") return reply(res, 500, { error: "catalog_unavailable" });
     return reply(res, 200, { object: "list", data: CATALOG });
   }
 
   if (rest === "/v1/chat/completions" && req.method === "POST") {
     if (scenario === "429") return reply429(res);
     if (scenario === "401") return reply401(res);
+    // catalog-down still serves completions so `run` can fall back to auto.
     handleBody(req, (raw) => {
       if (res.writableEnded) return;
       let model = "";

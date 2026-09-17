@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync, mkdtempSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,8 +64,7 @@ function writeOfflineApiMap(cfgDir) {
 // Isolated sandbox: tmp dirs, offline catalog + api map, a stub opencode
 // binary, and CLI helpers. No network, no live gateway.
 function tmpEnv() {
-  const S = join("/tmp", "aiand-e2e");
-  rmSync(S, { recursive: true, force: true });
+  const S = mkdtempSync(join(tmpdir(), "aiand-e2e-"));
   const home = join(S, "home");
   mkdirSync(join(home, ".config", "opencode"), { recursive: true });
   const cfg = join(S, "cfg");
@@ -99,6 +99,8 @@ function tmpEnv() {
 }
 
 const { S, cfg, bin, home, configPath, BEFORE, env } = tmpEnv();
+
+try {
 
 function cli(args) {
   // All call sites pass space-separated flags with no quoted values.
@@ -215,8 +217,8 @@ if (configLine) {
   const launched = JSON.parse(configLine.slice("OPENCODE_CONFIG_CONTENT=".length));
   check("launched config carries provider.aiand", Boolean(launched.provider?.aiand));
   check(
-    "launched config bakes the session key",
-    launched.provider?.aiand?.options?.apiKey === "sk-e2e-test-key-0000000000000000000000"
+    "launched config references the key via {file:} substitution, not the env",
+    /^\{file:.+\}$/.test(launched.provider?.aiand?.options?.apiKey ?? "")
   );
 }
 
@@ -386,3 +388,6 @@ check("uninstall left the launcher after refused hand-clone", existsSync(fakeLau
 
 console.log(results.join("\n"));
 console.log(results.every((r) => r.startsWith("PASS")) ? "E2E: ALL PASS" : "E2E: FAILURES PRESENT");
+} finally {
+  rmSync(S, { recursive: true, force: true });
+}

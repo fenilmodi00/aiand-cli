@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { withTestEnv } from "./helpers.mjs";
@@ -132,9 +132,15 @@ describe("run-agent launcher", () => {
 
       const envText = readFileSync(join(capture, "capture.env"), "utf8");
       const match = envText.match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
-      assert.ok(match, "OPENCODE_CONFIG_CONTENT in child env");
       const config = JSON.parse(match[1]);
-      assert.equal(config.provider?.aiand?.options?.apiKey, "sk-test-aiand");
+      // Key rides in a throwaway 0600 file via {file:} substitution, not
+      // the child env; the launcher's cleanup unlinks it after the exit.
+      assert.match(config.provider?.aiand?.options?.apiKey, /^\{file:.+\}$/);
+      // The CLI has exited: the launcher's cleanup must already have
+      // unlinked the throwaway key file (contents + 0600 are covered in
+      // test/agents-opencode.test.mjs while the launch is still live).
+      const keyFile = config.provider.aiand.options.apiKey.slice("{file:".length, -1);
+      assert.equal(existsSync(keyFile), false);
       assert.match(readFileSync(join(capture, "capture.args"), "utf8"), /^--version\n/);
     } finally {
       rmSync(capture, { recursive: true, force: true });

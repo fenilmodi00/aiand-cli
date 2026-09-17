@@ -58,11 +58,14 @@ export async function run(argv: string[]): Promise<void> {
   const profile = resolveProfile(str(parsed, "profile"));
   const session = await openSession(profile);
 
-  let model = await resolveEffectiveModel(
-    str(parsed, "model"),
-    profile.apiUrl,
-    profile.model
-  );
+  const requested = str(parsed, "model");
+  let model: string;
+  try {
+    model = await resolveEffectiveModel(requested, profile.apiUrl, profile.model);
+  } catch (error) {
+    if (requested) throw error;
+    model = "auto";
+  }
   let system = str(parsed, "system");
   const showReasoning = bool(parsed, "show-reasoning");
   const maxTokens = int(parsed, "max-tokens");
