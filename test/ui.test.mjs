@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
 import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { withTestEnv } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 const root = dirname(fileURLToPath(import.meta.url));
 const bin = join(root, "..", "dist", "index.js");
+
+withTestEnv("aiand-ui-test-", (dir) => {
+  const home = join(dir, "home");
+  const cfg = join(dir, "cfg");
+  mkdirSync(home, { recursive: true });
+  mkdirSync(cfg, { recursive: true });
+  process.env.AIAND_HOME = home;
+  process.env.AIAND_CONFIG_DIR = cfg;
+});
 
 const { colorsEnabled } = await import("../dist/cli/ui/color.js");
 const { printBanner } = await import("../dist/cli/ui/banner.js");

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sep } from "node:path";
 import { ApiError, CliError } from "./cli/errors.js";
 import { err, out, style } from "./cli/output.js";
 import { printBanner } from "./cli/ui/banner.js";
@@ -50,6 +51,15 @@ function showHelp(topicHelp?: string): void {
  * a command's stdout. Any failure is swallowed — housekeeping never breaks a
  * command.
  */
+
+function updateInstallHint(): string {
+  const launched = process.argv[1] ?? "";
+  if (launched.includes(`${sep}.aiand${sep}`) || launched.includes("/.aiand/")) {
+    return "re-run install.sh";
+  }
+  return "npm install -g @aiand/cli";
+}
+
 async function runSystemHousekeeping(): Promise<void> {
   const interactive =
     process.stderr.isTTY === true &&
@@ -64,7 +74,7 @@ async function runSystemHousekeeping(): Promise<void> {
   if (update) {
     err(
       style.dim(
-        `Update available: v${update.current} → v${update.latest}  (npm install -g @aiand/cli)`
+        `Update available: v${update.current} → v${update.latest}  (${updateInstallHint()})`
       )
     );
   }
@@ -100,6 +110,7 @@ async function main(): Promise<number> {
     const agent = findAgent(first);
     if (agent) {
       await runAgentCommand(agent, argv.slice(1));
+      await runSystemHousekeeping();
       return 0;
     }
     const guess = suggest(first);
@@ -121,9 +132,10 @@ main()
   .then((code) => {
     // A command (run-agent) may set process.exitCode to propagate a child's
     // exit status without process.exit-ing (so stdio flushes); honor it when
-    // the command itself did not return a nonzero code.
+    // the command itself did not return a nonzero code. Assign exitCode and
+    // let the process end naturally — process.exit() can drop piped output.
     const finalCode = code !== 0 ? code : (process.exitCode ?? 0);
-    process.exit(finalCode);
+    process.exitCode = finalCode;
   })
   .catch((error: unknown) => {
     if (error instanceof CliError) {

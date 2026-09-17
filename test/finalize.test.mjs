@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withTestEnv } from "./helpers.mjs";
 
@@ -29,7 +29,8 @@ describe("finalizeOnVersionChange", () => {
     assert.ok(Array.isArray(notes));
     assert.ok(notes.length > 0, "expected " + VERSION + " notes");
     // At least one line comes from the changelog's Fixed/Added sections.
-    assert.ok(notes.some((n) => n.startsWith("- ") || n.startsWith("###")));
+    assert.ok(notes.every((n) => n.startsWith("- ")));
+    assert.ok(notes.every((n) => !n.startsWith("###")));
     assert.equal(readState().lastVersion, VERSION);
   });
 
@@ -39,5 +40,16 @@ describe("finalizeOnVersionChange", () => {
     assert.ok(first.length > 0);
     const second = await finalizeOnVersionChange();
     assert.deepEqual(second, []);
+  });
+
+  test("first install records the version and prints no notes", async () => {
+    try {
+      unlinkSync(stateFile());
+    } catch {
+      /* no prior state */
+    }
+    const notes = await finalizeOnVersionChange();
+    assert.deepEqual(notes, []);
+    assert.equal(readState().lastVersion, VERSION);
   });
 });

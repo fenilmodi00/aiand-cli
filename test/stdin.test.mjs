@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
@@ -73,6 +73,7 @@ describe("piped stdin across stdio shapes", () => {
       assert.equal(r.code, 2, `expected NotLoggedIn, got ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /Not logged in/);
     } finally {
+      closeSync(fd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -87,6 +88,20 @@ describe("piped stdin across stdio shapes", () => {
       // Empty input closes immediately: readStdin sees no text.
       assert.equal(r.code, 1, `expected usage error, got ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /No prompt given/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("login --with-token rejects leftover stdin lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-stdin-test-"));
+    try {
+      const r = await runCli(["login", "--with-token"], {
+        env: childEnv(dir),
+        input: "sk-abc123\nleftover line\n",
+      });
+      assert.equal(r.code, 1, `expected leftover reject, got ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /single-line key/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

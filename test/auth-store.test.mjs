@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test, { beforeEach, describe } from "node:test";
-import { readFileSync, statSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { withTestEnv } from "./helpers.mjs";
 
@@ -47,6 +48,31 @@ describe("plaintext tier", () => {
     try {
       await secrets.storeSecret("p1", "x");
       assert.equal(statSync(join(env.dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
+    } finally {
+      delete process.env.AIAND_KEY_STORAGE;
+    }
+  });
+});
+
+describe("base URL loopback guard", () => {
+  test("prototype-polluting hostnames are not loopback", () => {
+    // A plain-object lookup would resolve these through Object.prototype.
+    assert.throws(() => config.assertHttpsBaseUrl("http://constructor"), /https/);
+    assert.throws(() => config.assertHttpsBaseUrl("http://__proto__"), /https/);
+  });
+
+  test("real loopback hosts allow http", () => {
+    assert.doesNotThrow(() => config.assertHttpsBaseUrl("http://127.0.0.1:8080"));
+    assert.doesNotThrow(() => config.assertHttpsBaseUrl("http://localhost:1"));
+  });
+
+  test("secrets round-trip survives the atomic metadata write", async () => {
+    resetDir();
+    process.env.AIAND_KEY_STORAGE = "plaintext";
+    try {
+      await config.saveCredential("atomic", { access_token: "sk-atomic", origin: "paste" });
+      assert.equal((await config.loadCredential("atomic")).access_token, "sk-atomic");
+      assert.equal(JSON.parse(readFileSync(config.credentialsPath(), "utf8")).atomic.access_token, undefined);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -124,6 +150,16 @@ describe("tier selection", () => {
       await assert.rejects(() => secrets.detectTier(), /must be one of/);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
+    }
+  });
+  test("a 64-char non-hex master key is rejected, not truncated", async () => {
+    process.env.AIAND_KEY_STORAGE = "file";
+    process.env.AIAND_SECRET_STORE_MASTER_KEY = "z".repeat(64);
+    try {
+      await assert.rejects(() => secrets.storeSecret("p1", "x"), /64 hex/);
+    } finally {
+      delete process.env.AIAND_KEY_STORAGE;
+      delete process.env.AIAND_SECRET_STORE_MASTER_KEY;
     }
   });
 });
@@ -261,6 +297,91 @@ describe("openSession never rotates a pasted key", () => {
       globalThis.fetch = realFetch;
       delete process.env.AIAND_KEY_STORAGE;
       await config.clearCredential("pastey").catch(() => {});
+    }
+  });
+});
+
+describe("macOS security interactive write", () => {
+  const BLOB = '{"access_token":"sk-test-1","refresh_token":"rt-1"}';
+
+  test("the -i command carries the secret on stdin, never in argv", () => {
+    const command = secrets.securityInteractiveSetCommand("default", BLOB);
+    // Shell-like quoting: the whole JSON blob stays one token after -w.
+    assert.equal(command, `add-generic-password -s aiand -a default -U -w '${BLOB}'\n`);
+  });
+
+  test("single quotes inside a secret are POSIX-escaped", () => {
+    const command = secrets.securityInteractiveSetCommand("p", "it's");
+    assert.equal(command, `add-generic-password -s aiand -a p -U -w 'it'\\''s'\n`);
+  });
+
+  test("storeSecret feeds security over stdin; the secret never rides argv", async () => {
+    // A stub `security` binary stands in for the real one (the darwin branch
+    // can't run on this CI): it records argv and stdin per call, persists the
+    // -w value from the interactive command, and serves it back for
+    // find-generic-password — enough to prove the write path end to end.
+    const sandbox = mkdtempSync(join(tmpdir(), "aiand-security-stub-"));
+    writeFileSync(
+      join(sandbox, "security"),
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const dir = __dirname;
+const argv = process.argv.slice(2);
+let stdin = "";
+process.stdin.on("data", (chunk) => (stdin += chunk));
+process.stdin.on("end", () => {
+  fs.appendFileSync(path.join(dir, "argv.log"), JSON.stringify(argv) + "\\n");
+  if (stdin) fs.appendFileSync(path.join(dir, "stdin.log"), stdin);
+  if (argv[0] === "-i") {
+    const line = stdin.trim().split("\\n").pop();
+    const match = line.match(/-w '(.*)'\\s*$/);
+    if (match) fs.writeFileSync(path.join(dir, "value"), match[1]);
+    process.exit(0);
+  }
+  if (argv[0] === "find-generic-password") {
+    try {
+      process.stdout.write(fs.readFileSync(path.join(dir, "value"), "utf8"));
+      process.exit(0);
+    } catch {
+      process.exit(44);
+    }
+  }
+  if (argv[0] === "delete-generic-password") {
+    try {
+      fs.unlinkSync(path.join(dir, "value"));
+    } catch {}
+    process.exit(0);
+  }
+  process.exit(0);
+});
+`,
+      { mode: 0o755 }
+    );
+    const realPath = process.env.PATH;
+    const realPlatform = process.platform;
+    process.env.PATH = `${sandbox}:${process.env.PATH}`;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.AIAND_KEY_STORAGE = "keychain";
+    try {
+      const tier = await secrets.storeSecret("default", BLOB);
+      assert.equal(tier, "keychain");
+      const argvLog = readFileSync(join(sandbox, "argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const stdinLog = readFileSync(join(sandbox, "stdin.log"), "utf8");
+      // The write rode stdin in -i mode and both readbacks matched, so the
+      // argv fallback never fired: after -i, every call is a find.
+      assert.deepEqual(argvLog[0], ["-i"]);
+      for (const call of argvLog.slice(1)) {
+        assert.equal(call[0], "find-generic-password");
+      }
+      assert.ok(stdinLog.includes(`-w '${BLOB}'`));
+      // No argv call ever carried the secret.
+      for (const line of argvLog) assert.ok(!JSON.stringify(line).includes(BLOB));
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+      process.env.PATH = realPath;
+      delete process.env.AIAND_KEY_STORAGE;
+      rmSync(sandbox, { recursive: true, force: true });
     }
   });
 });

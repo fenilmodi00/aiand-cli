@@ -4,6 +4,9 @@ dist/
 .DS_Store
 coverage/
 *.tgz
+.scratch
 
 .env
 
+.firecrawl/
+fireconnect/

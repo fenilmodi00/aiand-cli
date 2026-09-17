@@ -7,7 +7,7 @@
 #
 # Prerequisites:
 #   - contree CLI, authenticated (`contree auth`)
-#   - AIAND_API_KEY set (export it or source your .env)
+#   - AIAND_API_KEY exported or present in .env (auto-loaded)
 #   - a Node 22 build: dist/index.js (run `npm run build` first)
 #
 # What it spends: a handful of tiny real inference calls against the gateway —
@@ -33,8 +33,14 @@ if ! command -v contree >/dev/null 2>&1; then
   echo "error: the contree CLI is not on PATH — install it with: uv tool install contree-cli" >&2
   exit 1
 fi
+if [ -z "${AIAND_API_KEY:-}" ] && [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.env"
+  set +a
+fi
 if [ -z "${AIAND_API_KEY:-}" ]; then
-  echo "error: AIAND_API_KEY is not set — export it from your environment or .env" >&2
+  echo "error: AIAND_API_KEY is not set — export it or add it to $REPO_ROOT/.env" >&2
   exit 1
 fi
 if [ ! -f "$REPO_ROOT/dist/index.js" ]; then
@@ -51,9 +57,10 @@ echo "sandbox e2e: image $IMAGE, session $SESSION, harness $HARNESS"
 # --- Payload ---------------------------------------------------------------
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+keyfile=""
+trap 'rm -rf "$tmp"; [ -n "$keyfile" ] && rm -f "$keyfile"' EXIT
 
-tar -czf "$tmp/payload.tar.gz" dist package.json "$HARNESS"
+tar -czf "$tmp/payload.tar.gz" -C "$REPO_ROOT" dist CHANGELOG.md package.json "$HARNESS"
 
 # --- ConTree session dance -------------------------------------------------
 
@@ -62,18 +69,24 @@ if ! contree -S "$SESSION" use "tag:$IMAGE"; then
   exit 1
 fi
 contree -S "$SESSION" cd /root
-contree -S "$SESSION" run -- sh -c 'apt-get update -qq && apt-get install -y -qq procps >/dev/null && command -v pgrep'
+contree -S "$SESSION" run -s -- 'apt-get update -qq && apt-get install -y -qq procps >/dev/null && command -v pgrep'
 contree -S "$SESSION" tag aiand-sbx:base
 contree -S "$SESSION" file cp "$tmp/payload.tar.gz" /root/payload.tar.gz
-contree -S "$SESSION" run -- sh -c 'mkdir -p /work && tar -xzf /root/payload.tar.gz -C /work && node /work/scripts/sbx-test.mjs --plan | tail -1'
+contree -S "$SESSION" run -s -- 'mkdir -p /work && tar -xzf /root/payload.tar.gz -C /work && node /work/scripts/sbx-test.mjs --plan | tail -1'
 contree -S "$SESSION" tag aiand-sbx:e2e
 
 # --- Full run (disposable; exit code captured without tripping set -e) ------
 
+keyfile="$(mktemp)"
+chmod 600 "$keyfile"
+printf 'export AIAND_API_KEY=%q\n' "$AIAND_API_KEY" >"$keyfile"
+contree -S "$SESSION" file cp "$keyfile" /root/.aiand-api-key-env:m0600
+rm -f "$keyfile"
+
 rc=0
-contree -S "$SESSION" -o plain run --disposable \
-  -e AIAND_API_KEY="$AIAND_API_KEY" -e NO_COLOR=1 -e CI=1 \
-  -- node /work/scripts/sbx-test.mjs /work/dist/index.js || rc=$?
+contree -S "$SESSION" -o plain run --disposable -t 1200 \
+  -e NO_COLOR=1 -e CI=1 \
+  -- bash -lc 'set -a; . /root/.aiand-api-key-env; set +a; node /work/scripts/sbx-test.mjs /work/dist/index.js' || rc=$?
 
 if [ "$rc" -eq 0 ]; then
   echo "sandbox e2e: PASS (0)"

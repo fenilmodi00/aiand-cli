@@ -12,9 +12,13 @@ Options
   --keep-remote       forget the local credential without revoking the key
   --revoke            revoke the remote key without asking (device-minted keys)
 
-Keys this CLI minted via device login are revoked server-side (you are asked
-first when attached to a terminal). Keys you pasted in are only removed
-locally -- this CLI never revokes a key it did not mint.`;
+Keys this CLI minted via device login are revoked by posting the refresh
+token to /auth/device/logout (you are asked first when attached to a
+terminal). This CLI then strips the baked key from active agent configs on
+this machine. Whether the minted sk- stays valid on the gateway after that
+is the server's contract — run aiand <agent> off if a key is still on disk.
+Keys you pasted in are only removed locally -- this CLI never revokes a key
+it did not mint.`;
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {

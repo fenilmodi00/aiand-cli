@@ -33,6 +33,12 @@ export async function run(argv: string[]): Promise<void> {
   const pasteMode = bool(parsed, "paste") || bool(parsed, "with-token");
   const profile = resolveProfile(str(parsed, "profile"));
 
+  // CI mode: the environment key is the session — nothing stored, nothing done.
+  if (process.env.AIAND_API_KEY) {
+    out(style.yellow("AIAND_API_KEY is set — using it as the session. Nothing stored."));
+    return;
+  }
+
   const existing = await loadCredential(profile.name);
   if (!bool(parsed, "force") && existing) {
     if (isInteractive()) {
@@ -49,12 +55,6 @@ export async function run(argv: string[]): Promise<void> {
         hint: "Run `aiand whoami` to see who, or `aiand login --force` to replace it.",
       });
     }
-  }
-
-  // CI mode: the environment key is the session — nothing stored, nothing done.
-  if (process.env.AIAND_API_KEY) {
-    out(style.yellow("AIAND_API_KEY is set — using it as the session. Nothing stored."));
-    return;
   }
 
   if (pasteMode) {

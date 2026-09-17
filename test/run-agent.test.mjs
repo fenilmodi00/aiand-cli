@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, dirname, delimiter } from "node:path";
 import { tmpdir } from "node:os";
 import { withTestEnv } from "./helpers.mjs";
 
 const execFileAsync = promisify(execFile);
 const BIN = join(dirname(import.meta.dirname), "dist", "index.js");
+
+const { run } = await import("../dist/commands/run-agent.js");
 
 // --- Stub-agent scaffolding ------------------------------------------------
 // A temp bin dir holds shell stub scripts (chmod 0755) that dump the child
@@ -60,6 +62,28 @@ function plantMarkerStub(name) {
   writeFileSync(path, MARKER_STUB, { mode: 0o755 });
   return path;
 }
+// Sessionless env for direct run() calls: no key and an empty config dir, so
+// a missing validation would surface as NotLoggedIn instead. Restores env.
+async function withoutSession(fn) {
+  const saved = {
+    AIAND_API_KEY: process.env.AIAND_API_KEY,
+    AIAND_HOME: process.env.AIAND_HOME,
+    AIAND_CONFIG_DIR: process.env.AIAND_CONFIG_DIR,
+  };
+  const empty = mkdtempSync(join(tmpdir(), "aiand-runagent-nosess-"));
+  delete process.env.AIAND_API_KEY;
+  process.env.AIAND_HOME = empty;
+  process.env.AIAND_CONFIG_DIR = empty;
+  try {
+    return await fn();
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 const env = withTestEnv("aiand-runagent-", (dir) => {
   home = join(dir, "home");
@@ -108,9 +132,15 @@ describe("run-agent launcher", () => {
 
       const envText = readFileSync(join(capture, "capture.env"), "utf8");
       const match = envText.match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
-      assert.ok(match, "OPENCODE_CONFIG_CONTENT in child env");
       const config = JSON.parse(match[1]);
-      assert.equal(config.provider?.aiand?.options?.apiKey, "sk-test-aiand");
+      // Key rides in a throwaway 0600 file via {file:} substitution, not
+      // the child env; the launcher's cleanup unlinks it after the exit.
+      assert.match(config.provider?.aiand?.options?.apiKey, /^\{file:.+\}$/);
+      // The CLI has exited: the launcher's cleanup must already have
+      // unlinked the throwaway key file (contents + 0600 are covered in
+      // test/agents-opencode.test.mjs while the launch is still live).
+      const keyFile = config.provider.aiand.options.apiKey.slice("{file:".length, -1);
+      assert.equal(existsSync(keyFile), false);
       assert.match(readFileSync(join(capture, "capture.args"), "utf8"), /^--version\n/);
     } finally {
       rmSync(capture, { recursive: true, force: true });
@@ -229,5 +259,101 @@ describe("run-agent launcher", () => {
     } finally {
       rmSync(capture, { recursive: true, force: true });
     }
+  });
+
+  test("http --base-url rejects with the https error before session key resolution", async () => {
+    // Sessionless: without the early guard this fails as NotLoggedIn, so the
+    // https error proves validation runs before session key resolution.
+    await withoutSession(() =>
+      assert.rejects(run(["opencode", "--base-url", "http://evil.example"]), (error) => {
+        assert.match(error.message, /Base URL must use https/);
+        assert.doesNotMatch(error.message, /Not logged in/);
+        return true;
+      })
+    );
+  });
+
+  test("--help with a bad --base-url still prints help (no https error)", async () => {
+    // Help must win over base-url validation so `run-agent --help --base-url
+    // http://…` is usable.
+    await withoutSession(async () => {
+      const chunks = [];
+      const originalWrite = process.stdout.write;
+      process.stdout.write = (chunk, ...rest) => {
+        chunks.push(String(chunk));
+        return originalWrite.call(process.stdout, chunk, ...rest);
+      };
+      try {
+        await run(["--help", "--base-url", "http://evil.example"]);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+      assert.match(chunks.join(""), /run-agent/);
+    });
+  });
+
+  test("omitted --base-url passes the profile apiUrl into sessionLaunch", async () => {
+    plantStub("opencode");
+    const custom = "https://gw.example.test";
+    writeFileSync(
+      join(cfg, "config.json"),
+      JSON.stringify({ profile: "default", profiles: { default: { apiUrl: custom } } })
+    );
+    writeFileSync(
+      join(cfg, "model-catalog.json"),
+      JSON.stringify({
+        fetchedAt: Date.now(),
+        baseUrl: custom,
+        models: [model("aiand/glm-5.3"), model("aiand/other")],
+      })
+    );
+    const capture = mkdtempSync(join(tmpdir(), "aiand-cap-"));
+    try {
+      const { code } = await stubCli(["opencode"], {}, capture);
+      assert.equal(code, 42);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const match = envText.match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
+      assert.ok(match, "OPENCODE_CONFIG_CONTENT in child env");
+      const config = JSON.parse(match[1]);
+      assert.equal(config.provider?.aiand?.options?.baseURL, `${custom}/v1`);
+    } finally {
+      writeFileSync(join(cfg, "config.json"), JSON.stringify({ profile: "default", profiles: {} }));
+      writeFileSync(
+        join(cfg, "model-catalog.json"),
+        JSON.stringify({
+          fetchedAt: Date.now(),
+          baseUrl: "https://api.aiand.com",
+          models: [model("aiand/glm-5.3"), model("aiand/other")],
+        })
+      );
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("child env scrubs AIAND_API_KEY but keeps the adapter injection", async () => {
+    // stubCli always sets AIAND_API_KEY in the parent env; the launcher must
+    // not forward it — the adapter's own injection carries the key instead.
+    plantStub("opencode");
+    const capture = mkdtempSync(join(tmpdir(), "aiand-cap-"));
+    try {
+      const { code } = await stubCli(["opencode"], {}, capture);
+      assert.equal(code, 42);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      assert.doesNotMatch(envText, /^AIAND_API_KEY=/m);
+      assert.match(envText, /^OPENCODE_CONFIG_CONTENT=/m);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("http loopback --base-url passes https validation", async () => {
+    // Same sessionless env: the failure must come from a later stage
+    // (session, detection), never the https guard.
+    await withoutSession(() =>
+      assert.rejects(run(["opencode", "--base-url", "http://localhost:1234"]), (error) => {
+        assert.doesNotMatch(error.message, /Base URL must use https/);
+        return true;
+      })
+    );
   });
 });

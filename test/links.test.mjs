@@ -54,6 +54,17 @@ test("links: link emits OSC 8 when enabled", () => {
   assert.equal(link(url, active), `${OSC8_OPEN(url)}${url}${OSC8_CLOSE}`);
 });
 
+test("links: OSC 8 target cannot be closed by a String Terminator in the URL", () => {
+  const url = "https://evil.example/\x1b\\;title\x07";
+  const active = { stream: { isTTY: true }, env: { FORCE_HYPERLINK: "1" } };
+  const wrapped = link(url, active);
+  assert.equal(wrapped.startsWith("\x1b]8;;"), true);
+  assert.equal(wrapped.endsWith(OSC8_CLOSE), true);
+  const inner = wrapped.slice("\x1b]8;;".length, -OSC8_CLOSE.length).split("\x1b\\")[0];
+  assert.equal(inner.includes("\x1b"), false);
+  assert.equal(inner.includes("\x07"), false);
+});
+
 test("links: link falls back to plain text when disabled", () => {
   const inactive = { stream: { isTTY: false }, env: {} };
   assert.equal(link("https://a.example", inactive), "https://a.example");

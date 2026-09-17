@@ -9,8 +9,8 @@ const VERBS: Verb[] = ["on", "off", "status"];
 
 function agentHelp(adapter: AgentAdapter): string {
   const flags = [
-    "  --model <id>           model to route (default: auto)",
-    "  --force                overwrite a config another tool manages",
+    "  --model <id>           model to route (default: catalog preferred)",
+    "  --force                escape quit-guards when the app holds config in memory",
     "      --json              machine-readable output",
     "      --profile <name>    use a stored profile",
     "      --base-url <url>    point at a different API endpoint",
@@ -26,7 +26,7 @@ Usage
 
 Verbs
   on       wire ${adapter.label} to ai& (default)
-  off      restore your previous config byte-for-byte
+  off      remove aiand routing (keeps your edits)
   status   show whether ${adapter.label} is wired to ai&
 
 Options
@@ -79,7 +79,6 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
   const result = await agentOn(adapter, {
     model: str(parsed, "model"),
     force: bool(parsed, "force"),
-    slots: {},
     profile: str(parsed, "profile"),
     baseUrl: str(parsed, "base-url"),
   });
@@ -107,7 +106,7 @@ async function runOff(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): 
     out(style.dim(result.note));
     return;
   }
-  out(`${adapter.label} is off — your previous config was restored.`);
+  out(`${adapter.label} is off.`);
 }
 
 async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void> {

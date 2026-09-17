@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync, mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,8 +64,7 @@ function writeOfflineApiMap(cfgDir) {
 // Isolated sandbox: tmp dirs, offline catalog + api map, a stub opencode
 // binary, and CLI helpers. No network, no live gateway.
 function tmpEnv() {
-  const S = join("/tmp", "aiand-e2e");
-  execSync(`rm -rf ${S}`);
+  const S = mkdtempSync(join(tmpdir(), "aiand-e2e-"));
   const home = join(S, "home");
   mkdirSync(join(home, ".config", "opencode"), { recursive: true });
   const cfg = join(S, "cfg");
@@ -100,13 +100,16 @@ function tmpEnv() {
 
 const { S, cfg, bin, home, configPath, BEFORE, env } = tmpEnv();
 
+try {
+
 function cli(args) {
-  return execSync(`node ${DIST} ${args}`, { env, encoding: "utf8" });
+  // All call sites pass space-separated flags with no quoted values.
+  return execFileSync(process.execPath, [DIST, ...args.split(" ")], { env, encoding: "utf8" });
 }
 
 function cliOrNull(args) {
   try {
-    return { ok: true, out: execSync(`node ${DIST} ${args}`, { env, encoding: "utf8" }), err: "" };
+    return { ok: true, out: execFileSync(process.execPath, [DIST, ...args.split(" ")], { env, encoding: "utf8" }), err: "" };
   } catch (error) {
     return { ok: false, out: "", err: String(error.stderr ?? error.message ?? "") };
   }
@@ -141,13 +144,13 @@ check(
 cli("opencode off --json");
 const AFTER_OFF = readFileSync(configPath);
 check(
-  "off restores opencode.json byte-identical",
+  "off restores opencode.json byte-identical when untouched",
   BEFORE.equals(AFTER_OFF),
   `before=${BEFORE.length}B after=${AFTER_OFF.length}B`
 );
 check(
-  "backup dir removed",
-  !existsSync(join(S, "cfg", "backups", "opencode", "latest.json"))
+  "snapshot kept after off",
+  existsSync(join(S, "cfg", "backups", "opencode", "latest.json"))
 );
 
 const st2 = JSON.parse(cli("opencode status --json"));
@@ -159,9 +162,33 @@ const wiredAgain = JSON.parse(readFileSync(configPath, "utf8"));
 check("re-on rewires", wiredAgain.provider?.aiand?.options?.apiKey?.length > 0);
 cli("opencode off --json");
 check(
-  "second off restores byte-identical too",
+  "second off is byte-identical too",
   BEFORE.equals(readFileSync(configPath)),
-  "snapshot restore is repeatable"
+  "surgical off is repeatable"
+);
+
+// Subtractive path: user edits the file while on; off must keep the edit.
+cli("opencode on --json");
+const edited = JSON.parse(readFileSync(configPath, "utf8"));
+edited.autoupdate = true;
+writeFileSync(configPath, JSON.stringify(edited, null, 2) + "\n");
+cli("opencode off --json");
+const afterEditOff = JSON.parse(readFileSync(configPath, "utf8"));
+check(
+  "off after a user edit keeps the edit and drops our keys",
+  afterEditOff.autoupdate === true && afterEditOff.provider?.aiand === undefined && afterEditOff["x-aiand"] === undefined,
+  JSON.stringify(Object.keys(afterEditOff))
+);
+
+// Break-glass restore refuses without --force, restores with it.
+const refused = cliOrNull("restore opencode");
+check("restore without --force fails", refused.ok === false, refused.err.split("\n")[0]);
+cli("opencode on --json");
+cli("restore opencode --force");
+check(
+  "restore --force puts the first pre-wiring bytes back",
+  BEFORE.equals(readFileSync(configPath)),
+  "break-glass snapshot restore"
 );
 
 // --- credential storage -----------------------------------------------------
@@ -177,7 +204,7 @@ const capture = join(S, "capture");
 const launchEnv = { ...env, AIAND_CAPTURE: capture };
 let launchCode = 42;
 try {
-  execSync(`node ${DIST} run-agent opencode -- --version`, { env: launchEnv, encoding: "utf8" });
+  execFileSync(process.execPath, [DIST, "run-agent", "opencode", "--", "--version"], { env: launchEnv, encoding: "utf8" });
   launchCode = 0;
 } catch (error) {
   launchCode = error.status ?? 42;
@@ -190,8 +217,8 @@ if (configLine) {
   const launched = JSON.parse(configLine.slice("OPENCODE_CONFIG_CONTENT=".length));
   check("launched config carries provider.aiand", Boolean(launched.provider?.aiand));
   check(
-    "launched config bakes the session key",
-    launched.provider?.aiand?.options?.apiKey === "sk-e2e-test-key-0000000000000000000000"
+    "launched config references the key via {file:} substitution, not the env",
+    /^\{file:.+\}$/.test(launched.provider?.aiand?.options?.apiKey ?? "")
   );
 }
 
@@ -204,5 +231,163 @@ check(
   JSON.stringify(agentIds)
 );
 
+// --- uninstall (offline: fake launcher + fake checkout) ---------------------
+// Rewire one agent, then run the real `install.sh uninstall` against the
+// sandbox HOME. The fake launcher delegates to this dist so `init --off`
+// exercises the real restore path; the fake checkout stands in for
+// ~/.aiand/cli. Asserts: agents restored byte-identical, launcher gone,
+// checkout gone, config dir still present.
+// Baseline for this section: whatever the config holds now (the subtractive
+// test above legitimately leaves a user edit in the file, so the invariant
+// is "back to this state", not the original seed).
+const UNINSTALL_BEFORE = readFileSync(configPath);
+cli("opencode on --json");
+const fakeCheckout = join(home, ".aiand", "cli");
+mkdirSync(fakeCheckout, { recursive: true });
+writeFileSync(join(fakeCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }, null, 2));
+const launcherDir = join(home, ".local", "bin");
+mkdirSync(launcherDir, { recursive: true });
+const fakeLauncher = join(launcherDir, "aiand");
+writeFileSync(fakeLauncher, `#!/bin/sh\nexec "${process.execPath}" "${DIST}" "$@"\n`);
+chmodSync(fakeLauncher, 0o755);
+const aiandConfigDir = join(home, ".config", "aiand");
+mkdirSync(aiandConfigDir, { recursive: true });
+writeFileSync(join(aiandConfigDir, "sentinel"), "keep");
+let uninstallOk = true;
+let uninstallDetail = "";
+try {
+  uninstallDetail = execFileSync("bash", [join(ROOT, "install.sh"), "uninstall"], {
+    // Scrub the installer's own knobs: an AIAND_DIR exported in the dev
+    // shell would become the rm -rf target inside the sandboxed uninstall.
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: undefined,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  }).trim().split("\n").pop() ?? "";
+} catch (error) {
+  uninstallOk = false;
+  uninstallDetail = String(error.message ?? error).split("\n")[0];
+}
+check("uninstall exits zero", uninstallOk, uninstallDetail);
+check(
+  "uninstall restores opencode.json byte-identical",
+  UNINSTALL_BEFORE.equals(readFileSync(configPath)),
+  `before=${UNINSTALL_BEFORE.length}B after=${readFileSync(configPath).length}B`
+);
+check("uninstall removes the launcher", !existsSync(fakeLauncher), fakeLauncher);
+check("uninstall removes the checkout", !existsSync(fakeCheckout), fakeCheckout);
+check(
+  "uninstall keeps profiles/credentials/snapshots",
+  existsSync(join(aiandConfigDir, "sentinel")) && existsSync(cfg),
+  aiandConfigDir
+);
+
+const decoy = join(home, "Documents");
+mkdirSync(decoy, { recursive: true });
+writeFileSync(join(decoy, "keep.txt"), "keep");
+writeFileSync(fakeLauncher, `#!/bin/sh\nexec "${process.execPath}" "${DIST}" "$@"\n`);
+chmodSync(fakeLauncher, 0o755);
+let decoyRefused = false;
+let decoyDetail = "";
+try {
+  execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--force"], {
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: decoy,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  });
+} catch (error) {
+  decoyDetail = String(error.stderr ?? error.message ?? error);
+  decoyRefused = decoyDetail.includes("not an aiand checkout");
+}
+check("uninstall refuses a non-checkout AIAND_DIR", decoyRefused, decoyDetail.split("\n")[0]);
+check("uninstall left the non-checkout directory", existsSync(join(decoy, "keep.txt")), decoy);
+check("uninstall left the launcher after refused decoy", existsSync(fakeLauncher), fakeLauncher);
+
+const nestedDecoy = join(home, "NestedDecoy");
+mkdirSync(nestedDecoy, { recursive: true });
+writeFileSync(join(nestedDecoy, "keep.txt"), "keep");
+writeFileSync(
+  join(nestedDecoy, "package.json"),
+  JSON.stringify({ name: "other", metadata: { name: "@aiand/cli" } }, null, 2)
+);
+let nestedRefused = false;
+let nestedDetail = "";
+try {
+  execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--force"], {
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: nestedDecoy,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  });
+} catch (error) {
+  nestedDetail = String(error.stderr ?? error.message ?? error);
+  nestedRefused = nestedDetail.includes("not an aiand checkout");
+}
+check(
+  "uninstall refuses nested-name decoy package.json",
+  nestedRefused,
+  nestedDetail.split("\n")[0]
+);
+check(
+  "uninstall left the nested-name decoy directory",
+  existsSync(join(nestedDecoy, "keep.txt")),
+  nestedDecoy
+);
+check(
+  "uninstall left the launcher after nested-name decoy",
+  existsSync(fakeLauncher),
+  fakeLauncher
+);
+
+// Hand-cloned checkout: a valid @aiand/cli package.json at a custom AIAND_DIR
+// but no installer ownership marker — package-name identity alone must never
+// authorize rm -rf on a directory the installer did not clone.
+const handCloned = join(home, "src", "aiand-cli");
+mkdirSync(handCloned, { recursive: true });
+writeFileSync(join(handCloned, "keep.txt"), "keep");
+writeFileSync(join(handCloned, "package.json"), JSON.stringify({ name: "@aiand/cli" }, null, 2));
+writeFileSync(fakeLauncher, `#!/bin/sh\nexec "${process.execPath}" "${DIST}" "$@"\n`);
+chmodSync(fakeLauncher, 0o755);
+let handClonedRefused = false;
+let handClonedDetail = "";
+try {
+  execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--force"], {
+    env: {
+      ...env,
+      HOME: home,
+      AIAND_DIR: handCloned,
+      AIAND_UNINSTALL_FORCE: undefined,
+      AIAND_SOURCE: undefined,
+    },
+    encoding: "utf8",
+  });
+} catch (error) {
+  handClonedDetail = String(error.stderr ?? error.message ?? error);
+  handClonedRefused = handClonedDetail.includes("not an installer-owned checkout");
+}
+check(
+  "uninstall refuses a hand-cloned @aiand/cli checkout without the ownership marker",
+  handClonedRefused,
+  handClonedDetail.split("\n")[0]
+);
+check("uninstall left the hand-cloned directory", existsSync(join(handCloned, "keep.txt")), handCloned);
+check("uninstall left the launcher after refused hand-clone", existsSync(fakeLauncher), fakeLauncher);
+
 console.log(results.join("\n"));
 console.log(results.every((r) => r.startsWith("PASS")) ? "E2E: ALL PASS" : "E2E: FAILURES PRESENT");
+} finally {
+  rmSync(S, { recursive: true, force: true });
+}

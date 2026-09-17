@@ -5,11 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -20,6 +26,33 @@ jobs:
       - run: npm test
         env:
           AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
+      # The live e2e (test/e2e-live.test.mjs) runs inside `npm test` above
+      # with the same key and skips itself without key+binary (fork PRs stay
+      # green). No separate continue-on-error step: it can never fail
+      # anything, so it must not exist as a fake signal.
       - run: npm run build
+      - run: node scripts/e2e.mjs
       - run: npm run check:dist
       - run: npm run check:public
+  installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Install into an isolated HOME from the checkout itself (no network
+      # clone: AIAND_SOURCE points at actions/checkout's copy) and assert
+      # the launcher reports this PR's package.json version.
+      - run: |
+          set -euo pipefail
+          export ISOLATED_HOME="$RUNNER_TEMP/aiand-install-home"
+          mkdir -p "$ISOLATED_HOME"
+          HOME="$ISOLATED_HOME" AIAND_SOURCE="$GITHUB_WORKSPACE" bash "$GITHUB_WORKSPACE/install.sh"
+          expected="$(node -p "require('./package.json').version")"
+          actual="$(HOME="$ISOLATED_HOME" "$ISOLATED_HOME/.local/bin/aiand" --version)"
+          test "$actual" = "$expected" || { echo "aiand --version '$actual' != package.json '$expected'"; exit 1; }

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { configDir, writeFileAtomic } from "./fsutil.js";
@@ -64,11 +64,35 @@ async function run(
   return promise;
 }
 
+/**
+ * The command line handed to `security -i` on stdin, so the secret never
+ * appears in the child's argv (same-user `ps` can read argv for the child's
+ * lifetime). `security` has no stdin flag for the password itself; the -i
+ * mode reads whole commands from stdin. POSIX single-quoting keeps the blob
+ * one token under a shell-like tokenizer; under a plain whitespace tokenizer
+ * the quotes stay literal, the readback in keychainSet then mismatches, and
+ * storeSecret falls back to the encrypted file — the blob is never exposed.
+ */
+export function securityInteractiveSetCommand(account: string, secret: string): string {
+  const quoted = `'${secret.replace(/'/g, `'\\''`)}'`;
+  return `add-generic-password -s ${SERVICE} -a ${account} -U -w ${quoted}\n`;
+}
+
 async function keychainSet(account: string, secret: string): Promise<void> {
-  const result =
-    process.platform === "darwin"
-      ? await run("security", ["add-generic-password", "-s", SERVICE, "-a", account, "-w", secret, "-U"])
-      : await run("secret-tool", ["store", `--service=${SERVICE}`, `--account=${account}`], secret);
+  if (process.platform === "darwin") {
+    // Interactive exit codes are unreliable, so the -i write counts only
+    // when the readback matches byte-for-byte. -U updates an existing item,
+    // so a quote-mangled -i attempt is replaced, never duplicated. A failed
+    // -i write or readback throws — the credential blob must never ride in
+    // child argv (visible to same-user `ps`); storeSecret falls back to
+    // the encrypted file instead.
+    await run("security", ["-i"], securityInteractiveSetCommand(account, secret));
+    if ((await keychainGet(account)) !== secret) {
+      throw new Error("keychain readback mismatch");
+    }
+    return;
+  }
+  const result = await run("secret-tool", ["store", "--label=aiand", "service", SERVICE, "account", account], secret);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not store the secret (exit ${result.code}).`);
   }
@@ -78,7 +102,7 @@ async function keychainGet(account: string): Promise<string> {
   const result =
     process.platform === "darwin"
       ? await run("security", ["find-generic-password", "-s", SERVICE, "-a", account, "-w"])
-      : await run("secret-tool", ["lookup", `--service=${SERVICE}`, `--account=${account}`]);
+      : await run("secret-tool", ["lookup", "service", SERVICE, "account", account]);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not read the secret (exit ${result.code}).`);
   }
@@ -89,7 +113,7 @@ async function keychainDelete(account: string): Promise<void> {
   const result =
     process.platform === "darwin"
       ? await run("security", ["delete-generic-password", "-s", SERVICE, "-a", account])
-      : await run("secret-tool", ["clear", `--service=${SERVICE}`, `--account=${account}`]);
+      : await run("secret-tool", ["clear", "service", SERVICE, "account", account]);
   if (result.code !== 0) {
     throw new Error(`${keychainTool()} could not delete the secret (exit ${result.code}).`);
   }
@@ -114,16 +138,34 @@ async function probeKeychain(): Promise<boolean> {
   }
 }
 
+
+// The plaintext map is read-modify-write, and Node interleaves async I/O:
+// two concurrent stores (or a store racing a delete) would each read the
+// same old map and one update would be lost. Every mutation of the file
+// tier chains through this lock — writeFileAtomic keeps each single write
+// atomic, the chain keeps the read-modify-write sequence serial.
+let fileTierLock: Promise<void> = Promise.resolve();
+
+function serialized<T>(op: () => Promise<T>): Promise<T> {
+  const next = fileTierLock.then(op, op);
+  fileTierLock = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
 export async function storeSecret(profile: string, blob: string): Promise<Tier> {
   const tier = await detectTier();
   if (tier === "plaintext") {
-    const map = readPlaintextMap();
-    map[profile] = blob;
-    writePlaintextMap(map);
+    await serialized(async () => {
+      const map = readPlaintextMap();
+      map[profile] = blob;
+      await writePlaintextMap(map);
+    });
     return "plaintext";
   }
   if (tier === "file") {
-    await fileSet(profile, blob);
+    await serialized(() => fileSet(profile, blob));
     return "file";
   }
   try {
@@ -133,13 +175,13 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
     if ((await keychainGet(profile)) !== blob) throw new Error("keychain readback mismatch");
     return "keychain";
   } catch {
-    await fileSet(profile, blob);
+    await serialized(() => fileSet(profile, blob));
     return "file";
   }
 }
 
-export async function loadSecret(profile: string): Promise<string | null> {
-  const tier = await detectTier();
+export async function loadSecret(profile: string, recordedTier?: Tier): Promise<string | null> {
+  const tier = recordedTier ?? (await detectTier());
   if (tier === "plaintext") {
     return readPlaintextMap()[profile] ?? null;
   }
@@ -161,18 +203,20 @@ export async function loadSecret(profile: string): Promise<string | null> {
 export async function deleteSecret(profile: string, recordedTier?: Tier): Promise<void> {
   const tier = recordedTier ?? (await detectTier());
   if (tier === "plaintext") {
-    const map = readPlaintextMap();
-    if (!(profile in map)) return;
-    delete map[profile];
-    writePlaintextMap(map);
-    return;
+    return serialized(async () => {
+      const map = readPlaintextMap();
+      if (!(profile in map)) return;
+      delete map[profile];
+      await writePlaintextMap(map);
+    });
   }
   if (tier === "file") {
-    const store = await readStore();
-    if (!(profile in store)) return;
-    delete store[profile];
-    await writeStore(store);
-    return;
+    return serialized(async () => {
+      const store = await readStore();
+      if (!(profile in store)) return;
+      delete store[profile];
+      await writeStore(store);
+    });
   }
   try {
     await keychainDelete(profile);
@@ -184,11 +228,12 @@ export async function deleteSecret(profile: string, recordedTier?: Tier): Promis
   // a blob in secret-store.json — remove that residue too. Best-effort:
   // the keychain delete above is the primary result.
   try {
-    const store = await readStore();
-    if (profile in store) {
+    await serialized(async () => {
+      const store = await readStore();
+      if (!(profile in store)) return;
       delete store[profile];
       await writeStore(store);
-    }
+    });
   } catch {
     // unreadable/missing store means no residue to remove
   }
@@ -203,7 +248,7 @@ const secretsFilePath = (): string => join(configDir(), "secret-store.json");
 async function getKeyMaterial(): Promise<Buffer> {
   const envKey = process.env.AIAND_SECRET_STORE_MASTER_KEY;
   if (envKey) {
-    if (envKey.length !== 64) {
+    if (!/^[0-9a-fA-F]{64}$/.test(envKey)) {
       throw new CliError("AIAND_SECRET_STORE_MASTER_KEY must be 64 hex characters (32 bytes).");
     }
     return Buffer.from(envKey, "hex");
@@ -294,8 +339,6 @@ function readPlaintextMap(): SecretMap {
   }
 }
 
-function writePlaintextMap(map: SecretMap): void {
-  mkdirSync(configDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(plaintextPath(), JSON.stringify(map, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(plaintextPath(), 0o600);
+async function writePlaintextMap(map: SecretMap): Promise<void> {
+  await writeFileAtomic(plaintextPath(), JSON.stringify(map, null, 2) + "\n", { mode: 0o600 });
 }
