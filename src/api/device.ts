@@ -1,4 +1,5 @@
 import { ApiError, CliError } from "../cli/errors.js";
+import { isLoopbackHost } from "../config.js";
 import { publicRequest } from "./client.js";
 
 export const CLIENT_ID = "aiand-cli";
@@ -27,6 +28,7 @@ type TokenErrorBody = { error: string; error_description?: string };
 function devicePost(url: string, body: unknown): Promise<Response> {
   return publicRequest(url, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -50,8 +52,27 @@ export function verificationUrl(
   authUrl: string,
   device: DeviceCodeResponse,
 ): string {
-  const path = device.verification_uri_complete || device.verification_uri;
-  return path.startsWith("http") ? path : `${authUrl}${path}`;
+  const raw = device.verification_uri_complete || device.verification_uri;
+  let resolved: URL;
+  let auth: URL;
+  try {
+    auth = new URL(authUrl);
+    resolved = /^https?:\/\//i.test(raw) ? new URL(raw) : new URL(raw, `${auth.origin}/`);
+  } catch {
+    throw new CliError("The login URL from the server was not valid.", {
+      hint: "Run `aiand login` again, or pass --base-url if you meant a different gateway.",
+    });
+  }
+  const host = resolved.hostname.replace(/^\[|\]$/g, "");
+  const httpsOrLoopback =
+    resolved.protocol === "https:" ||
+    (resolved.protocol === "http:" && isLoopbackHost(host));
+  if (!httpsOrLoopback || resolved.origin !== auth.origin) {
+    throw new CliError("The login URL from the server was not on this gateway.", {
+      hint: "Run `aiand login` again, or pass --base-url if you meant a different gateway.",
+    });
+  }
+  return resolved.toString();
 }
 
 export type PollOptions = {
@@ -72,6 +93,7 @@ export async function pollForToken(
       throw new CliError("Login cancelled.", { exitCode: 130 });
     if (Date.now() >= deadline) {
       throw new CliError("The login code expired before it was approved.", {
+        exitCode: 3,
         hint: "Run `aiand login` again.",
       });
     }
@@ -99,6 +121,7 @@ export async function pollForToken(
         throw new CliError("Login was denied in the browser.", { exitCode: 3 });
       case "expired_token":
         throw new CliError("The login code expired before it was approved.", {
+          exitCode: 3,
           hint: "Run `aiand login` again.",
         });
       default:

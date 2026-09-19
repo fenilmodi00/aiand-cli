@@ -4,10 +4,24 @@ import { join } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-const ROOTS = ["src", "test", "scripts", ".github", "dist", "install.sh", "README.md", "CHANGELOG.md", "package.json"];
+const ROOTS = [
+  "src",
+  "test",
+  "scripts",
+  ".github",
+  "dist",
+  "install.sh",
+  "install.ps1",
+  "README.md",
+  "CHANGELOG.md",
+  "AGENTS.md",
+  "CONTEXT.md",
+  ".env.example",
+  "package.json",
+];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "coverage"]);
-const SCAN_EXT = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".md", ".yml", ".yaml"]);
+const SCAN_EXT = new Set([".ts", ".js", ".mjs", ".cjs", ".json", ".md", ".yml", ".yaml", ".sh", ".ps1"]);
 
 const PUBLIC_HOSTS = new Set(["api.aiand.com", "console.aiand.com", "docs.aiand.com"]);
 
@@ -61,7 +75,19 @@ const RULES = [
   {
     name: "credential-shaped string",
 
-    pattern: /\bsk-[0-9a-f]{24,}\b/gi,
+    pattern: /\bsk-[A-Za-z0-9_-]{16,}\b/gi,
+    allow: (match) => {
+      const m = match.toLowerCase();
+      return (
+        m === "sk-your-key-here" ||
+        m.startsWith("sk-test-") ||
+        m.startsWith("sk-e2e-") ||
+        m.startsWith("sk-smoke-") ||
+        m.startsWith("sk-key-") ||
+        m.startsWith("sk-browser") ||
+        m.startsWith("sk-this-key-")
+      );
+    },
     hint: "Never commit an API key, even a revoked one.",
   },
   {
@@ -96,7 +122,7 @@ for (const target of ROOTS) {
   for (const file of walk(target)) {
     if (file.endsWith(".map")) continue;
     const dot = file.lastIndexOf(".");
-    if (dot !== -1 && !SCAN_EXT.has(file.slice(dot))) continue;
+    if (dot !== -1 && !SCAN_EXT.has(file.slice(dot)) && file !== ".env.example") continue;
 
     if (file.endsWith("check-public.mjs")) continue;
 

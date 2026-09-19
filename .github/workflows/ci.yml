@@ -5,11 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -20,6 +26,78 @@ jobs:
       - run: npm test
         env:
           AIAND_API_KEY: ${{ github.event_name == 'push' && secrets.AIAND_API_KEY || '' }}
+      # The live e2e (test/e2e-live.test.mjs) runs inside `npm test` above
+      # with the same key and skips itself without key+binary (fork PRs stay
+      # green). No separate continue-on-error step: it can never fail
+      # anything, so it must not exist as a fake signal.
       - run: npm run build
+      - run: node scripts/e2e.mjs
       - run: npm run check:dist
       - run: npm run check:public
+  installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Install into an isolated HOME from the checkout itself (no network
+      # clone: AIAND_SOURCE points at actions/checkout's copy) and assert
+      # the launcher reports this PR's package.json version.
+      - run: |
+          set -euo pipefail
+          export ISOLATED_HOME="$RUNNER_TEMP/aiand-install-home"
+          mkdir -p "$ISOLATED_HOME"
+          HOME="$ISOLATED_HOME" AIAND_SOURCE="$GITHUB_WORKSPACE" AIAND_NO_MODIFY_PATH=1 bash "$GITHUB_WORKSPACE/install.sh"
+          expected="$(node -p "require('./package.json').version")"
+          actual="$(HOME="$ISOLATED_HOME" "$ISOLATED_HOME/.local/bin/aiand" --version)"
+          test "$actual" = "$expected" || { echo "aiand --version '$actual' != package.json '$expected'"; exit 1; }
+          for rc in "$ISOLATED_HOME/.bashrc" "$ISOLATED_HOME/.zshrc"; do
+            if [ -f "$rc" ] && grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "$rc"; then
+              echo "unexpected PATH export in $rc with AIAND_NO_MODIFY_PATH=1"
+              exit 1
+            fi
+          done
+      # Isolated-HOME installer behavior cases (allowlist, stage-fail, NO_COLOR, pwsh).
+      - run: node scripts/install-behavior.mjs
+  installer-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Local-checkout path ($PSScriptRoot is the checkout, no GitHub clone).
+      # AIAND_NO_MODIFY_PATH=1 keeps CI off the runner's real HKCU\Environment.
+      - run: |
+          $iso = Join-Path $env:RUNNER_TEMP 'aiand-install-home'
+          New-Item -ItemType Directory -Path $iso | Out-Null
+          $env:USERPROFILE = $iso
+          $env:HOME = $iso
+          $env:AIAND_NO_MODIFY_PATH = '1'
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE/install.ps1"
+          $expected = node -p "require('./package.json').version"
+          $cmd = Join-Path $iso '.local\bin\aiand.cmd'
+          $actual = (& $cmd --version | Out-String).Trim()
+          if ($actual -ne $expected) { throw "aiand --version '$actual' != '$expected'" }
+          $shim = Join-Path $iso '.local\bin\aiand'
+          if (-not (Test-Path $shim)) { throw "Git Bash shim missing: $shim" }
+          $bash = $null
+          foreach ($p in @((Join-Path $env:ProgramFiles 'Git\bin\bash.exe'), $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Git\bin\bash.exe' }))) {
+            if ($p -and (Test-Path -LiteralPath $p)) { $bash = $p; break }
+          }
+          if (-not $bash) { throw "Git Bash is required to verify the Git Bash shim" }
+          $actualShim = (& $bash $shim --version | Out-String).Trim()
+          if ($actualShim -ne $expected) { throw "Git Bash shim --version '$actualShim' != '$expected'" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE/install.ps1" uninstall --force
+          if (Test-Path $cmd) { throw "uninstall left $cmd" }
+          if (Test-Path $shim) { throw "uninstall left $shim" }
+        shell: powershell

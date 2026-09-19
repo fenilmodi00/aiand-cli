@@ -5,9 +5,63 @@ All notable changes to this project will be documented in this file.
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-17
+
+### Changed
+
+- Node runtime floor is Node 22+ (`engines.node` `>=22.0.0`). Installers
+  accept any 22.x.
+- Subtractive `off`: `aiand <agent> off` removes exactly what aiand added
+  and keeps the user's own edits. It never replays the pre-aiand snapshot —
+  that is break-glass `aiand restore <agent> --force` (refused without
+  `--force`). `restore` only copies or deletes paths in the adapter's
+  managed files, and only from inside that agent's snapshot directory.
+- `opencode on` no longer writes `enabled_providers` / `disabled_providers`
+  into `opencode.json` — hiding the user's other providers was hostile. The
+  provider lockdown stays on `run-agent` only, where the one-run inline
+  config is thrown away with the process.
+- `opencode on` sets a root `model` only when the file has none, or when
+  `--model` is passed (not `native`). `off` strips what we added; a
+  `provider.aiand` block or model the user edited is left in place, and
+  `off` says so. A config file we created is deleted when nothing else
+  remains; a user-created file is not.
+- `aiand init` honors `--profile` (same as the per-agent verbs) for batch
+  wiring, interactive wiring, and `--all`.
+- `aiand status` distinguishes three auth states: signed in (exit 0),
+  not signed in (exit 1), and gateway unreachable (exit 0 with a distinct
+  `reachable: false` field in `--json`), so scripts gating on the exit code
+  no longer false-fail during an outage. `--json` gains the `reachable`
+  field; `whoami` still fails loudly on an unreachable gateway.
 
 ### Added
+
+- Uninstall: `bash install.sh uninstall` (Windows: `install.ps1 uninstall`)
+  turns every aiand-routed agent `off` first (aborting before deleting
+  anything when off fails, so snapshots stay retryable), then removes the
+  launcher and the `~/.aiand/cli` checkout. Profiles, credentials, and
+  snapshots under `~/.config/aiand` are intentionally kept. `--force` (or
+  `AIAND_UNINSTALL_FORCE=1`) skips the agent teardown for broken installs;
+  the removal target is canonicalized and refused unless it sits strictly
+  inside HOME.
+- Windows installer: `install.ps1` is the PowerShell sibling of `install.sh`
+  — same staged clone/build, `AIAND_NO_MODIFY_PATH`, `NO_COLOR`,
+  ownership-gated uninstall, and HOME-bounded removal. Launchers land at
+  `~\.local\bin\aiand.cmd` (and a bash shim for Git Bash).
+- Installer `AIAND_SOURCE` may be a local path or
+  `https://github.com/aiandlabs/aiand-cli` (with or without `.git`). Other
+  remotes — including `git@host:path` and `host:path` — are refused.
+- Flag did-you-mean: a mistyped flag now prints `Did you mean --profile?`
+  alongside the parse error, using the same nearest-match threshold as
+  unknown-command suggestions.
+- Mock-gateway test harness: a loopback-only HTTP double
+  (`test/mock-gateway.mjs`) drives the built CLI against scripted 429
+  (Retry-After), 401-refresh-then-200, and happy-path identity responses, so
+  the API client's error paths have direct coverage without the live gateway.
+- CI smoke-tests both installers into an isolated HOME: `install.sh` on
+  Ubuntu (plus `scripts/install-behavior.mjs`) and `install.ps1` on
+  `windows-latest` (local-checkout `npm ci` + build, `aiand.cmd` and Git
+  Bash shim `--version`, then `uninstall --force`). The Windows job is the
+  full PS1 install path.
 
 - Sandbox E2E harness `scripts/sbx-test.mjs`: the full command matrix
   against the live gateway in an isolated VM, with an offline
@@ -17,13 +71,67 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Windows `aiand.cmd` launcher: `@()` plus `+` split `NODE_BIN` (comma binds
+  tighter than `+`), PowerShell 5.1 `Out-File` wrapped to the host width, and
+  nested `if (` / `for /f in (` parentheses made cmd.exe reject a Node path
+  under `C:\Program Files`. Launchers are here-strings written with
+  `WriteAllText`, and the `.cmd` file uses goto instead of nested blocks.
+- Git Bash `aiand` shim from `install.ps1`: Windows paths are converted to
+  `/c/...` form so a backslash cannot split the baked Node path (`\n` in
+  `\nodejs\node.exe`). `chmod +x` prefers `Git\bin\bash.exe` over WSL's
+  `System32\bash.exe`, which does not understand `/c/...` paths.
+  `install.sh uninstall` also removes `aiand.cmd` and runs it via `cmd.exe`
+  for `init --off` when the bash shim is missing.
+- OpenCode `x-aiand` stamp: a root-level marker makes OpenCode 1.18.15
+  refuse the file (`Unrecognized key: x-aiand`) and breaks both `opencode
+  on` and `run-agent` (`OPENCODE_CONFIG_CONTENT`). The stamp now lives on
+  `provider.aiand.options`, which the schema allows. `on` migrates a
+  leftover root key. Linux 1.18.30 is lenient at the root, so CI did not
+  catch this.
+
+- `aiand logs` still calls documented `GET /logs`. When that route is
+  unpublished (live 404 `not_found`), the CLI now says request logs are
+  not available and points at `aiand usage` instead of a bare HTTP 404.
+
 - Piped stdin is honored no matter how the parent provides it. `readStdin`
   only accepted FIFOs and files, so a caller that spawns the CLI with
   socketpair stdio (notably Node's own `child_process`, whose pipes are
   AF_UNIX sockets) had its piped context silently dropped by `run` and its
-  key rejected by `login --with-token`. Sockets are accepted now.
+  key rejected by `login --with-token`. Sockets are accepted now, as are
+  Windows anonymous pipes (`echo key | aiand login --with-token` in
+  cmd/PowerShell, Node `stdio: ['pipe']` parents), which fstat as mode
+  4096 (S_IFIFO) with `isFIFO()` false.
 
-## [0.2.0] - 2026-09-09
+- `run-agent --base-url` goes through the same https-or-loopback check as
+  every other command, before any session or catalog work (`--help` still
+  wins over a bad URL).
+- Ownership Marker: `opencode on` stamps `x-aiand: true` on
+  `provider.aiand.options` (not the OpenCode root — 1.18.15 `.strict()`
+  rejects unknown top-level keys). probe/disable/refreshKey treat a config
+  as ours when that stamp or a legacy root stamp is present, plus an https
+  or loopback URL. Marker-only — no prod-URL legacy path. A foreign
+  provider named `aiand` can no longer read active and be deleted by `off`
+  or `logout`.
+- `opencode.json` reads accept JSONC: OpenCode documents comments and
+  trailing commas for the file, so a commented config no longer blocks
+  `on`/`status`. Trailing-comma stripping is string-aware (a `,}` inside a
+  string value is preserved).
+- Atomic writes follow symlinks instead of replacing them: dotfile-managed
+  configs (stow/chezmoi) keep their link through `on`/`off`.
+- `run-agent` scrubs `AIAND_API_KEY` from the child environment — the
+  adapter's own injection carries the key, so a leaked env var would hand
+  it to every process the agent spawns.
+- Profile names are validated at the trust boundary: `__proto__` and other
+  prototype keys can no longer silently drop credential metadata.
+- The plaintext secret store rides the atomic writer, and
+  `AIAND_SECRET_STORE_MASTER_KEY` is validated as 64 hex characters rather
+  than 64 characters of anything.
+
+- macOS keychain writes no longer put the secret in the child's argv: the
+  command rides `security -i` stdin, counts only when the readback matches
+  byte-for-byte, and falls back to the argv form otherwise — never worse
+  than before, invisible to `ps` whenever interactive mode takes.
+
 
 ### Added
 

@@ -148,37 +148,64 @@ test("init --off with no routed agents -> friendly no-op, exit 0", async () => {
   assert.match(stdout, /No agents are currently wired to ai&\./);
 });
 
-test("init opencode wires on; init --off opencode and opencode off restore byte-identical", async () => {
-  // Plant an original config, then wire on, snapshot the on-state bytes for
-  // reference, and verify BOTH teardown paths restore the original exactly.
+test("init --off ignores leftover snapshots once the agent is already off", async () => {
+  plantOpencodeStub();
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+  writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
+  const on = await runCli(["init", "opencode"], { withStubs: true });
+  assert.equal(on.code, 0);
+  const off = await runCli(["init", "--off", "opencode"], { withStubs: true });
+  assert.equal(off.code, 0);
+  // Snapshot remains for restore --force; bare init --off must not treat
+  // that as still routed.
+  const again = await runCli(["init", "--off"]);
+  assert.equal(again.code, 0);
+  assert.match(again.stdout, /No agents are currently wired to ai&\./);
+});
+
+function assertAiandStripped(raw) {
+  const config = JSON.parse(raw);
+  assert.equal(config["x-aiand"], undefined);
+  assert.equal(config["x-aiand-previous-model"], undefined);
+  assert.equal(config.provider?.aiand, undefined);
+  assert.equal(config.enabled_providers, undefined);
+  assert.equal(config.disabled_providers, undefined);
+  return config;
+}
+
+test("init opencode wires on; init --off opencode and opencode off strip our keys", async () => {
   plantOpencodeStub();
   mkdirSync(join(home, ".config", "opencode"), { recursive: true });
   writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
 
-  // Wire on via `init opencode`.
   const onResult = await runCli(["init", "opencode"], { withStubs: true });
   assert.equal(onResult.code, 0);
   const wiredBytes = readFileSync(settingsPath(), "utf8");
   assert.notEqual(wiredBytes, ORIGINAL_SETTINGS, "wiring should rewrite opencode.json");
   assert.match(wiredBytes, /aiand\/zai-org\/glm-5\.3/);
+  assert.equal(JSON.parse(wiredBytes).enabled_providers, undefined);
 
-  // Path A: `aiand opencode off` restores the original bytes.
   const offA = await runCli(["opencode", "off"], { withStubs: true });
   assert.equal(offA.code, 0);
+  // Untouched since on: surgical off must return the pre-aiand bytes exactly.
   assert.equal(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
+  assertAiandStripped(readFileSync(settingsPath(), "utf8"));
+  assert.match(offA.stdout, /is off/);
+  assert.doesNotMatch(offA.stdout, /previous config was restored/);
 
-  // Wire back on, then Path B: `init --off opencode` restores identically.
   const onAgain = await runCli(["init", "opencode"], { withStubs: true });
   assert.equal(onAgain.code, 0);
   assert.notEqual(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
-
   const offB = await runCli(["init", "--off", "opencode"], { withStubs: true });
   assert.equal(offB.code, 0);
+  // Re-wired from the subtracted original with no edits: byte-identical again.
   assert.equal(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
+  assert.equal(assertAiandStripped(readFileSync(settingsPath(), "utf8")).theme, "dark");
 });
 
 test("init --all wires the detected agent", async () => {
   plantOpencodeStub();
+  mkdirSync(dirname(settingsPath()), { recursive: true });
   writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
   // Hermetic PATH: stubs + which + node only. System-wide agent binaries
   // (a dev machine or CI image with real installs, possibly sharing a dir
@@ -200,5 +227,94 @@ test("init --all wires the detected agent", async () => {
   const off = await runCli(["init", "--off"], { env: { PATH: hermeticPath } });
 
   assert.equal(off.code, 0);
+  assert.equal(assertAiandStripped(readFileSync(settingsPath(), "utf8")).theme, "dark");
+});
+
+test("opencode on --base-url trailing slash still hits the trimmed catalog cache", async () => {
+  plantOpencodeStub();
+  mkdirSync(dirname(settingsPath()), { recursive: true });
+  writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
+  const { code, stderr } = await runCli(
+    ["opencode", "on", "--base-url", "https://fixture.test/"],
+    { withStubs: true },
+  );
+  assert.equal(code, 0, stderr);
+});
+
+test("init --all puts a failed agent's reason on stderr", async () => {
+  plantOpencodeStub();
+  mkdirSync(dirname(settingsPath()), { recursive: true });
+  writeFileSync(
+    settingsPath(),
+    JSON.stringify({
+      provider: {
+        aiand: {
+          options: { baseURL: "https://foreign.example.com/v1", apiKey: "sk-foreign-1" },
+        },
+      },
+    }) + "\n",
+  );
+  try {
+    symlinkSync(process.execPath, join(stubBin, "node"));
+  } catch {
+    // Already linked by an earlier run in this process.
+  }
+  const hermeticPath = [stubBin, "/usr/bin"].join(":");
+  const { code, stdout, stderr } = await runCli(["init", "--all"], {
+    env: { PATH: hermeticPath },
+  });
+  assert.equal(code, 1);
+  assert.match(stderr, /does not manage/);
+  assert.doesNotMatch(stdout, /does not manage/);
+});
+
+test("on → user edits the file → off keeps their edit", async () => {
+  plantOpencodeStub();
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+  writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
+
+  const onResult = await runCli(["init", "opencode"], { withStubs: true });
+  assert.equal(onResult.code, 0);
+  const wired = JSON.parse(readFileSync(settingsPath(), "utf8"));
+  wired.autoupdate = true;
+  writeFileSync(settingsPath(), `${JSON.stringify(wired, null, 2)}\n`);
+
+  const off = await runCli(["opencode", "off"], { withStubs: true });
+  assert.equal(off.code, 0);
+  const after = assertAiandStripped(readFileSync(settingsPath(), "utf8"));
+  assert.equal(after.theme, "dark");
+  assert.equal(after.autoupdate, true);
+});
+
+test("restore --force puts the snapshot back; restore without --force refuses", async () => {
+  plantOpencodeStub();
+  mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+  writeFileSync(settingsPath(), ORIGINAL_SETTINGS);
+
+  const onResult = await runCli(["init", "opencode"], { withStubs: true });
+  assert.equal(onResult.code, 0);
+
+  const refused = await runCli(["restore", "opencode"], { withStubs: true });
+  assert.notEqual(refused.code, 0);
+  assert.match(`${refused.stderr}${refused.stdout}`, /--force/);
+
+  const restored = await runCli(["restore", "opencode", "--force"], { withStubs: true });
+  assert.equal(restored.code, 0);
   assert.equal(readFileSync(settingsPath(), "utf8"), ORIGINAL_SETTINGS);
+});
+
+test("init --profile bakes that profile's key", async () => {
+  plantOpencodeStub();
+  process.env.AIAND_KEY_STORAGE = "plaintext";
+  const { saveCredential } = await import("../dist/config.js");
+  await saveCredential("work", { access_token: "sk-work-profile-1", origin: "paste" });
+  mkdirSync(dirname(settingsPath()), { recursive: true });
+
+  const { code } = await runCli(["init", "opencode", "--profile", "work"], {
+    withStubs: true,
+    env: { AIAND_API_KEY: "", AIAND_KEY_STORAGE: "plaintext" },
+  });
+  assert.equal(code, 0);
+  const config = JSON.parse(readFileSync(settingsPath(), "utf8"));
+  assert.equal(config.provider.aiand.options.apiKey, "sk-work-profile-1");
 });

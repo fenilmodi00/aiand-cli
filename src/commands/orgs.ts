@@ -20,11 +20,15 @@ export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv);
   if (bool(parsed, "help")) return out(help);
 
-  const session = await openSession(resolveProfile(str(parsed, "profile")));
+  const profile = resolveProfile(str(parsed, "profile"));
+  const session = await openSession(profile);
   const orgs = await listOrgs(session);
+  const storedOrgId = session.credential?.org?.id;
+  const activeId = storedOrgId ?? orgs[0]?.id;
+  const marked = orgs.map((org) => ({ ...org, active: org.id === activeId }));
 
   if (bool(parsed, "json")) {
-    return json(orgs.map((org, i) => ({ ...org, active: i === 0 })));
+    return json(marked);
   }
 
   if (orgs.length === 0) {
@@ -32,10 +36,10 @@ export async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  table<AccountOrg & { index: number }>(
-    orgs.map((org, index) => ({ ...org, index })),
+  table<AccountOrg & { active: boolean }>(
+    marked,
     [
-      { header: "", value: (o) => (o.index === 0 ? style.green("*") : " ") },
+      { header: "", value: (o) => (o.active ? style.green("*") : " ") },
       { header: "name", value: (o) => o.name },
       { header: "id", value: (o) => style.dim(o.id) },
     ]

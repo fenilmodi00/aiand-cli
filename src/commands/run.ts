@@ -3,6 +3,7 @@ import { err, json, out, style } from "../cli/output.js";
 import { readStdin } from "../cli/stdin.js";
 import { CliError } from "../cli/errors.js";
 import { resolveProfile } from "../config.js";
+import { resolveEffectiveModel } from "../agents/catalog.js";
 import { openSession, type Session } from "../api/client.js";
 import {
   createChatCompletion,
@@ -23,7 +24,7 @@ Usage
   aiand run --model auto --system "be terse" "why is the sky blue?"
 
 Options
-  -m, --model <id>           model to call (default: auto)
+  -m, --model <id>           model to call (default: catalog preferred)
       --system <text>        system prompt
       --max-tokens <n>
       --temperature <n>
@@ -36,7 +37,9 @@ Options
   -q, --quiet                suppress the stats footer
 
 Piped stdin is appended to the prompt, so you can pass a file as context.
-Model "auto" lets ai& choose per request; the choice is reported in the footer.`;
+Omitting -m resolves a concrete catalog model (profile model when still listed,
+else the curated preferred default). Pass -m auto to let ai& choose per request
+when your account supports it; the choice is reported in the footer.`;
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
@@ -62,8 +65,20 @@ export async function run(argv: string[]): Promise<void> {
   if (system) messages.push({ role: "system", content: system });
   messages.push({ role: "user", content: prompt });
 
+  const requested = str(parsed, "model");
+  let model: string;
+  try {
+    model = await resolveEffectiveModel(requested, profile.apiUrl, profile.model);
+  } catch (error) {
+    if (requested || !profile.model) throw error;
+    // Cold catalog used to fail the prompt before send. Honor a configured
+    // default. Do not invent gateway `auto`: it is not a catalog id and
+    // 400s when automatic selection is off.
+    model = profile.model;
+  }
+
   const body: ChatRequest = {
-    model: str(parsed, "model") ?? profile.model ?? "auto",
+    model,
     messages,
   };
   const maxTokens = int(parsed, "max-tokens");

@@ -1,4 +1,8 @@
+import { ApiError } from "../cli/errors.js";
 import { requestJson, type Session } from "./client.js";
+
+const LOGS_UNAVAILABLE_HINT =
+  "Request logs are not served on this gateway. Use `aiand usage` for org totals.";
 
 export const LOG_RANGES = ["15m", "1h", "6h", "24h", "7days", "30days"] as const;
 export type LogRange = (typeof LOG_RANGES)[number];
@@ -34,17 +38,28 @@ export type LogQuery = {
   afterId?: string;
 };
 
-export function getLogs(session: Session, query: LogQuery = {}): Promise<LogPage> {
-  return requestJson<LogPage>(session, {
-    path: "/logs",
-    query: {
-      range: query.range,
-      errors: query.errorsOnly ? "true" : undefined,
-      limit: query.limit,
-      after: query.after,
-      after_id: query.afterId,
-    },
-  });
+export async function getLogs(session: Session, query: LogQuery = {}): Promise<LogPage> {
+  try {
+    return await requestJson<LogPage>(session, {
+      path: "/logs",
+      query: {
+        range: query.range,
+        errors: query.errorsOnly ? "true" : undefined,
+        limit: query.limit,
+        after: query.after,
+        after_id: query.afterId,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      throw new ApiError(404, "Request logs are not available.", {
+        requestId: error.requestId,
+        type: error.type,
+        hint: LOGS_UNAVAILABLE_HINT,
+      });
+    }
+    throw error;
+  }
 }
 
 export async function getLogsPaged(

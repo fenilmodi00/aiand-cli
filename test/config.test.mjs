@@ -38,8 +38,8 @@ describe("endpoint resolution", () => {
     assert.equal(profile.authUrl, config.DEFAULT_BASE_URL);
   });
 
-  test("a stored profile overrides the default", () => {
-    config.updateProfile("default", { apiUrl: "https://stored.example" });
+  test("a stored profile overrides the default", async () => {
+    await config.updateProfile("default", { apiUrl: "https://stored.example" });
     assert.equal(config.resolveProfile().apiUrl, "https://stored.example");
   });
 
@@ -122,6 +122,27 @@ describe("profiles", () => {
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
+  });
+  test("saveCredential rejects a __proto__ profile name", async () => {
+    await assert.rejects(
+      () => config.saveCredential("__proto__", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
+  });
+
+  test("updateProfile rejects a __proto__ profile name", async () => {
+    await assert.rejects(() => config.updateProfile("__proto__", { authUrl: "https://x.example" }), /not allowed/);
+  });
+
+  test("saveCredential rejects constructor and toString profile names", async () => {
+    await assert.rejects(
+      () => config.saveCredential("constructor", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
+    await assert.rejects(
+      () => config.saveCredential("toString", { access_token: "sk-a", refresh_token: "r", expires_at: 1 }),
+      /not allowed/
+    );
   });
 });
 
@@ -208,5 +229,21 @@ describe("malformed config", () => {
   test("fails with a readable message instead of a JSON parse trace", () => {
     writeFileSync(config.configPath(), "{ not json", { mode: 0o600 });
     assert.throws(() => config.loadConfig(), /not valid JSON/);
+  });
+});
+
+const cmd = await import("../dist/commands/config.js");
+
+describe("config set --profile", () => {
+  test("writes the named profile instead of default", async () => {
+    resetCredentialState();
+    await config.saveConfig({
+      profile: "default",
+      profiles: { default: {}, work: {} },
+    });
+    await cmd.run(["set", "model", "picked", "--profile", "work"]);
+    const stored = config.loadConfig();
+    assert.equal(stored.profiles.work.model, "picked");
+    assert.equal(stored.profiles.default?.model, undefined);
   });
 });

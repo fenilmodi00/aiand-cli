@@ -64,7 +64,7 @@ function isWideCodePoint(cp: number): boolean {
   return false;
 }
 
-function width(s: string): number {
+export function width(s: string): number {
   const plain = s.replace(ANSI_RE, "");
   let columns = 0;
 
@@ -84,6 +84,23 @@ function width(s: string): number {
   }
 
   return columns;
+}
+
+
+/** Visible-column truncate; drops styling on overflow and appends an ellipsis. */
+export function clipToWidth(line: string, columns: number): string {
+  if (width(line) <= columns) return line;
+  const plain = line.replace(ANSI_RE, "");
+  const budget = Math.max(0, columns - 1);
+  let used = 0;
+  let out = "";
+  for (const { segment } of segmenter.segment(plain)) {
+    const w = width(segment);
+    if (used + w > budget) break;
+    out += segment;
+    used += w;
+  }
+  return `${out}…`;
 }
 
 function pad(s: string, to: number, align: "left" | "right"): string {

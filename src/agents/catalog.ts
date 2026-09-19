@@ -6,7 +6,7 @@ import { configDir, writeFileAtomic } from "../config.js";
 import { listModels, type Model } from "../api/models.js";
 
 const CATALOG_CACHE_FILE = "model-catalog.json";
-const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+export const CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Whether a catalog model accepts image input. A model is vision-capable when
@@ -35,12 +35,31 @@ function catalogCachePath(): string {
   return join(configDir(), CATALOG_CACHE_FILE);
 }
 
+function parseCache(value: unknown): CatalogCache | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.fetchedAt !== "number" || !Number.isFinite(record.fetchedAt)) return null;
+  if (typeof record.baseUrl !== "string" || record.baseUrl.length === 0) return null;
+  if (!Array.isArray(record.models)) return null;
+  const models: Model[] = [];
+  for (const entry of record.models) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const model = entry as Record<string, unknown>;
+    if (typeof model.id !== "string" || model.id.length === 0) return null;
+    if (!Array.isArray(model.capabilities)) return null;
+    if (!model.capabilities.every((cap) => typeof cap === "string")) return null;
+    models.push(entry as Model);
+  }
+  return { fetchedAt: record.fetchedAt, baseUrl: record.baseUrl, models };
+}
+
 async function readCache(): Promise<CatalogCache | null> {
   try {
     const raw = await readFile(catalogCachePath(), "utf8");
-    return JSON.parse(raw) as CatalogCache;
+    return parseCache(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return null;
     throw error;
   }
 }
@@ -53,8 +72,8 @@ function isFresh(cache: CatalogCache, baseUrl: string): boolean {
 
 /**
  * The live /v1/models list, cached for 6h at <configDir>/model-catalog.json.
- * A fresh cache short-circuits the network entirely; a failed fetch falls
- * back to a stale cache before giving up.
+ * A fresh cache short-circuits the network entirely; a failed fetch does not
+ * serve an expired cache.
  */
 export async function getCatalog(baseUrl: string): Promise<Model[]> {
   const cached = await readCache();
@@ -68,12 +87,10 @@ export async function getCatalog(baseUrl: string): Promise<Model[]> {
     });
     return models;
   } catch (error) {
-    if (cached) return cached.models;
+    if (error instanceof CliError) throw error;
     throw new CliError("Could not reach the model catalog.", {
       hint: "Check your network and retry.",
-      // Preserve the underlying detail (401, rate limit, DNS) for the CLI
-      // error chain while keeping the catalog-specific message.
-      exitCode: error instanceof CliError ? error.exitCode : 1,
+      exitCode: 1,
     });
   }
 }
@@ -113,6 +130,20 @@ export function resolveDefault(models: Model[], profileModel?: string): string {
     });
   }
   return first.id;
+}
+
+/**
+ * Effective model for one-shot inference: an explicit --model flag wins
+ * as-is, otherwise resolve through the live catalog (profile model when
+ * still listed, else the curated default).
+ */
+export async function resolveEffectiveModel(
+  flag: string | undefined,
+  baseUrl: string,
+  profileModel?: string
+): Promise<string> {
+  if (flag !== undefined) return flag;
+  return resolveDefault(await getCatalog(baseUrl), profileModel);
 }
 
 

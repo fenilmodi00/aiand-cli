@@ -29,21 +29,6 @@ const writeCache = (payload) => writeFileSync(cachePath(), JSON.stringify(payloa
 const readCache = () => JSON.parse(readFileSync(cachePath(), "utf8"));
 const hour = 60 * 60 * 1000;
 
-/** Stub the registry fetch for the duration of `fn`, counting calls. */
-async function withFetch(impl, fn) {
-  let fetchCalls = 0;
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (...args) => {
-    fetchCalls += 1;
-    return impl(...args);
-  };
-  try {
-    return await fn(fetchCalls ? undefined : undefined, () => fetchCalls);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-}
-
 describe("compareVersions (dotted-integer, same-length padded)", () => {
   test("newer > older", () => {
     assert.ok(compareVersions("1.2.3", "1.2.2") > 0);
@@ -59,6 +44,10 @@ describe("compareVersions (dotted-integer, same-length padded)", () => {
     assert.ok(compareVersions("1.2", "1.1.9") > 0);
     assert.equal(compareVersions("1.2", "1.2.0"), 0);
   });
+  test("a prerelease is older than the matching release", () => {
+    assert.ok(compareVersions("1.0.0-rc.1", "1.0.0") < 0);
+    assert.ok(compareVersions("1.0.0", "1.0.0-rc.1") > 0);
+  });
 });
 
 describe("checkForUpdate", () => {
@@ -66,6 +55,12 @@ describe("checkForUpdate", () => {
     writeCache({ checkedAt: Date.now(), ok: true, latest: newerVersion(VERSION) });
     const info = await checkForUpdate();
     assert.deepEqual(info, { current: VERSION, latest: newerVersion(VERSION) });
+  });
+
+  test("ignores a prerelease on the latest dist-tag when the install is stable", async () => {
+    writeCache({ checkedAt: Date.now(), ok: true, latest: "99.0.0-rc.1" });
+    const info = await checkForUpdate();
+    assert.equal(info, null);
   });
 
   test("returns null when cached latest equals local version", async () => {
@@ -118,8 +113,19 @@ describe("checkForUpdate", () => {
 
   test("no refetch during failure retry window (1h)", async () => {
     writeCache({ checkedAt: Date.now(), ok: false });
-    const info = await checkForUpdate();
-    assert.equal(info, null);
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      fetchCalls += 1;
+      throw new Error("must not fetch inside the retry window");
+    };
+    try {
+      const info = await checkForUpdate();
+      assert.equal(fetchCalls, 0);
+      assert.equal(info, null);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   test("refetches after the failure retry window", async () => {

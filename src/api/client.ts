@@ -7,9 +7,12 @@ import {
   type Credential,
   type LoadedCredential,
 } from "../config.js";
-import { rotateTokens } from "./device.js";
-
 const ROTATE_BEFORE_SECONDS = 60 * 60 * 24 * 3;
+
+const refreshInflight = new Map<
+  string,
+  Promise<{ token: string; credential: LoadedCredential }>
+>();
 
 export const HEADERS = {
   METRICS: "X-Aiand-Metrics",
@@ -56,18 +59,32 @@ async function refresh(
   profile: ResolvedProfile,
   stored: LoadedCredential
 ): Promise<{ token: string; credential: LoadedCredential }> {
-  // Callers guard on refresh_token existing; this is the rotation path only.
-  const refreshToken = stored.refresh_token;
-  if (!refreshToken) throw new CliError("This credential has no refresh token.");
-  const tokens = await rotateTokens(profile.authUrl, refreshToken);
-  const next: LoadedCredential = {
-    ...stored,
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
-  };
-  await saveCredential(profile.name, next);
-  return { token: next.access_token, credential: next };
+  const inflight = refreshInflight.get(profile.name);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    const persisted = await loadCredential(profile.name);
+    const refreshToken = persisted?.refresh_token ?? stored.refresh_token;
+    if (!refreshToken) throw new CliError("This credential has no refresh token.");
+
+    const { rotateTokens } = await import("./device.js");
+    const tokens = await rotateTokens(profile.authUrl, refreshToken);
+    const next: LoadedCredential = {
+      ...stored,
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: Math.floor(Date.now() / 1000) + tokens.expires_in,
+    };
+    await saveCredential(profile.name, next);
+    return { token: next.access_token, credential: next };
+  })();
+
+  refreshInflight.set(profile.name, promise);
+  try {
+    return await promise;
+  } finally {
+    refreshInflight.delete(profile.name);
+  }
 }
 
 export type RequestOptions = {
@@ -111,6 +128,11 @@ export async function request(session: Session, options: RequestOptions): Promis
   let response = await send(session.token);
 
   if (response.status === 401 && session.credential?.refresh_token) {
+    if (response.body?.cancel) {
+      await response.body.cancel();
+    } else {
+      await response.arrayBuffer().catch(() => {});
+    }
     const rotated = await refresh(session.profile, session.credential);
     session.token = rotated.token;
     session.credential = rotated.credential;
@@ -127,10 +149,7 @@ export async function requestJson<T>(session: Session, options: RequestOptions):
 }
 
 export async function publicJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetchOrFail(url, {
-    ...init,
-    headers: { Accept: "application/json", "User-Agent": userAgent() },
-  });
+  const response = await publicRequest(url, init);
   if (!response.ok) throw await toApiError(response);
   return (await response.json()) as T;
 }
@@ -144,15 +163,10 @@ export async function publicJson<T>(url: string, init: RequestInit = {}): Promis
  */
 export async function publicRequest(url: string, init: RequestInit = {}): Promise<Response> {
   const { headers, ...rest } = init;
-  return fetchOrFail(url, {
-    ...rest,
-    headers: {
-      Accept: "application/json",
-      "User-Agent": userAgent(),
-      ...(rest.body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(headers as Record<string, string>),
-    },
-  });
+  const merged = new Headers(headers);
+  if (!merged.has("Accept")) merged.set("Accept", "application/json");
+  if (!merged.has("User-Agent")) merged.set("User-Agent", userAgent());
+  return fetchOrFail(url, { ...rest, headers: merged });
 }
 
 async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
@@ -164,7 +178,7 @@ async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
     }
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new ApiError(0, `Could not reach ${new URL(url).origin}: ${reason}`, {
-      hint: "Check your network, or point at another environment with --env / AIAND_BASE_URL.",
+      hint: "Check your network, or point at another environment with --base-url / AIAND_BASE_URL.",
     });
   }
 }

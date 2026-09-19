@@ -18,10 +18,15 @@ export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, { local: { type: "boolean", default: false } });
   if (bool(parsed, "help")) return out(help);
 
-  const { profile, session, user, org, orgs, cached } = await probeIdentity(
-    str(parsed, "profile"),
-    bool(parsed, "local")
-  );
+  const { profile, session, user, org, orgs, cached, reachable, probeError } =
+    await probeIdentity(str(parsed, "profile"), bool(parsed, "local"));
+
+  if (!reachable) {
+    // Foreground identity check: failing loudly is correct. The key is
+    // unverified, not absent — rethrow the gateway error rather than
+    // printing cached data as if it were verified.
+    throw probeError ?? new NotLoggedInError();
+  }
 
   if (!session) {
     // whoami requires a session; probeIdentity swallows NotLoggedInError and

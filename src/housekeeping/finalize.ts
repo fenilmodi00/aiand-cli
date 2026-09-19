@@ -41,27 +41,28 @@ function packageRootPath(name: string): string {
 /**
  * Read a "what's new" block from CHANGELOG.md for {@link VERSION}: the
  * `## [<VERSION>]` section (its header line through the line before the next
- * `## [` header), condensed to at most 4 non-empty lines. Returns [] when the
- * section is missing or unreadable.
+ * `## [` header), condensed to at most 4 `- ` bullets. Returns `null` when the
+ * section is missing or unreadable so a first install can stay silent.
  */
-async function releaseNotesForVersion(): Promise<string[]> {
+async function releaseNotesForVersion(): Promise<string[] | null> {
   try {
     const changelog = await readFile(packageRootPath("CHANGELOG.md"), "utf8");
     const lines = changelog.split("\n");
     const headerRe = new RegExp(`^## \\[${escapeRe(VERSION)}\\]`);
     const startIndex = lines.findIndex((line) => headerRe.test(line));
-    if (startIndex < 0) return [];
-    const block: string[] = [];
+    if (startIndex < 0) return null;
+    const bullets: string[] = [];
     for (
       let index = startIndex + 1;
       index < lines.length && !/^## \[/.test(lines[index] ?? "");
       index += 1
     ) {
-      block.push((lines[index] ?? "").trim());
+      const line = (lines[index] ?? "").trim();
+      if (line.startsWith("- ")) bullets.push(line);
     }
-    return block.filter(Boolean).slice(0, 4);
+    return bullets.slice(0, 4);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -77,15 +78,18 @@ function escapeRe(value: string): string {
 export async function finalizeOnVersionChange(): Promise<string[]> {
   const lastVersion = readState();
   if (lastVersion === VERSION) return [];
+  // First install: record the current version without a "what's new" dump.
+  if (lastVersion === null) {
+    await writeState(VERSION).catch(() => {});
+    return [];
+  }
 
-  const notes: string[] = [];
-  try {
-    const whatsNew = await releaseNotesForVersion();
-    notes.push(...whatsNew);
-  } catch {
-    // best-effort — a changelog hiccup never fails finalize
+  const whatsNew = await releaseNotesForVersion();
+  if (whatsNew === null) {
+    // Missing/unreadable changelog: keep the one-shot for a later run.
+    return [];
   }
 
   await writeState(VERSION).catch(() => {});
-  return notes;
+  return whatsNew;
 }

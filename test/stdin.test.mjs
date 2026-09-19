@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
+import { stdinLooksPiped } from "../dist/cli/stdin.js";
 
 // Piped stdin reaches the CLI however the parent provides it: real shells
 // hand over a FIFO, redirections a file — and Node's child_process hands over
@@ -73,6 +74,7 @@ describe("piped stdin across stdio shapes", () => {
       assert.equal(r.code, 2, `expected NotLoggedIn, got ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /Not logged in/);
     } finally {
+      closeSync(fd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -90,5 +92,57 @@ describe("piped stdin across stdio shapes", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("login --with-token rejects leftover stdin lines", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-stdin-test-"));
+    try {
+      const r = await runCli(["login", "--with-token"], {
+        env: childEnv(dir),
+        input: "sk-abc123\nleftover line\n",
+      });
+      assert.equal(r.code, 1, `expected leftover reject, got ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /single-line key/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stdinLooksPiped", () => {
+  const stats = (overrides = {}) => ({
+    isFIFO: () => false,
+    isFile: () => false,
+    isSocket: () => false,
+    mode: 0,
+    ...overrides,
+  });
+
+  test("TTY is never piped, even for a FIFO", () => {
+    assert.equal(stdinLooksPiped(stats({ isFIFO: () => true }), true), false);
+  });
+
+  test("FIFO is piped", () => {
+    assert.equal(stdinLooksPiped(stats({ isFIFO: () => true }), false), true);
+  });
+
+  test("file is piped", () => {
+    assert.equal(stdinLooksPiped(stats({ isFile: () => true }), false), true);
+  });
+
+  test("socket is piped", () => {
+    assert.equal(stdinLooksPiped(stats({ isSocket: () => true }), false), true);
+  });
+
+  test("Windows anonymous pipe (mode 4096, type checks false) is piped", () => {
+    assert.equal(stdinLooksPiped(stats({ mode: 4096 }), false), true);
+  });
+
+  test("unknown with mode 0 is not piped", () => {
+    assert.equal(stdinLooksPiped(stats({ mode: 0 }), false), false);
+  });
+
+  test("regular-file mode bits without isFile are not piped", () => {
+    assert.equal(stdinLooksPiped(stats({ mode: 0o100666 }), undefined), false);
   });
 });

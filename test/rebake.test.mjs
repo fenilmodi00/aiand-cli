@@ -41,6 +41,7 @@ function seedOpencodeConfig(key = K1, model = "m-default") {
     JSON.stringify({
       provider: { aiand: { options: { baseURL: "https://api.aiand.com/v1", apiKey: key } } },
       model: `aiand/${model}`,
+      "x-aiand": true,
     }) + "\n"
   );
 }
@@ -120,5 +121,102 @@ describe("rebakeAgentKeys", () => {
     );
 
     process.env.AIAND_HOME = home;
+  });
+});
+
+describe("logout strips baked keys", () => {
+  test("logout removes the baked key/provider from an active opencode config", async () => {
+    // Fresh home+cfg so the seeded config and the credential store are
+    // isolated; the runner is non-TTY so isInteractive() is false and logout
+    // never prompts.
+    const logoutHome = join(dir, "logout-strip");
+    const logoutCfg = join(dir, "logout-strip-cfg");
+    mkdirSync(logoutHome, { recursive: true });
+    mkdirSync(logoutCfg, { recursive: true });
+    const prevHome = process.env.AIAND_HOME;
+    const prevCfg = process.env.AIAND_CONFIG_DIR;
+    process.env.AIAND_HOME = logoutHome;
+    process.env.AIAND_CONFIG_DIR = logoutCfg;
+    process.env.AIAND_KEY_STORAGE = "plaintext";
+    // logout announces on stdout; keep the test output clean.
+    const realOut = process.stdout.write.bind(process.stdout);
+    const realErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = () => true;
+    process.stderr.write = () => true;
+    try {
+      const config = await import("../dist/config.js");
+      const { logout } = await import("../dist/auth/flow.js");
+      seedOpencodeConfig(K1, "m-default");
+      await config.saveCredential("logout-strip", {
+        access_token: K1,
+        origin: "paste",
+        storage: "plaintext",
+      });
+      // Teardown only strips agent configs when the logged-out profile is
+      // the active one (its key is the one rebake baked in). Sign-in promotes
+      // the profile; mirror that here.
+      await config.saveConfig({ profile: "logout-strip", profiles: { "logout-strip": {} } });
+      await logout({ profile: "logout-strip" });
+      assert.equal(await config.loadCredential("logout-strip"), null);
+      // Seeded by the test, not created by enable(): strip the keys, keep the file.
+      assert.equal(existsSync(opencodeConfig()), true, "user-created config is not deleted on strip");
+      const stripped = JSON.parse(readFileSync(opencodeConfig(), "utf8"));
+      assert.equal(stripped.provider, undefined);
+      assert.equal(stripped["x-aiand"], undefined);
+    } finally {
+      process.stdout.write = realOut;
+      process.stderr.write = realErr;
+      delete process.env.AIAND_KEY_STORAGE;
+      if (prevHome === undefined) delete process.env.AIAND_HOME;
+      else process.env.AIAND_HOME = prevHome;
+      if (prevCfg === undefined) delete process.env.AIAND_CONFIG_DIR;
+      else process.env.AIAND_CONFIG_DIR = prevCfg;
+    }
+  });
+
+  test("logout teardown follows config.profile, not AIAND_PROFILE", async () => {
+    const logoutHome = join(dir, "logout-env-override");
+    const logoutCfg = join(dir, "logout-env-override-cfg");
+    mkdirSync(logoutHome, { recursive: true });
+    mkdirSync(logoutCfg, { recursive: true });
+    const prevHome = process.env.AIAND_HOME;
+    const prevCfg = process.env.AIAND_CONFIG_DIR;
+    const prevProfile = process.env.AIAND_PROFILE;
+    process.env.AIAND_HOME = logoutHome;
+    process.env.AIAND_CONFIG_DIR = logoutCfg;
+    process.env.AIAND_KEY_STORAGE = "plaintext";
+    // Env override would previously skip teardown even though this is the
+    // stored active profile whose key is baked into the agent config.
+    process.env.AIAND_PROFILE = "other";
+    const realOut = process.stdout.write.bind(process.stdout);
+    const realErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = () => true;
+    process.stderr.write = () => true;
+    try {
+      const config = await import("../dist/config.js");
+      const { logout } = await import("../dist/auth/flow.js");
+      seedOpencodeConfig(K1, "m-default");
+      await config.saveCredential("logout-strip", {
+        access_token: K1,
+        origin: "paste",
+        storage: "plaintext",
+      });
+      await config.saveConfig({ profile: "logout-strip", profiles: { "logout-strip": {} } });
+      await logout({ profile: "logout-strip" });
+      assert.equal(await config.loadCredential("logout-strip"), null);
+      const stripped = JSON.parse(readFileSync(opencodeConfig(), "utf8"));
+      assert.equal(stripped.provider, undefined);
+      assert.equal(stripped["x-aiand"], undefined);
+    } finally {
+      process.stdout.write = realOut;
+      process.stderr.write = realErr;
+      delete process.env.AIAND_KEY_STORAGE;
+      if (prevProfile === undefined) delete process.env.AIAND_PROFILE;
+      else process.env.AIAND_PROFILE = prevProfile;
+      if (prevHome === undefined) delete process.env.AIAND_HOME;
+      else process.env.AIAND_HOME = prevHome;
+      if (prevCfg === undefined) delete process.env.AIAND_CONFIG_DIR;
+      else process.env.AIAND_CONFIG_DIR = prevCfg;
+    }
   });
 });
