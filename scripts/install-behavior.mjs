@@ -312,21 +312,33 @@ if (!HAS_BASH) {
     const wsl = spawnSync("wslpath", ["-w", ps1Path], { encoding: "utf8" });
     if (!wsl.error && wsl.status === 0 && wsl.stdout.trim()) winPs1 = wsl.stdout.trim();
 
+    // GitHub ubuntu-latest ships pwsh. $env:TEMP and (Get-Process).Path are
+    // often empty there; Join-Path $null is the "Path because it is null"
+    // bind error. Nested Join-Path (not '.aiand\\cli') keeps Unix pwsh
+    // creating .aiand/cli instead of a single '.aiand\\cli' directory.
     const smoke = `
 $ErrorActionPreference = 'Stop'
-$iso = Join-Path $env:TEMP ('aiand-ib-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+$tmpRoot = [System.IO.Path]::GetTempPath()
+$iso = Join-Path $tmpRoot ('aiand-ib-' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $iso -Force | Out-Null
 $env:USERPROFILE = $iso
 $env:HOME = $iso
 $env:AIAND_NO_MODIFY_PATH = '1'
-$checkout = Join-Path $iso '.aiand\\cli'
+$checkout = Join-Path (Join-Path $iso '.aiand') 'cli'
 New-Item -ItemType Directory -Path $checkout -Force | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $checkout 'package.json'), '{"name":"@aiand/cli"}' + [Environment]::NewLine)
 [System.IO.File]::WriteAllText((Join-Path $checkout '.aiand-installer-owned'), 'aiand-cli installer ownership marker' + [Environment]::NewLine)
-$bin = Join-Path $iso '.local\\bin'
+$bin = Join-Path (Join-Path $iso '.local') 'bin'
 New-Item -ItemType Directory -Path $bin -Force | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $bin 'aiand.cmd'), '@echo off' + [Environment]::NewLine)
-$runner = (Get-Process -Id $PID).Path
+$runner = $null
+try { $runner = [string](Get-Process -Id $PID).Path } catch { }
+if ([string]::IsNullOrWhiteSpace($runner)) {
+  $cmd = Get-Command -Name pwsh -ErrorAction SilentlyContinue
+  if (-not $cmd) { $cmd = Get-Command -Name powershell -ErrorAction SilentlyContinue }
+  if ($cmd) { $runner = [string]$cmd.Source }
+}
+if ([string]::IsNullOrWhiteSpace($runner)) { throw 'could not resolve pwsh path' }
 & $runner -NoProfile -ExecutionPolicy Bypass -File '${winPs1.replace(/'/g, "''")}' uninstall --force
 if ($LASTEXITCODE -ne 0) { throw "uninstall exit $LASTEXITCODE" }
 if (Test-Path (Join-Path $bin 'aiand.cmd')) { throw 'aiand.cmd still present' }

@@ -7,6 +7,8 @@
 //   - process.env.AIAND_API_KEY (repo secret in CI, withheld on fork PRs)
 //   - the `opencode` binary on PATH (installed in CI per INSTALL_HINTS.opencode)
 // Otherwise the file registers a single skipped test and exits 0.
+// Fork CI with a billed-out key skips the live assertion (balance is not a
+// CLI failure). Official-repo CI still fails so an empty org key is visible.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -24,6 +26,12 @@ function binaryOnPath(name) {
   return probe.status === 0 && !probe.error;
 }
 
+function errorText(error) {
+  return [error?.message, error?.stderr, error?.stdout]
+    .filter((s) => typeof s === "string" && s.length > 0)
+    .join("\n");
+}
+
 const hasKey = Boolean(process.env.AIAND_API_KEY);
 const hasBinary = binaryOnPath("opencode");
 const skipReason = !hasKey
@@ -36,7 +44,7 @@ if (skipReason) {
   console.log(`[e2e-live] skipping: ${skipReason}`);
   test("live opencode e2e (skipped without key+binary)", { skip: skipReason }, () => {});
 } else {
-  test("live opencode e2e: on -> run -> assert", { timeout: 420_000 }, () => {
+  test("live opencode e2e: on -> run -> assert", { timeout: 420_000 }, (t) => {
     // Sandbox BOTH homes: the CLI resolves adapter configs from AIAND_HOME
     // (see agentHome() in src/fsutil.ts: AIAND_HOME || homedir()), while the
     // opencode binary itself only knows HOME/XDG_CONFIG_HOME. Pointing all of
@@ -93,6 +101,12 @@ if (skipReason) {
       });
       assert.match(runOut, /pong/i, `gateway replied with the expected word: ${runOut.slice(0, 500)}`);
     } catch (error) {
+      const insufficient = /insufficient credits/i.test(errorText(error));
+      const officialCi = process.env.GITHUB_REPOSITORY === "aiandlabs/aiand-cli";
+      if (insufficient && !officialCi) {
+        t.skip("live gateway returned insufficient credits");
+        return;
+      }
       error.message = `[e2e-live] failed during ${phase}: ${error.message}`;
       throw error;
     } finally {
