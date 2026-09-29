@@ -11,6 +11,26 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand pi on` wires the Pi coding agent to ai& through
+  `~/.pi/agent/`: an `aiand` provider in `models.json` speaking the gateway's
+  OpenAI-compatible dialect with every model from the live catalog, the
+  session key in `auth.json` (locked to 0600, marked `managedBy: "aiand"`),
+  and `defaultProvider`/`defaultModel` in `settings.json`. `off` removes
+  exactly what `on` added and restores a `defaultModel` it had to set aside
+  because the gateway cannot serve it; one it can serve is kept. Pass
+  `--model native` to leave Pi's own default model. Reasoning models run at
+  their gateway default effort: Pi's client would otherwise send an effort
+  level (`medium`) the catalog does not publish for every model, and the
+  gateway rejects it.
+
+- `aiand run-agent pi` launches Pi on ai& for one session with no Pi config
+  written under `~/.pi/`: a throwaway overlay becomes
+  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
+  (never the child env), while session history still lands in the user's
+  real session directory. User-supplied `--provider`/`--model`/`--models`/
+  `--api-key` passthrough flags are stripped so the routing cannot be
+  overridden; the overlay is removed after the session ends.
+
 - `aiand claude on` lists every ai& model in Claude Code's `/model` picker,
   through its `modelPicker` setting: Claude Code only discovers gateway models
   whose id contains "claude", so ai&'s never appeared there. The built-in

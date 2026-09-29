@@ -50,6 +50,10 @@ export type SessionLaunchInput = {
 type SessionLaunch = {
   env: Record<string, string>; // added to child env
   args?: string[]; // extra CLI args before passthrough
+  // Passthrough flags the adapter must own: user-supplied `--flag value`
+  // and `--flag=value` forms of these are dropped so the launcher's
+  // routing cannot be overridden. Everything else passes verbatim.
+  stripPassthroughFlags?: string[];
   // Always run by the launcher after the child exits, success or failure:
   // remove throwaway overlays, close ephemeral servers. The launcher owns
   // this lifecycle because sessionLaunch is async — ephemeral servers can

@@ -46,19 +46,32 @@ for (const command of COMMANDS) {
   assert.equal(typeof command.run, "function", `command ${command.name} needs a run function`);
 }
 
-// CI installs a pinned OpenCode for the live tests; it must be the release
-// the CLI's install hint names, or the two drift apart silently.
+// CI installs a pinned OpenCode and a pinned Pi for the live tests; each
+// must be the release the CLI's install hint names, or the two drift
+// apart silently.
 const { OPENCODE_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "opencode", "adapter.js")).href
 );
+const { PI_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "pi", "adapter.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
-const ciPins = [...ciYml.matchAll(/opencode-ai@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
-assert.ok(ciPins.length > 0, "ci.yml should install a pinned opencode-ai");
-for (const pin of ciPins) {
+const opencodePins = [...ciYml.matchAll(/opencode-ai@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
+assert.ok(opencodePins.length > 0, "ci.yml should install a pinned opencode-ai");
+for (const pin of opencodePins) {
   assert.equal(
     pin,
     OPENCODE_VERSION,
     `ci.yml installs opencode-ai@${pin} but src/agents/opencode/adapter.ts pins ${OPENCODE_VERSION}`,
+  );
+}
+const piPins = [...ciYml.matchAll(/pi-coding-agent@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
+assert.ok(piPins.length > 0, "ci.yml should install a pinned pi-coding-agent");
+for (const pin of piPins) {
+  assert.equal(
+    pin,
+    PI_VERSION,
+    `ci.yml installs pi-coding-agent@${pin} but src/agents/pi/adapter.ts pins ${PI_VERSION}`,
   );
 }
 

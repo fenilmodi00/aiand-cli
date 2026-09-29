@@ -30,6 +30,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm install -g opencode-ai@1.18.32
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       - run: npm run lint
       # Builds dist/ (reused by every later step), then runs the `npm test`
       # suite under the coverage floor set in package.json.
@@ -41,6 +42,10 @@ jobs:
       # key+binary (fork PRs stay green). A fork push whose key has no credits also skips; official
       # main still fails on that. No continue-on-error step.
       - run: node scripts/e2e.mjs
+      # Real pinned Pi validating the generated config and a headless
+      # --print round-trip against the loopback double (no real gateway,
+      # no key): the schema-drift tripwire for models.json.
+      - run: node scripts/pi-smoke.mjs
       # Offline subset of the sandbox matrix: no key, no network.
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
       - run: npm run check:dist
@@ -142,11 +147,13 @@ jobs:
       # e2e.mjs runs the adapter matrix plus its win32 install.ps1 uninstall
       # cases, which no other job exercises.
       - run: node scripts/e2e.mjs
-      # Real npm-installed OpenCode (an opencode.cmd shim on Windows) launched
+      # Real npm-installed OpenCode and Pi (a .cmd shim on Windows) launched
       # through `aiand run-agent`, against the live gateway. Needs the key, so
-      # same events as the live job.
+      # same events as the live job. #33: this is also the Windows install
+      # tripwire for the Pi pin — check-dist keeps the version in step.
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: npm install -g opencode-ai@1.18.32
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
@@ -157,5 +164,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "run-agent opencode exited $LASTEXITCODE" }
           if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected opencode --version output: $out" }
           Write-Output "opencode via run-agent: $out"
+          $out = (node dist/index.js run-agent pi -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent pi exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected pi --version output: $out" }
+          Write-Output "pi via run-agent: $out"
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}

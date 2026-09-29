@@ -84,8 +84,8 @@ Most commands take `--json`, and every command takes `--help`.
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs) and
-[Codex](https://developers.openai.com/codex/cli).
+[Claude Code](https://code.claude.com/docs),
+[Codex](https://developers.openai.com/codex/cli) and [Pi](https://pi.dev).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -156,6 +156,22 @@ takes it over, and `aiand restore codex --force` brings the old one back. Your `
 plugins come along. Which Codex versions work with ai&, and what changed
 between them, is in the
 [Codex guide](https://docs.aiand.com/integrations/codex/).
+
+```bash
+aiand pi on             # route Pi through ai&
+aiand pi status
+aiand pi off
+aiand run-agent pi      # or: one Pi session on ai&, no Pi config written
+```
+
+`on` writes an `aiand` provider into `~/.pi/agent/models.json` speaking the
+gateway's OpenAI-compatible dialect, with every model from the live catalog,
+saves the session key in `~/.pi/agent/auth.json` (readable only by you), and
+sets `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`. Your
+other providers and credentials are untouched. A `defaultModel` ai& cannot
+serve is set aside until `off`; one it can serve is kept. Pass
+`--model <id>` to switch, or `--model native` to leave Pi's own default.
+Pi's config root moves wholesale with `PI_CODING_AGENT_DIR`.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

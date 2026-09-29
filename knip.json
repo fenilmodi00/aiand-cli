@@ -2,5 +2,5 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["test/**/*.mjs", "scripts/*.mjs"],
   "project": ["src/**/*.ts", "test/**/*.mjs", "scripts/**/*.mjs"],
-  "ignoreBinaries": ["opencode", "where", "wslpath"]
+  "ignoreBinaries": ["opencode", "pi", "where", "wslpath"]
 }

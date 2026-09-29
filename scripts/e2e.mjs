@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -147,6 +148,8 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -170,7 +173,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex"]) {
+  for (const name of ["opencode", "claude", "codex", "pi"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -410,6 +413,84 @@ try {
     existsSync(codexPath) && readFileSync(codexPath, "utf8") === handWritten,
   );
   for (const [path] of aiandLaunchers) rmSync(path);
+  // --- pi on/off/status -------------------------------------------------------
+  const piDir = join(home, ".pi", "agent");
+  mkdirSync(piDir, { recursive: true });
+  const piModelsPath = join(piDir, "models.json");
+  const piAuthPath = join(piDir, "auth.json");
+  const piSettingsPath = join(piDir, "settings.json");
+  writeFileSync(
+    piModelsPath,
+    `${JSON.stringify(
+      { providers: { openai: { name: "OpenAI", baseUrl: "https://api.openai.com/v1" } } },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    piAuthPath,
+    `${JSON.stringify({ openai: { type: "api_key", key: "sk-user-openai" } }, null, 2)}\n`,
+  );
+  writeFileSync(piSettingsPath, `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
+  const PI_MODELS_BEFORE = readFileSync(piModelsPath);
+  const PI_AUTH_BEFORE = readFileSync(piAuthPath);
+  const PI_SETTINGS_BEFORE = readFileSync(piSettingsPath);
+
+  const piOn = JSON.parse(cli("pi on --json"));
+  check("pi on succeeds", piOn.state === "on" && piOn.agent === "pi", JSON.stringify(piOn));
+  const piWiredModels = JSON.parse(readFileSync(piModelsPath, "utf8"));
+  check(
+    "pi on routes providers.aiand at the loopback double",
+    piWiredModels.providers?.aiand?.baseUrl === `${baseUrl}/v1`,
+    String(piWiredModels.providers?.aiand?.baseUrl),
+  );
+  check("pi on keeps the user's openai provider", Boolean(piWiredModels.providers?.openai));
+  const piWiredAuth = JSON.parse(readFileSync(piAuthPath, "utf8"));
+  check(
+    "pi on bakes the session key with the managedBy marker",
+    piWiredAuth.aiand?.key === "sk-e2e-test-key-0000000000000000000000" &&
+      piWiredAuth.aiand?.managedBy === "aiand",
+    JSON.stringify(Object.keys(piWiredAuth)),
+  );
+  check("pi on keeps the user's openai credential", piWiredAuth.openai?.key === "sk-user-openai");
+  // Windows has no POSIX permission bits (NTFS ACLs), so the 0600 lock is
+  // only assertable through the mode the write requested; the Linux job and
+  // the unit suite (agents-pi) cover it there.
+  if (process.platform !== "win32")
+    check("pi on locks auth.json to 0600", (statSync(piAuthPath).mode & 0o777) === 0o600);
+  const piWiredSettings = JSON.parse(readFileSync(piSettingsPath, "utf8"));
+  check(
+    "pi on sets defaultProvider and defaultModel",
+    piWiredSettings.defaultProvider === "aiand" &&
+      piWiredSettings.defaultModel === "zai-org/glm-5.3",
+    JSON.stringify(piWiredSettings),
+  );
+  check("pi on keeps unrelated settings keys", piWiredSettings.theme === "dark");
+
+  const piStatus = JSON.parse(cli("pi status --json"));
+  check(
+    "pi status: on with the default model",
+    piStatus.state === "on" && piStatus.model === "zai-org/glm-5.3",
+    JSON.stringify(piStatus),
+  );
+
+  cli("pi off --json");
+  check(
+    "pi off restores all three files byte-identical when untouched",
+    PI_MODELS_BEFORE.equals(readFileSync(piModelsPath)) &&
+      PI_AUTH_BEFORE.equals(readFileSync(piAuthPath)) &&
+      PI_SETTINGS_BEFORE.equals(readFileSync(piSettingsPath)),
+  );
+  const piStatus2 = JSON.parse(cli("pi status --json"));
+  check("pi status: off after teardown", piStatus2.state === "off", JSON.stringify(piStatus2));
+  cli("pi on --json");
+  cli("restore pi --force");
+  check(
+    "restore pi --force puts the seeded files back",
+    PI_MODELS_BEFORE.equals(readFileSync(piModelsPath)) &&
+      PI_AUTH_BEFORE.equals(readFileSync(piAuthPath)) &&
+      PI_SETTINGS_BEFORE.equals(readFileSync(piSettingsPath)),
+  );
 
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
@@ -510,6 +591,51 @@ try {
       !codexArgs.join(" ").includes("sk-e2e-test-key"),
   );
 
+  const piCapture = join(S, "capture-pi");
+  let piLaunchCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "pi", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: piCapture },
+      encoding: "utf8",
+    });
+    piLaunchCode = 0;
+  } catch (error) {
+    piLaunchCode = error.status ?? 42;
+  }
+  check("run-agent pi exits with the child code", piLaunchCode === 42, `code=${piLaunchCode}`);
+  const piChildEnv = existsSync(`${piCapture}.env`) ? readFileSync(`${piCapture}.env`, "utf8") : "";
+  const piOverlay = piChildEnv.match(/^PI_CODING_AGENT_DIR=(.*)$/m)?.[1];
+  check(
+    "run-agent pi points PI_CODING_AGENT_DIR at a throwaway overlay",
+    Boolean(piOverlay?.includes("aiand-pi-")),
+    piOverlay ?? "missing",
+  );
+  check(
+    "run-agent pi keeps the key out of the child env",
+    !piChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
+  );
+  check(
+    "run-agent pi keeps session history in the user's session dir",
+    // join() yields native separators; match the path tail, not its slashes.
+    /\.pi[\\/]agent[\\/]sessions$/.test(
+      piChildEnv.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1] ?? "",
+    ),
+    piChildEnv.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1] ?? "missing",
+  );
+  check("run-agent pi removes the throwaway overlay", Boolean(piOverlay) && !existsSync(piOverlay));
+  const piLaunchArgs = existsSync(`${piCapture}.args`)
+    ? readFileSync(`${piCapture}.args`, "utf8").split(/\r?\n/)
+    : [];
+  check(
+    "run-agent pi prepends provider/model routing, then passthrough",
+    piLaunchArgs[0] === "--provider" &&
+      piLaunchArgs[1] === "aiand" &&
+      piLaunchArgs[2] === "--model" &&
+      Boolean(piLaunchArgs[3]) &&
+      piLaunchArgs[piLaunchArgs.length - 2] === "--version",
+    piLaunchArgs.slice(0, 4).join(" "),
+  );
+
   // Passthrough must reach the agent verbatim. On Windows the stub is a .cmd
   // shim run through cmd.exe, so shell metacharacters must stay literal.
   const tricky = [
@@ -547,8 +673,8 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex and opencode",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode"]),
+    "registry ships exactly claude, codex, opencode and pi",
+    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode", "pi"]),
     JSON.stringify(agentIds),
   );
 
