@@ -80,7 +80,8 @@ when coverage goes up; never lower it to land a change.
 - `build`: lint, `npm run test:coverage`, `scripts/e2e.mjs`, `scripts/pi-smoke.mjs`
   (a real pinned Pi validating the config aiand generates and a headless
   `--print` round-trip through the loopback double — the schema-drift
-  tripwire for Pi's pre-1.0 models.json), the offline `sbx-test.mjs
+  tripwire for Pi's pre-1.0 models.json), `scripts/omp-smoke.mjs` (the same
+  round-trip for Oh My Pi's YAML), the offline `sbx-test.mjs
   --smoke`, `check:dist`, and `check:public`. With the `AIAND_API_KEY` secret
   (pushes to main and pull requests from branches of this repository),
   the test run includes the live OpenCode run.

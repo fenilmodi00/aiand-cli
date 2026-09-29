@@ -55,6 +55,9 @@ const { OPENCODE_VERSION } = await import(
 const { PI_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "pi", "adapter.js")).href
 );
+const { OMP_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "omp", "adapter.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
 const opencodePins = [...ciYml.matchAll(/opencode-ai@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
 assert.ok(opencodePins.length > 0, "ci.yml should install a pinned opencode-ai");
@@ -72,6 +75,17 @@ for (const pin of piPins) {
     pin,
     PI_VERSION,
     `ci.yml installs pi-coding-agent@${pin} but src/agents/pi/adapter.ts pins ${PI_VERSION}`,
+  );
+}
+// omp installs through the omp.sh installer, pinned with `--ref vX.Y.Z`
+// (Linux sh) / `-Ref vX.Y.Z` (Windows PowerShell).
+const ompPins = [...ciYml.matchAll(/omp\.sh\/install[^\n]*--?ref v([0-9.]+)/gi)].map((m) => m[1]);
+assert.ok(ompPins.length > 0, "ci.yml should install a pinned omp via omp.sh/install --ref");
+for (const pin of ompPins) {
+  assert.equal(
+    pin,
+    OMP_VERSION,
+    `ci.yml installs omp --ref v${pin} but src/agents/omp/adapter.ts pins ${OMP_VERSION}`,
   );
 }
 

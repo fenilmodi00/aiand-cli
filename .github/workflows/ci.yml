@@ -31,6 +31,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
+      # Pinned omp for the omp-smoke tripwire below; the installer drops the
+      # binary in ~/.local/bin, which later steps need on PATH.
+      - run: curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v18.4.3
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: npm run lint
       # Builds dist/ (reused by every later step), then runs the `npm test`
       # suite under the coverage floor set in package.json.
@@ -46,6 +50,9 @@ jobs:
       # --print round-trip against the loopback double (no real gateway,
       # no key): the schema-drift tripwire for models.json.
       - run: node scripts/pi-smoke.mjs
+      # Real pinned omp accepting the generated models.yml and a headless -p
+      # round-trip: the schema-drift tripwire for omp's provider block.
+      - run: node scripts/omp-smoke.mjs
       # Offline subset of the sandbox matrix: no key, no network.
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
       - run: npm run check:dist
@@ -154,6 +161,15 @@ jobs:
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
+      # install.ps1 takes -Ref, so Windows pins the same release as the
+      # Linux job (check-dist keeps the two in step). The installer only
+      # writes the registry User PATH, which later steps do not re-read, so
+      # expose the dir via GITHUB_PATH. Gated with its run-agent check below
+      # so fork PRs skip the download.
+      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          & ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary -Ref v18.4.3
+          "$env:LOCALAPPDATA\omp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
@@ -168,5 +184,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "run-agent pi exited $LASTEXITCODE" }
           if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected pi --version output: $out" }
           Write-Output "pi via run-agent: $out"
+          $out = (node dist/index.js run-agent omp -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent omp exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected omp --version output: $out" }
+          Write-Output "omp via run-agent: $out"
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
