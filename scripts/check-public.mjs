@@ -70,7 +70,8 @@ const RULES = [
       match.startsWith("@anthropic-ai/") ||
       match.startsWith("@openai/") ||
       match.startsWith("@earendil-works/") ||
-      match.startsWith("@deepseek-ai/"),
+      match.startsWith("@deepseek-ai/") ||
+      match.startsWith("@github/"),
     hint: "Reference only published packages.",
   },
   {

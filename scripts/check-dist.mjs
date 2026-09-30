@@ -58,6 +58,9 @@ const { PI_VERSION } = await import(
 const { OMP_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "omp", "adapter.js")).href
 );
+const { COPILOT_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "copilot", "adapter.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
 const opencodePins = [...ciYml.matchAll(/opencode-ai@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
 assert.ok(opencodePins.length > 0, "ci.yml should install a pinned opencode-ai");
@@ -109,6 +112,15 @@ for (const pin of ompWindowsPins) {
   );
 }
 
+const copilotPins = [...ciYml.matchAll(/@github\/copilot@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
+assert.ok(copilotPins.length > 0, "ci.yml should install a pinned @github/copilot");
+for (const pin of copilotPins) {
+  assert.equal(
+    pin,
+    COPILOT_VERSION,
+    `ci.yml pins @github/copilot@${pin} but the install hint names ${COPILOT_VERSION}`,
+  );
+}
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,
