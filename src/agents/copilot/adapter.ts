@@ -287,7 +287,13 @@ async function enable(input: EnableInput): Promise<EnableResult> {
       : ((await existingFileMode(paths.settings)) ?? DEFAULT_FILE_MODE));
 
   await writeFileAtomic(paths.providers, providersText, { mode: PRIVATE_FILE_MODE });
-  await writeFileAtomic(paths.settings, settingsText, { mode: previousSettingsMode });
+  // native never edits settingsText; an unchanged file is not rewritten, so
+  // a missing settings.json is never created empty (the CLI could not parse
+  // it and off's write-equality early-return would strand it).
+  const settingsChanged = settingsText !== raw.settings;
+  if (settingsChanged) {
+    await writeFileAtomic(paths.settings, settingsText, { mode: previousSettingsMode });
+  }
 
   await recordAddedState(COPILOT_ID, {
     previousModelSelection,
@@ -301,7 +307,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   return {
     model: isNative ? "native" : (wroteModelSelection as string),
     catalogModel: isNative ? undefined : input.model,
-    filesWritten: [paths.providers, paths.settings],
+    filesWritten: settingsChanged ? [paths.providers, paths.settings] : [paths.providers],
     warnings,
   };
 }
@@ -329,17 +335,19 @@ async function disable(): Promise<DisableResult> {
     providers: await readTextIfExists(paths.providers),
     settings: await readTextIfExists(paths.settings),
   };
+  // Both files are parsed before anything is written: a hand edit that broke
+  // settings.json must not strand off halfway through a stripped
+  // providers.json. Keep the record: once the JSON is fixed, off can still
+  // tell our values from the user's.
   let providersFile: Record<string, unknown>;
+  let settingsFile: Record<string, unknown>;
   try {
     providersFile = await readCopilotFile(paths.providers);
+    settingsFile = await readCopilotFile(paths.settings);
   } catch (error) {
     if (error instanceof CliError) {
-      // Keep the record: once the JSON is fixed, off can still tell our
-      // values from the user's.
-      return {
-        stripped: false,
-        notes: [`${paths.providers} is not valid JSON; fix it, then run aiand copilot off again.`],
-      };
+      const what = error.message.trim().replace(/\.$/, "");
+      return { stripped: false, notes: [`${what}; fix it, then run aiand copilot off again.`] };
     }
     throw error;
   }
@@ -381,20 +389,23 @@ async function disable(): Promise<DisableResult> {
     );
 
     // settings.json: hand back the `model` selection on replaced, or drop
-    // the key when on added it to a file that had none. A value the user
-    // changed in between is theirs and stays, with a note.
+    // the key when on added it to a file that had none. A `aiand/`-prefixed
+    // value — ours, or a later pick of another ai& model from the app's
+    // menu — is always undone: off just deleted every row that could serve
+    // it, so leaving it dangles a dead model. Only the user's own value
+    // stays, with a note.
     let settingsText = raw.settings;
-    const settings = parseWritten(settingsText);
-    if (added?.wroteModelSelection !== undefined) {
-      if (settings.model === added.wroteModelSelection) {
-        if (added.previousModelSelection !== undefined) {
-          settingsText = jsoncSet(settingsText, ["model"], added.previousModelSelection);
-        } else {
-          settingsText = jsoncDelete(settingsText, ["model"]);
-        }
-      } else if (settings.model !== undefined) {
-        notes.push("left model because you edited it");
+    const model = settingsFile.model;
+    const isOurSelection =
+      typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
+    if (isOurSelection) {
+      if (added?.previousModelSelection !== undefined) {
+        settingsText = jsoncSet(settingsText, ["model"], added.previousModelSelection);
+      } else {
+        settingsText = jsoncDelete(settingsText, ["model"]);
       }
+    } else if (added?.wroteModelSelection !== undefined && model !== undefined) {
+      notes.push("left model because you edited it");
     }
     await writeStripped(
       paths.settings,
@@ -508,6 +519,11 @@ export const copilotAdapter: AgentAdapter = {
     return {
       env: {
         COPILOT_HOME: overlay,
+        // COPILOT_PROVIDERS_CONFIG outranks COPILOT_HOME for providers.json
+        // (file-direct beats the relocated dir), so an inherited value would
+        // make the child read the user's file, not the overlay: pin it at
+        // the overlay's own providers.json.
+        COPILOT_PROVIDERS_CONFIG: join(overlay, "providers.json"),
         // Model precedence (observed against 1.0.89): --model >
         // COPILOT_MODEL > settings.json. COPILOT_MODEL beats the overlay's
         // own pin and an inherited user env; COPILOT_OFFLINE=true keeps a

@@ -230,6 +230,14 @@ describe("copilot adapter", () => {
     assert.equal(readJson(copilotSettingsPath()).model, "gpt-5.1");
   });
 
+  test("enable(): native with no settings.json creates no empty file", async () => {
+    const result = await copilotAdapter.enable(enableInput({ model: "native" }));
+    assert.deepEqual(result.filesWritten, [copilotProvidersPath()]);
+    assert.equal(existsSync(copilotSettingsPath()), false);
+    await copilotAdapter.disable();
+    assert.equal(existsSync(copilotProvidersPath()), false);
+  });
+
   test("probe(): absent config is inactive with no model", async () => {
     const result = await copilotAdapter.probe();
     assert.equal(result.active, false);
@@ -293,6 +301,20 @@ describe("copilot adapter", () => {
     assert.equal(readJson(copilotSettingsPath()).model, "gpt-5.1");
   });
 
+  test("disable(): a dangling aiand/ pick made after on is still undone", async () => {
+    // The user switched models inside Copilot: a different aiand/ ref than
+    // the one on wrote. off deletes every row that could serve it, so the
+    // value is ours to undo — a bare launch must not dangle on a dead
+    // provider.
+    const seed = seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    writeJson(copilotSettingsPath(), { theme: "dark", model: "aiand/qwen/qwen3.8-27b" });
+    const result = await copilotAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.deepEqual(result.notes, []);
+    assert.equal(readFileSync(copilotSettingsPath()).equals(seed.settings), true);
+  });
+
   test("disable(): foreign unroutable aiand row stays untouched", async () => {
     writeJson(copilotProvidersPath(), {
       providers: [{ name: "aiand", type: "openai", baseUrl: "ftp://elsewhere.invalid" }],
@@ -302,6 +324,19 @@ describe("copilot adapter", () => {
     assert.equal(result.stripped, false);
     assert.equal(readJson(copilotProvidersPath()).providers.length, 1);
     assert.equal(readJson(copilotProvidersPath()).models.length, 1);
+  });
+
+  test("disable(): a malformed settings.json blocks before providers is touched", async () => {
+    await copilotAdapter.enable(enableInput());
+    writeFileSync(copilotSettingsPath(), "{ broken");
+    const providersBefore = readFileSync(copilotProvidersPath());
+    const result = await copilotAdapter.disable();
+    assert.equal(result.stripped, false);
+    assert.match(
+      result.notes[0],
+      /settings\.json is not valid JSON; fix it, then run aiand copilot off again/,
+    );
+    assert.equal(readFileSync(copilotProvidersPath()).equals(providersBefore), true);
   });
 
   test("disable(): malformed providers.json keeps the record and notes", async () => {
@@ -377,7 +412,11 @@ describe("copilot adapter", () => {
       assert.equal(launch.env.COPILOT_MODEL, "aiand/zai-org/glm-5.3");
       assert.equal(launch.env.COPILOT_OFFLINE, "true");
       assert.deepEqual(launch.args, ["--no-auto-update"]);
-      assert.deepEqual(launch.stripPassthroughFlags, ["--model"]);
+      assert.equal(
+        launch.env.COPILOT_PROVIDERS_CONFIG,
+        join(launch.env.COPILOT_HOME, "providers.json"),
+        "an inherited COPILOT_PROVIDERS_CONFIG cannot outrank the overlay",
+      );
 
       const overlayProviders = readJson(join(launch.env.COPILOT_HOME, "providers.json"));
       assert.equal(overlayProviders.providers[0].apiKey, "sk-session-1");

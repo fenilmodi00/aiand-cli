@@ -48,6 +48,7 @@ delete process.env.COPILOT_HOME;
 delete process.env.COPILOT_PROVIDERS_CONFIG;
 delete process.env.COPILOT_MODEL;
 delete process.env.COPILOT_OFFLINE;
+delete process.env.FORCE_COLOR;
 
 const guard = `--import=${pathToFileURL(join(import.meta.dirname, "net-guard.mjs")).href}`;
 if (!(process.env.NODE_OPTIONS ?? "").includes(guard)) {

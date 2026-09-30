@@ -82,8 +82,9 @@ export async function execCopilotSql(dbPath: string, statements: string[]): Prom
     return;
   }
   // sqlite3 auto-commits per statement; the explicit BEGIN/COMMIT is what
-  // makes the batch atomic, matching the node:sqlite path above.
-  const result = spawnSync("sqlite3", [dbPath], {
+  // makes the batch atomic, matching the node:sqlite path above. -bail stops
+  // the shell at the first error so a mid-batch failure never reaches COMMIT.
+  const result = spawnSync("sqlite3", ["-bail", dbPath], {
     input: `BEGIN;\n${statements.join("\n")}\nCOMMIT;`,
     encoding: "utf8",
   });
