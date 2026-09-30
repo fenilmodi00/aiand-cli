@@ -7,9 +7,67 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand omp on` wires Oh My Pi to ai& through `~/.omp/agent/`: an
+  override-only `aiand` provider block in `models.yml` — baseUrl, the
+  session key locked to 0600, and the `managedBy: "aiand"` marker; omp
+  already bundles the aiand provider, so nothing else is written — and a
+  `modelRoles.default` pin in `config.yml`. `off` removes exactly what
+  `on` added; a `modelRoles.default` ai& cannot serve is set aside and put
+  back on `off`, one it can serve is kept. Pass `--model native` to leave
+  omp's own default.
+
+- `aiand run-agent omp` launches Oh My Pi on ai& for one session with no omp
+  config written under `~/.omp/`: a throwaway overlay becomes
+  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
+  (never the child env), while session history still lands in the user's
+  real session directory. User-supplied `--model`/`--provider`/`--api-key`/
+  `--models` passthrough flags are stripped so the routing cannot be
+  overridden; the overlay is removed after the session ends.
+
+### Fixed
+
+- `aiand run-agent omp` keeps session history in omp's XDG data dir
+  (`$XDG_DATA_HOME/omp/sessions`) when the user ran `omp config init-xdg`;
+  previously the session dir was always `~/.omp/agent/sessions`, so XDG
+  setups wrote history where omp never reads it.
+
+- `aiand omp off` strips the aiand provider block from the config files
+  recorded by `on` when the omp agent dir was relocated between the two,
+  instead of orphaning the key literal in the old directory.
+
+- `aiand omp off` reports `stripped: false` when a relocated config file is
+  unreadable and nothing was stripped yet, instead of a misleading `true`;
+  the record is kept so a retry after the fix still strips.
+
+- OMP flow-sequence values with quoted commas (`modes: ["a,b", c]`) parse
+  without splitting inside the quotes; previously the comma inside quotes
+  silently produced two items.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added
+
+- `aiand pi on` wires the Pi coding agent to ai& through
+  `~/.pi/agent/`: an `aiand` provider in `models.json` speaking the gateway's
+  OpenAI-compatible dialect with every model from the live catalog, the
+  session key in `auth.json` (locked to 0600, marked `managedBy: "aiand"`),
+  and `defaultProvider`/`defaultModel` in `settings.json`. `off` removes
+  exactly what `on` added and restores a `defaultModel` it had to set aside
+  because the gateway cannot serve it; one it can serve is kept. Pass
+  `--model native` to leave Pi's own default model. Reasoning models run at
+  their gateway default effort: Pi's client would otherwise send an effort
+  level (`medium`) the catalog does not publish for every model, and the
+  gateway rejects it.
+
+- `aiand run-agent pi` launches Pi on ai& for one session with no Pi config
+  written under `~/.pi/`: a throwaway overlay becomes
+  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
+  (never the child env), while session history still lands in the user's
+  real session directory. User-supplied `--provider`/`--model`/`--models`/
+  `--api-key` passthrough flags are stripped so the routing cannot be
+  overridden; the overlay is removed after the session ends.
 
 - `aiand claude on` lists every ai& model in Claude Code's `/model` picker,
   through its `modelPicker` setting: Claude Code only discovers gateway models

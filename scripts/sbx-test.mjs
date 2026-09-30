@@ -108,6 +108,8 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
   "FORCE_COLOR",
   "STUB_EXIT",
 ];
@@ -167,6 +169,10 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+const PI_DIR = join(MAIN_HOME, ".pi", "agent");
+const PI_MODELS = join(PI_DIR, "models.json");
+const PI_AUTH = join(PI_DIR, "auth.json");
+const PI_SETTINGS = join(PI_DIR, "settings.json");
 
 function seedFile(state, path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -187,7 +193,7 @@ function sameBytes(path, expected) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex"];
+const STUB_NAMES = ["opencode", "claude", "codex", "pi"];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -204,6 +210,13 @@ if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+// Same for the PI_CODING_AGENT_DIR overlay the launcher deletes after exit.
+if (process.env.PI_CODING_AGENT_DIR) {
+  const dir = process.env.PI_CODING_AGENT_DIR;
+  record.overlayMode = fs.statSync(dir + "/auth.json").mode & 0o777;
+  record.overlayAuth = JSON.parse(fs.readFileSync(dir + "/auth.json", "utf8"));
+  record.overlayModels = JSON.parse(fs.readFileSync(dir + "/models.json", "utf8"));
 }
 fs.writeFileSync(${JSON.stringify(LAUNCHED)} + "/" + name + ".json", JSON.stringify(record, null, 2));
 process.exit(Number(process.env.STUB_EXIT ?? 0));
@@ -419,9 +432,62 @@ const AGENT_DEFS = {
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
     },
   },
+  pi: {
+    bin: "pi",
+    seed(state) {
+      state.created = [];
+      seedFile(
+        state,
+        PI_MODELS,
+        `${JSON.stringify(
+          { providers: { openai: { name: "OpenAI", baseUrl: "https://api.openai.com/v1" } } },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        PI_AUTH,
+        `${JSON.stringify({ openai: { type: "api_key", key: "sk-user-openai" } }, null, 2)}\n`,
+      );
+      seedFile(state, PI_SETTINGS, `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
+    },
+    contents(t) {
+      const models = parseJson(readFileSync(PI_MODELS, "utf8")) ?? {};
+      const aiand = models.providers?.aiand ?? {};
+      t.ok(aiand.api === "openai-completions", "provider speaks openai-completions");
+      t.ok(
+        aiand.baseUrl === "https://api.aiand.com/v1",
+        "provider baseUrl is gateway /v1",
+        String(aiand.baseUrl),
+      );
+      // `aiand models --json` sorts by id while the provider array keeps
+      // gateway order: compare the sets, not the sequences.
+      const ids = (loadCatalog() ?? []).map((m) => m.id);
+      const modelIds = (aiand.models ?? []).map((m) => m.id);
+      t.ok(
+        ids.length === 0 || [...modelIds].sort().join() === [...ids].sort().join(),
+        "provider lists every catalog model",
+        `${modelIds.length} rows, ${ids.length} catalog models`,
+      );
+      const auth = parseJson(readFileSync(PI_AUTH, "utf8")) ?? {};
+      t.ok(
+        auth.aiand?.key === KEY && auth.aiand?.managedBy === "aiand",
+        "auth.json aiand credential carries the key and marker",
+      );
+      t.ok(auth.openai?.key === "sk-user-openai", "user credential survives");
+      const settings = parseJson(readFileSync(PI_SETTINGS, "utf8")) ?? {};
+      t.ok(
+        settings.defaultProvider === "aiand" && settings.defaultModel === modelId(),
+        "settings pin provider and model",
+        `${settings.defaultProvider}/${settings.defaultModel}`,
+      );
+      t.ok(settings.theme === "dark", "user settings survive");
+    },
+  },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex"];
+const WIRING_ONE = ["opencode", "claude", "codex", "pi"];
 
 function verifyOffRestore(t, id) {
   const state = agentStates[id];
@@ -1406,6 +1472,32 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+
+define("launcher", "launcher-pi", (t) => {
+  const r = launchCheck("pi", ["pi", "--", "--dump"]);
+  okStatus(t, r, "run-agent pi");
+  const rec = stubRecord("pi");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    rec.args[0] === "--provider" && rec.args[1] === "aiand" && rec.args.at(-1) === "--dump",
+    "--provider aiand --model <id>, then passthrough",
+  );
+  t.ok(rec.env.PI_CODING_AGENT_DIR?.includes("aiand-pi-"), "overlay is the throwaway dir");
+  t.ok(
+    /\.pi[/\\]agent[/\\]sessions$/.test(rec.env.PI_CODING_AGENT_SESSION_DIR ?? ""),
+    "session history stays in the user's session dir",
+    String(rec.env.PI_CODING_AGENT_SESSION_DIR),
+  );
+  t.ok(rec.overlayMode === 0o600, "overlay auth.json is 0600", String(rec.overlayMode));
+  t.ok(rec.overlayAuth?.aiand?.key === KEY, "the key rides in the overlay, not the env");
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  t.ok(
+    rec.overlayModels?.providers?.aiand?.baseUrl === "https://api.aiand.com/v1",
+    "overlay provider is gateway /v1",
+  );
+  t.ok(!existsSync(rec.env.PI_CODING_AGENT_DIR), "overlay removed after exit");
 });
 
 define("launcher", "launcher-exit-code", (t) => {

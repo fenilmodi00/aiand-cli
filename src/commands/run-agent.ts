@@ -194,11 +194,32 @@ export async function run(argv: string[]): Promise<void> {
   delete env.AIAND_API_KEY;
   Object.assign(env, launch.env);
 
+  // The adapter may own routing flags in the passthrough (e.g. Pi's
+  // --provider/--model/--api-key): drop the user's `--flag value` and
+  // `--flag=value` forms so the injected routing cannot be overridden.
+  // Everything else passes verbatim. A value is only consumed when it is
+  // not itself a flag, so `--model --print` keeps --print and a trailing
+  // `--model` eats nothing.
+  const ownedFlags = launch.stripPassthroughFlags ?? [];
+  const passthrough: string[] = [];
+  for (let i = 0; i < split.passthrough.length; i += 1) {
+    const token = split.passthrough[i]!;
+    if (ownedFlags.includes(token)) {
+      // `--flag value`: the value is the next token, when present and not
+      // itself a flag.
+      const next = split.passthrough[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
+    passthrough.push(token);
+  }
+
   try {
     // Spawn the agent binary with an argument array. A Windows `.cmd` shim
     // needs cmd.exe; spawnChild escapes every token for it (src/cli/win-spawn.ts)
     // instead of joining raw passthrough into shell text.
-    const forwardArgs = [...(launch.args ?? []), ...split.passthrough];
+    const forwardArgs = [...(launch.args ?? []), ...passthrough];
     const { status, signal } = await spawnChild(adapter.bin, forwardArgs, {
       env,
       stdio: "inherit",
