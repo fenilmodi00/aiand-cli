@@ -511,16 +511,18 @@ export const copilotAdapter: AgentAdapter = {
     return {
       env: {
         COPILOT_HOME: overlay,
-        // COPILOT_MODEL beats inherited settings/user env, and a pure-BYOK
-        // session never phones GitHub (documented COPILOT_OFFLINE).
+        // Model precedence (observed against 1.0.89): --model >
+        // COPILOT_MODEL > settings.json. COPILOT_MODEL beats the overlay's
+        // own pin and an inherited user env; COPILOT_OFFLINE=true keeps a
+        // pure-BYOK session from phoning GitHub (skips auth, telemetry,
+        // web tools, GitHub MCP, auto-update).
         COPILOT_MODEL: `${COPILOT_SELECTION_PREFIX}${model}`,
         COPILOT_OFFLINE: "true",
       },
-      // --no-auto-update: a mid-session binary upgrade must not churn the
-      // pinned release. --model stays available to the user; the injected
-      // pin already wins over settings, and the CLI flag would only be
-      // stripped here if it could beat the env — it cannot, so the flag
-      // override of the pin is stripped (see run-agent's owned-flag filter).
+      // --no-auto-update: a mid-session upgrade must not churn the pinned
+      // release. --model is stripped because a CLI flag outranks the
+      // env pin (see the precedence above), so the injected routing would
+      // otherwise be overridable (run-agent's owned-flag filter).
       args: ["--no-auto-update"],
       stripPassthroughFlags: ["--model"],
       cleanup: async () => {
