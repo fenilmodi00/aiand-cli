@@ -14,6 +14,9 @@ withTestEnv("aiand-omp-test-", (dir) => {
   // Unlike its sibling vars, test/setup.mjs does not clear PI_CONFIG_DIR, so
   // a developer's own relocation would move ompAgentDir() out from under us.
   delete process.env.PI_CONFIG_DIR;
+  // Same reason: a developer's own XDG-migrated omp would redirect the
+  // session dir out from under the default-location assertions.
+  delete process.env.XDG_DATA_HOME;
   mkdirSync(join(process.env.AIAND_HOME, ".omp", "agent"), { recursive: true });
   mkdirSync(process.env.AIAND_CONFIG_DIR, { recursive: true });
 });
@@ -308,6 +311,50 @@ describe("omp adapter", () => {
     assert.equal(existsSync(addedRecord()), false);
   });
 
+  test("off: strips the block from the recorded dir when the config dir moved", async () => {
+    const seed = seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    // The user relocated omp's agent dir between `on` and `off`; the moved
+    // dir need not exist — off must still honor the recorded paths.
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      const result = await ompAdapter.disable();
+      assert.equal(result.stripped, true);
+      assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
+      assert.equal(readFileSync(configPath()).equals(seed.config), true);
+      assert.equal(existsSync(addedRecord()), false);
+      assert.ok(result.notes.some((n) => n.includes("config dir moved")));
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
+  test("off: unparseable relocated config keeps the record for retry", async () => {
+    const seed = seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      writeFileSync(configPath(), "modelRoles: {broken}\n");
+      const result = await ompAdapter.disable();
+      // The OLD models.yml was stripped anyway; the record survives for retry.
+      assert.equal(result.stripped, true);
+      assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
+      assert.ok(
+        result.notes.some((n) => n.includes("is not valid YAML") && n.includes(configPath())),
+      );
+      assert.equal(existsSync(addedRecord()), true);
+
+      // The user fixes the old config.yml; the retry restores and clears it.
+      writeFileSync(configPath(), CONFIG_SEED("aiand/zai-org/glm-5.3"));
+      const retry = await ompAdapter.disable();
+      assert.equal(retry.stripped, true);
+      assert.equal(readFileSync(configPath()).equals(seed.config), true);
+      assert.equal(existsSync(addedRecord()), false);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
   test("refreshKey: idempotent same key, previousKey gates, one-literal swap", async () => {
     seedUserFiles();
     await ompAdapter.enable(enableInput());
@@ -389,6 +436,67 @@ describe("omp adapter", () => {
       await launch.cleanup();
     } finally {
       delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    }
+  });
+
+  // The XDG redirect mirrors omp's DirResolver: linux/darwin only.
+  const xdgPlatform = process.platform === "linux" || process.platform === "darwin";
+
+  test("sessionLaunch: XDG-migrated omp keeps history in its XDG sessions dir", {
+    skip: !xdgPlatform,
+  }, async () => {
+    const xdg = join(process.env.AIAND_HOME, "xdg");
+    mkdirSync(join(xdg, "omp"), { recursive: true });
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      process.env.XDG_DATA_HOME = xdg;
+      const launch = await ompAdapter.sessionLaunch(sessionInput());
+      try {
+        assert.equal(launch.env.PI_CODING_AGENT_SESSION_DIR, join(xdg, "omp", "sessions"));
+      } finally {
+        await launch.cleanup();
+      }
+    } finally {
+      delete process.env.XDG_DATA_HOME;
+    }
+  });
+
+  test("sessionLaunch: XDG_DATA_HOME without an omp data dir falls back to the agent dir", {
+    skip: !xdgPlatform,
+  }, async () => {
+    const xdg = join(process.env.AIAND_HOME, "xdg-empty"); // never created
+    delete process.env.PI_CODING_AGENT_DIR;
+    try {
+      process.env.XDG_DATA_HOME = xdg;
+      const launch = await ompAdapter.sessionLaunch(sessionInput());
+      try {
+        assert.equal(launch.env.PI_CODING_AGENT_SESSION_DIR, join(agentDir(), "sessions"));
+      } finally {
+        await launch.cleanup();
+      }
+    } finally {
+      delete process.env.XDG_DATA_HOME;
+    }
+  });
+
+  test("sessionLaunch: PI_CODING_AGENT_DIR beats an XDG-migrated omp", {
+    skip: !xdgPlatform,
+  }, async () => {
+    const xdg = join(process.env.AIAND_HOME, "xdg");
+    mkdirSync(join(xdg, "omp"), { recursive: true });
+    const elsewhere = join(process.env.AIAND_HOME, "elsewhere", "agent");
+    try {
+      process.env.XDG_DATA_HOME = xdg;
+      process.env.PI_CODING_AGENT_DIR = elsewhere;
+      const launch = await ompAdapter.sessionLaunch(sessionInput());
+      try {
+        assert.equal(launch.env.PI_CODING_AGENT_SESSION_DIR, join(elsewhere, "sessions"));
+      } finally {
+        await launch.cleanup();
+      }
+    } finally {
+      delete process.env.XDG_DATA_HOME;
+      delete process.env.PI_CODING_AGENT_DIR;
     }
   });
 });

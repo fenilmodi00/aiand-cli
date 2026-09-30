@@ -190,6 +190,10 @@ until `off`; one it can serve is kept. Pass `--model <id>` to switch, or
 `--model native` to leave omp's own default. `PI_CODING_AGENT_DIR` moves the
 config root.
 
+One-session launches keep session history in omp's own session dir, including
+its XDG location (`$XDG_DATA_HOME/omp/sessions`) when omp was migrated with
+`omp config init-xdg`.
+
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.
 

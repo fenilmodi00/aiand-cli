@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +41,9 @@ const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand omp on a
 
 /**
  * What enable() recorded so off can tell its values from the user's. The
- * baked key never appears here: only ids, previous values, and file modes.
+ * baked key never appears here: only ids, previous values, file modes, and
+ * the absolute paths we wrote (paths are not secrets; the snapshot manifest
+ * already stores them).
  */
 type OmpRecord = {
   /** What config.yml's modelRoles.default was before on (undefined = absent). */
@@ -50,12 +53,30 @@ type OmpRecord = {
   /** File mode before `on` wrote it, per file off rewrites. */
   previousModelsMode?: number;
   previousConfigMode?: number;
+  /** Where `on` actually wrote the files; off strips them if the dir moved. */
+  modelsPath?: string;
+  configPath?: string;
 };
 
 /** The agent config dir: ~/.omp/agent/, or $PI_CODING_AGENT_DIR when set. */
 function ompAgentDir(): string {
   if (process.env.PI_CODING_AGENT_DIR) return process.env.PI_CODING_AGENT_DIR;
   return join(agentHome(), process.env.PI_CONFIG_DIR || ".omp", "agent");
+}
+
+/** Where omp keeps session history: the agent dir's `sessions/`, or the
+ *  XDG data dir omp migrated to (`$XDG_DATA_HOME/omp/sessions`) when the
+ *  user ran `omp config init-xdg`. Mirrors DirResolver (dirs.ts:365-399):
+ *  XDG applies only on linux/darwin, only when the agent dir is the
+ *  default one, and only when the XDG dir exists. */
+function ompSessionsDir(): string {
+  if (process.env.PI_CODING_AGENT_DIR) return join(ompAgentDir(), "sessions");
+  if (process.platform === "linux" || process.platform === "darwin") {
+    const xdg = process.env.XDG_DATA_HOME || join(agentHome(), ".local", "share");
+    const migrated = join(xdg, "omp");
+    if (existsSync(migrated)) return join(migrated, "sessions");
+  }
+  return join(ompAgentDir(), "sessions");
 }
 
 function ompModelsPath(): string {
@@ -261,6 +282,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     wroteDefaultModel,
     previousModelsMode,
     previousConfigMode,
+    modelsPath: paths.models,
+    configPath: paths.config,
   });
 
   // The model now in effect, as the catalog id: this run's write, else what
@@ -379,6 +402,65 @@ async function disable(): Promise<DisableResult> {
     );
   }
 
+  // A dir move after `on` (PI_CODING_AGENT_DIR / PI_CONFIG_DIR retargeted)
+  // leaves our block in the old files while the current dir shows nothing
+  // of ours. The record knows where `on` actually wrote: strip those too,
+  // or the baked key stays live forever with nothing pointing at it.
+  for (const kind of ["models", "config"] as const) {
+    const stalePath = kind === "models" ? added?.modelsPath : added?.configPath;
+    if (!stalePath || stalePath === paths[kind] || !existsSync(stalePath)) continue;
+    const rawStale = await readTextIfExists(stalePath);
+    let stale: Record<string, unknown>;
+    try {
+      stale = kind === "models" ? await readOmpFile(stalePath) : readYamlMapping(rawStale);
+    } catch (error) {
+      if (error instanceof CliError || error instanceof SyntaxError) {
+        // Keep the record: after the fix, off must still find this path.
+        return {
+          stripped: true,
+          notes: [`${stalePath} is not valid YAML; fix it, then run aiand omp off again.`],
+        };
+      }
+      throw error;
+    }
+    let staleText = rawStale;
+    if (kind === "models") {
+      // Marker-gated like the current dir: a foreign block is left alone.
+      if (!hasOwnershipMarker(stale)) continue;
+      staleText = yamlDelete(rawStale, ["providers", OMP_PROVIDER_ID]);
+      const left = aiandProviderParent(readYamlMapping(staleText));
+      if (left && Object.keys(left).length === 0) {
+        staleText = yamlDelete(staleText, ["providers"]);
+      }
+    } else if (added?.wroteDefaultModel !== undefined) {
+      // config.yml: the same hand-back logic as the current dir, same
+      // record. Values the user changed in between are theirs and stay.
+      const modelRoles =
+        stale.modelRoles && typeof stale.modelRoles === "object" && !Array.isArray(stale.modelRoles)
+          ? (stale.modelRoles as Record<string, unknown>)
+          : undefined;
+      if (modelRoles?.default === added.wroteDefaultModel) {
+        staleText =
+          added.previousDefaultModel !== undefined
+            ? yamlSet(staleText, ["modelRoles", "default"], added.previousDefaultModel)
+            : yamlDelete(staleText, ["modelRoles", "default"]);
+      } else if (modelRoles?.default !== undefined) {
+        notes.push("left modelRoles.default because you edited it");
+      }
+    }
+    await writeStripped(
+      stalePath,
+      rawStale,
+      staleText,
+      (kind === "models" ? added?.previousModelsMode : added?.previousConfigMode) ??
+        DEFAULT_FILE_MODE,
+    );
+    if (staleText !== rawStale) {
+      stripped = true;
+      notes.push(`stripped the aiand block from ${stalePath} because the omp config dir moved`);
+    }
+  }
+
   await clearAddedState(OMP_ID);
   return { stripped, notes };
 }
@@ -387,7 +469,7 @@ async function disable(): Promise<DisableResult> {
  * The OMP release the install hint pins (check-dist keeps ci.yml in step).
  * @public read from dist/ by scripts/check-dist.mjs
  */
-export const OMP_VERSION = "18.4.3";
+export const OMP_VERSION = "18.4.4";
 
 const OMP_INSTALL = {
   command: `curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v${OMP_VERSION}`,
@@ -436,8 +518,9 @@ export const ompAdapter: AgentAdapter = {
     // override block `on` writes) and config.yml pinning modelRoles.default
     // at 0600. The key never rides the child env — the overlay file is how
     // omp reads it — and cleanup removes the overlay after the child exits.
-    // Real session history survives in the user's own session dir, pointed
-    // at through PI_CODING_AGENT_SESSION_DIR.
+    // Real session history survives in the user's own session dir — omp's
+    // default agent dir, its XDG location when migrated, or an explicit
+    // PI_CODING_AGENT_SESSION_DIR — pointed at through that env var.
     const model = input.model ?? resolveDefault(input.catalog, input.profileModel);
     const overlay = await mkdtemp(join(tmpdir(), "aiand-omp-"));
     // A failed setup would otherwise leak the overlay (and a half-written
@@ -471,8 +554,7 @@ export const ompAdapter: AgentAdapter = {
     return {
       env: {
         PI_CODING_AGENT_DIR: overlay,
-        PI_CODING_AGENT_SESSION_DIR:
-          process.env.PI_CODING_AGENT_SESSION_DIR ?? join(ompAgentDir(), "sessions"),
+        PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR ?? ompSessionsDir(),
       },
       // --model pins the routing; a user-supplied --provider/--api-key/
       // --models would override the overlay, so they are stripped with the

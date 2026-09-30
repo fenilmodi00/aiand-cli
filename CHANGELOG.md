@@ -26,6 +26,17 @@ breaking changes while the command surface settles.
   `--models` passthrough flags are stripped so the routing cannot be
   overridden; the overlay is removed after the session ends.
 
+### Fixed
+
+- `aiand run-agent omp` keeps session history in omp's XDG data dir
+  (`$XDG_DATA_HOME/omp/sessions`) when the user ran `omp config init-xdg`;
+  previously the session dir was always `~/.omp/agent/sessions`, so XDG
+  setups wrote history where omp never reads it.
+
+- `aiand omp off` strips the aiand provider block from the config files
+  recorded by `on` when the omp agent dir was relocated between the two,
+  instead of orphaning the key literal in the old directory.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added
