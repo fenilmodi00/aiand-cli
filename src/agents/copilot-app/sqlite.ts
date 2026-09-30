@@ -58,7 +58,7 @@ function sqlTextOrNull(value: string | null | undefined): string {
 /** True for failures that mean the undocumented app schema moved under us. */
 export function isCopilotSchemaError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /no such (?:table|column)|not a database|file is not a database/i.test(message);
+  return /no such (?:table|column)|not a database/i.test(message);
 }
 
 /** Execute a batch of statements as one atomic unit; any failure rolls back all. */

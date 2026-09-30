@@ -38,7 +38,7 @@
 //     COPILOT_HOME; `off` still deletes exactly the two files `on` created
 //     from a fresh sandbox (phase 3 asserts that).
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,14 +176,6 @@ try {
   );
   if (on.state === "on") process.stdout.write("PASS aiand copilot on\n");
   else fail(`aiand copilot on: ${JSON.stringify(on)}`);
-
-  const providers = JSON.parse(readFileSync(join(copilotDir, "providers.json"), "utf8"));
-  const aiandRow = providers.providers.find((row) => row.name === "aiand");
-  if (aiandRow?.baseUrl === `${baseUrl}/v1` && aiandRow?.apiKey === env.AIAND_API_KEY) {
-    process.stdout.write("PASS providers.json routes aiand at the loopback double\n");
-  } else {
-    fail(`providers.json not wired: ${JSON.stringify(aiandRow)}`);
-  }
 
   // 2. Headless round-trips: the default selection and an explicit
   //    --model both resolve to the wireModel the double echoes. The

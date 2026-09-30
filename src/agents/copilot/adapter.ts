@@ -298,12 +298,9 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     createdSettings,
   });
 
-  if (isNative) {
-    return { model: "native", filesWritten: [paths.providers, paths.settings], warnings };
-  }
   return {
-    model: wroteModelSelection as string,
-    catalogModel: input.model,
+    model: isNative ? "native" : (wroteModelSelection as string),
+    catalogModel: isNative ? undefined : input.model,
     filesWritten: [paths.providers, paths.settings],
     warnings,
   };

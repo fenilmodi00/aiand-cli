@@ -30,10 +30,10 @@ breaking changes while the command surface settles.
   provider row speaking the gateway's OpenAI-compatible dialect, plus one
   model row per catalog model, in `~/.copilot/providers.json` (or
   `$COPILOT_HOME`), and the `aiand/<id>` pin in `~/.copilot/settings.json`
-  that a bare `copilot` launch needs, since a BYOK provider has no built-in
-  default. `off` removes exactly those rows and hands back the `model`
-  selection it replaced; a value you changed in between is kept. The provider
-  row holds the session key literal and no GitHub sign-in is involved. `aiand
+  that a bare `copilot` launch needs. `off` removes exactly those rows and
+  hands back the `model` selection it replaced; a value you changed in
+  between is kept. The provider row holds the session key literal and no
+  GitHub sign-in is involved. `aiand
   run-agent copilot` launches the CLI on ai& for one session with nothing
   written under `~/.copilot`: a throwaway dir becomes `COPILOT_HOME` holding
   the generated provider rows and the session model, with

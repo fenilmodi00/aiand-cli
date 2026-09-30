@@ -199,6 +199,15 @@ function sameBytes(path, expected) {
   }
 }
 
+function readCopilotDb(...sqls) {
+  const db = new DatabaseSync(COPILOT_DB, { readOnly: true });
+  try {
+    return sqls.map((sql) => db.prepare(sql).all());
+  } finally {
+    db.close();
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
@@ -580,19 +589,10 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
       db.close();
     },
     contents(t) {
-      const db = new DatabaseSync(COPILOT_DB, { readOnly: true });
-      let providers;
-      let models;
-      try {
-        providers = db
-          .prepare("SELECT id, name, settings_json FROM model_providers WHERE id LIKE 'aiand-%';")
-          .all();
-        models = db
-          .prepare("SELECT model_id FROM provider_models WHERE provider_id LIKE 'aiand-%';")
-          .all();
-      } finally {
-        db.close();
-      }
+      const [providers, models] = readCopilotDb(
+        "SELECT id, name, settings_json FROM model_providers WHERE id LIKE 'aiand-%';",
+        "SELECT model_id FROM provider_models WHERE provider_id LIKE 'aiand-%';",
+      );
       t.ok(
         providers.length === 1 && providers[0].name === "ai&",
         "one owned provider row",
@@ -619,15 +619,10 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     verifyOffExtra(t) {
       // The db is the app's own file: off must strip our rows, keep the
       // user's, and never delete the database itself.
-      const db = new DatabaseSync(COPILOT_DB, { readOnly: true });
-      let ours;
-      let foreign;
-      try {
-        ours = db.prepare("SELECT id FROM model_providers WHERE id LIKE 'aiand-%';").all();
-        foreign = db.prepare("SELECT id FROM model_providers WHERE id = 'user-1';").all();
-      } finally {
-        db.close();
-      }
+      const [ours, foreign] = readCopilotDb(
+        "SELECT id FROM model_providers WHERE id LIKE 'aiand-%';",
+        "SELECT id FROM model_providers WHERE id = 'user-1';",
+      );
       t.ok(ours.length === 0, "our provider row is gone after off");
       t.ok(foreign.length === 1, "the user's provider row survives off");
       t.ok(existsSync(COPILOT_DB), "the app's database file survives off");

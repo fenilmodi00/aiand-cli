@@ -212,8 +212,7 @@ session key itself, so no GitHub sign-in is involved. Pass `--model <id>` to
 switch models; `off` hands back the `model` selection it replaced, or drops
 the key it added, and leaves a value you changed in between. The key sits in
 that file while Copilot is wired, so keep it out of a dotfiles repo.
-`--model native` leaves settings.json's model as it is, since BYOK has no
-default of its own.
+`--model native` leaves settings.json's model as it is.
 
 The GitHub Copilot desktop app takes the same wiring through its own provider
 store, and nothing else. `aiand copilot-app on` writes an `aiand-`-prefixed

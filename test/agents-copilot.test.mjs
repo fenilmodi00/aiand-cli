@@ -269,13 +269,9 @@ describe("copilot adapter", () => {
     await copilotAdapter.enable(enableInput());
     const result = await copilotAdapter.disable();
     assert.equal(result.stripped, true);
-    const providers = readJson(copilotProvidersPath());
-    assert.deepEqual(providers.providers, [
-      { name: "fireworks", type: "openai", baseUrl: "https://api.fireworks.ai/inference/v1" },
-    ]);
-    assert.deepEqual(providers.models, [
-      { id: "kimi", provider: "fireworks", wireModel: "kimi-k2", name: "Kimi" },
-    ]);
+    // Byte-identity against the seed pins both halves at once: our rows
+    // are gone and the user's rows kept (the pi precedent asserts bytes
+    // only).
     assert.equal(readFileSync(copilotProvidersPath()).equals(seed.providers), true);
     assert.equal(readFileSync(copilotSettingsPath()).equals(seed.settings), true);
   });

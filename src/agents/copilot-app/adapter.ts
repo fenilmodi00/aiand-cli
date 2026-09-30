@@ -177,19 +177,11 @@ async function findAppProvider(): Promise<AppProviderRow | null> {
   if (!row) return null;
   const settings = JSON.parse(String(row.settings_json ?? "{}")) as Record<string, unknown>;
   const headers = JSON.parse(String(settings.headersJson ?? "{}")) as Record<string, unknown>;
-  const authorization = typeof headers.Authorization === "string" ? headers.Authorization : "";
-  return {
-    id: String(row.id),
-    settings,
-    apiKey: /^Bearer\s+/i.test(authorization)
-      ? authorization.replace(/^Bearer\s+/i, "")
-      : undefined,
-  };
+  const bearer = (typeof headers.Authorization === "string" ? headers.Authorization : "").match(
+    /^Bearer\s+(.*)$/i,
+  );
+  return { id: String(row.id), settings, apiKey: bearer?.[1] };
 }
-
-/** The db header the GUI still shows; foreign rows stay byte-untouched. */
-const appProviderStatement = (providerId: string, settingsJson: string): string =>
-  `INSERT OR REPLACE INTO model_providers (id, name, type, settings_json, account_id) VALUES (${sqlString(providerId)}, ${sqlString(COPILOT_APP_PROVIDER_NAME)}, 'openai', ${sqlString(settingsJson)}, NULL);`;
 
 function copilotAppModels(input: EnableInput): CopilotAppModel[] {
   return input.catalog.map((model) => ({
@@ -237,7 +229,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     const existing = await findAppProvider().catch(() => null);
     const providerId = existing?.id ?? newCopilotProviderId();
     const statements = [
-      appProviderStatement(providerId, settingsJson),
+      `INSERT OR REPLACE INTO model_providers (id, name, type, settings_json, account_id) VALUES (${sqlString(providerId)}, ${sqlString(COPILOT_APP_PROVIDER_NAME)}, 'openai', ${sqlString(settingsJson)}, NULL);`,
       // Replace the whole model set under one transaction; UNIQUE
       // (provider_id, model_id) makes a re-on idempotent.
       `DELETE FROM provider_models WHERE provider_id = ${sqlString(providerId)};`,

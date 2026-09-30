@@ -960,16 +960,14 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     Boolean(copilotOverlay?.includes("aiand-copilot-")),
     copilotOverlay ?? "missing",
   );
+  const copilotModel = copilotChildEnv.match(/^COPILOT_MODEL=(.*)$/m)?.[1] ?? "missing";
+  const copilotOffline = copilotChildEnv.match(/^COPILOT_OFFLINE=(.*)$/m)?.[1] ?? "missing";
   check(
     "run-agent copilot pins COPILOT_MODEL to an aiand-qualified catalog id",
-    /^aiand\//.test(copilotChildEnv.match(/^COPILOT_MODEL=(.*)$/m)?.[1] ?? ""),
-    copilotChildEnv.match(/^COPILOT_MODEL=(.*)$/m)?.[1] ?? "missing",
+    /^aiand\//.test(copilotModel),
+    copilotModel,
   );
-  check(
-    "run-agent copilot runs offline",
-    copilotChildEnv.match(/^COPILOT_OFFLINE=(.*)$/m)?.[1] === "true",
-    copilotChildEnv.match(/^COPILOT_OFFLINE=(.*)$/m)?.[1] ?? "missing",
-  );
+  check("run-agent copilot runs offline", copilotOffline === "true", copilotOffline);
   check(
     "run-agent copilot keeps the key out of the child env",
     !copilotChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
