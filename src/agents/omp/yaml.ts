@@ -129,6 +129,47 @@ function parseKeyLine(raw: string): KeyLine | null {
   };
 }
 
+/** Split a flow-sequence body on commas that sit outside quotes. */
+function splitFlowItems(inner: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i]!;
+    if (quote === '"') {
+      cur += char;
+      if (char === "\\") {
+        cur += inner[i + 1] ?? "";
+        i++;
+      } else if (char === '"') quote = null;
+      continue;
+    }
+    if (quote === "'") {
+      cur += char;
+      if (char === "'") {
+        if (inner[i + 1] === "'") {
+          cur += "'";
+          i++;
+        } else quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      cur += char;
+      continue;
+    }
+    if (char === ",") {
+      parts.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += char;
+  }
+  parts.push(cur);
+  return parts;
+}
+
 /** An inline value: `{}` / `[a, b]` flow, else a scalar. */
 function parseInline(raw: string): YamlValue {
   const text = raw.trim();
@@ -136,7 +177,7 @@ function parseInline(raw: string): YamlValue {
   if (text.startsWith("[") && text.endsWith("]")) {
     const inner = text.slice(1, -1).trim();
     if (inner === "") return [];
-    return inner.split(",").map((part) => parseScalar(part));
+    return splitFlowItems(inner).map((part) => parseScalar(part));
   }
   if (text.startsWith("{")) throw new SyntaxError(`flow mappings are not supported: ${text}`);
   return parseScalar(text);

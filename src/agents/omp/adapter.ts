@@ -416,8 +416,10 @@ async function disable(): Promise<DisableResult> {
     } catch (error) {
       if (error instanceof CliError || error instanceof SyntaxError) {
         // Keep the record: after the fix, off must still find this path.
+        // Report the running total, not a hardcoded true: when nothing was
+        // stripped yet (moved dir, first stale file unreadable) this is false.
         return {
-          stripped: true,
+          stripped,
           notes: [`${stalePath} is not valid YAML; fix it, then run aiand omp off again.`],
         };
       }

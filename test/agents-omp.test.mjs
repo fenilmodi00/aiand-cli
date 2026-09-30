@@ -11,8 +11,9 @@ withTestEnv("aiand-omp-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
   process.env.AIAND_CONFIG_DIR = join(dir, "cfg");
   process.env.AIAND_API_KEY = "sk-test-123";
-  // Unlike its sibling vars, test/setup.mjs does not clear PI_CONFIG_DIR, so
-  // a developer's own relocation would move ompAgentDir() out from under us.
+  // test/setup.mjs clears PI_CONFIG_DIR and XDG_DATA_HOME globally; the
+  // deletes below are belt-and-braces so this file stays hermetic even when
+  // run without the preload.
   delete process.env.PI_CONFIG_DIR;
   // Same reason: a developer's own XDG-migrated omp would redirect the
   // session dir out from under the default-location assertions.
@@ -355,6 +356,25 @@ describe("omp adapter", () => {
     }
   });
 
+  test("off: unparseable relocated models.yml with nothing stripped reports false", async () => {
+    seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      // models.yml is the first stale file off reads: unreadable there means
+      // nothing was stripped yet, so stripped stays false for the retry.
+      writeFileSync(modelsPath(), "providers: {broken}\n");
+      const result = await ompAdapter.disable();
+      assert.equal(result.stripped, false);
+      assert.ok(
+        result.notes.some((n) => n.includes("is not valid YAML") && n.includes(modelsPath())),
+      );
+      assert.equal(existsSync(addedRecord()), true);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
   test("refreshKey: idempotent same key, previousKey gates, one-literal swap", async () => {
     seedUserFiles();
     await ompAdapter.enable(enableInput());
@@ -586,6 +606,11 @@ describe("omp yaml editors", () => {
 
   test("parseYaml: block sequences", () => {
     assert.deepEqual(parseYaml("modes:\n  - fast\n  - 1\n  - 2.5\n"), { modes: ["fast", 1, 2.5] });
+  });
+
+  test("parseYaml: flow sequences keep quoted commas intact", () => {
+    assert.deepEqual(parseYaml('modes: ["a,b", c]\n'), { modes: ["a,b", "c"] });
+    assert.deepEqual(parseYaml("modes: ['d,e', f]\n"), { modes: ["d,e", "f"] });
   });
 
   test("parseYaml: sequence of mappings keeps sibling, last, and nested entries", () => {

@@ -37,6 +37,14 @@ breaking changes while the command surface settles.
   recorded by `on` when the omp agent dir was relocated between the two,
   instead of orphaning the key literal in the old directory.
 
+- `aiand omp off` reports `stripped: false` when a relocated config file is
+  unreadable and nothing was stripped yet, instead of a misleading `true`;
+  the record is kept so a retry after the fix still strips.
+
+- OMP flow-sequence values with quoted commas (`modes: ["a,b", c]`) parse
+  without splitting inside the quotes; previously the comma inside quotes
+  silently produced two items.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added
