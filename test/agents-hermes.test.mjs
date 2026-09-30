@@ -160,6 +160,23 @@ describe("hermes adapter: membership", () => {
     }
   });
 
+  test("hermes-agent resolves to the hermes adapter, on the CLI too", async () => {
+    // #17 P17-6: the full product name (install domain, docs) is an alias,
+    // the way claude-code resolves to claude.
+    const { findAgent } = await import("../dist/agents/registry.js");
+    assert.equal(findAgent("hermes-agent")?.id, "hermes");
+    plantStub(stubBin, "hermes");
+    const { code, stdout } = await runCli(["hermes-agent", "status", "--json"], {
+      env: cliEnv({
+        AIAND_HOME: home,
+        AIAND_CONFIG_DIR: cfg,
+        PATH: `${stubBin}${delimiter}${process.env.PATH}`,
+      }),
+    });
+    assert.equal(code, 0);
+    assert.equal(JSON.parse(stdout).agent, "hermes");
+  });
+
   test("status --json reports installed and off through the CLI", async () => {
     plantStub(stubBin, "hermes");
     const { code, stdout } = await runCli(["hermes", "status", "--json"], {
@@ -527,6 +544,28 @@ describe("hermes adapter: persistent on/off", () => {
     assert.ok(!readFileSync(envPath(), "utf8").includes("AIAND_HERMES_API_KEY"));
   });
 
+  test("off: a stamp-dropped block with our key_env still strips on the record", async () => {
+    // #17 P17-5: the record backstops a Hermes rewrite that dropped the
+    // unknown stamp key, while the dedicated key_env still proves the block
+    // is ours — the record alone never strips, the pair does.
+    plantPersistentHome();
+    await hermes.hermesAdapter.enable(enableInput());
+    writeFileSync(
+      configPath(),
+      readFileSync(configPath(), "utf8")
+        .split("\n")
+        .filter((line) => !line.includes("managed_by"))
+        .join("\n"),
+    );
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.ok(
+      !(result.notes ?? []).some((n) => /left providers\.aiand/.test(n)),
+      "no left-behind note",
+    );
+    assert.ok(!readFileSync(configPath(), "utf8").includes("  aiand:"), "our block stripped");
+  });
+
   test("off: a hand-edited plugin file is left with a note", async () => {
     // #16
     plantPersistentHome();
@@ -655,6 +694,37 @@ describe("hermes adapter: persistent on/off", () => {
       active: true,
       model: "zai-org/glm-5.3",
     });
+    await hermes.hermesAdapter.disable();
+  });
+
+  test("refreshKey: a repointed block is the user's, returns false untouched", async () => {
+    // #17 P17-4: the swap needs the dedicated key_env as well as the stamp
+    // or record — a block the user repointed at their own var keeps routing
+    // there, so our orphaned literal must not move.
+    plantPersistentHome();
+    await hermes.hermesAdapter.enable(enableInput());
+    const before = readFileSync(envPath(), "utf8");
+
+    // Stamp kept, key_env repointed: still the user's.
+    writeFileSync(
+      configPath(),
+      readFileSync(configPath(), "utf8").replace(
+        "key_env: AIAND_HERMES_API_KEY",
+        "key_env: USER_ANTHROPIC_KEY",
+      ),
+    );
+    assert.equal(await hermes.hermesAdapter.refreshKey({ apiKey: "sk-new" }), false);
+
+    // Stamp dropped too (record-only): still the user's.
+    writeFileSync(
+      configPath(),
+      readFileSync(configPath(), "utf8")
+        .split("\n")
+        .filter((line) => !line.includes("managed_by"))
+        .join("\n"),
+    );
+    assert.equal(await hermes.hermesAdapter.refreshKey({ apiKey: "sk-new" }), false);
+    assert.equal(readFileSync(envPath(), "utf8"), before, "the baked key is untouched");
     await hermes.hermesAdapter.disable();
   });
 
@@ -953,6 +1023,35 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     assert.ok(native.includes("key_env: AIAND_HERMES_API_KEY"), "connection stays");
     assert.ok(!native.includes("default_model"), "native names no model");
     assert.ok(!/^ {2}models:/m.test(native), "native lists no models");
+  });
+
+  test("the dedicated base-URL var travels .env to plugin end to end", () => {
+    // #17 P17-7: AIAND_HERMES_BASE_URL is written into the routing .env with
+    // the same baseUrl the provider block, plugin, and config pin carry, and
+    // the plugin declares it in env_vars for Hermes to inject at runtime.
+    // It stays module-private: no other module names it.
+    assert.equal(
+      Object.hasOwn(hermesRouting, "HERMES_PROVIDER_BASE_URL_ENV"),
+      false,
+      "module-private",
+    );
+    const writes = hermesRouting.buildHermesWrites({
+      apiKey: "sk-test-hermes-enable",
+      baseUrl: "https://api.aiand.com",
+      model: "zai-org/glm-5.3",
+      envText: "USER_KEY=keep\n",
+      configText: "theme: dark\n",
+    });
+    assert.ok(
+      writes.env.split("\n").includes('AIAND_HERMES_BASE_URL="https://api.aiand.com"'),
+      "the .env defines it",
+    );
+    assert.ok(writes.config.includes('base_url: "https://api.aiand.com"'), "the block pins it");
+    assert.ok(writes.initPy.includes('base_url="https://api.aiand.com"'), "the plugin bakes it");
+    assert.ok(
+      writes.initPy.includes('env_vars=("AIAND_HERMES_API_KEY", "AIAND_HERMES_BASE_URL")'),
+      "the plugin declares it",
+    );
   });
 
   test("column-0 comments inside sections survive pin and strip", async () => {

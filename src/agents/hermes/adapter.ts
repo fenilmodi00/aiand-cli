@@ -295,7 +295,9 @@ async function disable(): Promise<DisableResult> {
   if (hasProviderAiand(configText)) {
     // The stamp may be gone (a Hermes rewrite dropping unknown keys) while
     // the record proves the block is ours — but only while its key_env is
-    // still the dedicated var we wrote; a repointed block is the user's.
+    // still the dedicated var we wrote; a repointed block is the user's. The
+    // record alone never strips: without the stamp it takes the dedicated
+    // key_env to prove the block is still ours.
     const looksOurs = readProviderField(configText, "key_env") === HERMES_PROVIDER_API_KEY_ENV;
     if (marked || looksOurs) {
       configText = stripHermesProvider(configText);
@@ -384,6 +386,9 @@ export const hermesAdapter: AgentAdapter = {
   label: "Hermes Agent",
   bin: HERMES_BIN,
   install: HERMES_INSTALL,
+  // The product's full name (install domain, docs): `aiand hermes-agent
+  // on` and `aiand run-agent hermes-agent` resolve like `hermes`, the way
+  // `claude-code` resolves to `claude`.
   aliases: ["hermes-agent"],
   detect(): DetectResult {
     return detectBinary(HERMES_BIN);
@@ -395,14 +400,18 @@ export const hermesAdapter: AgentAdapter = {
   enable,
   disable,
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {
-    // Marker-gated like disable(): a marked config with a garbage or
-    // non-loopback baseURL still holds our baked key and must be swapped. A
-    // foreign `aiand`-named block (no marker, no record) keeps its own key
-    // untouched.
+    // Gated like disable()'s block strip: our stamp or record, plus a
+    // key_env still naming the dedicated var. A marked config with a garbage
+    // or non-loopback baseURL still holds our baked key and must be swapped,
+    // but a record-only block the user repointed at their own var (stamp
+    // gone, key_env renamed) is theirs — swapping our orphaned literal would
+    // change nothing routable. A foreign `aiand`-named block (no marker, no
+    // record) keeps its own key untouched.
+    const configText = await readTextIfExists(hermesConfigPath());
     const marked =
-      hasHermesMarker(await readTextIfExists(hermesConfigPath())) ||
-      (await getAddedState<HermesRecord>(HERMES_ID)) !== null;
+      hasHermesMarker(configText) || (await getAddedState<HermesRecord>(HERMES_ID)) !== null;
     if (!marked) return false;
+    if (readProviderField(configText, "key_env") !== HERMES_PROVIDER_API_KEY_ENV) return false;
     const envPath = hermesEnvPath();
     const raw = await readTextIfExists(envPath);
     const current = readEnvValue(raw, HERMES_PROVIDER_API_KEY_ENV);
@@ -462,7 +471,8 @@ export const hermesAdapter: AgentAdapter = {
       },
       // The overlay pins provider and model; a user flag would override the
       // injected routing, so the launcher drops these from the passthrough
-      // (both `--flag value` and `--flag=value`).
+      // (both `--flag value` and `--flag=value`). The set is Hermes's own
+      // (`-m, --model MODEL` and `--provider PROVIDER` per `hermes --help`).
       args: ["--provider", HERMES_PROVIDER_ID, ...(model === undefined ? [] : ["--model", model])],
       stripPassthroughFlags: ["--provider", "--model", "-m"],
       cleanup: async () => {

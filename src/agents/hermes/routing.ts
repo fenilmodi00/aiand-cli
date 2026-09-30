@@ -8,6 +8,13 @@
 /** The provider id, and the overlay .env names that feed it. */
 export const HERMES_PROVIDER_ID = "aiand";
 export const HERMES_PROVIDER_API_KEY_ENV = "AIAND_HERMES_API_KEY";
+/**
+ * The overlay/persistent `.env` name for the gateway base URL, read back
+ * only by the generated provider plugin (`env_vars` in
+ * buildHermesProviderFiles): the `.env` defines it, the plugin declares it,
+ * Hermes injects it at runtime. Deliberately module-private — no other
+ * module names it; the plugin and the `.env` meet through the built bytes.
+ */
 const HERMES_PROVIDER_BASE_URL_ENV = "AIAND_HERMES_BASE_URL";
 /**
  * Ownership marker aiand stamps on its `providers.aiand` block so off can

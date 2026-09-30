@@ -204,8 +204,12 @@ export async function run(argv: string[]): Promise<void> {
   // Hermes routes through its overlay .env, never the child env: an
   // inherited ANTHROPIC_API_KEY/BASE_URL/TOKEN (the user's own key, a proxy)
   // would ride along and shadow or confuse the overlay routing, so hermes
-  // launches drop them. Scoped to hermes: the wired adapters own their
-  // ANTHROPIC_* rows, and only hermes ignores the child env for routing.
+  // launches drop them. A literal list, never an ANTHROPIC_* sweep: these
+  // are the only three Hermes consults for inference routing (mirroring the
+  // .env shadowing in hermes/routing.ts), and the wired adapters own their
+  // own ANTHROPIC_* rows — claude's settings env keeps ANTHROPIC_MODEL,
+  // ANTHROPIC_DEFAULT_*_MODEL, and ANTHROPIC_AUTH_TOKEN. Scoped to hermes
+  // for the same reason: only hermes ignores the child env for routing.
   if (adapter.id === "hermes") {
     delete env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_BASE_URL;
