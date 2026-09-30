@@ -7,6 +7,36 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand omp on` wires Oh My Pi to ai& through `~/.omp/agent/`: an
+  override-only `aiand` provider block in `models.yml` — baseUrl, the
+  session key locked to 0600, and the `managedBy: "aiand"` marker; omp
+  already bundles the aiand provider, so nothing else is written — and a
+  `modelRoles.default` pin in `config.yml`. `off` removes exactly what
+  `on` added; a `modelRoles.default` ai& cannot serve is set aside and put
+  back on `off`, one it can serve is kept. Pass `--model native` to leave
+  omp's own default.
+
+- `aiand run-agent omp` launches Oh My Pi on ai& for one session with no omp
+  config written under `~/.omp/`: a throwaway overlay becomes
+  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
+  (never the child env), while session history still lands in the user's
+  real session directory. User-supplied `--model`/`--provider`/`--api-key`/
+  `--models` passthrough flags are stripped so the routing cannot be
+  overridden; the overlay is removed after the session ends.
+
+### Fixed
+
+- `aiand run-agent omp` keeps session history in omp's XDG data dir
+  (`$XDG_DATA_HOME/omp/sessions`) when the user ran `omp config init-xdg`;
+  previously the session dir was always `~/.omp/agent/sessions`, so XDG
+  setups wrote history where omp never reads it.
+
+- `aiand omp off` strips the aiand provider block from the config files
+  recorded by `on` when the omp agent dir was relocated between the two,
+  instead of orphaning the key literal in the old directory.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

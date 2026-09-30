@@ -85,7 +85,8 @@ Most commands take `--json`, and every command takes `--help`.
 
 aiand currently supports [OpenCode](https://opencode.ai),
 [Claude Code](https://code.claude.com/docs),
-[Codex](https://developers.openai.com/codex/cli) and [Pi](https://pi.dev).
+[Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev) and
+[Oh My Pi](https://omp.sh).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -172,6 +173,26 @@ other providers and credentials are untouched. A `defaultModel` ai& cannot
 serve is set aside until `off`; one it can serve is kept. Pass
 `--model <id>` to switch, or `--model native` to leave Pi's own default.
 Pi's config root moves wholesale with `PI_CODING_AGENT_DIR`.
+
+```bash
+aiand omp on             # wire Oh My Pi through ai&
+aiand omp status
+aiand omp off
+aiand run-agent omp      # or: one Oh My Pi session on ai&, no omp config written
+```
+
+`on` writes an override-only `aiand` provider block into
+`~/.omp/agent/models.yml` (omp already bundles the aiand provider, so only the
+gateway URL, your key and the ownership marker are written) and pins
+`modelRoles.default` in `~/.omp/agent/config.yml`. Your other providers and
+settings are untouched. A `modelRoles.default` ai& cannot serve is set aside
+until `off`; one it can serve is kept. Pass `--model <id>` to switch, or
+`--model native` to leave omp's own default. `PI_CODING_AGENT_DIR` moves the
+config root.
+
+One-session launches keep session history in omp's own session dir, including
+its XDG location (`$XDG_DATA_HOME/omp/sessions`) when omp was migrated with
+`omp config init-xdg`.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

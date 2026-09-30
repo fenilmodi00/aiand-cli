@@ -257,6 +257,92 @@ describe("run-agent launcher", () => {
     }
   });
 
+  // omp mirrors pi's overlay launch: throwaway PI_CODING_AGENT_DIR holding the
+  // key, real session history pointed at separately.
+  test("omp: overlay dir + session dir env, key never in child env, overlay removed", async () => {
+    plantCaptureStub("omp");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["omp", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const agentDir = envText.match(/^PI_CODING_AGENT_DIR=(.*)$/m)?.[1];
+      assert.ok(agentDir, "PI_CODING_AGENT_DIR in child env");
+      assert.ok(agentDir.includes("aiand-omp-"), "overlay is a throwaway mkdtemp dir");
+      const sessionDir = envText.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1];
+      assert.ok(
+        sessionDir?.endsWith(join(".omp", "agent", "sessions")),
+        "session history points at the user's real session dir",
+        String(sessionDir),
+      );
+      // The key rides the overlay models.yml, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      // The CLI has exited: the launcher's cleanup must already have
+      // removed the whole overlay.
+      assert.equal(existsSync(agentDir), false);
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--model");
+      assert.ok(args[1].startsWith("aiand/"), "a concrete model selector resolved");
+      // runCli pipes stdin, so the launcher must add --print: upstream omp
+      // hangs on redirected stdin without an explicit one-shot mode.
+      assert.ok(args.includes("--print"), "--print injected for non-TTY stdin");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("omp: user routing flags cannot override the injected routing", async () => {
+    plantCaptureStub("omp");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "omp",
+          "--",
+          "--api-key",
+          "evil",
+          "--provider=openai",
+          "--model",
+          "gpt-4o",
+          "--models",
+          "a,b",
+          "--print",
+        ],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--model");
+      assert.ok(args[1].startsWith("aiand/"), "our selector comes first");
+      assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
+      assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
+      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
+      assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
+      assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("omp: missing binary -> 127 with the omp install hint", async () => {
+    rmSync(join(binDir, "omp"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["omp"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /Oh My Pi is not installed/);
+      assert.match(stderr, /omp\.sh\/install/);
+      assert.match(stderr, /https:\/\/omp\.sh/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("-- passthrough preserves flags and order verbatim", async () => {
     plantCaptureStub("opencode");
     const capture = captureDir();

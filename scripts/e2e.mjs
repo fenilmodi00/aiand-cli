@@ -173,7 +173,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex", "pi"]) {
+  for (const name of ["opencode", "claude", "codex", "pi", "omp"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -492,6 +492,76 @@ try {
       PI_SETTINGS_BEFORE.equals(readFileSync(piSettingsPath)),
   );
 
+  // --- omp on/off/status ------------------------------------------------------
+  const ompAgentDir = join(home, ".omp", "agent");
+  mkdirSync(ompAgentDir, { recursive: true });
+  const ompModelsPath = join(ompAgentDir, "models.yml");
+  const ompConfigPath = join(ompAgentDir, "config.yml");
+  // Text assertions only: the adapter's YAML editors are covered by the unit
+  // suite, so e2e proves byte survival with string checks like the codex block.
+  writeFileSync(
+    ompModelsPath,
+    "# user's own providers, kept by aiand\nproviders:\n  openai:\n    baseUrl: https://api.openai.com/v1\n    apiKey: sk-user-openai\n",
+  );
+  writeFileSync(
+    ompConfigPath,
+    "symbolPreset: unicode\nmodelRoles:\n  default: anthropic/claude-haiku-4-5\n",
+  );
+  const OMP_MODELS_BEFORE = readFileSync(ompModelsPath);
+  const OMP_CONFIG_BEFORE = readFileSync(ompConfigPath);
+
+  const ompOn = JSON.parse(cli("omp on --json"));
+  check("omp on succeeds", ompOn.state === "on" && ompOn.agent === "omp", JSON.stringify(ompOn));
+  const ompModelsText = readFileSync(ompModelsPath, "utf8");
+  check(
+    "omp on routes providers.aiand at the loopback double with the marker",
+    ompModelsText.includes("aiand:") &&
+      ompModelsText.includes(`baseUrl: ${baseUrl}/v1`) &&
+      ompModelsText.includes("sk-e2e-test-key-0000000000000000000000") &&
+      ompModelsText.includes("managedBy: aiand"),
+    ompModelsText.split("\n").find((line) => line.includes("baseUrl")) ?? "missing",
+  );
+  check(
+    "omp on keeps the user's comment and openai provider",
+    ompModelsText.includes("# user's own providers") &&
+      ompModelsText.includes("https://api.openai.com/v1") &&
+      ompModelsText.includes("apiKey: sk-user-openai"),
+  );
+  // Windows has no POSIX permission bits, so the 0600 lock is only assertable
+  // through the mode the write requested (see the pi note above).
+  if (process.platform !== "win32")
+    check("omp on locks models.yml to 0600", (statSync(ompModelsPath).mode & 0o777) === 0o600);
+  const ompConfigText = readFileSync(ompConfigPath, "utf8");
+  check(
+    "omp on pins modelRoles.default at the catalog default",
+    ompConfigText.includes("default: aiand/zai-org/glm-5.3"),
+    ompConfigText.split("\n").find((line) => line.includes("default:")) ?? "missing",
+  );
+  check("omp on keeps unrelated config keys", ompConfigText.includes("symbolPreset: unicode"));
+
+  const ompStatus = JSON.parse(cli("omp status --json"));
+  check(
+    "omp status: on with the default model",
+    ompStatus.state === "on" && ompStatus.model === "zai-org/glm-5.3",
+    JSON.stringify(ompStatus),
+  );
+
+  cli("omp off --json");
+  check(
+    "omp off restores both files byte-identical when untouched",
+    OMP_MODELS_BEFORE.equals(readFileSync(ompModelsPath)) &&
+      OMP_CONFIG_BEFORE.equals(readFileSync(ompConfigPath)),
+  );
+  const ompStatus2 = JSON.parse(cli("omp status --json"));
+  check("omp status: off after teardown", ompStatus2.state === "off", JSON.stringify(ompStatus2));
+  cli("omp on --json");
+  cli("restore omp --force");
+  check(
+    "restore omp --force puts the seeded files back",
+    OMP_MODELS_BEFORE.equals(readFileSync(ompModelsPath)) &&
+      OMP_CONFIG_BEFORE.equals(readFileSync(ompConfigPath)),
+  );
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -636,6 +706,54 @@ try {
     piLaunchArgs.slice(0, 4).join(" "),
   );
 
+  const ompCapture = join(S, "capture-omp");
+  let ompLaunchCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "omp", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: ompCapture },
+      encoding: "utf8",
+    });
+    ompLaunchCode = 0;
+  } catch (error) {
+    ompLaunchCode = error.status ?? 42;
+  }
+  check("run-agent omp exits with the child code", ompLaunchCode === 42, `code=${ompLaunchCode}`);
+  const ompChildEnv = existsSync(`${ompCapture}.env`)
+    ? readFileSync(`${ompCapture}.env`, "utf8")
+    : "";
+  const ompOverlay = ompChildEnv.match(/^PI_CODING_AGENT_DIR=(.*)$/m)?.[1];
+  check(
+    "run-agent omp points PI_CODING_AGENT_DIR at a throwaway overlay",
+    Boolean(ompOverlay?.includes("aiand-omp-")),
+    ompOverlay ?? "missing",
+  );
+  check(
+    "run-agent omp keeps the key out of the child env",
+    !ompChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
+  );
+  check(
+    "run-agent omp keeps session history in the user's session dir",
+    // join() yields native separators; match the path tail, not its slashes.
+    /\.omp[\\/]agent[\\/]sessions$/.test(
+      ompChildEnv.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1] ?? "",
+    ),
+    ompChildEnv.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1] ?? "missing",
+  );
+  check(
+    "run-agent omp removes the throwaway overlay",
+    Boolean(ompOverlay) && !existsSync(ompOverlay),
+  );
+  const ompLaunchArgs = existsSync(`${ompCapture}.args`)
+    ? readFileSync(`${ompCapture}.args`, "utf8").split(/\r?\n/)
+    : [];
+  check(
+    "run-agent omp prepends model routing, then passthrough",
+    ompLaunchArgs[0] === "--model" &&
+      Boolean(ompLaunchArgs[1]) &&
+      ompLaunchArgs[ompLaunchArgs.length - 2] === "--version",
+    ompLaunchArgs.slice(0, 3).join(" "),
+  );
+
   // Passthrough must reach the agent verbatim. On Windows the stub is a .cmd
   // shim run through cmd.exe, so shell metacharacters must stay literal.
   const tricky = [
@@ -673,8 +791,8 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex, opencode and pi",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode", "pi"]),
+    "registry ships exactly claude, codex, omp, opencode and pi",
+    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "omp", "opencode", "pi"]),
     JSON.stringify(agentIds),
   );
 
