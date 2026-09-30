@@ -12,7 +12,8 @@ agent's native wire format, so the CLI never runs a local proxy, translator,
 or daemon to serve one. _Avoid:_ relay, proxy.
 
 **Wire format** - the request/response dialect an agent speaks: OpenAI-compatible chat
-(OpenCode, Pi, Oh My Pi), Anthropic Messages (Claude Code) or OpenAI Responses (Codex).
+(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app), Anthropic Messages
+(Claude Code) or OpenAI Responses (Codex).
 The CLI points the agent at the gateway in its own dialect; it never translates between dialects.
 
 **Org** - the account scope a key is minted against and spend is reported
@@ -24,7 +25,8 @@ The three verbs - `on`, `off`, `status` - are the primary product surface;
 `init` and the launcher are conveniences layered over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude, codex, pi and omp. One adapter per agent. _Avoid:_ harness, integration, connector.
+shipped, currently opencode, claude, codex, pi, omp, copilot and copilot-app.
+One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
 which config files it owns, and how to enable, disable, and probe it. It lives
@@ -79,7 +81,12 @@ profile's auth command, `aiand key export`: Codex rejects unknown keys under
 Pi file with a schema behind it (TypeBox), while auth.json passes unknown
 credential keys through. For omp it is `managedBy: "aiand"` on the models.yml
 provider block: omp has no auth.json, and its provider schema tolerates
-unknown keys.
+unknown keys. For the Copilot CLI it is the provider row itself, the one
+named `aiand` in providers.json: the CLI errors loudly on unrecognized
+provider fields, so nothing extra rides in the row. For the Copilot app it
+is the `aiand-` prefix on the `model_providers` row id in `data.db`: the
+name the app displays is a brand label, while the row id is what `off`
+matches.
 
 **restore** - `aiand restore <agent> --force`: the break-glass byte-for-byte
 snapshot restore. Overwrites any edits made since `on`, which is why it is
