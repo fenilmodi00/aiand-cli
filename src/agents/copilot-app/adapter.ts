@@ -107,7 +107,7 @@ function copilotAppProcessRunning(): boolean {
   }
   const pattern =
     process.platform === "darwin" ? copilotAppProcessSpec.darwin : copilotAppProcessSpec.linux;
-  const probe = spawnSync("pgrep", ["-f", pattern], { encoding: "utf8" });
+  const probe = spawnSync("pgrep", ["-fi", pattern], { encoding: "utf8" });
   if (probe.error || probe.status !== 0) return false;
   return Boolean(probe.stdout?.trim());
 }
@@ -285,10 +285,16 @@ export const copilotAppAdapter: AgentAdapter = {
   // GUI-installed — its db or app dir is the footprint), but `bin` feeds
   // status display and must name the real command family.
   bin: "copilot",
-  install: {
-    command: "brew install --cask github-copilot-app",
-    url: "https://github.com/features/ai/github-app",
-  },
+  install:
+    process.platform === "win32"
+      ? {
+          command: "winget install GitHub.CopilotApp",
+          url: "https://github.com/features/ai/github-app",
+        }
+      : {
+          command: "brew install --cask github-copilot-app",
+          url: "https://github.com/features/ai/github-app",
+        },
   detect(): DetectResult {
     const dbPath = copilotDataDbPath();
     if (existsSync(dbPath)) return { installed: true, path: dbPath };
