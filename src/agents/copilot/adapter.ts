@@ -396,8 +396,7 @@ async function disable(): Promise<DisableResult> {
     // stays, with a note.
     let settingsText = raw.settings;
     const model = settingsFile.model;
-    const isOurSelection =
-      typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
+    const isOurSelection = typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
     if (isOurSelection) {
       if (added?.previousModelSelection !== undefined) {
         settingsText = jsoncSet(settingsText, ["model"], added.previousModelSelection);
