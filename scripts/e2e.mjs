@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -150,6 +151,10 @@ const SCRUB = [
   "CODEX_HOME",
   "PI_CODING_AGENT_DIR",
   "PI_CODING_AGENT_SESSION_DIR",
+  "COPILOT_HOME",
+  "COPILOT_PROVIDERS_CONFIG",
+  "COPILOT_MODEL",
+  "COPILOT_OFFLINE",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -173,7 +178,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex", "pi", "omp"]) {
+  for (const name of ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -562,6 +567,182 @@ try {
       OMP_CONFIG_BEFORE.equals(readFileSync(ompConfigPath)),
   );
 
+  // --- copilot on/off/status --------------------------------------------------
+  const copilotDir = join(home, ".copilot");
+  mkdirSync(copilotDir, { recursive: true });
+  const copilotProvidersPath = join(copilotDir, "providers.json");
+  const copilotSettingsPath = join(copilotDir, "settings.json");
+  // Seeded with a foreign provider + model row and a foreign model selection:
+  // on must append ours and repoint the selection while every foreign row and
+  // key survives, and off must restore both files byte-identical.
+  writeFileSync(
+    copilotProvidersPath,
+    `${JSON.stringify(
+      {
+        providers: [
+          { name: "fireworks", type: "openai", baseUrl: "https://api.fireworks.ai/inference/v1" },
+        ],
+        models: [{ id: "kimi", provider: "fireworks" }],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    copilotSettingsPath,
+    `${JSON.stringify({ theme: "dark", model: "gpt-5.1" }, null, 2)}\n`,
+  );
+  const COPILOT_PROVIDERS_BEFORE = readFileSync(copilotProvidersPath);
+  const COPILOT_SETTINGS_BEFORE = readFileSync(copilotSettingsPath);
+
+  const copilotOn = JSON.parse(cli("copilot on --json"));
+  check(
+    "copilot on succeeds",
+    copilotOn.state === "on" && copilotOn.agent === "copilot",
+    JSON.stringify(copilotOn),
+  );
+  const copilotProviders = JSON.parse(readFileSync(copilotProvidersPath, "utf8"));
+  const copilotAiand = (copilotProviders.providers ?? []).find((row) => row?.name === "aiand");
+  check(
+    "copilot on routes the aiand provider at the loopback double",
+    copilotAiand?.baseUrl === `${baseUrl}/v1` && copilotAiand?.type === "openai",
+    String(copilotAiand?.baseUrl),
+  );
+  check(
+    "copilot on bakes the session key into the provider row",
+    copilotAiand?.apiKey === "sk-e2e-test-key-0000000000000000000000",
+  );
+  check(
+    "copilot on keeps the foreign provider and model rows",
+    copilotProviders.providers?.some((row) => row?.name === "fireworks") &&
+      copilotProviders.models?.some((row) => row?.id === "kimi") &&
+      copilotProviders.models?.some(
+        (row) => row?.id === "zai-org/glm-5.3" && row?.provider === "aiand",
+      ),
+    JSON.stringify(copilotProviders.models ?? []),
+  );
+  const copilotSettings = JSON.parse(readFileSync(copilotSettingsPath, "utf8"));
+  check(
+    "copilot on repoints the model selection at the catalog default",
+    copilotSettings.model === "aiand/zai-org/glm-5.3",
+    String(copilotSettings.model),
+  );
+  check("copilot on keeps unrelated settings keys", copilotSettings.theme === "dark");
+  // Windows has no POSIX permission bits, so the 0600 lock is only assertable
+  // through the mode the write requested (see the pi note above).
+  if (process.platform !== "win32")
+    check(
+      "copilot on locks providers.json to 0600",
+      (statSync(copilotProvidersPath).mode & 0o777) === 0o600,
+    );
+
+  const copilotStatus = JSON.parse(cli("copilot status --json"));
+  check(
+    "copilot status: on with the default model",
+    copilotStatus.state === "on" && copilotStatus.model === "zai-org/glm-5.3",
+    JSON.stringify(copilotStatus),
+  );
+
+  cli("copilot off --json");
+  check(
+    "copilot off restores both files byte-identical when untouched",
+    COPILOT_PROVIDERS_BEFORE.equals(readFileSync(copilotProvidersPath)) &&
+      COPILOT_SETTINGS_BEFORE.equals(readFileSync(copilotSettingsPath)),
+  );
+  const copilotStatus2 = JSON.parse(cli("copilot status --json"));
+  check(
+    "copilot status: off after teardown",
+    copilotStatus2.state === "off",
+    JSON.stringify(copilotStatus2),
+  );
+  cli("copilot on --json");
+  cli("restore copilot --force");
+  check(
+    "restore copilot --force puts the seeded files back",
+    COPILOT_PROVIDERS_BEFORE.equals(readFileSync(copilotProvidersPath)) &&
+      COPILOT_SETTINGS_BEFORE.equals(readFileSync(copilotSettingsPath)),
+  );
+
+  // --- copilot-app on/off/status ----------------------------------------------
+  // The app owns data.db; `on` refuses a missing one, so the fixture stands in
+  // for a first app launch. Schema per src/agents/copilot-app/sqlite.ts.
+  const copilotDbPath = join(copilotDir, "data.db");
+  const copilotDb = new DatabaseSync(copilotDbPath);
+  copilotDb.exec(`
+CREATE TABLE model_providers (id TEXT PRIMARY KEY, name TEXT, created_at TEXT, updated_at TEXT, type TEXT, settings_json TEXT, account_id TEXT);
+CREATE TABLE provider_models (id TEXT PRIMARY KEY, provider_id TEXT, model_id TEXT, wire_model TEXT, display_name TEXT, max_prompt_tokens INTEGER, max_output_tokens INTEGER, wire_api_override TEXT, created_at TEXT, updated_at TEXT, supported_reasoning_efforts TEXT, UNIQUE(provider_id, model_id));
+INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'mine', 'openai', '{}');
+`);
+  copilotDb.close();
+
+  const copilotAppOn = JSON.parse(cli("copilot-app on --json"));
+  check(
+    "copilot-app on succeeds",
+    copilotAppOn.state === "on" && copilotAppOn.agent === "copilot-app",
+    JSON.stringify(copilotAppOn),
+  );
+  const readCopilotDb = (sql) => {
+    const db = new DatabaseSync(copilotDbPath, { readOnly: true });
+    try {
+      return db.prepare(sql).all();
+    } finally {
+      db.close();
+    }
+  };
+  const ownedProviders = readCopilotDb(
+    "SELECT id, name, type, settings_json FROM model_providers WHERE id LIKE 'aiand-%';",
+  );
+  check(
+    "copilot-app on writes exactly one owned provider row",
+    ownedProviders.length === 1 && ownedProviders[0].name === "ai&",
+    JSON.stringify(ownedProviders),
+  );
+  const ownedSettings = JSON.parse(String(ownedProviders[0]?.settings_json ?? "{}"));
+  check(
+    "copilot-app on routes the provider at the loopback double",
+    ownedSettings.baseUrl === `${baseUrl}/v1` && ownedSettings.wireApi === "completions",
+    String(ownedSettings.baseUrl),
+  );
+  check(
+    "copilot-app on carries the key in the Authorization header",
+    String(ownedSettings.headersJson ?? "").includes(
+      "Bearer sk-e2e-test-key-0000000000000000000000",
+    ),
+    String(ownedSettings.headersJson),
+  );
+  const ownedModels = readCopilotDb(
+    "SELECT model_id FROM provider_models WHERE provider_id LIKE 'aiand-%';",
+  );
+  check(
+    "copilot-app on writes one model row per catalog model",
+    ownedModels.length === 1 && ownedModels[0].model_id === E2E_MODEL.id,
+    `rows=${ownedModels.map((row) => row.model_id).join(",")}`,
+  );
+
+  const copilotAppStatus = JSON.parse(cli("copilot-app status --json"));
+  check(
+    // The app picks its model per session (no persisted default), so the
+    // adapter reports routing only — always a null model.
+    "copilot-app status: on without a claimed model",
+    copilotAppStatus.state === "on" && copilotAppStatus.model === null,
+    JSON.stringify(copilotAppStatus),
+  );
+
+  cli("copilot-app off --json");
+  check(
+    "copilot-app off removes our rows and keeps the foreign provider",
+    readCopilotDb("SELECT id FROM model_providers WHERE id LIKE 'aiand-%';").length === 0 &&
+      readCopilotDb("SELECT id FROM provider_models WHERE provider_id LIKE 'aiand-%';").length ===
+        0 &&
+      readCopilotDb("SELECT id FROM model_providers WHERE id = 'user-1';").length === 1,
+  );
+  const copilotAppStatus2 = JSON.parse(cli("copilot-app status --json"));
+  check(
+    "copilot-app status: off after teardown",
+    copilotAppStatus2.state === "off",
+    JSON.stringify(copilotAppStatus2),
+  );
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -754,6 +935,85 @@ try {
     ompLaunchArgs.slice(0, 3).join(" "),
   );
 
+  const copilotCapture = join(S, "capture-copilot");
+  let copilotLaunchCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "copilot", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: copilotCapture },
+      encoding: "utf8",
+    });
+    copilotLaunchCode = 0;
+  } catch (error) {
+    copilotLaunchCode = error.status ?? 42;
+  }
+  check(
+    "run-agent copilot exits with the child code",
+    copilotLaunchCode === 42,
+    `code=${copilotLaunchCode}`,
+  );
+  const copilotChildEnv = existsSync(`${copilotCapture}.env`)
+    ? readFileSync(`${copilotCapture}.env`, "utf8")
+    : "";
+  const copilotOverlay = copilotChildEnv.match(/^COPILOT_HOME=(.*)$/m)?.[1];
+  check(
+    "run-agent copilot points COPILOT_HOME at a throwaway overlay",
+    Boolean(copilotOverlay?.includes("aiand-copilot-")),
+    copilotOverlay ?? "missing",
+  );
+  check(
+    "run-agent copilot pins COPILOT_MODEL to an aiand-qualified catalog id",
+    /^aiand\//.test(copilotChildEnv.match(/^COPILOT_MODEL=(.*)$/m)?.[1] ?? ""),
+    copilotChildEnv.match(/^COPILOT_MODEL=(.*)$/m)?.[1] ?? "missing",
+  );
+  check(
+    "run-agent copilot runs offline",
+    copilotChildEnv.match(/^COPILOT_OFFLINE=(.*)$/m)?.[1] === "true",
+    copilotChildEnv.match(/^COPILOT_OFFLINE=(.*)$/m)?.[1] ?? "missing",
+  );
+  check(
+    "run-agent copilot keeps the key out of the child env",
+    !copilotChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
+  );
+  check(
+    "run-agent copilot removes the throwaway overlay",
+    Boolean(copilotOverlay) && !existsSync(copilotOverlay),
+  );
+  const copilotLaunchArgs = existsSync(`${copilotCapture}.args`)
+    ? readFileSync(`${copilotCapture}.args`, "utf8").split(/\r?\n/)
+    : [];
+  check(
+    "run-agent copilot disables auto-update, then passes through",
+    copilotLaunchArgs[0] === "--no-auto-update" &&
+      copilotLaunchArgs[copilotLaunchArgs.length - 2] === "--version",
+    copilotLaunchArgs.slice(0, 2).join(" "),
+  );
+
+  // A GUI-only adapter must refuse a session launch before the key ceremony
+  // and before any child spawn: no capture file can exist.
+  const copilotAppCapture = join(S, "capture-copilot-app");
+  let copilotAppCode = 1;
+  let copilotAppErr = "";
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "copilot-app", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: copilotAppCapture },
+      encoding: "utf8",
+    });
+    copilotAppCode = 0;
+  } catch (error) {
+    copilotAppCode = error.status ?? 1;
+    copilotAppErr = String(error.stderr ?? error.message ?? "");
+  }
+  check(
+    "run-agent copilot-app refuses a session launch",
+    copilotAppCode === 1 && /does not support session launches/.test(copilotAppErr),
+    copilotAppErr.split("\n")[0],
+  );
+  check(
+    "run-agent copilot-app never spawns the child",
+    !existsSync(`${copilotAppCapture}.args`),
+    copilotAppCapture,
+  );
+
   // Passthrough must reach the agent verbatim. On Windows the stub is a .cmd
   // shim run through cmd.exe, so shell metacharacters must stay literal.
   const tricky = [
@@ -791,8 +1051,9 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex, omp, opencode and pi",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "omp", "opencode", "pi"]),
+    "registry ships exactly claude, codex, copilot, copilot-app, omp, opencode and pi",
+    JSON.stringify(agentIds) ===
+      JSON.stringify(["claude", "codex", "copilot", "copilot-app", "omp", "opencode", "pi"]),
     JSON.stringify(agentIds),
   );
 
