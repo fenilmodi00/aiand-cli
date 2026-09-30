@@ -194,21 +194,25 @@ export function parseYaml(text: string): unknown {
 
     function parseMap(indent: number, firstEntry?: KeyLine): Record<string, YamlValue> {
       const out: Record<string, YamlValue> = {};
-      let pending: KeyLine | null = firstEntry ?? null;
+      // A pre-parsed first entry came off a `- key:` line, which parseSeq
+      // already advanced past: its value block starts at the next line.
+      if (firstEntry !== undefined) {
+        out[firstEntry.key] =
+          firstEntry.valueText === null
+            ? parseValueBelow(indent)
+            : parseInline(firstEntry.valueText);
+      }
       for (;;) {
         const line = next();
         if (line === undefined || line.indent < indent) break;
         if (line.indent > indent) throw new SyntaxError(`unexpected indent: ${line.raw}`);
-        const parsed = pending ?? parseKeyLine(line.raw);
+        const parsed = parseKeyLine(line.raw);
         if (parsed === null) {
           if (SEQ_LINE.test(line.text))
             throw new SyntaxError(`sequence item in a mapping: ${line.raw}`);
           throw new SyntaxError(`not a mapping line: ${line.raw}`);
         }
-        // A pre-parsed first entry came off a `- key:` line, which parseSeq
-        // already advanced past: its value block starts at the next line.
-        if (pending !== null) pending = null;
-        else cursor++;
+        cursor++;
         out[parsed.key] =
           parsed.valueText === null ? parseValueBelow(indent) : parseInline(parsed.valueText);
       }

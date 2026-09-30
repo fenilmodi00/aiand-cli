@@ -322,6 +322,20 @@ async function disable(): Promise<DisableResult> {
   // Everything below is gated on our stamp: a foreign `aiand`-named
   // provider (no marker) and an already-stripped file are left alone.
   if (hasOwnershipMarker(models)) {
+    // Parse config.yml before any write: when it cannot be parsed, off writes
+    // nothing — the record and the models.yml marker stay, so a retry after
+    // the fix can still strip our block and restore the previous default.
+    let configText = raw.config;
+    let config: Record<string, unknown>;
+    try {
+      config = readYamlMapping(configText);
+    } catch {
+      return {
+        stripped: false,
+        notes: [`${paths.config} is not valid YAML; fix it, then run aiand omp off again.`],
+      };
+    }
+
     stripped = true;
 
     // models.yml: drop our provider block; unrelated providers survive, and
@@ -340,16 +354,6 @@ async function disable(): Promise<DisableResult> {
 
     // config.yml: hand back modelRoles.default on set aside or wrote.
     // Values the user changed in between are theirs and stay, with a note.
-    // An unparseable config.yml keeps the record like models.yml above:
-    // off still ran, and the user fixes their file before a retry.
-    let configText = raw.config;
-    let config: Record<string, unknown>;
-    try {
-      config = readYamlMapping(configText);
-    } catch {
-      notes.push(`${paths.config} is not valid YAML; fix it, then run aiand omp off again.`);
-      config = {};
-    }
     const modelRoles =
       config.modelRoles &&
       typeof config.modelRoles === "object" &&

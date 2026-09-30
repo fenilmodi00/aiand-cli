@@ -78,14 +78,34 @@ for (const pin of piPins) {
   );
 }
 // omp installs through the omp.sh installer, pinned with `--ref vX.Y.Z`
-// (Linux sh) / `-Ref vX.Y.Z` (Windows PowerShell).
-const ompPins = [...ciYml.matchAll(/omp\.sh\/install[^\n]*--?ref v([0-9.]+)/gi)].map((m) => m[1]);
-assert.ok(ompPins.length > 0, "ci.yml should install a pinned omp via omp.sh/install --ref");
-for (const pin of ompPins) {
+// (Linux sh) / `-Ref vX.Y.Z` (Windows PowerShell). Each platform is checked
+// separately so one losing its pin can't hide behind the other's.
+const ompLinuxPins = [...ciYml.matchAll(/omp\.sh\/install(?!\.ps1)[^\n]*--ref v([0-9.]+)/g)].map(
+  (m) => m[1],
+);
+assert.ok(
+  ompLinuxPins.length > 0,
+  "ci.yml should install a pinned omp on Linux via omp.sh/install --ref",
+);
+for (const pin of ompLinuxPins) {
   assert.equal(
     pin,
     OMP_VERSION,
-    `ci.yml installs omp --ref v${pin} but src/agents/omp/adapter.ts pins ${OMP_VERSION}`,
+    `ci.yml installs omp --ref v${pin} on Linux but src/agents/omp/adapter.ts pins ${OMP_VERSION}`,
+  );
+}
+const ompWindowsPins = [...ciYml.matchAll(/omp\.sh\/install\.ps1[^\n]*-Ref v([0-9.]+)/gi)].map(
+  (m) => m[1],
+);
+assert.ok(
+  ompWindowsPins.length > 0,
+  "ci.yml should install a pinned omp on Windows via omp.sh/install.ps1 -Ref",
+);
+for (const pin of ompWindowsPins) {
+  assert.equal(
+    pin,
+    OMP_VERSION,
+    `ci.yml installs omp -Ref v${pin} on Windows but src/agents/omp/adapter.ts pins ${OMP_VERSION}`,
   );
 }
 

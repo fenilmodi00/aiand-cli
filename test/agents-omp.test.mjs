@@ -286,6 +286,28 @@ describe("omp adapter", () => {
     assert.equal(readYamlMapping(readText(modelsPath())).providers.aiand, undefined);
   });
 
+  test("off: broken config.yml writes nothing, keeps marker and record, retry restores", async () => {
+    seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    const modelsAfterEnable = readFileSync(modelsPath());
+    writeFileSync(configPath(), "modelRoles: {broken}\n");
+
+    const result = await ompAdapter.disable();
+    assert.equal(result.stripped, false);
+    assert.ok(result.notes.some((n) => n.includes("not valid YAML")));
+    // Nothing was written: the marker survives and the record still holds
+    // the previous default for the retry.
+    assert.equal(readFileSync(modelsPath()).equals(modelsAfterEnable), true);
+    assert.equal(readJson(addedRecord()).previousDefaultModel, "anthropic/claude-haiku-4-5");
+
+    // The user fixes config.yml; the retry strips and restores the default.
+    writeFileSync(configPath(), CONFIG_SEED("aiand/zai-org/glm-5.3"));
+    const retry = await ompAdapter.disable();
+    assert.equal(retry.stripped, true);
+    assert.equal(configDefault(), "anthropic/claude-haiku-4-5");
+    assert.equal(existsSync(addedRecord()), false);
+  });
+
   test("refreshKey: idempotent same key, previousKey gates, one-literal swap", async () => {
     seedUserFiles();
     await ompAdapter.enable(enableInput());
@@ -456,6 +478,13 @@ describe("omp yaml editors", () => {
 
   test("parseYaml: block sequences", () => {
     assert.deepEqual(parseYaml("modes:\n  - fast\n  - 1\n  - 2.5\n"), { modes: ["fast", 1, 2.5] });
+  });
+
+  test("parseYaml: sequence of mappings keeps sibling, last, and nested entries", () => {
+    const text = "items:\n  - id: a\n  - id: b\n  - compat:\n      x: 1\n";
+    assert.deepEqual(parseYaml(text), {
+      items: [{ id: "a" }, { id: "b" }, { compat: { x: 1 } }],
+    });
   });
 
   test("parseYaml: flow mappings and tab indentation are SyntaxError", () => {
