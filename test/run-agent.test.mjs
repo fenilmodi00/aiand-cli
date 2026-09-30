@@ -364,6 +364,107 @@ describe("run-agent launcher", () => {
     }
   });
 
+  // copilot mirrors the overlay launch through COPILOT_HOME: the throwaway
+  // dir holds providers.json (with the key) + settings.json, and
+  // COPILOT_MODEL pins the qualified selection the CLI accepts.
+  test("copilot: overlay env + qualified model, key in the overlay file only, overlay removed", async () => {
+    plantStub(
+      binDir,
+      "copilot",
+      `env > "$AIAND_CAPTURE.env"
+cp "$COPILOT_HOME/providers.json" "$AIAND_CAPTURE.providers.json"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+exit 42`,
+    );
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["copilot", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const overlay = envText.match(/^COPILOT_HOME=(.*)$/m)?.[1];
+      assert.ok(overlay?.includes("aiand-copilot-"), "COPILOT_HOME is a throwaway overlay");
+      assert.match(envText, /^COPILOT_MODEL=aiand\/.+$/m, "qualified selection pins the model");
+      assert.match(envText, /^COPILOT_OFFLINE=true$/m, "pure-BYOK mode, no GitHub calls");
+      // The key rides the overlay providers.json, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      assert.match(readFileSync(join(capture, "capture.providers.json"), "utf8"), /sk-test-aiand/);
+      // The child exited: the launcher's cleanup removed the whole overlay.
+      assert.equal(existsSync(overlay), false);
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--no-auto-update");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("copilot: the user's --model cannot override the injected routing", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        ["copilot", "--", "--model", "gpt-4o", "--model=x", "--version"],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, ["--no-auto-update", "--version"]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // #18's filter edge, on copilot's owned flag: an owned flag followed by
+  // another flag keeps the flag.
+  test("copilot: --model --version keeps --version", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["copilot", "--", "--model", "--version"], {}, capture);
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args.at(-1), "--version");
+      assert.ok(!args.includes("--model"));
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("copilot: missing binary -> 127 with the npm install hint", async () => {
+    rmSync(join(binDir, "copilot"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["copilot"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /GitHub Copilot is not installed/);
+      assert.match(stderr, /npm install -g @github\/copilot@/);
+      assert.match(stderr, /docs\.github\.com/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // The desktop app is config-only: run-agent refuses before any session,
+  // pointing at `aiand copilot-app on`.
+  test("copilot-app: run-agent refuses session launches", async () => {
+    mkdirSync(join(home, ".copilot"), { recursive: true });
+    writeFileSync(join(home, ".copilot", "data.db"), "");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(["copilot-app", "--", "--version"], {}, capture);
+      assert.equal(code, 1);
+      assert.match(stderr, /does not support session launches/);
+      assert.match(stderr, /aiand copilot-app on/);
+      assert.equal(existsSync(join(capture, "capture.args")), false, "child never spawned");
+    } finally {
+      rmSync(join(home, ".copilot"), { recursive: true, force: true });
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
   test("-- passthrough preserves flags and order verbatim", async () => {
     plantCaptureStub("opencode");
     const capture = captureDir();
