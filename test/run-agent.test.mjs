@@ -48,6 +48,14 @@ while [ ! -f "$AIAND_DONE" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done`;
 
 const CATALOG = [catalogModel("aiand/glm-5.3"), catalogModel("aiand/other")];
 
+// CodeAF's launch overlay is a throwaway dir the launcher removes once
+// the child exits, so the stub also copies the overlay config.json out
+// — the only moment the file still exists to read.
+const CODEAF_CAPTURE_STUB = `env > "$AIAND_CAPTURE.env"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+cat "$CODEAF_HOME/config.json" > "$AIAND_CAPTURE.cfg"
+exit 42`;
+
 let home, cfg, binDir;
 
 const env = withTestEnv("aiand-runagent-", (dir) => {
@@ -163,6 +171,47 @@ describe("run-agent launcher", () => {
         readFileSync(join(capture, "capture.env"), "utf8"),
         /^AIAND_API_KEY=sk-test-aiand$/m,
       );
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("codeaf: throwaway CODEAF_HOME overlay carries the key, env repoints the gateway", async () => {
+    plantStub(binDir, "codeaf", CODEAF_CAPTURE_STUB);
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["codeaf", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const envValue = (name) => envText.match(new RegExp(`^${name}=(.*)$`, "m"))?.[1];
+      // The overlay lives in a throwaway temp dir, never the aiand home.
+      const codeafHome = envValue("CODEAF_HOME");
+      assert.ok(codeafHome);
+      assert.match(codeafHome, /aiand-codeaf-/);
+      assert.notEqual(codeafHome, home);
+      assert.ok(!codeafHome.startsWith(home));
+      // The default service is repointed at the gateway; inherited
+      // keys are neutralized so they cannot beat the overlay file.
+      assert.equal(envValue("CODEAF_BASE_URL"), "https://api.aiand.com/v1");
+      assert.equal(envValue("OPENROUTER_API_KEY"), "");
+      assert.equal(envValue("OPENAI_API_KEY"), "");
+      assert.equal(envValue("CODEAF_MODEL"), "");
+      assert.equal(envValue("CODEAF_NO_UPDATE_CHECK"), "1");
+      assert.equal(envValue("CODEAF_TELEMETRY"), "off");
+      // The session key rides only in the overlay file, never the env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      // The stub copied the overlay out before cleanup removed it:
+      // the key plus the catalog id verbatim (this fixture's ids carry
+      // the aiand/ prefix, so the overlay must pass it through — the
+      // same reason the opencode case below sees a doubled prefix).
+      assert.deepEqual(JSON.parse(readFileSync(join(capture, "capture.cfg"), "utf8")), {
+        api_key: "sk-test-aiand",
+        "model.talk": "aiand/glm-5.3",
+      });
+      // No args are synthesized: the passthrough stays verbatim.
+      assert.match(readFileSync(join(capture, "capture.args"), "utf8"), /^--version\n/);
+      // The CLI has exited: cleanup must have removed the whole overlay.
+      assert.equal(existsSync(codeafHome), false);
     } finally {
       rmSync(capture, { recursive: true, force: true });
     }

@@ -24,7 +24,7 @@ The three verbs - `on`, `off`, `status` - are the primary product surface;
 `init` and the launcher are conveniences layered over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude and codex. One adapter per agent. _Avoid:_ harness, integration, connector.
+shipped, currently opencode, claude, codex and codeaf. One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
 which config files it owns, and how to enable, disable, and probe it. It lives
@@ -75,6 +75,9 @@ schema rejects unknown top-level keys. For Claude Code it is
 Code warn on every start, while `env` takes any name. For Codex it is the
 profile's auth command, `aiand key export`: Codex rejects unknown keys under
 `--strict-config`, and a hand-written profile prints its key another way.
+For CodeAF it is the `x-aiand` field on its `model_sources` row, with the
+recorded row shape as durable proof because CodeAF's own connection editor
+drops unknown fields.
 
 **restore** - `aiand restore <agent> --force`: the break-glass byte-for-byte
 snapshot restore. Overwrites any edits made since `on`, which is why it is

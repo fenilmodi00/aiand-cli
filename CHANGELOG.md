@@ -7,6 +7,17 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand codeaf on`/`off`/`status` wire CodeAF to ai& through an `aiand`
+  connection row in `~/.codeaf/config.json` (or `$CODEAF_HOME`): `on`
+  writes the connection with the session key and pins the model
+  (`--model native` keeps CodeAF's own default), and `off` removes
+  exactly what `on` added. `aiand run-agent codeaf` launches CodeAF on
+  ai& for one session with nothing written. `scripts/codeaf-smoke.mjs`
+  drives the hand-written row through the real pinned CodeAF binary
+  against a loopback gateway double.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added
