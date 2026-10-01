@@ -9,6 +9,26 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand pi on` wires the Pi coding agent to ai& through
+  `~/.pi/agent/`: an `aiand` provider in `models.json` speaking the gateway's
+  OpenAI-compatible dialect with every model from the live catalog, the
+  session key in `auth.json` (locked to 0600, marked `managedBy: "aiand"`),
+  and `defaultProvider`/`defaultModel` in `settings.json`. `off` removes
+  exactly what `on` added and restores a `defaultModel` it had to set aside
+  because the gateway cannot serve it; one it can serve is kept. Pass
+  `--model native` to leave Pi's own default model. Reasoning models run at
+  their gateway default effort: Pi's client would otherwise send an effort
+  level (`medium`) the catalog does not publish for every model, and the
+  gateway rejects it.
+
+- `aiand run-agent pi` launches Pi on ai& for one session with no Pi config
+  written under `~/.pi/`: a throwaway overlay becomes
+  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
+  (never the child env), while session history still lands in the user's
+  real session directory. User-supplied `--provider`/`--model`/`--models`/
+  `--api-key` passthrough flags are stripped so the routing cannot be
+  overridden; the overlay is removed after the session ends.
+
 - `aiand omp on` wires Oh My Pi to ai& through `~/.omp/agent/`: an
   override-only `aiand` provider block in `models.yml` — baseUrl, the
   session key locked to 0600, and the `managedBy: "aiand"` marker; omp
@@ -66,6 +86,25 @@ breaking changes while the command surface settles.
   unreadable and nothing was stripped yet, instead of a misleading `true`;
   the record is kept so a retry after the fix still strips.
 
+- `aiand pi off` strips the aiand provider, credential, and defaults from
+  the config files recorded by `on` when the Pi config dir was relocated
+  between the two, instead of orphaning the key literal in the old
+  directory.
+
+- `aiand copilot off` strips the aiand provider rows and model selection
+  from the config files recorded by `on` when the Copilot config dir was
+  relocated between the two, instead of orphaning the key literal in the
+  old directory.
+
+- `aiand <agent> off` lists several notes separated with `; ` instead of
+  spaces, so a run-on line like "...config dir moved stripped the..." reads
+  as distinct notes; the `--json` note stays a single string.
+
+- `aiand copilot-app on` on Linux points at the app's download page with an
+  "open it once" hint instead of the macOS `brew install --cask` command:
+  the brew line never works on Linux, and the usual state there is the app
+  installed without its config database yet.
+
 - OMP flow-sequence values with quoted commas (`modes: ["a,b", c]`) parse
   without splitting inside the quotes; previously the comma inside quotes
   silently produced two items.
@@ -73,26 +112,6 @@ breaking changes while the command surface settles.
 ## [0.4.0] - 2026-09-29
 
 ### Added
-
-- `aiand pi on` wires the Pi coding agent to ai& through
-  `~/.pi/agent/`: an `aiand` provider in `models.json` speaking the gateway's
-  OpenAI-compatible dialect with every model from the live catalog, the
-  session key in `auth.json` (locked to 0600, marked `managedBy: "aiand"`),
-  and `defaultProvider`/`defaultModel` in `settings.json`. `off` removes
-  exactly what `on` added and restores a `defaultModel` it had to set aside
-  because the gateway cannot serve it; one it can serve is kept. Pass
-  `--model native` to leave Pi's own default model. Reasoning models run at
-  their gateway default effort: Pi's client would otherwise send an effort
-  level (`medium`) the catalog does not publish for every model, and the
-  gateway rejects it.
-
-- `aiand run-agent pi` launches Pi on ai& for one session with no Pi config
-  written under `~/.pi/`: a throwaway overlay becomes
-  `PI_CODING_AGENT_DIR` holding the generated provider and the session key
-  (never the child env), while session history still lands in the user's
-  real session directory. User-supplied `--provider`/`--model`/`--models`/
-  `--api-key` passthrough flags are stripped so the routing cannot be
-  overridden; the overlay is removed after the session ends.
 
 - `aiand claude on` lists every ai& model in Claude Code's `/model` picker,
   through its `modelPicker` setting: Claude Code only discovers gateway models
