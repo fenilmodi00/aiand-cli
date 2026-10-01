@@ -39,6 +39,7 @@ const agentDir = () => join(process.env.AIAND_HOME, ".pi", "agent");
 const modelsPath = () => join(agentDir(), "models.json");
 const authPath = () => join(agentDir(), "auth.json");
 const settingsPath = () => join(agentDir(), "settings.json");
+const addedRecord = () => join(process.env.AIAND_CONFIG_DIR, "snapshots", "pi", "added.json");
 
 const CATALOG = [
   catalogModel("zai-org/glm-5.3", { capabilities: ["tools", "vision"] }),
@@ -375,6 +376,55 @@ describe("pi adapter", () => {
         join(elsewhere, "auth.json"),
         join(elsewhere, "settings.json"),
       ]);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
+  // PR #18 review: relocated config dir orphaned the baked key
+  test("off: strips the recorded files when the pi config dir moved", async () => {
+    const seed = seedUserFiles();
+    await piAdapter.enable(enableInput());
+    // The user relocated Pi's agent dir between `on` and `off`; the moved
+    // dir need not exist — off must still honor the recorded paths.
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      const result = await piAdapter.disable();
+      assert.equal(result.stripped, true);
+      assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
+      assert.equal(readFileSync(settingsPath()).equals(seed.settings), true);
+      // auth.json: our credential gone, the user's own key back byte-wise.
+      assert.equal(readFileSync(authPath()).equals(seed.auth), true);
+      assert.ok(result.notes.some((n) => n.includes("config dir moved")));
+      assert.equal(existsSync(addedRecord()), false);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
+  test("off: unparseable relocated auth.json keeps the record for retry", async () => {
+    seedUserFiles();
+    await piAdapter.enable(enableInput());
+    // Capture our wired auth.json so the retry can restore a readable file.
+    const wiredAuth = readFileSync(authPath());
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      // auth.json is the first stale file off reads, and it is unreadable:
+      // nothing was stripped yet, so stripped stays false and the record
+      // survives for the retry.
+      writeFileSync(authPath(), "{broken");
+      const result = await piAdapter.disable();
+      assert.equal(result.stripped, false);
+      assert.ok(
+        result.notes.some((n) => n.includes("is not valid JSON") && n.includes(authPath())),
+      );
+      assert.equal(existsSync(addedRecord()), true);
+
+      // The user fixes the old auth.json; the retry strips and clears it.
+      writeFileSync(authPath(), wiredAuth);
+      const retry = await piAdapter.disable();
+      assert.equal(retry.stripped, true);
+      assert.equal(existsSync(addedRecord()), false);
     } finally {
       delete process.env.PI_CODING_AGENT_DIR;
     }

@@ -151,6 +151,27 @@ describe("engine: fixture adapter", () => {
     assert.deepEqual(after.permissions, { allow: ["Bash*"] });
   });
 
+  // Live sandbox: a moved-dir strip plus an edited-value note rendered as one
+  // run-on line; the shared `note` string must separate them.
+  test("off joins multiple notes with '; ' for the human line", async () => {
+    cleanFixture();
+    const twoNotes = {
+      ...makeFixture(home),
+      disable: async () => ({
+        stripped: true,
+        notes: [
+          "stripped the aiand config from /x/agent/models.json because the pi config dir moved",
+          "left defaultModel because you edited it",
+        ],
+      }),
+    };
+    const off = await eng.agentOff(twoNotes);
+    assert.equal(
+      off.note,
+      "stripped the aiand config from /x/agent/models.json because the pi config dir moved; left defaultModel because you edited it",
+    );
+  });
+
   test("agentOn with no binary prints an install hint and exits 127", async () => {
     cleanFixture();
     await assert.rejects(eng.agentOn(makeFixture(home, { installed: false })), (e) => {

@@ -176,6 +176,19 @@ describe("copilot-app adapter", () => {
     assert.equal(rows("SELECT * FROM model_providers").length, 2, "foreign provider survives");
   });
 
+  test("enable(): --model warns the app keeps its own pick; native stays quiet", async () => {
+    createAppDb();
+    const pinned = await copilotAppAdapter.enable(enableInput({ pinModel: true }));
+    assert.ok(
+      pinned.warnings.some((w) =>
+        /The app keeps its own model pick: choose zai-org\/glm-5\.3 in its model menu\./.test(w),
+      ),
+    );
+    assert.equal(pinned.warnings.length, 2, "the sign-in warning always rides along");
+    const native = await copilotAppAdapter.enable(enableInput({ model: "native" }));
+    assert.equal(native.warnings.length, 1);
+  });
+
   test("enable(): a re-on reuses the provider id and replaces model rows", async () => {
     createAppDb();
     await copilotAppAdapter.enable(enableInput());

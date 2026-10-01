@@ -47,6 +47,8 @@ const CATALOG = [
   catalogModel("qwen/qwen3.8-27b", { reasoning_efforts: ["low", "high"] }),
 ];
 
+const addedRecord = () => join(process.env.AIAND_CONFIG_DIR, "snapshots", "copilot", "added.json");
+
 const enableInput = (overrides = {}) =>
   baseEnableInput({
     apiKey: "sk-enable-1",
@@ -231,6 +233,9 @@ describe("copilot adapter", () => {
   });
 
   test("enable(): native with no settings.json creates no empty file", async () => {
+    // The command layer snapshots before the first write; seed that here so
+    // the manifest records providers.json did not exist and off can unlink it.
+    await snapshotFiles("copilot", copilotAdapter.managedFiles());
     const result = await copilotAdapter.enable(enableInput({ model: "native" }));
     assert.deepEqual(result.filesWritten, [copilotProvidersPath()]);
     assert.equal(existsSync(copilotSettingsPath()), false);
@@ -387,6 +392,58 @@ describe("copilot adapter", () => {
     });
     assert.equal(await copilotAdapter.refreshKey({ apiKey: "sk-new" }), false);
     assert.equal(readJson(copilotProvidersPath()).providers[0].apiKey, "sk-foreign");
+  });
+
+  // PR #18 review: relocated config dir orphaned the baked key
+  test("disable(): strips the recorded files when COPILOT_HOME moved", async () => {
+    // Capture the pre-move paths: copilotProvidersPath() is env-dependent,
+    // so the asserts below must read the OLD dir the recorded paths name.
+    const oldProviders = copilotProvidersPath();
+    const oldSettings = copilotSettingsPath();
+    const seed = seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    // The user relocated the Copilot config dir between `on` and `off`; the
+    // moved dir need not exist — off must still honor the recorded paths.
+    process.env.COPILOT_HOME = join(process.env.AIAND_HOME, "moved");
+    try {
+      const result = await copilotAdapter.disable();
+      assert.equal(result.stripped, true);
+      assert.equal(readFileSync(oldProviders).equals(seed.providers), true);
+      assert.equal(readFileSync(oldSettings).equals(seed.settings), true);
+      assert.ok(result.notes.some((n) => n.includes("config dir moved")));
+      assert.equal(existsSync(addedRecord()), false);
+    } finally {
+      delete process.env.COPILOT_HOME;
+    }
+  });
+
+  test("disable(): unparseable relocated providers.json keeps the record for retry", async () => {
+    const oldProviders = copilotProvidersPath();
+    seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    // Capture our wired providers.json so the retry can restore a readable file.
+    const wiredProviders = readFileSync(oldProviders);
+    process.env.COPILOT_HOME = join(process.env.AIAND_HOME, "moved");
+    try {
+      // providers.json is the first stale file off reads, and it is
+      // unreadable: nothing was stripped yet, so stripped stays false and
+      // the record survives for the retry.
+      writeFileSync(oldProviders, "{broken");
+      const result = await copilotAdapter.disable();
+      assert.equal(result.stripped, false);
+      assert.ok(
+        result.notes.some((n) => n.includes("is not valid JSON") && n.includes(oldProviders)),
+      );
+      assert.equal(existsSync(addedRecord()), true);
+
+      // The user fixes the old providers.json; the retry strips and clears it.
+      writeFileSync(oldProviders, wiredProviders);
+      const retry = await copilotAdapter.disable();
+      assert.equal(retry.stripped, true);
+      assert.equal(existsSync(addedRecord()), false);
+    } finally {
+      delete process.env.COPILOT_HOME;
+    }
   });
 
   test("added state never stores the key", async () => {

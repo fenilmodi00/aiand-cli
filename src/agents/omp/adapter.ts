@@ -1,13 +1,18 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, trimSlash, writeFileAtomic } from "../../config.js";
+import {
+  agentHome,
+  DEFAULT_BASE_URL,
+  isRoutableBaseUrl,
+  trimSlash,
+  writeFileAtomic,
+} from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
-import { readTextIfExists } from "../managed-file.js";
+import { asObject, createSessionOverlay, readTextIfExists } from "../managed-file.js";
 import { clearAddedState, fileCreatedByUs, getAddedState, recordAddedState } from "../snapshot.js";
 import type {
   AgentAdapter,
@@ -32,9 +37,6 @@ const OMP_PROVIDER_ID = "aiand";
  */
 const OMP_MARKER_KEY = "managedBy";
 const OMP_MARKER = "aiand";
-
-/** OpenAI-compatible base URL omp dials for every ai& model. */
-const OMP_BASE_URL = "https://api.aiand.com/v1";
 
 /** Recovery hint for an omp config file that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand omp on again.";
@@ -107,19 +109,11 @@ async function readOmpFile(path: string): Promise<Record<string, unknown>> {
 
 /** The `aiand` provider block in models.yml, when it is a mapping. */
 function aiandProvider(models: Record<string, unknown>): Record<string, unknown> | undefined {
-  const providers = aiandProviderParent(models);
-  if (providers === undefined) return undefined;
-  const provider = providers[OMP_PROVIDER_ID];
-  return provider && typeof provider === "object" && !Array.isArray(provider)
-    ? (provider as Record<string, unknown>)
-    : undefined;
+  return asObject(aiandProviderParent(models)?.[OMP_PROVIDER_ID]);
 }
 
 function aiandProviderParent(models: Record<string, unknown>): Record<string, unknown> | undefined {
-  const providers = models.providers;
-  return providers && typeof providers === "object" && !Array.isArray(providers)
-    ? (providers as Record<string, unknown>)
-    : undefined;
+  return asObject(models.providers);
 }
 
 /** True when our stamp sits on the models.yml `aiand` provider block. */
@@ -127,11 +121,8 @@ function hasOwnershipMarker(models: Record<string, unknown>): boolean {
   return aiandProvider(models)?.[OMP_MARKER_KEY] === OMP_MARKER;
 }
 
-/** `--base-url` + `/v1`, or the production gateway when none is given. */
-function ompBaseUrl(baseUrl?: string): string {
-  const base = trimSlash(baseUrl ?? "");
-  return base ? `${base}/v1` : OMP_BASE_URL;
-}
+const ompBaseUrl = (baseUrl?: string): string =>
+  `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
 
 /**
  * The one builder for the override-only aiand provider block omp reads:
@@ -164,11 +155,7 @@ async function probe(): Promise<ProbeResult> {
   if (!isRoutableBaseUrl(typeof baseUrl === "string" ? baseUrl : undefined)) {
     return { active: false, model: null };
   }
-  const modelRoles = config.modelRoles;
-  const defaultModel =
-    modelRoles && typeof modelRoles === "object" && !Array.isArray(modelRoles)
-      ? (modelRoles as Record<string, unknown>).default
-      : undefined;
+  const defaultModel = asObject(config.modelRoles)?.default;
   const model =
     typeof defaultModel === "string" && defaultModel.startsWith(`${OMP_PROVIDER_ID}/`)
       ? defaultModel.slice(OMP_PROVIDER_ID.length + 1)
@@ -187,7 +174,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
 
   // A foreign provider merely named `aiand` is never ours to overwrite.
   if (aiandProvider(models) !== undefined && !hasOwnershipMarker(models)) {
-    throw new CliError("OMP already has a providers.aiand block that ai& does not manage.", {
+    throw new CliError("Oh My Pi already has a providers.aiand block that ai& does not manage.", {
       hint: "Remove or rename the foreign block by hand, then run aiand omp on again.",
     });
   }
@@ -212,12 +199,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
 
   // config.yml: modelRoles.default, additive. The prior value is what off
   // hands back; on a re-`on` the first capture stays authoritative.
-  const modelRoles =
-    config.modelRoles && typeof config.modelRoles === "object" && !Array.isArray(config.modelRoles)
-      ? (config.modelRoles as Record<string, unknown>)
-      : undefined;
-  const userDefaultModel =
-    typeof modelRoles?.default === "string" ? (modelRoles.default as string) : "";
+  const modelRoles = asObject(config.modelRoles);
+  const userDefaultModel = typeof modelRoles?.default === "string" ? modelRoles.default : "";
 
   let configText = raw.config;
   let wroteDefaultModel: string | undefined;
@@ -226,7 +209,9 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     // Leave the model unpinned: omp's own default resolution wins (with our
     // provider block, that is the bundled aiand default). on still wires
     // routing, so the user can pick a model in omp.
-    warnings.push("OMP's own default model resolution is in effect; pass --model to pick one.");
+    warnings.push(
+      "Oh My Pi's own default model resolution is in effect; pass --model to pick one.",
+    );
     wroteDefaultModel = prior?.wroteDefaultModel;
     if (wroteDefaultModel !== undefined && userDefaultModel !== wroteDefaultModel) {
       // A hand edit replaced our write: the record's undo target is stale.
@@ -377,12 +362,7 @@ async function disable(): Promise<DisableResult> {
 
     // config.yml: hand back modelRoles.default on set aside or wrote.
     // Values the user changed in between are theirs and stay, with a note.
-    const modelRoles =
-      config.modelRoles &&
-      typeof config.modelRoles === "object" &&
-      !Array.isArray(config.modelRoles)
-        ? (config.modelRoles as Record<string, unknown>)
-        : undefined;
+    const modelRoles = asObject(config.modelRoles);
     if (added?.wroteDefaultModel !== undefined) {
       if (modelRoles?.default === added.wroteDefaultModel) {
         if (added.previousDefaultModel !== undefined) {
@@ -437,10 +417,7 @@ async function disable(): Promise<DisableResult> {
     } else if (added?.wroteDefaultModel !== undefined) {
       // config.yml: the same hand-back logic as the current dir, same
       // record. Values the user changed in between are theirs and stay.
-      const modelRoles =
-        stale.modelRoles && typeof stale.modelRoles === "object" && !Array.isArray(stale.modelRoles)
-          ? (stale.modelRoles as Record<string, unknown>)
-          : undefined;
+      const modelRoles = asObject(stale.modelRoles);
       if (modelRoles?.default === added.wroteDefaultModel) {
         staleText =
           added.previousDefaultModel !== undefined
@@ -524,38 +501,24 @@ export const ompAdapter: AgentAdapter = {
     // default agent dir, its XDG location when migrated, or an explicit
     // PI_CODING_AGENT_SESSION_DIR — pointed at through that env var.
     const model = input.model ?? resolveDefault(input.catalog, input.profileModel);
-    const overlay = await mkdtemp(join(tmpdir(), "aiand-omp-"));
-    // A failed setup would otherwise leak the overlay (and a half-written
-    // key file) after an error: run-agent never sees cleanup it didn't get.
-    try {
-      await writeFile(
-        join(overlay, "models.yml"),
-        yamlRender({
-          providers: {
-            [OMP_PROVIDER_ID]: buildOmpProviderBlock({
-              baseUrl: input.baseUrl,
-              apiKey: input.apiKey,
-            }),
-          },
-        }),
-        { mode: PRIVATE_FILE_MODE },
-      );
-      await writeFile(
-        join(overlay, "config.yml"),
-        yamlRender({ modelRoles: { default: `${OMP_PROVIDER_ID}/${model}` } }),
-        { mode: PRIVATE_FILE_MODE },
-      );
-    } catch (error) {
-      await rm(overlay, { recursive: true, force: true });
-      throw error;
-    }
+    const overlay = await createSessionOverlay("aiand-omp-", {
+      "models.yml": yamlRender({
+        providers: {
+          [OMP_PROVIDER_ID]: buildOmpProviderBlock({
+            baseUrl: input.baseUrl,
+            apiKey: input.apiKey,
+          }),
+        },
+      }),
+      "config.yml": yamlRender({ modelRoles: { default: `${OMP_PROVIDER_ID}/${model}` } }),
+    });
     const args = ["--model", `${OMP_PROVIDER_ID}/${model}`];
     // Non-TTY stdin: ask for an explicit one-shot mode. A piped prompt must
     // process and exit, not sit on an interactive session.
     if (!process.stdin.isTTY) args.push("--print");
     return {
       env: {
-        PI_CODING_AGENT_DIR: overlay,
+        PI_CODING_AGENT_DIR: overlay.dir,
         PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR ?? ompSessionsDir(),
       },
       // --model pins the routing; a user-supplied --provider/--api-key/
@@ -563,9 +526,7 @@ export const ompAdapter: AgentAdapter = {
       // rest of the routing flags (both `--flag value` and `--flag=value`).
       args,
       stripPassthroughFlags: ["--model", "--provider", "--api-key", "--models"],
-      cleanup: async () => {
-        await rm(overlay, { recursive: true, force: true });
-      },
+      cleanup: overlay.cleanup,
     };
   },
 };

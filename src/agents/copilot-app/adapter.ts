@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, trimSlash } from "../../config.js";
+import { agentHome, DEFAULT_BASE_URL, isRoutableBaseUrl, trimSlash } from "../../config.js";
 import type {
   AgentAdapter,
   DetectResult,
@@ -141,11 +141,8 @@ async function guardSchema<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-/** `--base-url` + `/v1`, or the production gateway when none is given. */
-function copilotAppBaseUrl(baseUrl?: string): string {
-  const base = trimSlash(baseUrl ?? "");
-  return base ? `${base}/v1` : "https://api.aiand.com/v1";
-}
+const copilotAppBaseUrl = (baseUrl?: string): string =>
+  `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
 
 /** The provider row's settings_json: auth rides the Authorization header. */
 function copilotAppSettingsJson(baseUrl: string, apiKey: string): string {
@@ -240,13 +237,17 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   // The app resolves its own model per session; there is no ai& "model in
   // effect" to report, so enable reports the resolved pick without
   // claiming the app pinned it.
+  const warnings = [
+    "The app keeps GitHub sign-in even for BYOK providers, and you pick the ai& model in its model menu.",
+  ];
+  if (input.pinModel) {
+    warnings.push(`The app keeps its own model pick: choose ${input.model} in its model menu.`);
+  }
   return {
     model: input.model,
     catalogModel: input.model === "native" ? undefined : input.model,
     filesWritten: [dbPath],
-    warnings: [
-      "The app keeps GitHub sign-in even for BYOK providers, and you pick the ai& model in its model menu.",
-    ],
+    warnings,
   };
 }
 
@@ -277,16 +278,25 @@ export const copilotAppAdapter: AgentAdapter = {
   // GUI-installed — its db or app dir is the footprint), but `bin` feeds
   // status display and must name the real command family.
   bin: "copilot",
+  // Linux has no GUI install-path probe (an AppImage mounts unenumerably),
+  // so detect() gates on data.db — which the app only creates on first
+  // open. The Linux hint therefore says "open it once", and never suggests
+  // brew (macOS-only) for an app that may already be installed.
   install:
     process.platform === "win32"
       ? {
           command: "winget install GitHub.CopilotApp",
           url: "https://github.com/features/ai/github-app",
         }
-      : {
-          command: "brew install --cask github-copilot-app",
-          url: "https://github.com/features/ai/github-app",
-        },
+      : process.platform === "darwin"
+        ? {
+            command: "brew install --cask github-copilot-app",
+            url: "https://github.com/features/ai/github-app",
+          }
+        : {
+            command: "Install the GitHub Copilot desktop app, then open it once",
+            url: "https://github.com/features/ai/github-app",
+          },
   detect(): DetectResult {
     const dbPath = copilotDataDbPath();
     if (existsSync(dbPath)) return { installed: true, path: dbPath };

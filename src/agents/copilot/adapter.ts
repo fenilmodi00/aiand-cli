@@ -1,22 +1,28 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Model } from "../../api/models.js";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, trimSlash, writeFileAtomic } from "../../config.js";
+import {
+  agentHome,
+  DEFAULT_BASE_URL,
+  isRoutableBaseUrl,
+  trimSlash,
+  writeFileAtomic,
+} from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
 import {
   asObject,
+  createSessionOverlay,
   jsoncDelete,
   jsoncSet,
-  notValidJsonError,
-  parseJsonc,
+  parseWrittenObject,
+  readJsoncObject,
   readTextIfExists,
+  writeStrippedJsonc,
 } from "../managed-file.js";
-import { clearAddedState, fileCreatedByUs, getAddedState, recordAddedState } from "../snapshot.js";
+import { clearAddedState, getAddedState, recordAddedState } from "../snapshot.js";
 import type {
   AgentAdapter,
   DetectResult,
@@ -35,16 +41,14 @@ const COPILOT_PROVIDER_NAME = "aiand";
 /** Model selections the CLI accepts for a BYOK provider are `aiand/<id>`. */
 const COPILOT_SELECTION_PREFIX = `${COPILOT_PROVIDER_NAME}/`;
 
-/** OpenAI-compatible base URL the CLI dials for every ai& model. */
-const COPILOT_BASE_URL = "https://api.aiand.com/v1";
-
 /** Recovery hint for a Copilot config file that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand copilot on again.";
 
 /**
  * What enable() recorded so off can tell its values from the user's. The
- * baked key never appears here: only selections, previous values, modes,
- * and created flags.
+ * baked key never appears here: only selections, previous values, modes, and
+ * the absolute paths we wrote (paths are not secrets; the snapshot manifest
+ * already stores them).
  */
 type CopilotRecord = {
   /** settings.json's `model` before on overwrote it (undefined = absent). */
@@ -54,9 +58,9 @@ type CopilotRecord = {
   /** File mode before `on` wrote it, per file off rewrites. */
   previousProvidersMode?: number;
   previousSettingsMode?: number;
-  /** Whether `on` created the file (a created file is unlinked when emptied). */
-  createdProviders?: boolean;
-  createdSettings?: boolean;
+  /** Where `on` actually wrote the files; off strips them if the dir moved. */
+  providersPath?: string;
+  settingsPath?: string;
 };
 
 /** The CLI's config dir: ~/.copilot/, or $COPILOT_HOME when set. */
@@ -79,29 +83,6 @@ export function copilotSettingsPath(): string {
   return join(copilotHomeDir(), "settings.json");
 }
 
-/**
- * Tolerant JSONC read of a Copilot config file (settings.json is documented
- * JSONC): missing/blank reads as {}, a parse error or a non-object root is
- * the shared invalid-JSON CliError with the recovery hint.
- */
-async function readCopilotFile(path: string): Promise<Record<string, unknown>> {
-  const text = await readTextIfExists(path);
-  if (!text.trim()) return {};
-  let parsed: unknown;
-  try {
-    parsed = parseJsonc(text);
-  } catch (error) {
-    if (error instanceof SyntaxError) throw notValidJsonError(path, INVALID_CONFIG_HINT);
-    throw error;
-  }
-  return asObject(parsed) ?? {};
-}
-
-/** Re-parse text this module just wrote, which is always an object or empty. */
-function parseWritten(text: string): Record<string, unknown> {
-  return asObject(parseJsonc(text)) ?? {};
-}
-
 /** The `aiand` provider row in providers.json `providers[]`, when shaped like one. */
 function aiandRow(providers: Record<string, unknown>): Record<string, unknown> | undefined {
   const rows = Array.isArray(providers.providers) ? providers.providers : [];
@@ -118,11 +99,8 @@ function isOurRow(row: Record<string, unknown> | undefined): boolean {
   return row !== undefined && isRoutableBaseUrl(row.baseUrl);
 }
 
-/** `--base-url` + `/v1`, or the production gateway when none is given. */
-function copilotBaseUrl(baseUrl?: string): string {
-  const base = trimSlash(baseUrl ?? "");
-  return base ? `${base}/v1` : COPILOT_BASE_URL;
-}
+const copilotBaseUrl = (baseUrl?: string): string =>
+  `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
 
 /**
  * The provider row the CLI needs for BYOK: the OpenAI chat-completions
@@ -172,8 +150,8 @@ async function probe(): Promise<ProbeResult> {
   let providers: Record<string, unknown>;
   let settings: Record<string, unknown>;
   try {
-    providers = await readCopilotFile(copilotProvidersPath());
-    settings = await readCopilotFile(copilotSettingsPath());
+    providers = await readJsoncObject(copilotProvidersPath(), INVALID_CONFIG_HINT);
+    settings = await readJsoncObject(copilotSettingsPath(), INVALID_CONFIG_HINT);
   } catch {
     // A file mid-edit must not wedge `copilot status`.
     return { active: false, model: null };
@@ -194,8 +172,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     providers: await readTextIfExists(paths.providers),
     settings: await readTextIfExists(paths.settings),
   };
-  const providersFile = await readCopilotFile(paths.providers);
-  const settingsFile = await readCopilotFile(paths.settings);
+  const providersFile = await readJsoncObject(paths.providers, INVALID_CONFIG_HINT);
+  const settingsFile = await readJsoncObject(paths.settings, INVALID_CONFIG_HINT);
 
   // A foreign provider merely named `aiand` is never ours to overwrite:
   // only rows routing somewhere usable are treated as our own writes.
@@ -273,8 +251,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   // capture stays authoritative. providers.json holds the plaintext
   // session key: 0600 for as long as it lives there. A file on created
   // stays private — a stray file must never open 0644.
-  const createdProviders = prior?.createdProviders ?? !existsSync(paths.providers);
-  const createdSettings = prior?.createdSettings ?? !existsSync(paths.settings);
+  const createdProviders = !existsSync(paths.providers);
+  const createdSettings = !existsSync(paths.settings);
   const previousProvidersMode =
     prior?.previousProvidersMode ??
     (createdProviders
@@ -300,8 +278,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     wroteModelSelection,
     previousProvidersMode,
     previousSettingsMode,
-    createdProviders,
-    createdSettings,
+    providersPath: paths.providers,
+    settingsPath: paths.settings,
   });
 
   return {
@@ -312,20 +290,29 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   };
 }
 
-/** Write a stripped file back, or unlink it when our `on` created it and nothing is left. */
-async function writeStripped(
-  path: string,
-  before: string,
-  after: string,
-  mode: number,
-  created: boolean,
-): Promise<void> {
-  if (after === before) return;
-  if (Object.keys(parseWritten(after)).length === 0 && created) {
-    await rm(path, { force: true });
-  } else {
-    await writeFileAtomic(path, after, { mode });
+/**
+ * The settings.json selection hand-back off performs on one file, current
+ * dir or moved: an `aiand/`-prefixed `model` is ours to undo (off just
+ * deleted every row that could serve it, so leaving it dangles a dead
+ * model); the user's own value stays, with a note.
+ */
+function handBackSelection(
+  text: string,
+  added: CopilotRecord | null,
+): { text: string; notes: string[] } {
+  const notes: string[] = [];
+  const model = text.trim() ? parseWrittenObject(text).model : undefined;
+  const isOurSelection = typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
+  let out = text;
+  if (isOurSelection) {
+    out =
+      added?.previousModelSelection !== undefined
+        ? jsoncSet(out, ["model"], added.previousModelSelection)
+        : jsoncDelete(out, ["model"]);
+  } else if (added?.wroteModelSelection !== undefined && model !== undefined) {
+    notes.push("left model because you edited it");
   }
+  return { text: out, notes };
 }
 
 async function disable(): Promise<DisableResult> {
@@ -340,10 +327,11 @@ async function disable(): Promise<DisableResult> {
   // providers.json. Keep the record: once the JSON is fixed, off can still
   // tell our values from the user's.
   let providersFile: Record<string, unknown>;
-  let settingsFile: Record<string, unknown>;
   try {
-    providersFile = await readCopilotFile(paths.providers);
-    settingsFile = await readCopilotFile(paths.settings);
+    providersFile = await readJsoncObject(paths.providers, INVALID_CONFIG_HINT);
+    // Parsed only to gate: a hand edit that broke settings.json must block
+    // before anything is written.
+    await readJsoncObject(paths.settings, INVALID_CONFIG_HINT);
   } catch (error) {
     if (error instanceof CliError) {
       const what = error.message.trim().replace(/\.$/, "");
@@ -380,39 +368,96 @@ async function disable(): Promise<DisableResult> {
     } else if (providersFile.models !== undefined) {
       providersText = jsoncDelete(providersText, ["models"]);
     }
-    await writeStripped(
+    await writeStrippedJsonc(
+      COPILOT_ID,
       paths.providers,
       raw.providers,
       providersText,
       added?.previousProvidersMode ?? PRIVATE_FILE_MODE,
-      added?.createdProviders === true || (await fileCreatedByUs(COPILOT_ID, paths.providers)),
     );
 
-    // settings.json: hand back the `model` selection on replaced, or drop
-    // the key when on added it to a file that had none. A `aiand/`-prefixed
-    // value — ours, or a later pick of another ai& model from the app's
-    // menu — is always undone: off just deleted every row that could serve
-    // it, so leaving it dangles a dead model. Only the user's own value
-    // stays, with a note.
-    let settingsText = raw.settings;
-    const model = settingsFile.model;
-    const isOurSelection = typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
-    if (isOurSelection) {
-      if (added?.previousModelSelection !== undefined) {
-        settingsText = jsoncSet(settingsText, ["model"], added.previousModelSelection);
-      } else {
-        settingsText = jsoncDelete(settingsText, ["model"]);
-      }
-    } else if (added?.wroteModelSelection !== undefined && model !== undefined) {
-      notes.push("left model because you edited it");
-    }
-    await writeStripped(
+    // settings.json: the same selection hand-back as the stale path below.
+    const handedBack = handBackSelection(raw.settings, added);
+    notes.push(...handedBack.notes);
+    await writeStrippedJsonc(
+      COPILOT_ID,
       paths.settings,
       raw.settings,
-      settingsText,
+      handedBack.text,
       added?.previousSettingsMode ?? DEFAULT_FILE_MODE,
-      added?.createdSettings === true || (await fileCreatedByUs(COPILOT_ID, paths.settings)),
     );
+  }
+
+  // A dir move after `on` (COPILOT_HOME / COPILOT_PROVIDERS_CONFIG
+  // retargeted) leaves our rows in the old files while the current file
+  // shows nothing of ours. The record knows where `on` actually wrote:
+  // strip those too, or the baked key stays live forever with nothing
+  // pointing at it. Runs outside the current-file gate so a current dir
+  // with no providers.json is still honored.
+  for (const kind of ["providers", "settings"] as const) {
+    const stalePath = kind === "providers" ? added?.providersPath : added?.settingsPath;
+    if (!stalePath || stalePath === paths[kind] || !existsSync(stalePath)) continue;
+    const rawStale = await readTextIfExists(stalePath);
+    let stale: Record<string, unknown>;
+    try {
+      stale = await readJsoncObject(stalePath, INVALID_CONFIG_HINT);
+    } catch (error) {
+      if (error instanceof CliError) {
+        // Keep the record: after the fix, off must still find this path.
+        // Report the running total, not a hardcoded true: when nothing was
+        // stripped yet (moved dir, first stale file unreadable) this is false.
+        return {
+          stripped,
+          notes: [`${stalePath} is not valid JSON; fix it, then run aiand copilot off again.`],
+        };
+      }
+      throw error;
+    }
+    let staleText = rawStale;
+    if (kind === "providers") {
+      // Row-gated like the current dir: a foreign unroutable `aiand` row is
+      // left alone.
+      if (!isOurRow(aiandRow(stale))) continue;
+      const leftProviders = (Array.isArray(stale.providers) ? stale.providers : []).filter(
+        (entry) => asObject(entry)?.name !== COPILOT_PROVIDER_NAME,
+      );
+      const leftModels = (Array.isArray(stale.models) ? stale.models : []).filter(
+        (entry) => asObject(entry)?.provider !== COPILOT_PROVIDER_NAME,
+      );
+      if (leftProviders.length > 0) {
+        staleText = jsoncSet(staleText, ["providers"], leftProviders);
+      } else if (stale.providers !== undefined) {
+        staleText = jsoncDelete(staleText, ["providers"]);
+      }
+      if (leftModels.length > 0) {
+        staleText = jsoncSet(staleText, ["models"], leftModels);
+      } else if (stale.models !== undefined) {
+        staleText = jsoncDelete(staleText, ["models"]);
+      }
+    } else {
+      // settings.json: the same selection hand-back as the current dir,
+      // same record. Values the user changed in between are theirs and stay.
+      const handedBack = handBackSelection(rawStale, added);
+      staleText = handedBack.text;
+      notes.push(...handedBack.notes);
+    }
+    const mode: Record<typeof kind, number | undefined> = {
+      providers: added?.previousProvidersMode,
+      settings: added?.previousSettingsMode,
+    };
+    await writeStrippedJsonc(
+      COPILOT_ID,
+      stalePath,
+      rawStale,
+      staleText,
+      mode[kind] ?? (kind === "providers" ? PRIVATE_FILE_MODE : DEFAULT_FILE_MODE),
+    );
+    if (staleText !== rawStale) {
+      stripped = true;
+      notes.push(
+        `stripped the aiand config from ${stalePath} because the Copilot config dir moved`,
+      );
+    }
   }
 
   await clearAddedState(COPILOT_ID);
@@ -452,7 +497,7 @@ export const copilotAdapter: AgentAdapter = {
     // own key untouched.
     const path = copilotProvidersPath();
     const raw = await readTextIfExists(path);
-    const providers = await readCopilotFile(path);
+    const providers = await readJsoncObject(path, INVALID_CONFIG_HINT);
     const rows = Array.isArray(providers.providers) ? providers.providers : [];
     const index = rows.findIndex(
       (entry) => asObject(entry)?.name === COPILOT_PROVIDER_NAME && isOurRow(asObject(entry)),
@@ -485,44 +530,30 @@ export const copilotAdapter: AgentAdapter = {
     // keeping its transcript out of the user's ~/.copilot is acceptable,
     // and upstream offers no separate history dir.
     const model = input.model ?? resolveDefault(input.catalog, input.profileModel);
-    const overlay = await mkdtemp(join(tmpdir(), "aiand-copilot-"));
-    // A failed setup would otherwise leak the overlay (and a half-written
-    // key file) after an error: run-agent never sees cleanup it didn't get.
-    try {
-      await writeFile(
-        join(overlay, "providers.json"),
-        `${JSON.stringify(
-          {
-            providers: [
-              buildCopilotProvider({
-                apiKey: input.apiKey,
-                baseUrl: copilotBaseUrl(input.baseUrl),
-              }),
-            ],
-            models: buildCopilotModelEntries(input.catalog),
-          },
-          null,
-          2,
-        )}\n`,
-        { mode: PRIVATE_FILE_MODE },
-      );
-      await writeFile(
-        join(overlay, "settings.json"),
-        `${JSON.stringify({ model: `${COPILOT_SELECTION_PREFIX}${model}` }, null, 2)}\n`,
-        { mode: PRIVATE_FILE_MODE },
-      );
-    } catch (error) {
-      await rm(overlay, { recursive: true, force: true });
-      throw error;
-    }
+    const overlay = await createSessionOverlay("aiand-copilot-", {
+      "providers.json": `${JSON.stringify(
+        {
+          providers: [
+            buildCopilotProvider({
+              apiKey: input.apiKey,
+              baseUrl: copilotBaseUrl(input.baseUrl),
+            }),
+          ],
+          models: buildCopilotModelEntries(input.catalog),
+        },
+        null,
+        2,
+      )}\n`,
+      "settings.json": `${JSON.stringify({ model: `${COPILOT_SELECTION_PREFIX}${model}` }, null, 2)}\n`,
+    });
     return {
       env: {
-        COPILOT_HOME: overlay,
+        COPILOT_HOME: overlay.dir,
         // COPILOT_PROVIDERS_CONFIG outranks COPILOT_HOME for providers.json
         // (file-direct beats the relocated dir), so an inherited value would
         // make the child read the user's file, not the overlay: pin it at
         // the overlay's own providers.json.
-        COPILOT_PROVIDERS_CONFIG: join(overlay, "providers.json"),
+        COPILOT_PROVIDERS_CONFIG: join(overlay.dir, "providers.json"),
         // Model precedence (observed against 1.0.89): --model >
         // COPILOT_MODEL > settings.json. COPILOT_MODEL beats the overlay's
         // own pin and an inherited user env; COPILOT_OFFLINE=true keeps a
@@ -537,9 +568,7 @@ export const copilotAdapter: AgentAdapter = {
       // otherwise be overridable (run-agent's owned-flag filter).
       args: ["--no-auto-update"],
       stripPassthroughFlags: ["--model"],
-      cleanup: async () => {
-        await rm(overlay, { recursive: true, force: true });
-      },
+      cleanup: overlay.cleanup,
     };
   },
 };

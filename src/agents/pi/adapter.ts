@@ -1,21 +1,29 @@
-import { chmod, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { chmod } from "node:fs/promises";
 import { join } from "node:path";
 import type { Model } from "../../api/models.js";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, trimSlash, writeFileAtomic } from "../../config.js";
+import {
+  agentHome,
+  DEFAULT_BASE_URL,
+  isRoutableBaseUrl,
+  trimSlash,
+  writeFileAtomic,
+} from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
 import {
   asObject,
+  createSessionOverlay,
   jsoncDelete,
   jsoncSet,
-  notValidJsonError,
-  parseJsonc,
+  parseWrittenObject,
+  readJsoncObject,
   readTextIfExists,
+  writeStrippedJsonc,
 } from "../managed-file.js";
-import { clearAddedState, fileCreatedByUs, getAddedState, recordAddedState } from "../snapshot.js";
+import { clearAddedState, getAddedState, recordAddedState } from "../snapshot.js";
 import type {
   AgentAdapter,
   DetectResult,
@@ -41,15 +49,14 @@ const PI_PROVIDER_ID = "aiand";
 const PI_MARKER_KEY = "managedBy";
 const PI_MARKER = "aiand";
 
-/** OpenAI-compatible base URL Pi dials for every ai& model. */
-const PI_BASE_URL = "https://api.aiand.com/v1";
-
 /** Recovery hint for a Pi config file that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand pi on again.";
 
 /**
  * What enable() recorded so off can tell its values from the user's. The
- * baked key never appears here: only ids, previous values, and file modes.
+ * baked key never appears here: only ids, previous values, file modes, and
+ * the absolute paths we wrote (paths are not secrets; the snapshot manifest
+ * already stores them).
  */
 type PiRecord = {
   /** What settings.json's defaultProvider was before on (undefined = absent). */
@@ -63,6 +70,10 @@ type PiRecord = {
   previousSettingsMode?: number;
   /** auth.json's mode before `on` wrote it; a new file stays private. */
   previousAuthMode?: number;
+  /** Where `on` actually wrote the files; off strips them if the dir moved. */
+  modelsPath?: string;
+  authPath?: string;
+  settingsPath?: string;
 };
 
 /** The agent config dir: ~/.pi/agent/, or $PI_CODING_AGENT_DIR when set. */
@@ -84,30 +95,6 @@ function piSettingsPath(): string {
 
 const PI_MANAGED_FILES = [piModelsPath, piAuthPath, piSettingsPath] as const;
 
-/**
- * Read a Pi config file as an object: missing/blank reads as {}, a parse
- * error is the shared invalid-JSON CliError. Pi parses all three files with
- * plain JSON.parse (only models.json tolerates comments), but the surgical
- * editors keep whatever text the user had, so its round trip is safe.
- */
-async function readPiFile(path: string): Promise<Record<string, unknown>> {
-  const text = await readTextIfExists(path);
-  if (!text.trim()) return {};
-  let parsed: unknown;
-  try {
-    parsed = parseJsonc(text);
-  } catch (error) {
-    if (error instanceof SyntaxError) throw notValidJsonError(path, INVALID_CONFIG_HINT);
-    throw error;
-  }
-  return asObject(parsed) ?? {};
-}
-
-/** Re-parse text this module just wrote, which is always an object or empty. */
-function parseWritten(text: string): Record<string, unknown> {
-  return asObject(parseJsonc(text)) ?? {};
-}
-
 /** The `aiand` credential block in auth.json, when it is an object. */
 function aiandCredential(auth: Record<string, unknown>): Record<string, unknown> | undefined {
   return asObject(auth[PI_PROVIDER_ID]);
@@ -123,11 +110,8 @@ function aiandProvider(models: Record<string, unknown>): Record<string, unknown>
   return asObject(asObject(models.providers)?.[PI_PROVIDER_ID]);
 }
 
-/** `--base-url` + `/v1`, or the production gateway when none is given. */
-function piBaseUrl(baseUrl?: string): string {
-  const base = trimSlash(baseUrl ?? "");
-  return base ? `${base}/v1` : PI_BASE_URL;
-}
+const piBaseUrl = (baseUrl?: string): string =>
+  `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
 
 /**
  * One model entry in Pi's `providers.aiand.models` array, rendered from the
@@ -189,9 +173,9 @@ async function probe(): Promise<ProbeResult> {
   let models: Record<string, unknown>;
   let settings: Record<string, unknown>;
   try {
-    auth = await readPiFile(piAuthPath());
-    models = await readPiFile(piModelsPath());
-    settings = await readPiFile(piSettingsPath());
+    auth = await readJsoncObject(piAuthPath(), INVALID_CONFIG_HINT);
+    models = await readJsoncObject(piModelsPath(), INVALID_CONFIG_HINT);
+    settings = await readJsoncObject(piSettingsPath(), INVALID_CONFIG_HINT);
   } catch {
     // A file mid-edit must not wedge `pi status`.
     return { active: false, model: null };
@@ -210,9 +194,9 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     auth: await readTextIfExists(paths.auth),
     settings: await readTextIfExists(paths.settings),
   };
-  const models = await readPiFile(paths.models);
-  const auth = await readPiFile(paths.auth);
-  const settings = await readPiFile(paths.settings);
+  const models = await readJsoncObject(paths.models, INVALID_CONFIG_HINT);
+  const auth = await readJsoncObject(paths.auth, INVALID_CONFIG_HINT);
+  const settings = await readJsoncObject(paths.settings, INVALID_CONFIG_HINT);
 
   // A foreign provider merely named `aiand` is never ours to overwrite.
   if (aiandProvider(models) !== undefined && !hasOwnershipMarker(auth)) {
@@ -325,6 +309,9 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     previousModelsMode,
     previousSettingsMode,
     previousAuthMode,
+    modelsPath: paths.models,
+    authPath: paths.auth,
+    settingsPath: paths.settings,
   });
 
   // The model now in effect: this run's write, else what the file already
@@ -340,19 +327,35 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   };
 }
 
-/** Write a stripped file back, or unlink it when our `on` created it and nothing is left. */
-async function writeStripped(
-  path: string,
-  before: string,
-  after: string,
-  mode: number,
-): Promise<void> {
-  if (after === before) return;
-  if (Object.keys(parseWritten(after)).length === 0 && (await fileCreatedByUs(PI_ID, path))) {
-    await unlink(path).catch(() => {});
-  } else {
-    await writeFileAtomic(path, after, { mode });
+/**
+ * The settings.json hand-back off performs on one file, current dir or
+ * moved: a defaultModel we wrote is restored (or removed) only while it is
+ * still ours, and a defaultProvider we set is handed back. Values the user
+ * changed in between are theirs and stay, with a note.
+ */
+function handBackSettings(text: string, added: PiRecord | null): { text: string; notes: string[] } {
+  const notes: string[] = [];
+  const settings = text.trim() ? parseWrittenObject(text) : {};
+  let out = text;
+  if (added?.wroteDefaultModel !== undefined) {
+    if (settings.defaultModel === added.wroteDefaultModel) {
+      out =
+        added.previousDefaultModel !== undefined
+          ? jsoncSet(out, ["defaultModel"], added.previousDefaultModel)
+          : jsoncDelete(out, ["defaultModel"]);
+    } else if (settings.defaultModel !== undefined) {
+      notes.push("left defaultModel because you edited it");
+    }
   }
+  if (settings.defaultProvider === PI_PROVIDER_ID) {
+    out =
+      added?.previousDefaultProvider !== undefined
+        ? jsoncSet(out, ["defaultProvider"], added.previousDefaultProvider)
+        : jsoncDelete(out, ["defaultProvider"]);
+  } else if (settings.defaultProvider !== undefined) {
+    notes.push("left defaultProvider because you edited it");
+  }
+  return { text: out, notes };
 }
 
 async function disable(): Promise<DisableResult> {
@@ -365,7 +368,7 @@ async function disable(): Promise<DisableResult> {
   };
   let auth: Record<string, unknown>;
   try {
-    auth = await readPiFile(paths.auth);
+    auth = await readJsoncObject(paths.auth, INVALID_CONFIG_HINT);
   } catch (error) {
     if (error instanceof CliError) {
       // Keep the record: once the JSON is fixed, off can still tell our
@@ -390,7 +393,8 @@ async function disable(): Promise<DisableResult> {
     // A file our on created (the snapshot recorded its absence) and that is
     // now empty is unlinked, never left behind as a stray.
     const authText = jsoncDelete(raw.auth, [PI_PROVIDER_ID]);
-    await writeStripped(
+    await writeStrippedJsonc(
+      PI_ID,
       paths.auth,
       raw.auth,
       authText,
@@ -398,50 +402,95 @@ async function disable(): Promise<DisableResult> {
     );
 
     // settings.json: hand back the defaultProvider on replaced and the
-    // defaultModel on set aside or wrote. Values the user changed in
-    // between are theirs and stay, with a note.
-    let settingsText = raw.settings;
-    const settings = parseWritten(settingsText);
-    if (added?.wroteDefaultModel !== undefined) {
-      if (settings.defaultModel === added.wroteDefaultModel) {
-        if (added.previousDefaultModel !== undefined) {
-          settingsText = jsoncSet(settingsText, ["defaultModel"], added.previousDefaultModel);
-        } else {
-          settingsText = jsoncDelete(settingsText, ["defaultModel"]);
-        }
-      } else if (settings.defaultModel !== undefined) {
-        notes.push("left defaultModel because you edited it");
-      }
-    }
-    if (settings.defaultProvider === PI_PROVIDER_ID) {
-      if (added?.previousDefaultProvider !== undefined) {
-        settingsText = jsoncSet(settingsText, ["defaultProvider"], added.previousDefaultProvider);
-      } else {
-        settingsText = jsoncDelete(settingsText, ["defaultProvider"]);
-      }
-    } else if (settings.defaultProvider !== undefined) {
-      notes.push("left defaultProvider because you edited it");
-    }
-    await writeStripped(
+    // defaultModel on set aside or wrote.
+    const handedBack = handBackSettings(raw.settings, added);
+    notes.push(...handedBack.notes);
+    await writeStrippedJsonc(
+      PI_ID,
       paths.settings,
       raw.settings,
-      settingsText,
+      handedBack.text,
       added?.previousSettingsMode ?? DEFAULT_FILE_MODE,
     );
 
     // models.json: drop our provider block; unrelated providers survive,
     // and an emptied `providers` map (ours alone) is dropped with it.
     let modelsText = jsoncDelete(raw.models, ["providers", PI_PROVIDER_ID]);
-    const left = asObject(parseWritten(modelsText).providers);
+    const left = asObject(parseWrittenObject(modelsText).providers);
     if (left && Object.keys(left).length === 0) {
       modelsText = jsoncDelete(modelsText, ["providers"]);
     }
-    await writeStripped(
+    await writeStrippedJsonc(
+      PI_ID,
       paths.models,
       raw.models,
       modelsText,
       added?.previousModelsMode ?? DEFAULT_FILE_MODE,
     );
+  }
+
+  // A dir move after `on` (PI_CODING_AGENT_DIR retargeted) leaves our
+  // credential in the old files while the current dir shows nothing of
+  // ours. The record knows where `on` actually wrote: strip those too, or
+  // the baked key stays live forever with nothing pointing at it. auth.json
+  // comes first — it carries the ownership marker, so it also decides
+  // whether the stale files are ours at all.
+  for (const kind of ["auth", "models", "settings"] as const) {
+    const stalePath = added?.[`${kind}Path`];
+    if (!stalePath || stalePath === paths[kind] || !existsSync(stalePath)) continue;
+    const rawStale = await readTextIfExists(stalePath);
+    let stale: Record<string, unknown>;
+    try {
+      stale = await readJsoncObject(stalePath, INVALID_CONFIG_HINT);
+    } catch (error) {
+      if (error instanceof CliError) {
+        // Keep the record: after the fix, off must still find this path.
+        // Report the running total, not a hardcoded true: when nothing was
+        // stripped yet (moved dir, first stale file unreadable) this is false.
+        return {
+          stripped,
+          notes: [`${stalePath} is not valid JSON; fix it, then run aiand pi off again.`],
+        };
+      }
+      throw error;
+    }
+    let staleText = rawStale;
+    if (kind === "auth") {
+      // Marker-gated like the current dir: a foreign credential is left alone.
+      if (!hasOwnershipMarker(stale)) continue;
+      staleText = jsoncDelete(rawStale, [PI_PROVIDER_ID]);
+    } else if (kind === "models") {
+      // models.json: drop our provider block; unrelated providers survive,
+      // and an emptied `providers` map (ours alone) is dropped with it.
+      if (aiandProvider(stale) === undefined) continue;
+      staleText = jsoncDelete(rawStale, ["providers", PI_PROVIDER_ID]);
+      const left = asObject(parseWrittenObject(staleText).providers);
+      if (left && Object.keys(left).length === 0) {
+        staleText = jsoncDelete(staleText, ["providers"]);
+      }
+    } else {
+      // settings.json: the same hand-back logic as the current dir, same
+      // record. Values the user changed in between are theirs and stay.
+      const handedBack = handBackSettings(rawStale, added);
+      staleText = handedBack.text;
+      notes.push(...handedBack.notes);
+    }
+    const mode: Record<typeof kind, number | undefined> = {
+      auth: added?.previousAuthMode,
+      models: added?.previousModelsMode,
+      settings: added?.previousSettingsMode,
+    };
+    await writeStrippedJsonc(
+      PI_ID,
+      stalePath,
+      rawStale,
+      staleText,
+      mode[kind] ?? (kind === "auth" ? PRIVATE_FILE_MODE : DEFAULT_FILE_MODE),
+    );
+    if (staleText !== rawStale) {
+      stripped = true;
+      notes.push(`stripped the aiand config from ${stalePath} because the pi config dir moved`);
+    }
   }
 
   await clearAddedState(PI_ID);
@@ -478,7 +527,7 @@ export const piAdapter: AgentAdapter = {
     // its own key untouched.
     const path = piAuthPath();
     const raw = await readTextIfExists(path);
-    const credential = aiandCredential(await readPiFile(path));
+    const credential = aiandCredential(await readJsoncObject(path, INVALID_CONFIG_HINT));
     if (!credential || credential[PI_MARKER_KEY] !== PI_MARKER) return false;
     // A same-key no-op still counts as touched: an idempotent rebake reports
     // refreshed.
@@ -503,37 +552,23 @@ export const piAdapter: AgentAdapter = {
     // dir — its history must not vanish with the throwaway. No Pi config
     // files are written under ~/.pi; history still lands in the user's dir.
     const model = input.model ?? resolveDefault(input.catalog, input.profileModel);
-    const overlay = await mkdtemp(join(tmpdir(), "aiand-pi-"));
-    // A failed setup would otherwise leak the overlay (and a half-written
-    // key file) after an error: run-agent never sees cleanup it didn't get.
-    try {
-      await writeFile(
-        join(overlay, "models.json"),
-        `${JSON.stringify(
-          {
-            providers: {
-              [PI_PROVIDER_ID]: buildPiProvider({
-                baseUrl: piBaseUrl(input.baseUrl),
-                catalog: input.catalog,
-              }),
-            },
+    const overlay = await createSessionOverlay("aiand-pi-", {
+      "models.json": `${JSON.stringify(
+        {
+          providers: {
+            [PI_PROVIDER_ID]: buildPiProvider({
+              baseUrl: piBaseUrl(input.baseUrl),
+              catalog: input.catalog,
+            }),
           },
-          null,
-          2,
-        )}\n`,
-        { mode: PRIVATE_FILE_MODE },
-      );
-      await writeFile(
-        join(overlay, "auth.json"),
-        `${JSON.stringify({
-          [PI_PROVIDER_ID]: { type: "api_key", key: input.apiKey, [PI_MARKER_KEY]: PI_MARKER },
-        })}\n`,
-        { mode: PRIVATE_FILE_MODE },
-      );
-    } catch (error) {
-      await rm(overlay, { recursive: true, force: true });
-      throw error;
-    }
+        },
+        null,
+        2,
+      )}\n`,
+      "auth.json": `${JSON.stringify({
+        [PI_PROVIDER_ID]: { type: "api_key", key: input.apiKey, [PI_MARKER_KEY]: PI_MARKER },
+      })}\n`,
+    });
     const args = ["--provider", PI_PROVIDER_ID, "--model", model];
     // Non-TTY stdin: ask for an explicit one-shot mode. Upstream Pi has had
     // hang bugs with redirected stdin when no mode is set; a piped prompt
@@ -541,7 +576,7 @@ export const piAdapter: AgentAdapter = {
     if (!process.stdin.isTTY) args.push("--print");
     return {
       env: {
-        PI_CODING_AGENT_DIR: overlay,
+        PI_CODING_AGENT_DIR: overlay.dir,
         PI_CODING_AGENT_SESSION_DIR:
           process.env.PI_CODING_AGENT_SESSION_DIR ?? join(piAgentDir(), "sessions"),
       },
@@ -550,9 +585,7 @@ export const piAdapter: AgentAdapter = {
       // of the routing flags (both `--flag value` and `--flag=value`).
       args,
       stripPassthroughFlags: ["--provider", "--model", "--models", "--api-key"],
-      cleanup: async () => {
-        await rm(overlay, { recursive: true, force: true });
-      },
+      cleanup: overlay.cleanup,
     };
   },
 };
