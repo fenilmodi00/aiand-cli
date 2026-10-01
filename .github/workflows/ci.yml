@@ -31,7 +31,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
-      - run: npm install -g @github/copilot@1.0.89
+      - run: npm install -g --ignore-scripts @github/copilot@1.0.89
       # Pinned omp for the omp-smoke tripwire below; the installer drops the
       # binary in ~/.local/bin, which later steps need on PATH.
       - run: curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v18.4.4
@@ -168,7 +168,7 @@ jobs:
       # check-dist keeps the pin in step with the CLI's install hint; the
       # gated run-agent copilot smoke below needs the same-repo key.
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: npm install -g @github/copilot@1.0.89
+        run: npm install -g --ignore-scripts @github/copilot@1.0.89
       # install.ps1 takes -Ref, so Windows pins the same release as the
       # Linux job (check-dist keeps the two in step). The installer only
       # writes the registry User PATH, which later steps do not re-read, so

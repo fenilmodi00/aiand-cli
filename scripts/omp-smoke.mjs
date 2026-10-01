@@ -151,6 +151,9 @@ try {
   };
   delete env.PI_CODING_AGENT_DIR;
   delete env.PI_CODING_AGENT_SESSION_DIR;
+  // omp renames its .omp root with PI_CONFIG_DIR: a contributor-exported
+  // value would retarget the seeded files the byte comparisons below read.
+  delete env.PI_CONFIG_DIR;
 
   // 1. Wire with the real CLI.
   const on = JSON.parse(
