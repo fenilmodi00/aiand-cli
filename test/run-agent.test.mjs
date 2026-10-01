@@ -25,6 +25,7 @@ import {
 } from "./helpers.mjs";
 
 const { run } = await import("../dist/commands/run-agent.js");
+const { registerAgent } = await import("../dist/agents/registry.js");
 
 // --- Stub-agent scaffolding ------------------------------------------------
 // A temp bin dir holds shell stub scripts that dump the child env + argv to
@@ -489,4 +490,146 @@ describe("run-agent launcher", () => {
       }
     });
   }
+});
+
+describe("run-agent generic adapter hooks", () => {
+  // hermes sets these hooks on a shipped adapter; the fixtures here still
+  // cover both sides directly: one opting in, one strict (neither flag set).
+  const HOOKS_ID = "t1-hooks";
+  const STRICT_ID = "t1-hooks-strict";
+
+  const hookSessionLaunch = async (input) => ({
+    env: { T1_INJECTED: "yes" },
+    args: ["--got-model", input.model ?? "none"],
+    stripPassthroughFlags: ["--provider", "--model", "-m"],
+  });
+
+  const hookAdapter = (id, hooks) => ({
+    id,
+    label: `T1 ${id}`,
+    bin: id,
+    install: { command: `npm i -g ${id}`, url: "https://example.test/t1" },
+    detect: () => ({ installed: true, path: join(binDir, id) }),
+    managedFiles: () => [],
+    probe: async () => ({ active: false, model: null }),
+    enable: async () => ({ model: "none", filesWritten: [] }),
+    disable: async () => ({ stripped: false }),
+    sessionLaunch: hookSessionLaunch,
+    ...hooks,
+  });
+
+  registerAgent(
+    hookAdapter(HOOKS_ID, {
+      shadowEnv: ["T1_SHADOW_ONE", "T1_SHADOW_TWO"],
+      allowUnpinnedModel: true,
+    }),
+  );
+  registerAgent(hookAdapter(STRICT_ID, {}));
+
+  // Session env for direct run() calls: signed in, default profile, a seeded
+  // catalog so validation never touches the network. Clears AIAND_BASE_URL
+  // (an earlier test's --base-url run leaves it set in-process) and restores
+  // process.exitCode (run() sets it to the child's) alongside the capture dir.
+  async function runFixture(agentId, argv, extraEnv = {}) {
+    const capture = captureDir();
+    writeFileSync(join(cfg, "config.json"), JSON.stringify({ profile: "default", profiles: {} }));
+    seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+    const prevExit = process.exitCode;
+    try {
+      await withEnv(
+        {
+          AIAND_HOME: home,
+          AIAND_CONFIG_DIR: cfg,
+          AIAND_API_KEY: "sk-test-aiand",
+          AIAND_BASE_URL: undefined,
+          PATH: `${binDir}${delimiter}${process.env.PATH}`,
+          AIAND_CAPTURE: join(capture, "capture"),
+          ...extraEnv,
+        },
+        () => run([agentId, ...argv]),
+      );
+      return capture;
+    } finally {
+      process.exitCode = prevExit;
+    }
+  }
+
+  test("shadowEnv scrubs listed names but keeps the adapter injection", async () => {
+    plantCaptureStub(HOOKS_ID);
+    const capture = await runFixture(HOOKS_ID, ["--", "--version"], {
+      T1_SHADOW_ONE: "parent",
+      T1_SHADOW_TWO: "parent",
+    });
+    try {
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      assert.doesNotMatch(envText, /^T1_SHADOW_ONE=/m);
+      assert.doesNotMatch(envText, /^T1_SHADOW_TWO=/m);
+      assert.match(envText, /^T1_INJECTED=yes$/m);
+      assert.doesNotMatch(envText, /^AIAND_API_KEY=/m);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("allowUnpinnedModel lets --model native reach the adapter", async () => {
+    plantCaptureStub(HOOKS_ID);
+    const capture = await runFixture(HOOKS_ID, ["--model", "native", "--", "--version"]);
+    try {
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, ["--got-model", "native", "--version"]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("without allowUnpinnedModel, --model native fails validation, child never spawned", async () => {
+    plantMarkerStub(STRICT_ID);
+    const capture = captureDir();
+    const marker = join(capture, "marker");
+    writeFileSync(join(cfg, "config.json"), JSON.stringify({ profile: "default", profiles: {} }));
+    seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+    const prevExit = process.exitCode;
+    try {
+      await withEnv(
+        {
+          AIAND_HOME: home,
+          AIAND_CONFIG_DIR: cfg,
+          AIAND_API_KEY: "sk-test-aiand",
+          AIAND_BASE_URL: undefined,
+          PATH: `${binDir}${delimiter}${process.env.PATH}`,
+          AIAND_MARKER: marker,
+        },
+        () =>
+          assert.rejects(run([STRICT_ID, "--model", "native"]), (error) => {
+            assert.match(error.message, /--model "native" is not in the catalog/);
+            return true;
+          }),
+      );
+      assert.throws(() => readFileSync(marker, "utf8"), /ENOENT/);
+    } finally {
+      process.exitCode = prevExit;
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("stripPassthroughFlags drops owned routing flags, passes the rest", async () => {
+    plantCaptureStub(HOOKS_ID);
+    const capture = await runFixture(HOOKS_ID, [
+      "--",
+      "--provider",
+      "evil",
+      "--model",
+      "--print",
+      "--model=gpt-4o",
+      "-m",
+    ]);
+    try {
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      // "--provider evil" eaten with its value; "--model --print" keeps
+      // --print; "--flag=" stripped; trailing "-m" eats nothing.
+      assert.deepEqual(args, ["--got-model", "none", "--print"]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
 });

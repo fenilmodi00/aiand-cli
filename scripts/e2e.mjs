@@ -147,6 +147,7 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "HERMES_HOME",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -170,7 +171,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex"]) {
+  for (const name of ["opencode", "claude", "codex", "hermes"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -411,6 +412,179 @@ try {
   );
   for (const [path] of aiandLaunchers) rmSync(path);
 
+  // --- hermes on/off/status ---------------------------------------------------
+  // Hermes routes through ~/.hermes under the sandbox HOME (HERMES_HOME is
+  // scrubbed above), so this section touches only hermes-owned files and no
+  // other agent's fixtures.
+  const hermesDir = join(home, ".hermes");
+  const hermesConfig = join(hermesDir, "config.yaml");
+  const hermesEnvFile = join(hermesDir, ".env");
+  mkdirSync(hermesDir, { recursive: true });
+  writeFileSync(hermesConfig, "theme: dark\n");
+  const HERMES_BEFORE = readFileSync(hermesConfig);
+
+  const hermesOn = JSON.parse(cli("hermes on --json"));
+  check("hermes on succeeds", hermesOn.state === "on", JSON.stringify(hermesOn));
+  const hermesWired = readFileSync(hermesConfig, "utf8");
+  check("hermes on keeps unrelated keys", hermesWired.includes("theme: dark"));
+  check(
+    "hermes on stamps providers.aiand at the loopback double",
+    hermesWired.includes('managed_by: "aiand"') &&
+      hermesWired.includes(`base_url: "${baseUrl}/v1"`) &&
+      hermesWired.includes('provider: "aiand"'),
+    hermesWired.split("\n").slice(0, 12).join(" | "),
+  );
+  check(
+    "hermes on bakes the session key into .env",
+    readFileSync(hermesEnvFile, "utf8").includes(
+      "AIAND_HERMES_API_KEY=sk-e2e-test-key-0000000000000000000000",
+    ),
+  );
+  const hermesStatus = JSON.parse(cli("hermes status --json"));
+  check(
+    "hermes status: on with a model",
+    hermesStatus.state === "on" && Boolean(hermesStatus.model),
+    JSON.stringify(hermesStatus),
+  );
+  cli("hermes off --json");
+  check(
+    "hermes off restores config.yaml byte-identical when untouched",
+    HERMES_BEFORE.equals(readFileSync(hermesConfig)),
+  );
+  check("hermes off removes a .env it created", !existsSync(hermesEnvFile));
+  check(
+    "hermes snapshot kept after off",
+    existsSync(join(S, "cfg", "snapshots", "hermes", "latest.json")),
+  );
+  const hermesOffStatus = JSON.parse(cli("hermes status --json"));
+  check("hermes status: off after teardown", hermesOffStatus.state === "off");
+
+  // Idempotent re-on: a second `on` re-bakes the same routing,
+  // and the second `off` is byte-identical too.
+  cli("hermes on --json");
+  check(
+    "hermes re-on re-bakes the session key into .env",
+    readFileSync(hermesEnvFile, "utf8").includes(
+      "AIAND_HERMES_API_KEY=sk-e2e-test-key-0000000000000000000000",
+    ),
+  );
+  check(
+    "hermes re-on keeps providers.aiand stamped",
+    readFileSync(hermesConfig, "utf8").includes('managed_by: "aiand"'),
+  );
+  cli("hermes off --json");
+  check(
+    "hermes second off is byte-identical too",
+    HERMES_BEFORE.equals(readFileSync(hermesConfig)),
+    "surgical off is repeatable",
+  );
+
+  // Subtractive path: the user edits a value `on` wrote; off
+  // must keep the edit.
+  cli("hermes on --json");
+  const hermesEdited = readFileSync(hermesConfig, "utf8").replace(
+    /^ {2}default: ".*"$/m,
+    '  default: "user-own-model"',
+  );
+  writeFileSync(hermesConfig, hermesEdited);
+  cli("hermes off --json");
+  const hermesAfterEdit = readFileSync(hermesConfig, "utf8");
+  check(
+    "off after a user edit keeps the edited model default",
+    hermesAfterEdit.includes('default: "user-own-model"') &&
+      !hermesAfterEdit.includes("managed_by") &&
+      !hermesAfterEdit.includes("providers:"),
+    hermesAfterEdit.split("\n").slice(0, 8).join(" | "),
+  );
+  check("hermes off still removes a .env it created", !existsSync(hermesEnvFile));
+
+  // Foreign-block refusal: an unstamped `aiand` block is never
+  // overwritten — `on` refuses it (with or without --force) and
+  // the file survives byte-identical; break-glass restore brings
+  // the first pre-wiring bytes back.
+  const hermesForeign = [
+    "theme: dark",
+    "providers:",
+    "  aiand:",
+    '    name: "aiand"',
+    '    base_url: "https://example.invalid/v1"',
+    '    api_key: "sk-user-foreign"',
+  ].join("\n");
+  writeFileSync(hermesConfig, hermesForeign);
+  const hermesRefused = cliOrNull("hermes on --json");
+  check(
+    "hermes on refuses a foreign providers.aiand block",
+    hermesRefused.ok === false && hermesRefused.err.includes("does not manage"),
+    hermesRefused.err.split("\n")[0],
+  );
+  check(
+    "the refusal leaves the foreign block byte-identical",
+    readFileSync(hermesConfig, "utf8") === hermesForeign,
+  );
+  check(
+    "hermes on --force also refuses a foreign block",
+    cliOrNull("hermes on --force --json").ok === false,
+  );
+  cli("restore hermes --force");
+  check(
+    "restore hermes --force brings back the first pre-wiring bytes",
+    readFileSync(hermesConfig, "utf8") === "theme: dark\n",
+  );
+
+  // --- run-agent hermes (offline: stub binary, cached catalog) ----------------
+  const hermesCapture = join(S, "capture-hermes");
+  const hermesConfigBefore = existsSync(hermesConfig) ? readFileSync(hermesConfig) : null;
+  let hermesCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "hermes", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: hermesCapture },
+      encoding: "utf8",
+    });
+    hermesCode = 0;
+  } catch (error) {
+    hermesCode = error.status ?? 42;
+  }
+  check("run-agent hermes exits with the child code", hermesCode === 42, `code=${hermesCode}`);
+  const hermesChildEnv = existsSync(`${hermesCapture}.env`)
+    ? readFileSync(`${hermesCapture}.env`, "utf8")
+    : "";
+  const hermesOverlayLine = hermesChildEnv
+    .split("\n")
+    .find((line) => line.startsWith("HERMES_HOME="));
+  const hermesOverlay = hermesOverlayLine?.slice("HERMES_HOME=".length);
+  check(
+    "run-agent hermes points HERMES_HOME at a throwaway overlay",
+    Boolean(hermesOverlay) && hermesOverlay.includes("aiand-hermes-"),
+    hermesOverlay ?? "missing",
+  );
+  const hermesArgs = existsSync(`${hermesCapture}.args`)
+    ? readFileSync(`${hermesCapture}.args`, "utf8").split(/\r?\n/).filter(Boolean)
+    : [];
+  check(
+    "run-agent hermes passes --provider aiand, then the passthrough",
+    hermesArgs[0] === "--provider" &&
+      hermesArgs[1] === "aiand" &&
+      hermesArgs.at(-1) === "--version",
+    hermesArgs.slice(0, 4).join(" "),
+  );
+  check(
+    "run-agent hermes removes the throwaway overlay",
+    Boolean(hermesOverlay) && !existsSync(hermesOverlay),
+    hermesOverlay ?? "missing",
+  );
+  const hermesConfigAfter = existsSync(hermesConfig) ? readFileSync(hermesConfig) : null;
+  check(
+    "run-agent hermes leaves the real home as it was",
+    (hermesConfigBefore === null && hermesConfigAfter === null) ||
+      (hermesConfigBefore !== null &&
+        hermesConfigAfter !== null &&
+        hermesConfigBefore.equals(hermesConfigAfter)),
+  );
+  check(
+    "run-agent hermes keeps the key out of the child env",
+    !hermesChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
+  );
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -547,8 +721,8 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex and opencode",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode"]),
+    "registry ships exactly claude, codex, hermes and opencode",
+    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "hermes", "opencode"]),
     JSON.stringify(agentIds),
   );
 

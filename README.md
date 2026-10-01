@@ -84,8 +84,9 @@ Most commands take `--json`, and every command takes `--help`.
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs) and
-[Codex](https://developers.openai.com/codex/cli).
+[Claude Code](https://code.claude.com/docs),
+[Codex](https://developers.openai.com/codex/cli) and
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs/).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -156,6 +157,23 @@ takes it over, and `aiand restore codex --force` brings the old one back. Your `
 plugins come along. Which Codex versions work with ai&, and what changed
 between them, is in the
 [Codex guide](https://docs.aiand.com/integrations/codex/).
+
+```bash
+aiand hermes on          # route Hermes Agent through ai&
+aiand hermes status
+aiand hermes off
+aiand run-agent hermes   # launch Hermes on ai&, nothing written
+```
+
+`on` adds a stamped `aiand` entry under `providers:` in
+`~/.hermes/config.yaml` (or `$HERMES_HOME/config.yaml`), pointed at the
+gateway with `key_env: AIAND_HERMES_API_KEY`, and bakes that variable into
+`~/.hermes/.env` at `0600`. Your other providers and your own edits are left
+alone. If you already chose a default the gateway can serve it stays chosen;
+pass `--model <id>` to switch, or `--model native` to keep Hermes's own
+default. A default the gateway cannot serve is set aside and put back on
+`off`. `run-agent hermes` uses a throwaway overlay instead, so one-shot
+launches start state-fresh.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

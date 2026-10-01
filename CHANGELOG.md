@@ -7,6 +7,21 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand hermes on` wires Hermes Agent to ai& through `~/.hermes/config.yaml`
+  (or `$HERMES_HOME`): a stamped `aiand` entry under `providers:` pointed at
+  the gateway with `key_env: AIAND_HERMES_API_KEY`, the key baked into
+  `~/.hermes/.env` at `0600`, and the top-level `model:` pointed at the
+  gateway default. Your other providers and your own edits are left alone; a
+  default the gateway cannot serve is set aside and put back on `off`, and
+  `--model native` keeps Hermes's own default. `off` removes exactly what
+  `on` added, `status` probes the real files, and `aiand run-agent hermes`
+  launches on ai& for one session through a throwaway overlay with nothing
+  written. User-supplied `--provider`/`--model`/`-m` passthrough flags are
+  stripped so the routing cannot be overridden; the overlay is removed after
+  the session ends.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

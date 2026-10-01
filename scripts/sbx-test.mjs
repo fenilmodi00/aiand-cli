@@ -108,6 +108,7 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "HERMES_HOME",
   "FORCE_COLOR",
   "STUB_EXIT",
 ];
@@ -167,6 +168,12 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+// Hermes routes through ~/.hermes under the sandbox AIAND_HOME
+// (HERMES_HOME is scrubbed like the other agents' roots):
+// config.yaml holds providers + model, .env the session key.
+const HERMES_DIR = join(MAIN_HOME, ".hermes");
+const HERMES_CONFIG = join(HERMES_DIR, "config.yaml");
+const HERMES_ENV = join(HERMES_DIR, ".env");
 
 function seedFile(state, path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -187,7 +194,7 @@ function sameBytes(path, expected) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex"];
+const STUB_NAMES = ["opencode", "claude", "codex", "hermes"];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -204,6 +211,16 @@ if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+// ...and the HERMES_HOME overlay (config.yaml + .env) the
+// launcher deletes after exit: the .env is the only file
+// that carries the session key, so its mode is the
+// security-relevant one to record.
+if (process.env.HERMES_HOME) {
+  const dir = process.env.HERMES_HOME;
+  record.hermesEnvMode = fs.statSync(dir + "/.env").mode & 0o777;
+  record.hermesConfig = fs.readFileSync(dir + "/config.yaml", "utf8");
+  record.hermesEnv = fs.readFileSync(dir + "/.env", "utf8");
 }
 fs.writeFileSync(${JSON.stringify(LAUNCHED)} + "/" + name + ".json", JSON.stringify(record, null, 2));
 process.exit(Number(process.env.STUB_EXIT ?? 0));
@@ -419,9 +436,51 @@ const AGENT_DEFS = {
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
     },
   },
+  hermes: {
+    bin: "hermes",
+    seed(state) {
+      state.created = [];
+      // The same seeds scripts/e2e.mjs uses: a theme-bearing
+      // config.yaml and a user .env line, both under the
+      // default ~/.hermes (HERMES_HOME is scrubbed).
+      seedFile(state, HERMES_CONFIG, "theme: dark\n");
+      seedFile(state, HERMES_ENV, "HERMES_USER_TOKEN=sk-user-hermes\n");
+    },
+    contents(t) {
+      // Text assertions on the same shapes e2e checks: the
+      // adapter's YAML editors are covered by the unit suite
+      // (agents-hermes).
+      const config = readFileSync(HERMES_CONFIG, "utf8");
+      t.ok(config.includes('managed_by: "aiand"'), "providers.aiand carries the ownership stamp");
+      t.ok(
+        config.includes('base_url: "https://api.aiand.com/v1"'),
+        "provider base_url is the gateway /v1 route",
+        config.split("\n").find((line) => line.includes("base_url")) ?? "missing",
+      );
+      t.ok(
+        config.includes('key_env: "AIAND_HERMES_API_KEY"'),
+        "provider points at the dedicated key_env",
+      );
+      t.ok(
+        config.includes(`default_model: "${modelId()}"`),
+        "provider block pins the catalog default",
+        config.split("\n").find((line) => line.includes("default_model")) ?? "missing",
+      );
+      t.ok(
+        config.includes(`default: "${modelId()}"`),
+        "model.default pins the catalog default",
+        config.split("\n").find((line) => line.startsWith("  default:")) ?? "missing",
+      );
+      t.ok(!config.includes(KEY), "the key never rides in config.yaml");
+      t.ok(config.includes("theme: dark"), "user theme survives");
+      const envText = readFileSync(HERMES_ENV, "utf8");
+      t.ok(envText.includes(`AIAND_HERMES_API_KEY=${KEY}`), ".env bakes the session key");
+      t.ok(envText.includes("HERMES_USER_TOKEN=sk-user-hermes"), "user .env line survives");
+    },
+  },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex"];
+const WIRING_ONE = ["opencode", "claude", "codex", "hermes"];
 
 function verifyOffRestore(t, id) {
   const state = agentStates[id];
@@ -1406,6 +1465,48 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+define("launcher", "launcher-hermes", (t) => {
+  // The launcher overlays a throwaway HERMES_HOME holding
+  // config.yaml + .env; it must never wire the user's real
+  // ~/.hermes (that is `hermes on`'s job).
+  const configBefore = readFileSync(HERMES_CONFIG, "utf8");
+  const envBefore = readFileSync(HERMES_ENV, "utf8");
+  const r = launchCheck("hermes", ["hermes", "--", "--dump"]);
+  okStatus(t, r, "run-agent hermes");
+  const rec = stubRecord("hermes");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    rec.args[0] === "--provider" &&
+      rec.args[1] === "aiand" &&
+      rec.args[2] === "--model" &&
+      rec.args[3] === modelId() &&
+      rec.args.at(-1) === "--dump",
+    "--provider aiand --model <id>, then passthrough",
+    rec.args.slice(0, 4).join(" "),
+  );
+  t.ok(
+    rec.env.HERMES_HOME?.includes("aiand-hermes-"),
+    "overlay is the throwaway dir",
+    String(rec.env.HERMES_HOME),
+  );
+  t.ok(rec.hermesEnvMode === 0o600, "overlay .env is 0600", String(rec.hermesEnvMode));
+  t.ok(
+    rec.hermesEnv?.includes(`AIAND_HERMES_API_KEY=${KEY}`),
+    "the key rides in the overlay .env, not the env",
+  );
+  t.ok(
+    rec.hermesConfig?.includes('managed_by: "aiand"') &&
+      rec.hermesConfig?.includes(`default_model: "${modelId()}"`),
+    "overlay config.yaml pins provider and model",
+    String(rec.hermesConfig),
+  );
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  t.ok(!rec.args.join(" ").includes(KEY), "the key is not in argv");
+  t.ok(!existsSync(rec.env.HERMES_HOME), "overlay removed after exit");
+  t.ok(readFileSync(HERMES_CONFIG, "utf8") === configBefore, "the real config.yaml is untouched");
+  t.ok(readFileSync(HERMES_ENV, "utf8") === envBefore, "the real .env is untouched");
 });
 
 define("launcher", "launcher-exit-code", (t) => {
