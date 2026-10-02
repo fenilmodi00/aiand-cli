@@ -54,8 +54,27 @@ const CODEAF_BIN = "codeaf";
  */
 export const CODEAF_VERSION = "v0.5.1";
 
+/**
+ * The pinned release's published sha256 per binary asset. The smoke
+ * script checks these BEFORE the binary reaches PATH and treats the
+ * release's own checksums.txt as the secondary match, so a release
+ * rewritten in place cannot swap the bytes this map was rotated for.
+ * Bump together with CODEAF_VERSION; the unit test pins the map.
+ */
+export const CODEAF_SHA256: Record<string, string> = {
+  "codeaf-darwin-amd64": "716ad8fd77bad6c1b654e66455d1ef76deb0b289a0d7754a7622f6aa6d280eb6",
+  "codeaf-darwin-arm64": "a95f493f7743c4bcfd1a76a0889a73d0eabd6d805ccbec9a7f728cd2eb72e65c",
+  "codeaf-linux-amd64": "df2d7b210291b44902608ad61264ba2f598728284a358c0c114090cc4bbf5e43",
+  "codeaf-linux-arm64": "35fe94d670d9c9fa912d3cf5a5f1367edc9e06a28ac6d93f398284989f0387a7",
+  "codeaf-windows-amd64.exe": "b733b8d0b4d5f05943281a7adca3fbec32d4d83c9d03400c556135f39cf3bafc",
+  "codeaf-windows-arm64.exe": "f0a218e745e78fbff53a84eae6bbd78be2ef227e1cfab1ffaf45f6c53dfd8ecd",
+};
+
 const CODEAF_INSTALL = {
-  command: "curl -fsSL https://agentfield.ai/get/codeaf | bash",
+  // Pinned through the installer's --version, the same posture as the
+  // omp hint accepted in #18: an unpinned `curl | bash` follows
+  // whatever the script serves that day.
+  command: `curl -fsSL https://agentfield.ai/get/codeaf | bash -s -- --version ${CODEAF_VERSION}`,
   url: "https://agentfield.ai/docs/codeaf",
 };
 
@@ -260,9 +279,14 @@ async function disable(): Promise<DisableResult> {
   try {
     rows = readRows(raw, path);
   } catch {
-    // A file we cannot read as rows is not ours to strip.
-    await clearAddedState(CODEAF_ID);
-    return { stripped: false };
+    // Keep the record: it is the durable ownership proof, and clearing
+    // it would make `off` unfinishable once the file is fixed (our key
+    // could still sit behind the row). Name the file, tell the user to
+    // fix it, and let the retry strip everything.
+    return {
+      stripped: false,
+      notes: [`${path} is not valid JSON; fix it, then run aiand codeaf off again.`],
+    };
   }
   const ours = findOurs(rows, record?.source);
   if (ours === undefined) {

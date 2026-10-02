@@ -435,7 +435,8 @@ try {
     codeafRow?.written === "aiand" &&
       codeafRow?.address === `${baseUrl}/v1` &&
       codeafRow?.key === "sk-e2e-test-key-0000000000000000000000" &&
-      codeafRow?.["x-aiand"] === true,
+      codeafRow?.["x-aiand"] === true &&
+      codeafRow?.order === 1,
     JSON.stringify(codeafRow),
   );
   check(

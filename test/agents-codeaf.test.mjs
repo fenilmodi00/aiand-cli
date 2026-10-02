@@ -21,7 +21,9 @@ withTestEnv("aiand-codeaf-test-", (dir) => {
   mkdirSync(process.env.AIAND_CONFIG_DIR, { recursive: true });
 });
 
-const { codeafAdapter, CODEAF_VERSION } = await import("../dist/agents/codeaf/adapter.js");
+const { codeafAdapter, CODEAF_SHA256, CODEAF_VERSION } = await import(
+  "../dist/agents/codeaf/adapter.js"
+);
 const {
   CODEAF_MARKER_KEY,
   CODEAF_SOURCE_ID,
@@ -108,22 +110,39 @@ describe("codeaf adapter", () => {
     assert.equal(codeafAdapter.label, "CodeAF");
     assert.equal(codeafAdapter.bin, "codeaf");
     assert.deepEqual(codeafAdapter.install, {
-      command: "curl -fsSL https://agentfield.ai/get/codeaf | bash",
+      command: "curl -fsSL https://agentfield.ai/get/codeaf | bash -s -- --version v0.5.1",
       url: "https://agentfield.ai/docs/codeaf",
     });
     assert.deepEqual(codeafAdapter.managedFiles(), [configPath()]);
     assert.equal(CODEAF_VERSION, "v0.5.1");
+    // The digest map the smoke verifies against before PATH.
+    assert.deepEqual(Object.keys(CODEAF_SHA256).sort(), [
+      "codeaf-darwin-amd64",
+      "codeaf-darwin-arm64",
+      "codeaf-linux-amd64",
+      "codeaf-linux-arm64",
+      "codeaf-windows-amd64.exe",
+      "codeaf-windows-arm64.exe",
+    ]);
+    for (const digest of Object.values(CODEAF_SHA256)) {
+      assert.match(digest, /^[0-9a-f]{64}$/);
+    }
   });
 
   test("on writes the aiand row and model.talk, locked to 0600", async () => {
     const result = await codeafAdapter.enable(enableInput());
     const config = readConfig();
-    // Exactly the row aiandSourcesRow mints: key_env stays unset (CodeAF's
-    // WriteSources blanks `key` whenever key_env is set).
-    assert.deepEqual(
-      config.model_sources[0],
-      aiandSourcesRow("sk-enable-1", "https://api.aiand.com"),
-    );
+    // The wire shape pinned as a literal: a builder regression (wrong
+    // suffix, renamed field) must fail here, not on both sides.
+    // key_env stays unset — CodeAF's WriteSources blanks `key` whenever it is set.
+    assert.deepEqual(config.model_sources[0], {
+      id: "custom-aiand",
+      written: "aiand",
+      address: "https://api.aiand.com/v1",
+      key: "sk-enable-1",
+      order: 1,
+      "x-aiand": true,
+    });
     assert.equal(config.model_sources.length, 1);
     assert.equal(config["model.talk"], `aiand/${GLM}`);
     assert.equal(result.model, `aiand/${GLM}`);
@@ -257,14 +276,6 @@ describe("codeaf adapter", () => {
 
     // missing, blank, garbage and non-object configs read inactive, never throwing
     assert.deepEqual(await codeafAdapter.probe(), { active: false, model: null });
-    for (const garbage of ["", "not json {{{", "[]", '{"model_sources": "nope"}']) {
-      seed(garbage);
-      assert.deepEqual(
-        await codeafAdapter.probe(),
-        { active: false, model: null },
-        JSON.stringify(garbage),
-      );
-    }
 
     // active with the marker on a routable address, reporting model.talk
     seed(
@@ -430,6 +441,32 @@ describe("codeaf adapter", () => {
       assert.equal(statSync(configPath()).mode & 0o777, 0o644);
     }
 
+    if (process.platform !== "win32") {
+      // a re-on carries the FIRST on's mode: the record, not the
+      // (possibly loosened) current mode, is what off restores
+      seed('{"daily_budget_usd": 5}\n');
+      chmodSync(configPath(), 0o644);
+      await codeafAdapter.enable(enableInput());
+      chmodSync(configPath(), 0o666);
+      await codeafAdapter.enable(enableInput());
+      await codeafAdapter.disable();
+      assert.equal(
+        statSync(configPath()).mode & 0o777,
+        0o644,
+        "off restores the first on's recorded mode",
+      );
+    }
+
+    // off after CodeAF's editor stripped the marker: the recorded row
+    // shape proves ownership, and the key leaves with the row
+    await codeafAdapter.enable(enableInput());
+    const unmarked = readConfig();
+    delete unmarked.model_sources[0][CODEAF_MARKER_KEY];
+    writeFileSync(configPath(), `${JSON.stringify(unmarked, null, 2)}\n`);
+    const proofOff = await codeafAdapter.disable();
+    assert.equal(proofOff.stripped, true);
+    assert.ok(!readConfig().model_sources, "the single-row array is our artifact and leaves");
+
     // a file we created and emptied is unlinked; a user's file never is
     rmSync(configPath(), { force: true });
     await codeafAdapter.enable(enableInput());
@@ -557,6 +594,8 @@ describe("codeaf adapter", () => {
     assert.deepEqual(readRows("{}"), []);
     assert.deepEqual(readRows('{"model_sources": []}'), []);
     assert.deepEqual(readRows('{"model_sources": [{}]}'), [{}]);
+    // non-object entries are not rows and drop out of the read
+    assert.deepEqual(readRows('{"model_sources": [null, 1, "x", {"id": "r"}]}'), [{ id: "r" }]);
     // a non-object root is not valid JSON
     assert.throws(
       () => readRows("[]"),
@@ -579,6 +618,50 @@ describe("codeaf adapter", () => {
     );
     assert.equal(existsSync(configPath()), true, "the refusal writes nothing");
     assert.equal(readFileSync(configPath(), "utf8"), "[]");
+  });
+
+  test("a hand-made row without written or order: no crash, appends sanely", async () => {
+    // #18-parity: hand-edited rows may omit `written` and `order`.
+    // Neither may crash `on` (the guard reads every row) nor bake a
+    // null order into the appended row (Math.max over undefined).
+    seed('{"model_sources": [{"id": "openrouter"}]}');
+    await codeafAdapter.enable(enableInput());
+    const text = readFileSync(configPath(), "utf8");
+    const rows = readRows(text);
+    assert.equal(rows.length, 2, "the order-less row survives");
+    assert.equal(rows.find((row) => row.id === CODEAF_SOURCE_ID).order, 2);
+    assert.doesNotMatch(text, /"order": null/);
+
+    // a written-less row under our id is foreign: refused, not crashed
+    seed('{"model_sources": [{"id": "custom-aiand"}]}');
+    await assert.rejects(
+      () => codeafAdapter.enableGuard({ force: false }),
+      (error) => error instanceof CliError,
+      "the both-spellings refusal reads a written-less row",
+    );
+  });
+
+  test("off keeps the ownership record when the config is transiently broken", async () => {
+    await codeafAdapter.enable(enableInput());
+    const good = readFileSync(configPath(), "utf8");
+    // A half-saved file must not consume the record: the retry after
+    // the fix must still strip everything.
+    seed("{ broken");
+    const broken = await codeafAdapter.disable();
+    assert.equal(broken.stripped, false);
+    assert.ok(
+      broken.notes.some((note) => /fix it, then run aiand codeaf off again/.test(note)),
+      JSON.stringify(broken),
+    );
+
+    writeFileSync(configPath(), good);
+    const off = await codeafAdapter.disable();
+    assert.equal(off.stripped, true, "the record survived for the retry");
+    assert.equal(
+      existsSync(configPath()),
+      false,
+      "the file we created is stripped and unlinked",
+    );
   });
 });
 

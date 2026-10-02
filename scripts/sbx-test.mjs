@@ -1468,6 +1468,8 @@ define("launcher", "launcher-codeaf", (t) => {
     String(rec.env.CODEAF_BASE_URL),
   );
   t.ok(rec.env.OPENROUTER_API_KEY === "", "OPENROUTER_API_KEY is blanked");
+  t.ok(rec.env.OPENAI_API_KEY === "", "OPENAI_API_KEY is blanked");
+  t.ok(rec.env.CODEAF_MODEL === "", "CODEAF_MODEL is blanked so the overlay wins");
   t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
   const cfg = rec.codeafConfig;
   t.ok(cfg !== undefined, "overlay config.json was captured before cleanup");

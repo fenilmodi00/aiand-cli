@@ -1,7 +1,8 @@
 // Real-binary smoke for the CodeAF adapter: the two behaviors unit
 // and e2e stubs cannot show. Downloads the pinned CodeAF release
-// (set CODEAF_BIN to a local build to skip the download), verifies
-// it against the release's checksums.txt, and drives it through a
+// (set CODEAF_BIN to a local build to skip the download; CI never
+// may), checks it against the repo-pinned sha256 map first and the
+// release's own checksums.txt second, and drives it through a
 // loopback OpenAI-compatible double:
 //   1. `aiand run-agent codeaf -- chat --once` — the throwaway
 //      CODEAF_HOME overlay plus the repointed default service
@@ -39,9 +40,11 @@ const DOUBLE_START_TIMEOUT_MS = 15_000;
 // dead endpoint must fail the smoke, not hang the job.
 const CHILD_TIMEOUT_MS = 120_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
-// The release the adapter's install hint pins; check-dist.mjs
-// keeps ci.yml's CODEAF_VERSION in step with it.
-const { CODEAF_VERSION } = await import(
+// The release the adapter's install hint pins; check-dist.mjs keeps
+// ci.yml's CODEAF_VERSION in step with it. CODEAF_SHA256 is the
+// repo-pinned digest map — the trusted anchor; checksums.txt is only
+// a secondary match against the release's own list.
+const { CODEAF_VERSION, CODEAF_SHA256 } = await import(
   pathToFileURL(join(ROOT, "dist", "agents", "codeaf", "adapter.js")).href
 );
 
@@ -194,13 +197,19 @@ async function fetchReleaseAsset(url) {
 }
 
 /** The pinned release binary in `binDir`, or a copy of
- * CODEAF_BIN when set (a local build). The release path
- * verifies against checksums.txt; either way the binary ends
- * up 0755 in `binDir`, which the sandbox puts on PATH — the
- * launcher spawns the bare name "codeaf". */
+ * CODEAF_BIN when set (a local build). The release path checks the
+ * repo-pinned sha256 first and the release's own checksums.txt
+ * second; either way the binary ends up 0755 in `binDir`, which the
+ * sandbox puts on PATH — the launcher spawns the bare name
+ * "codeaf". */
 async function resolveCodeafBin(binDir) {
   const binPath = join(binDir, process.platform === "win32" ? "codeaf.exe" : "codeaf");
   if (process.env.CODEAF_BIN) {
+    // A local override skips every verification; in CI that would
+    // silently drop the supply-chain leg the job exists for.
+    if (process.env.GITHUB_ACTIONS) {
+      throw new Error("CODEAF_BIN must not override the pinned release in CI");
+    }
     copyFileSync(process.env.CODEAF_BIN, binPath);
     chmodSync(binPath, 0o755);
     return binPath;
@@ -209,16 +218,26 @@ async function resolveCodeafBin(binDir) {
   const checksums = (await fetchReleaseAsset(`${base}/checksums.txt`)).toString("utf8");
   const bytes = await fetchReleaseAsset(`${base}/${ASSET}`);
   const digest = createHash("sha256").update(bytes).digest("hex");
-  // sha256sum format ("<hex>  <file>"); tolerate "<file>: <hex>" too.
+  const pinned = CODEAF_SHA256[ASSET];
+  if (!pinned) {
+    throw new Error(`no repo-pinned sha256 for ${ASSET} (bump CODEAF_SHA256 with CODEAF_VERSION)`);
+  }
+  if (digest !== pinned) {
+    throw new Error(
+      `sha256 mismatch for ${ASSET}: the download hashes to ${digest}, the repo pins ${pinned}`,
+    );
+  }
+  // Secondary: the release's own list must agree with the pinned
+  // digest (sha256sum format "<hex>  <file>"; tolerate the reverse).
   const listed = checksums
     .split(/\r?\n/)
     .filter((line) => line.includes(ASSET))
     .map((line) => line.match(/[0-9a-f]{64}/i)?.[0]?.toLowerCase() ?? "")
     .filter(Boolean);
-  if (listed.length !== 1 || listed[0] !== digest) {
+  if (listed.length !== 1 || listed[0] !== pinned) {
     throw new Error(
       `checksum mismatch for ${ASSET}: checksums.txt lists ${listed.join(", ") || "no hash"}, ` +
-        `the download hashes to ${digest}`,
+        `the repo pins ${pinned}`,
     );
   }
   writeFileSync(binPath, bytes);
@@ -344,10 +363,28 @@ try {
 
   // --- check 2: the hand-written row drives the real binary ----------
   const codeafConfigPath = join(home, ".codeaf", "config.json");
-  const on = JSON.parse(cli("codeaf on --json"));
-  check("codeaf on succeeds", on.state === "on" && on.agent === "codeaf", JSON.stringify(on));
+  let onOut = "";
+  try {
+    onOut = cli("codeaf on --json");
+  } catch (error) {
+    // A non-zero exit must print a FAIL line, not a raw stack.
+    onOut = String(error.stdout ?? error.message);
+  }
+  let on;
+  try {
+    on = JSON.parse(onOut);
+  } catch {
+    on = undefined;
+  }
+  check(
+    "codeaf on succeeds",
+    on?.state === "on" && on?.agent === "codeaf",
+    on === undefined ? onOut : JSON.stringify(on),
+  );
 
-  const wired = JSON.parse(readFileSync(codeafConfigPath, "utf8"));
+  const wired = existsSync(codeafConfigPath)
+    ? JSON.parse(readFileSync(codeafConfigPath, "utf8"))
+    : {};
   const row = wired.model_sources?.find((entry) => entry.id === "custom-aiand");
   check(
     "on writes the custom-aiand source row",

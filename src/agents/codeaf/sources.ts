@@ -103,7 +103,9 @@ export function foreignAiand(
 ): CodeafSourceRow | undefined {
   return rows.find(
     (row) =>
-      (row.id === CODEAF_SOURCE_ID || row.written.toLowerCase() === CODEAF_WRITTEN) &&
+      (row.id === CODEAF_SOURCE_ID ||
+        // A hand-made row may omit `written`; it is still not ours.
+        String(row.written ?? "").toLowerCase() === CODEAF_WRITTEN) &&
       !isOurs(row, record),
   );
 }
@@ -124,8 +126,14 @@ export function withOurRow(
   const ours = findOurs(rows, record);
   let next: CodeafSourceRow[];
   if (ours === undefined) {
-    // Append after the last existing order (1 when the list is empty).
-    const order = rows.length === 0 ? 1 : Math.max(...rows.map((existing) => existing.order)) + 1;
+    // A hand-made row may omit `order`; a NaN max would serialize as
+    // `null` into the appended row. Non-numeric orders count as 1.
+    const order =
+      rows.length === 0
+        ? 1
+        : Math.max(
+            ...rows.map((existing) => (Number.isFinite(existing.order) ? existing.order : 1)),
+          ) + 1;
     next = [...rows, { ...row, order }];
   } else {
     // Replace in place: the row keeps its position and its order.
