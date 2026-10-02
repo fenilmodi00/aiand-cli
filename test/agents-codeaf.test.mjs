@@ -657,11 +657,7 @@ describe("codeaf adapter", () => {
     writeFileSync(configPath(), good);
     const off = await codeafAdapter.disable();
     assert.equal(off.stripped, true, "the record survived for the retry");
-    assert.equal(
-      existsSync(configPath()),
-      false,
-      "the file we created is stripped and unlinked",
-    );
+    assert.equal(existsSync(configPath()), false, "the file we created is stripped and unlinked");
   });
 });
 
