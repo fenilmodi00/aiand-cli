@@ -30,6 +30,20 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm install -g opencode-ai@1.18.32
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
+      # No scripts field in the package (npm view @github/copilot@1.0.89
+      # scripts is empty; bin is a plain node npm-loader.js), so
+      # --ignore-scripts is a no-op here — it matches the pi pin's
+      # discipline and keeps a future postinstall from running CI-side.
+      - run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      # Pinned omp for the omp-smoke tripwire below: the v18.4.4 release
+      # asset, checked against its published sha256 before it reaches PATH.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/omp"
+          curl -fsSLo "$RUNNER_TEMP/omp/omp" https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-linux-x64
+          echo "24c830fceb0bd6884bf5bf2c7a2b7407bc23fafe655e924c695ef9be308e46f3  $RUNNER_TEMP/omp/omp" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/omp/omp"
+          echo "$RUNNER_TEMP/omp" >> "$GITHUB_PATH"
       - run: npm run lint
       # Builds dist/ (reused by every later step), then runs the `npm test`
       # suite under the coverage floor set in package.json.
@@ -41,7 +55,17 @@ jobs:
       # key+binary (fork PRs stay green). A fork push whose key has no credits also skips; official
       # main still fails on that. No continue-on-error step.
       - run: node scripts/e2e.mjs
-      # Offline subset of the sandbox matrix: no key, no network.
+      # Real pinned Pi validating the generated config and a headless
+      # --print round-trip against the loopback double (no real gateway,
+      # no key): the schema-drift tripwire for models.json.
+      - run: node scripts/pi-smoke.mjs
+      # Real pinned omp accepting the generated models.yml and a headless -p
+      # round-trip: the schema-drift tripwire for omp's provider block.
+      - run: node scripts/omp-smoke.mjs
+      # Real pinned Copilot CLI accepting the generated providers.json and
+      # a headless -p round-trip: the schema-drift tripwire for the BYOK
+      # provider shape.
+      - run: node scripts/copilot-smoke.mjs
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
       - run: npm run check:dist
       - run: npm run check:public
@@ -142,11 +166,33 @@ jobs:
       # e2e.mjs runs the adapter matrix plus its win32 install.ps1 uninstall
       # cases, which no other job exercises.
       - run: node scripts/e2e.mjs
-      # Real npm-installed OpenCode (an opencode.cmd shim on Windows) launched
+      # Real npm-installed OpenCode and Pi (a .cmd shim on Windows) launched
       # through `aiand run-agent`, against the live gateway. Needs the key, so
-      # same events as the live job.
+      # same events as the live job. #33: this is also the Windows install
+      # tripwire for the Pi pin — check-dist keeps the version in step.
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: npm install -g opencode-ai@1.18.32
+      - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
+      # check-dist keeps the pin in step with the CLI's install hint; the
+      # gated run-agent copilot smoke below needs the same-repo key.
+      # No scripts field in the package (npm view @github/copilot@1.0.89
+      # scripts is empty; bin is a plain node npm-loader.js), so
+      # --ignore-scripts is a no-op here — it matches the pi pin's
+      # discipline and keeps a future postinstall from running CI-side.
+      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      # Windows downloads the same pinned release asset as the Linux job
+      # (check-dist keeps the two in step). RUNNER_TEMP is not on PATH, so
+      # expose the dir via GITHUB_PATH. Gated with the run-agent check
+      # below so fork PRs skip the download.
+      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'omp'
+          New-Item -ItemType Directory -Path $dir | Out-Null
+          $exe = Join-Path $dir 'omp.exe'
+          Invoke-WebRequest -Uri https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-windows-x64.exe -OutFile $exe
+          if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne '5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54') { throw 'omp-windows-x64.exe sha256 mismatch' }
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
@@ -157,5 +203,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "run-agent opencode exited $LASTEXITCODE" }
           if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected opencode --version output: $out" }
           Write-Output "opencode via run-agent: $out"
+          $out = (node dist/index.js run-agent pi -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent pi exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected pi --version output: $out" }
+          Write-Output "pi via run-agent: $out"
+          $out = (node dist/index.js run-agent omp -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent omp exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected omp --version output: $out" }
+          Write-Output "omp via run-agent: $out"
+          $out = (node dist/index.js run-agent copilot -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent copilot exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected copilot --version output: $out" }
+          Write-Output "copilot via run-agent: $out"
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}

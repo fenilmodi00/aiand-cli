@@ -46,22 +46,73 @@ for (const command of COMMANDS) {
   assert.equal(typeof command.run, "function", `command ${command.name} needs a run function`);
 }
 
-// CI installs a pinned OpenCode for the live tests; it must be the release
-// the CLI's install hint names, or the two drift apart silently.
+// CI installs a pinned OpenCode and a pinned Pi for the live tests; each
+// must be the release the CLI's install hint names, or the two drift
+// apart silently.
 const { OPENCODE_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "opencode", "adapter.js")).href
 );
+const { PI_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "pi", "adapter.js")).href
+);
+const { OMP_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "omp", "install.js")).href
+);
+const { COPILOT_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "copilot", "adapter.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
-const ciPins = [...ciYml.matchAll(/opencode-ai@([0-9A-Za-z.+-]+)/g)].map((m) => m[1]);
-assert.ok(ciPins.length > 0, "ci.yml should install a pinned opencode-ai");
-for (const pin of ciPins) {
-  assert.equal(
-    pin,
-    OPENCODE_VERSION,
-    `ci.yml installs opencode-ai@${pin} but src/agents/opencode/adapter.ts pins ${OPENCODE_VERSION}`,
-  );
+// One entry per pinned agent install in ci.yml: `regex` captures the pin,
+// `expected` is the version the adapter exports, `label` is the
+// pin-not-found message, `message` builds the mismatch text from the pin.
+const PINS = [
+  {
+    label: "ci.yml should install a pinned opencode-ai",
+    regex: /opencode-ai@([0-9A-Za-z.+-]+)/g,
+    expected: OPENCODE_VERSION,
+    message: (pin) =>
+      `ci.yml installs opencode-ai@${pin} but src/agents/opencode/adapter.ts pins ${OPENCODE_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned pi-coding-agent",
+    regex: /pi-coding-agent@([0-9A-Za-z.+-]+)/g,
+    expected: PI_VERSION,
+    message: (pin) =>
+      `ci.yml installs pi-coding-agent@${pin} but src/agents/pi/adapter.ts pins ${PI_VERSION}`,
+  },
+  // omp installs as a pinned release asset (omp-linux-x64 /
+  // omp-windows-x64.exe) from the vX.Y.Z release, digest-checked in
+  // ci.yml. Each platform is checked separately so one losing its pin
+  // can't hide behind the other's.
+  {
+    label: "ci.yml should install a pinned omp on Linux via the release asset",
+    regex: /oh-my-pi\/releases\/download\/v([0-9.]+)\/omp-linux-x64/g,
+    expected: OMP_VERSION,
+    message: (pin) =>
+      `ci.yml pins the omp-linux-x64 asset at v${pin} on Linux but src/agents/omp/install.ts pins ${OMP_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned omp on Windows via the release asset",
+    regex: /oh-my-pi\/releases\/download\/v([0-9.]+)\/omp-windows-x64\.exe/g,
+    expected: OMP_VERSION,
+    message: (pin) =>
+      `ci.yml pins the omp-windows-x64.exe asset at v${pin} on Windows but src/agents/omp/install.ts pins ${OMP_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned @github/copilot",
+    regex: /@github\/copilot@([0-9A-Za-z.+-]+)/g,
+    expected: COPILOT_VERSION,
+    message: (pin) =>
+      `ci.yml pins @github/copilot@${pin} but the install hint names ${COPILOT_VERSION}`,
+  },
+];
+for (const { label, regex, expected, message } of PINS) {
+  const pins = [...ciYml.matchAll(regex)].map((m) => m[1]);
+  assert.ok(pins.length > 0, label);
+  for (const pin of pins) {
+    assert.equal(pin, expected, message(pin));
+  }
 }
-
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,

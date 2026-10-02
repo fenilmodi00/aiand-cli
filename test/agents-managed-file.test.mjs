@@ -6,8 +6,10 @@ import {
   jsoncDelete,
   jsoncSet,
   parseJsonc,
+  readJsoncObject,
   readTextIfExists,
 } from "../dist/agents/managed-file.js";
+import { CliError } from "../dist/cli/errors.js";
 import { withTestEnv } from "./helpers.mjs";
 
 // Pure file helpers: only a scratch dir, no env to isolate.
@@ -21,6 +23,44 @@ describe("managed-file read side", () => {
     const present = join(box.dir, "hi.txt");
     writeFileSync(present, "hello\n");
     assert.equal(await readTextIfExists(present), "hello\n");
+  });
+});
+
+describe("readJsoncObject", () => {
+  test("missing and blank files read as {}", async () => {
+    assert.deepEqual(await readJsoncObject(join(box.dir, "absent.json")), {});
+    const blank = join(box.dir, "blank.json");
+    writeFileSync(blank, "   \n");
+    assert.deepEqual(await readJsoncObject(blank), {});
+  });
+
+  test("readJsoncObject: a non-object root is the invalid-JSON error, not a silent {}", async () => {
+    const models = join(box.dir, "models.json");
+    writeFileSync(models, "[1,2]");
+    const hint = "Fix it by hand, or delete it and run aiand pi on again.";
+    await assert.rejects(
+      readJsoncObject(models, hint),
+      (error) =>
+        error instanceof CliError &&
+        error.message === `${models} is not valid JSON.` &&
+        error.hint === hint,
+    );
+  });
+
+  test("scalar roots are the invalid-JSON error too, not a silent {}", async () => {
+    // Both shapes parse cleanly but cannot hold the object paths
+    // adapters splice, so each must fail at the read the same way.
+    for (const text of ['"just a string"', "true"]) {
+      const file = join(box.dir, "scalar.json");
+      writeFileSync(file, text);
+      await assert.rejects(
+        readJsoncObject(file, "recover"),
+        (error) =>
+          error instanceof CliError &&
+          error.message === `${file} is not valid JSON.` &&
+          error.hint === "recover",
+      );
+    }
   });
 });
 

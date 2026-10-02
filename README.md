@@ -84,8 +84,11 @@ Most commands take `--json`, and every command takes `--help`.
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs) and
-[Codex](https://developers.openai.com/codex/cli).
+[Claude Code](https://code.claude.com/docs),
+[Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
+[Oh My Pi](https://omp.sh),
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
+and the [GitHub Copilot app](https://github.com/features/ai/github-app).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -156,6 +159,71 @@ takes it over, and `aiand restore codex --force` brings the old one back. Your `
 plugins come along. Which Codex versions work with ai&, and what changed
 between them, is in the
 [Codex guide](https://docs.aiand.com/integrations/codex/).
+
+```bash
+aiand pi on             # route Pi through ai&
+aiand pi status
+aiand pi off
+aiand run-agent pi      # or: one Pi session on ai&, no Pi config written
+```
+
+`on` writes an `aiand` provider into `~/.pi/agent/models.json` speaking the
+gateway's OpenAI-compatible dialect, with every model from the live catalog,
+saves the session key in `~/.pi/agent/auth.json` (readable only by you), and
+sets `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`. Your
+other providers and credentials are untouched. A `defaultModel` ai& cannot
+serve is set aside until `off`; one it can serve is kept. Pass
+`--model <id>` to switch, or `--model native` to leave Pi's own default.
+Pi's config root moves wholesale with `PI_CODING_AGENT_DIR`.
+
+```bash
+aiand omp on             # wire Oh My Pi through ai&
+aiand omp status
+aiand omp off
+aiand run-agent omp      # or: one Oh My Pi session on ai&, no omp config written
+```
+
+`on` writes an override-only `aiand` provider block into
+`~/.omp/agent/models.yml` (omp already bundles the aiand provider, so only the
+gateway URL, your key and the ownership marker are written) and pins
+`modelRoles.default` in `~/.omp/agent/config.yml`. Your other providers and
+settings are untouched. A `modelRoles.default` ai& cannot serve is set aside
+until `off`; one it can serve is kept. Pass `--model <id>` to switch, or
+`--model native` to leave omp's own default. `PI_CODING_AGENT_DIR` moves the
+config root wholesale; `PI_CONFIG_DIR` renames the `.omp` root.
+
+One-session launches keep session history in omp's own session dir, including
+its XDG location (`$XDG_DATA_HOME/omp/sessions`) when omp was migrated with
+`omp config init-xdg`.
+
+```bash
+aiand copilot on         # wire GitHub Copilot CLI through ai&
+aiand copilot status
+aiand copilot off
+aiand run-agent copilot  # or: one Copilot CLI session on ai&, no config written
+```
+
+`on` writes an `aiand` provider into `~/.copilot/providers.json` (or
+`$COPILOT_HOME/providers.json`) with every model from the live catalog, and
+pins the `aiand/<id>` model in `~/.copilot/settings.json`, which a bare
+`copilot` launch needs - a BYOK provider has no built-in default. Your other
+providers and their rows are untouched, and the provider row holds the
+session key itself, so no GitHub sign-in is involved. Pass `--model <id>` to
+switch models; `off` hands back the `model` selection it replaced, or drops
+the key it added, and leaves a value you changed in between. The key sits in
+that file while Copilot is wired, so keep it out of a dotfiles repo.
+`--model native` leaves settings.json's model as it is.
+
+The GitHub Copilot desktop app takes the same wiring through its own provider
+store, and nothing else. `aiand copilot-app on` writes an `aiand-`-prefixed
+provider row and one model row per catalog model into `~/.copilot/data.db`
+(or `$COPILOT_HOME/data.db`); the app has to have created that database, so
+open it once first. The app keeps GitHub sign-in even for BYOK providers, and
+you pick the ai& model in its own model menu - aiand does not set a default
+there. Quit the app before `on` or `off`, since it rewrites the database as
+it exits and would clobber the change; `--force` goes ahead anyway. The app
+is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
+for permanent wiring.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

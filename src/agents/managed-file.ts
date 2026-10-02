@@ -1,6 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { CliError } from "../cli/errors.js";
+import { writeFileAtomic } from "../config.js";
+import { PRIVATE_FILE_MODE } from "../fsutil.js";
+import { fileCreatedByUs } from "./snapshot.js";
 
 /** A plain object's own record, or undefined for arrays, null and primitives. */
 export const asObject = (value: unknown): Record<string, unknown> | undefined =>
@@ -9,8 +14,9 @@ export const asObject = (value: unknown): Record<string, unknown> | undefined =>
     : undefined;
 /**
  * Managed-file plumbing shared by adapters: read-or-empty, JSONC parse, the
- * invalid-JSON error, and surgical JSONC text edits. Adapters keep the
- * wire-format knowledge; atomic writes live in fsutil.ts.
+ * invalid-JSON error, surgical JSONC text edits, the stripped-file write, and
+ * the throwaway session overlay. Adapters keep the wire-format knowledge;
+ * atomic writes live in fsutil.ts.
  */
 
 /** Read a file, treating only ENOENT as empty: a real read error is not a clean "off". */
@@ -361,4 +367,80 @@ export function jsoncDelete(text: string, path: string[]): string {
     }
     return text.slice(0, from) + text.slice(prop.valueEnd);
   });
+}
+
+/**
+ * Read a JSONC config file as an object: missing/blank reads as {}, a parse
+ * error OR a non-object root is the shared invalid-JSON CliError. `hint` is
+ * the adapter's recovery advice for that error. Adapters splice object paths
+ * into this file, so a list or scalar root must fail loud here — at the
+ * read — instead of mid-write, after the enable path has already snapshotted
+ * the file.
+ */
+export async function readJsoncObject(
+  path: string,
+  hint?: string,
+): Promise<Record<string, unknown>> {
+  const text = await readTextIfExists(path);
+  if (!text.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = parseJsonc(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw notValidJsonError(path, hint);
+    throw error;
+  }
+  const object = asObject(parsed);
+  if (object === undefined) throw notValidJsonError(path, hint);
+  return object;
+}
+
+/** Re-parse text an adapter just wrote, which is always an object or empty. */
+export function parseWrittenObject(text: string): Record<string, unknown> {
+  return asObject(parseJsonc(text)) ?? {};
+}
+
+/** Write a stripped file back, or unlink it when our `on` created it and nothing is left. */
+export async function writeStrippedJsonc(
+  agentId: string,
+  path: string,
+  before: string,
+  after: string,
+  mode: number,
+): Promise<void> {
+  if (after === before) return;
+  if (
+    Object.keys(parseWrittenObject(after)).length === 0 &&
+    (await fileCreatedByUs(agentId, path))
+  ) {
+    await rm(path, { force: true });
+  } else {
+    await writeFileAtomic(path, after, { mode });
+  }
+}
+
+/**
+ * A throwaway overlay dir holding `files` (name -> contents) at 0600. A
+ * failed write removes the dir (and any half-written key file) before
+ * rethrowing; cleanup removes it after the child exits.
+ */
+export async function createSessionOverlay(
+  prefix: string,
+  files: Record<string, string>,
+): Promise<{ dir: string; cleanup: () => Promise<void> }> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  try {
+    for (const [name, contents] of Object.entries(files)) {
+      await writeFile(join(dir, name), contents, { mode: PRIVATE_FILE_MODE });
+    }
+  } catch (error) {
+    await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    dir,
+    cleanup: async () => {
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
 }

@@ -76,7 +76,7 @@ contree -S "$SESSION" cd /root
 contree -S "$SESSION" run -s -- 'apt-get update -qq && apt-get install -y -qq procps >/dev/null && command -v pgrep'
 contree -S "$SESSION" tag aiand-sbx:base
 contree -S "$SESSION" file cp "$tmp/payload.tar.gz" /root/payload.tar.gz
-contree -S "$SESSION" run -s -- 'mkdir -p /work && tar -xzf /root/payload.tar.gz -C /work && node /work/scripts/sbx-test.mjs --plan | tail -1'
+contree -S "$SESSION" run -s -- 'mkdir -p /work && tar -xzf /root/payload.tar.gz -C /work && node /work/scripts/sbx-test.mjs /work/dist/index.js --plan | tail -1'
 contree -S "$SESSION" tag aiand-sbx:e2e
 
 # --- Full run (disposable; exit code captured without tripping set -e) ------
