@@ -84,8 +84,9 @@ Most commands take `--json`, and every command takes `--help`.
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs) and
-[Codex](https://developers.openai.com/codex/cli).
+[Claude Code](https://code.claude.com/docs),
+[Codex](https://developers.openai.com/codex/cli) and
+[CodeAF](https://agentfield.ai/docs/codeaf).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -156,6 +157,28 @@ takes it over, and `aiand restore codex --force` brings the old one back. Your `
 plugins come along. Which Codex versions work with ai&, and what changed
 between them, is in the
 [Codex guide](https://docs.aiand.com/integrations/codex/).
+
+```bash
+aiand codeaf on          # add an ai& connection to CodeAF
+aiand codeaf status      # check what CodeAF is actually configured to use
+aiand codeaf off         # remove exactly what aiand added
+aiand run-agent codeaf   # launch CodeAF on ai&, nothing written
+```
+
+`on` adds an `aiand` connection to `~/.codeaf/config.json` (or
+`$CODEAF_HOME/config.json`), with the session key and a model pin, so
+plain `codeaf` uses ai& afterwards. Your other settings and connections
+are left alone. If you already chose a model it stays chosen; pass
+`--model <id>` to switch, or `--model native` to keep CodeAF's own
+default. The key sits in that file while CodeAF is wired, so keep it out
+of a dotfiles repo. `on` refuses a config that already routes CodeAF
+somewhere ai& does not manage; `--force` takes it over.
+
+`off` removes only what aiand wrote. If a config ever ends up in a state
+you do not want, `aiand restore codeaf --force` puts back the exact file
+from before aiand first touched it. `aiand run-agent codeaf` launches
+CodeAF on ai& for one session, writing nothing; `aiand run-agent codeaf
+-- chat --once "…"` is the one-shot door.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

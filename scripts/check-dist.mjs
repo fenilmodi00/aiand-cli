@@ -62,6 +62,22 @@ for (const pin of ciPins) {
   );
 }
 
+// The CodeAF smoke job downloads the release the adapter pins; the
+// CODEAF_VERSION env must stay in step with it, the same way the
+// opencode-ai install pin above does.
+const { CODEAF_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "codeaf", "adapter.js")).href
+);
+const codeafPins = [...ciYml.matchAll(/CODEAF_VERSION:\s*(v[0-9.]+)/g)].map((m) => m[1]);
+assert.ok(codeafPins.length > 0, "ci.yml should set CODEAF_VERSION for the codeaf-smoke job");
+for (const pin of codeafPins) {
+  assert.equal(
+    pin,
+    CODEAF_VERSION,
+    `ci.yml sets CODEAF_VERSION ${pin} but src/agents/codeaf/adapter.ts pins ${CODEAF_VERSION}`,
+  );
+}
+
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,

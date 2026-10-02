@@ -81,6 +81,14 @@ describe("dispatch subprocess", () => {
     assert.ok(JSON.parse(r.stdout).agent);
   });
 
+  // Same registry integration for codeaf: `status --json` needs no
+  // session and returns agent status JSON through the real adapter.
+  test("codeaf noun dispatches to the codeaf adapter, not unknown-command", async () => {
+    const r = await cli(["codeaf", "status", "--json"]);
+    assert.notEqual(r.code, 127);
+    assert.ok(JSON.parse(r.stdout).agent);
+  });
+
   test("aiand init --all with no detectable agents is friendly and exits 0", async () => {
     // PATH holds only node's own directory: the registry ships opencode
     // (a real adapter), but `which` cannot resolve there, so

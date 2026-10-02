@@ -108,6 +108,8 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "CODEAF_HOME",
+  "CODEAF_PROFILE_DIR",
   "FORCE_COLOR",
   "STUB_EXIT",
 ];
@@ -167,6 +169,7 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+const CODEAF_CFG = join(MAIN_HOME, ".codeaf", "config.json");
 
 function seedFile(state, path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -187,7 +190,7 @@ function sameBytes(path, expected) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex"];
+const STUB_NAMES = ["opencode", "claude", "codex", "codeaf"];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -204,6 +207,14 @@ if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+// The launcher deletes the CODEAF_HOME overlay after exit: keep what it held.
+if (process.env.CODEAF_HOME) {
+  const cfgFile = process.env.CODEAF_HOME + "/config.json";
+  if (fs.existsSync(cfgFile)) {
+    record.codeafMode = fs.statSync(cfgFile).mode & 0o777;
+    record.codeafConfig = JSON.parse(fs.readFileSync(cfgFile, "utf8"));
+  }
 }
 fs.writeFileSync(${JSON.stringify(LAUNCHED)} + "/" + name + ".json", JSON.stringify(record, null, 2));
 process.exit(Number(process.env.STUB_EXIT ?? 0));
@@ -419,9 +430,40 @@ const AGENT_DEFS = {
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
     },
   },
+  codeaf: {
+    bin: "codeaf",
+    seed(state) {
+      state.created = [];
+      state.cfg = seedFile(
+        state,
+        CODEAF_CFG,
+        `${JSON.stringify({ daily_budget_usd: 5 }, null, 2)}\n`,
+      );
+    },
+    contents(t) {
+      const cfg = parseJson(readFileSync(CODEAF_CFG, "utf8")) ?? {};
+      const row = (cfg.model_sources ?? []).find((entry) => entry?.id === "custom-aiand");
+      t.ok(row !== undefined, "model_sources carries the custom-aiand row");
+      if (!row) return;
+      t.ok(row.written === "aiand", "row written is aiand", String(row.written));
+      t.ok(
+        row.address === "https://api.aiand.com/v1",
+        "row address is gateway /v1",
+        String(row.address),
+      );
+      t.ok(row.key === KEY, "row key is the session key");
+      t.ok(
+        cfg["model.talk"] === `aiand/${modelId()}`,
+        `model.talk is aiand/${modelId()}`,
+        String(cfg["model.talk"]),
+      );
+      t.ok(cfg.api_key === undefined, "root api_key is not written");
+      t.ok(cfg.daily_budget_usd === 5, "daily_budget_usd survives");
+    },
+  },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex"];
+const WIRING_ONE = ["opencode", "claude", "codex", "codeaf"];
 
 function verifyOffRestore(t, id) {
   const state = agentStates[id];
@@ -1406,6 +1448,39 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+
+define("launcher", "launcher-codeaf", (t) => {
+  const r = launchCheck("codeaf", ["codeaf", "--", "--dump"]);
+  okStatus(t, r, "run-agent codeaf");
+  const rec = stubRecord("codeaf");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(rec.args.at(-1) === "--dump", "passthrough stays verbatim");
+  t.ok(
+    typeof rec.env.CODEAF_HOME === "string" && rec.env.CODEAF_HOME.length > 0,
+    "CODEAF_HOME is set to the throwaway overlay",
+    String(rec.env.CODEAF_HOME),
+  );
+  t.ok(
+    rec.env.CODEAF_BASE_URL === "https://api.aiand.com/v1",
+    "CODEAF_BASE_URL is the gateway /v1",
+    String(rec.env.CODEAF_BASE_URL),
+  );
+  t.ok(rec.env.OPENROUTER_API_KEY === "", "OPENROUTER_API_KEY is blanked");
+  t.ok(rec.env.OPENAI_API_KEY === "", "OPENAI_API_KEY is blanked");
+  t.ok(rec.env.CODEAF_MODEL === "", "CODEAF_MODEL is blanked so the overlay wins");
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  const cfg = rec.codeafConfig;
+  t.ok(cfg !== undefined, "overlay config.json was captured before cleanup");
+  if (!cfg) return;
+  t.ok(cfg.api_key === KEY, "overlay api_key is the session key");
+  t.ok(
+    cfg["model.talk"] === modelId(),
+    "overlay model.talk is the bare catalog id",
+    String(cfg["model.talk"]),
+  );
+  t.ok(rec.codeafMode === 0o600, "overlay config.json is 0600", String(rec.codeafMode));
 });
 
 define("launcher", "launcher-exit-code", (t) => {

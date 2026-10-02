@@ -1,10 +1,11 @@
 import { claudeAdapter } from "./claude/adapter.js";
+import { codeafAdapter } from "./codeaf/adapter.js";
 import { codexAdapter } from "./codex/adapter.js";
 import { opencodeAdapter } from "./opencode/adapter.js";
 import type { AgentAdapter } from "./types.js";
 
 /** Every adapter ships here, in display order: adding one is an import plus a line. */
-const registered: AgentAdapter[] = [opencodeAdapter, claudeAdapter, codexAdapter];
+const registered: AgentAdapter[] = [opencodeAdapter, claudeAdapter, codexAdapter, codeafAdapter];
 
 export const AGENTS: readonly AgentAdapter[] = registered;
 

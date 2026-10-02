@@ -147,6 +147,9 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "CODEAF_HOME",
+  "CODEAF_PROFILE_DIR",
+  "AFORGE_HOME",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -170,7 +173,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex"]) {
+  for (const name of ["opencode", "claude", "codex", "codeaf"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -411,6 +414,171 @@ try {
   );
   for (const [path] of aiandLaunchers) rmSync(path);
 
+  // --- codeaf on/off/status ---------------------------------------------------
+  // CodeAF keeps one plain-JSON settings file at <home>/.codeaf/config.json.
+  const codeafDir = join(home, ".codeaf");
+  const codeafPath = join(codeafDir, "config.json");
+  const codeafSeed = `${JSON.stringify({ daily_budget_usd: 5 }, null, 2)}\n`;
+  mkdirSync(codeafDir, { recursive: true });
+  writeFileSync(codeafPath, codeafSeed);
+
+  const codeafOn = JSON.parse(cli("codeaf on --json"));
+  check(
+    "codeaf on succeeds",
+    codeafOn.state === "on" && codeafOn.agent === "codeaf",
+    JSON.stringify(codeafOn),
+  );
+  const codeafWired = JSON.parse(readFileSync(codeafPath, "utf8"));
+  const codeafRow = (codeafWired.model_sources ?? []).find((row) => row?.id === "custom-aiand");
+  check(
+    "codeaf on writes the aiand source row at the loopback double",
+    codeafRow?.written === "aiand" &&
+      codeafRow?.address === `${baseUrl}/v1` &&
+      codeafRow?.key === "sk-e2e-test-key-0000000000000000000000" &&
+      codeafRow?.["x-aiand"] === true &&
+      codeafRow?.order === 1,
+    JSON.stringify(codeafRow),
+  );
+  check(
+    "codeaf on pins the talk model through the aiand service",
+    codeafWired["model.talk"] === "aiand/zai-org/glm-5.3",
+    String(codeafWired["model.talk"]),
+  );
+  check("codeaf on never writes the root api_key", codeafWired.api_key === undefined);
+  check("codeaf on keeps unrelated keys", codeafWired.daily_budget_usd === 5);
+
+  const codeafStatus = JSON.parse(cli("codeaf status --json"));
+  check(
+    "codeaf status: on with the talk model",
+    codeafStatus.state === "on" && codeafStatus.model === "aiand/zai-org/glm-5.3",
+    JSON.stringify(codeafStatus),
+  );
+
+  cli("codeaf off --json");
+  const codeafOff = JSON.parse(readFileSync(codeafPath, "utf8"));
+  check(
+    "codeaf off removes our source row and talk model",
+    !(codeafOff.model_sources ?? []).some(
+      (row) => row?.["x-aiand"] === true || row?.id === "custom-aiand",
+    ) && codeafOff["model.talk"] === undefined,
+    JSON.stringify(codeafOff),
+  );
+  check("codeaf off keeps the user's budget key", codeafOff.daily_budget_usd === 5);
+  const codeafStatusOff = JSON.parse(cli("codeaf status --json"));
+  check(
+    "codeaf status: off after teardown",
+    codeafStatusOff.state === "off",
+    JSON.stringify(codeafStatusOff),
+  );
+
+  cli("codeaf on --json");
+  cli("restore codeaf --force");
+  check(
+    "restore codeaf --force puts the seeded bytes back",
+    readFileSync(codeafPath, "utf8") === codeafSeed,
+    "break-glass snapshot restore",
+  );
+
+  // A hand-made aiand connection (no marker, pointed elsewhere) is
+  // refused; --force takes it over.
+  const foreignConfig = `${JSON.stringify(
+    {
+      daily_budget_usd: 5,
+      model_sources: [
+        {
+          key: "sk-e2e-foreign-000000000000000000000",
+          written: "aiand",
+          address: "https://api.example.com/v1",
+          order: 1,
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+  writeFileSync(codeafPath, foreignConfig);
+  check("codeaf on refuses a connection it did not write", !cliOrNull("codeaf on --json").ok);
+  cli("codeaf on --force --json");
+  const codeafTaken = JSON.parse(readFileSync(codeafPath, "utf8"));
+  const takenRow = (codeafTaken.model_sources ?? []).find((row) => row?.["x-aiand"] === true);
+  check(
+    "codeaf on --force takes over the foreign connection",
+    takenRow?.address === `${baseUrl}/v1` &&
+      takenRow?.key === "sk-e2e-test-key-0000000000000000000000",
+    JSON.stringify(takenRow),
+  );
+  cli("codeaf off --json");
+  cli("restore codeaf --force");
+  check(
+    "restore codeaf --force brings back the connection --force took over",
+    readFileSync(codeafPath, "utf8") === foreignConfig,
+  );
+
+  // run-agent codeaf: a throwaway CODEAF_HOME overlay carries the key
+  // and the bare model; the child env only ever sees the repointed
+  // base URL and the neutralizers.
+  const codeafCapture = join(S, "capture-codeaf");
+  let codeafCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "codeaf", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: codeafCapture },
+      encoding: "utf8",
+    });
+    codeafCode = 0;
+  } catch (error) {
+    codeafCode = error.status ?? 42;
+  }
+  check("run-agent codeaf exits with the child code", codeafCode === 42, `code=${codeafCode}`);
+  const codeafArgs = existsSync(`${codeafCapture}.args`)
+    ? readFileSync(`${codeafCapture}.args`, "utf8").split(/\r?\n/).filter(Boolean)
+    : [];
+  check(
+    "run-agent codeaf passes the passthrough through verbatim",
+    codeafArgs.at(-1) === "--version",
+    codeafArgs.join(" "),
+  );
+  const codeafChildEnv = existsSync(`${codeafCapture}.env`)
+    ? readFileSync(`${codeafCapture}.env`, "utf8")
+    : "";
+  const codeafEnvValue = (name) =>
+    codeafChildEnv
+      .split("\n")
+      .find((line) => line.startsWith(`${name}=`))
+      ?.slice(name.length + 1);
+  const launchedCodeafHome = codeafEnvValue("CODEAF_HOME");
+  check(
+    "run-agent codeaf launches from a throwaway CODEAF_HOME",
+    Boolean(launchedCodeafHome) && launchedCodeafHome !== home && launchedCodeafHome !== codeafDir,
+    launchedCodeafHome ?? "missing",
+  );
+  check(
+    "run-agent codeaf repoints CODEAF_BASE_URL at the loopback double",
+    codeafEnvValue("CODEAF_BASE_URL") === `${baseUrl}/v1`,
+    codeafEnvValue("CODEAF_BASE_URL") ?? "missing",
+  );
+  check(
+    "run-agent codeaf neutralizes inherited router keys",
+    codeafEnvValue("OPENROUTER_API_KEY") === "" && codeafEnvValue("OPENAI_API_KEY") === "",
+  );
+  check(
+    "run-agent codeaf clears CODEAF_MODEL so the overlay's model.talk wins",
+    codeafEnvValue("CODEAF_MODEL") === "",
+  );
+  check(
+    "run-agent codeaf silences update checks and telemetry",
+    codeafEnvValue("CODEAF_NO_UPDATE_CHECK") === "1" &&
+      codeafEnvValue("CODEAF_TELEMETRY") === "off",
+  );
+  check(
+    "run-agent codeaf keeps the session key out of the child env",
+    !codeafChildEnv.includes("sk-e2e-test-key-0000000000000000000000"),
+  );
+  check(
+    "run-agent codeaf removes the throwaway overlay after exit",
+    Boolean(launchedCodeafHome) && !existsSync(launchedCodeafHome),
+    launchedCodeafHome ?? "missing",
+  );
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -547,8 +715,8 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex and opencode",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode"]),
+    "registry ships exactly claude, codeaf, codex and opencode",
+    JSON.stringify(agentIds) === JSON.stringify(["claude", "codeaf", "codex", "opencode"]),
     JSON.stringify(agentIds),
   );
 
