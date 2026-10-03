@@ -84,8 +84,9 @@ Most commands take `--json`, and every command takes `--help`.
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs) and
-[Codex](https://developers.openai.com/codex/cli).
+[Claude Code](https://code.claude.com/docs),
+[Codex](https://developers.openai.com/codex/cli) and
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -156,6 +157,24 @@ takes it over, and `aiand restore codex --force` brings the old one back. Your `
 plugins come along. Which Codex versions work with ai&, and what changed
 between them, is in the
 [Codex guide](https://docs.aiand.com/integrations/codex/).
+
+```bash
+aiand prime on           # route Prime Agent through ai&
+aiand prime status
+aiand prime off
+aiand run-agent prime    # launch Prime Agent on ai&, nothing written
+```
+
+`on` adds an `aiand` provider to `~/.prime/agent/models.json` (or
+`$PRIME_AGENT_CODING_AGENT_DIR`), with every model from the live catalog, and
+writes the `defaultProvider`/`defaultModel` pair into `settings.json` beside
+it, so plain `prime-agent` starts on ai&. A model pair of your own is kept
+unless you pass `--model`; `--model native` leaves it alone entirely. Your
+other providers, your own edits, and your `auth.json` logins are untouched.
+The file carries your key, so it is written at mode `0600`. Prime Agent never
+rewrites `models.json`, so the route survives its own updates. A pair `--model`
+set aside, `off` puts back; a provider block you edited, `off` leaves and only
+removes the key and the marker from it.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

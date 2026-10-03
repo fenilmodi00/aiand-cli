@@ -7,6 +7,21 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand prime on` wires Prime Agent to ai& through `~/.prime/agent/models.json`
+  (or `$PRIME_AGENT_CODING_AGENT_DIR`): an `aiand` provider with every live-catalog
+  model, the session key baked at mode `0600`, and the `defaultProvider`/
+  `defaultModel` pair in `settings.json` beside it so plain `prime-agent` starts on
+  ai&. A model pair you already chose is kept; `--model` switches one (the pair
+  `on` set aside comes back on `off`), `--model native` leaves the file alone.
+  `on` refuses a `providers.aiand` block ai& does not manage, and `off` leaves a
+  block you edited, removing only the key and the `x-aiand` marker from it.
+  `aiand run-agent prime` launches Prime Agent on ai& through a throwaway agent
+  dir, writing nothing. `aiand prime off` removes exactly what `on` added. If a
+  file it must edit is not valid JSON, `off` leaves everything in place, keeps
+  its record, and says which file to fix so a retry can finish.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

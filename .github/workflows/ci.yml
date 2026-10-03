@@ -30,6 +30,17 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm install -g opencode-ai@1.18.32
+      # The pinned release the install hint names (check-dist keeps the pin in
+      # step with src/agents/prime/install.ts). The official installer pipes a
+      # mutable main-branch script into sh; the v0.9.8 platform asset is a
+      # digest-checked tarball holding the prime-agent binary at its root.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/prime-agent"
+          curl -fsSLo "$RUNNER_TEMP/prime-agent.tgz" https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.9.8/prime-agent-0.9.8-linux-x64.tar.gz
+          echo "83fb09129bf78e3e60268212cd70932166591b15188caa70c1b0efbcc76235e2  $RUNNER_TEMP/prime-agent.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/prime-agent.tgz" -C "$RUNNER_TEMP/prime-agent"
+          chmod +x "$RUNNER_TEMP/prime-agent/prime-agent"
+          echo "$RUNNER_TEMP/prime-agent" >> "$GITHUB_PATH"
       - run: npm run lint
       # Builds dist/ (reused by every later step), then runs the `npm test`
       # suite under the coverage floor set in package.json.
@@ -41,6 +52,11 @@ jobs:
       # key+binary (fork PRs stay green). A fork push whose key has no credits also skips; official
       # main still fails on that. No continue-on-error step.
       - run: node scripts/e2e.mjs
+      # A real pinned Prime Agent must accept the config `aiand prime on`
+      # generates and complete a headless round-trip through the loopback
+      # double (upstream JSON-schema-validates models.json, so schema drift
+      # breaks here first).
+      - run: node scripts/prime-smoke.mjs
       # Offline subset of the sandbox matrix: no key, no network.
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
       - run: npm run check:dist

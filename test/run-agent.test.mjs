@@ -168,6 +168,26 @@ describe("run-agent launcher", () => {
     }
   });
 
+  test("prime: a throwaway agent dir carries the route; the key stays out of the child env", async () => {
+    plantCaptureStub("prime-agent");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["prime", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const dir = /^PRIME_AGENT_CODING_AGENT_DIR=(.*)$/m.exec(envText)?.[1];
+      assert.ok(dir, "the overlay agent dir is injected");
+      // Contents and 0600 are covered in test/agents-prime.test.mjs; after
+      // the exit the launcher's cleanup must have removed the whole dir.
+      assert.equal(existsSync(dir), false, "overlay dir gone after exit");
+      assert.equal(existsSync(join(home, ".prime")), false, "user files untouched");
+      assert.doesNotMatch(envText, /sk-test-aiand/, "the key rides in the overlay, not the env");
+      assert.doesNotMatch(envText, /^AIAND_API_KEY=/m, "the launcher scrubs the env key");
+      assert.match(readFileSync(join(capture, "capture.args"), "utf8"), /^--version\n$/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
   test("-- passthrough preserves flags and order verbatim", async () => {
     plantCaptureStub("opencode");
     const capture = captureDir();

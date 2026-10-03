@@ -10,6 +10,8 @@
 // - CLAUDE_CONFIG_DIR unset: the Claude Code adapter honours it, so a
 //   developer's own setting would point tests at their real settings.json.
 // - CODEX_HOME unset: the same for the Codex adapter and its profile file.
+// - PRIME_AGENT_CODING_AGENT_DIR unset: the same for the Prime adapter's
+//   models.json and settings.json (its session dir/socket live in it).
 // - FORCE_COLOR unset: it overrides NO_COLOR and forces ANSI on non-TTY
 //   streams, flipping the color and table assertions.
 // - test/net-guard.mjs on NODE_OPTIONS: fetch to anything but loopback fails
@@ -32,6 +34,9 @@ if (!process.env.AIAND_TEST_STUB_BIN) {
 process.env.AIAND_NO_BROWSER = "1";
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CODEX_HOME;
+delete process.env.PRIME_AGENT_CODING_AGENT_DIR;
+delete process.env.PRIME_AGENT_SESSION_DIR;
+delete process.env.PRIME_AGENT_DAEMON_SOCKET;
 delete process.env.FORCE_COLOR;
 
 const guard = `--import=${pathToFileURL(join(import.meta.dirname, "net-guard.mjs")).href}`;

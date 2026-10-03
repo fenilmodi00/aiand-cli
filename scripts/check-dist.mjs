@@ -62,6 +62,23 @@ for (const pin of ciPins) {
   );
 }
 
+// Same contract for Prime Agent: the pinned release asset (digest-checked in
+// ci.yml) is the release the install hint downloads.
+const { PRIME_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "prime", "install.js")).href
+);
+const primePins = [...ciYml.matchAll(/prime-agent\/releases\/download\/v([0-9A-Za-z.+-]+)\//g)].map(
+  (m) => m[1],
+);
+assert.ok(primePins.length > 0, "ci.yml should install a pinned prime-agent");
+for (const pin of primePins) {
+  assert.equal(
+    pin,
+    PRIME_VERSION,
+    `ci.yml installs prime-agent ${pin} but src/agents/prime/install.ts pins ${PRIME_VERSION}`,
+  );
+}
+
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -147,6 +148,7 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "PRIME_AGENT_CODING_AGENT_DIR",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -170,7 +172,7 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex"]) {
+  for (const name of ["opencode", "claude", "codex", "prime-agent"]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -411,6 +413,60 @@ try {
   );
   for (const [path] of aiandLaunchers) rmSync(path);
 
+  // --- prime on/off/status ----------------------------------------------------
+  const primeDir = join(home, ".prime", "agent");
+  mkdirSync(primeDir, { recursive: true });
+  const primeModelsPath = join(primeDir, "models.json");
+  writeFileSync(
+    primeModelsPath,
+    `${JSON.stringify({ theme: "dark", providers: { other: { baseUrl: "https://o" } } }, null, 2)}\n`,
+  );
+  const PRIME_BEFORE = readFileSync(primeModelsPath);
+
+  const primeOn = JSON.parse(cli("prime on --json"));
+  check("prime on succeeds", primeOn.state === "on", JSON.stringify(primeOn));
+  const primeWired = JSON.parse(readFileSync(primeModelsPath, "utf8"));
+  check(
+    "prime on stamps the marker on providers.aiand",
+    primeWired.providers?.aiand?.["x-aiand"] === true,
+  );
+  check(
+    "prime on routes baseUrl at the loopback double /v1",
+    primeWired.providers?.aiand?.baseUrl === `${baseUrl}/v1`,
+    String(primeWired.providers?.aiand?.baseUrl),
+  );
+  check(
+    "prime on bakes the session key",
+    primeWired.providers?.aiand?.apiKey === "sk-e2e-test-key-0000000000000000000000",
+  );
+  check(
+    "prime on keeps unrelated keys",
+    primeWired.theme === "dark" && primeWired.providers?.other?.baseUrl === "https://o",
+  );
+  check(
+    "prime on locks models.json to 0600",
+    // Windows has no POSIX modes; the file is still 0600 on POSIX.
+    process.platform === "win32" || (statSync(primeModelsPath).mode & 0o777) === 0o600,
+  );
+  const primeStatus = JSON.parse(cli("prime status --json"));
+  check("prime status: on with a model", primeStatus.state === "on" && Boolean(primeStatus.model));
+  cli("prime off --json");
+  check(
+    "prime off restores models.json byte-identical when untouched",
+    PRIME_BEFORE.equals(readFileSync(primeModelsPath)),
+  );
+  check(
+    "prime off restores the pre-existing mode",
+    process.platform === "win32" || (statSync(primeModelsPath).mode & 0o777) !== 0o600,
+  );
+  cli("prime on --json");
+  cli("restore prime --force");
+  check(
+    "restore prime --force puts the seed back",
+    PRIME_BEFORE.equals(readFileSync(primeModelsPath)),
+  );
+  rmSync(join(home, ".prime"), { recursive: true, force: true });
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -510,6 +566,30 @@ try {
       !codexArgs.join(" ").includes("sk-e2e-test-key"),
   );
 
+  const primeCapture = join(S, "capture-prime");
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "prime", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: primeCapture },
+      encoding: "utf8",
+    });
+  } catch {
+    // the stub exits 42
+  }
+  const primeChildEnv = existsSync(`${primeCapture}.env`)
+    ? readFileSync(`${primeCapture}.env`, "utf8")
+    : "";
+  const primeOverlayDir = /^PRIME_AGENT_CODING_AGENT_DIR=(.*)$/m.exec(primeChildEnv)?.[1];
+  check(
+    "run-agent prime injects the throwaway agent dir",
+    Boolean(primeOverlayDir) && !existsSync(primeOverlayDir),
+    String(primeOverlayDir),
+  );
+  check(
+    "run-agent prime keeps the key out of the child env",
+    !primeChildEnv.includes("sk-e2e-test-key"),
+  );
+  check("run-agent prime leaves the user's agent dir untouched", !existsSync(join(home, ".prime")));
+
   // Passthrough must reach the agent verbatim. On Windows the stub is a .cmd
   // shim run through cmd.exe, so shell metacharacters must stay literal.
   const tricky = [
@@ -547,8 +627,8 @@ try {
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex and opencode",
-    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode"]),
+    "registry ships exactly claude, codex, opencode and prime",
+    JSON.stringify(agentIds) === JSON.stringify(["claude", "codex", "opencode", "prime"]),
     JSON.stringify(agentIds),
   );
 
