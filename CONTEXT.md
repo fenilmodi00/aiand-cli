@@ -12,7 +12,8 @@ agent's native wire format, so the CLI never runs a local proxy, translator,
 or daemon to serve one. _Avoid:_ relay, proxy.
 
 **Wire format** - the request/response dialect an agent speaks: OpenAI-compatible chat
-(OpenCode), Anthropic Messages (Claude Code) or OpenAI Responses (Codex).
+(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app, Command Code), Anthropic
+Messages (Claude Code) or OpenAI Responses (Codex).
 The CLI points the agent at the gateway in its own dialect; it never translates between dialects.
 
 **Org** - the account scope a key is minted against and spend is reported
@@ -24,7 +25,9 @@ The three verbs - `on`, `off`, `status` - are the primary product surface;
 `init` and the launcher are conveniences layered over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude and codex. One adapter per agent. _Avoid:_ harness, integration, connector.
+shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app and
+commandcode.
+One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
 which config files it owns, and how to enable, disable, and probe it. It lives
@@ -74,7 +77,21 @@ schema rejects unknown top-level keys. For Claude Code it is
 `env.AIAND_MANAGED` in `settings.json`: an unknown top-level key makes Claude
 Code warn on every start, while `env` takes any name. For Codex it is the
 profile's auth command, `aiand key export`: Codex rejects unknown keys under
-`--strict-config`, and a hand-written profile prints its key another way.
+`--strict-config`, and a hand-written profile prints its key another way. For Pi it is
+`managedBy: "aiand"` on the `auth.json` credential: models.json is the one
+Pi file with a schema behind it (TypeBox), while auth.json passes unknown
+credential keys through. For omp it is `managedBy: "aiand"` on the models.yml
+provider block: omp has no auth.json, and its provider schema tolerates
+unknown keys. For the Copilot CLI it is the provider row itself, the one
+named `aiand` in providers.json: the CLI errors loudly on unrecognized
+provider fields, so nothing extra rides in the row. For the Copilot app it
+is the `aiand-` prefix on the `model_providers` row id in `data.db`: the
+name the app displays is a brand label, while the row id is what `off`
+matches.
+For Command Code it is `managedBy: "aiand"` on the `provider.aiand` row in
+`providers.json`: Command Code passes unknown row keys through its own rewrites,
+while unknown keys inside a model entry are dropped, so the stamp lives at row
+level only.
 
 **restore** - `aiand restore <agent> --force`: the break-glass byte-for-byte
 snapshot restore. Overwrites any edits made since `on`, which is why it is
@@ -89,8 +106,12 @@ path strictly inside HOME.
 
 **Launcher** - `aiand run-agent <agent>`: run one agent process with routing
 injected into its environment or a throwaway overlay, leaving user files
-untouched. Works without a prior `on`; an optional convenience beside
-permanent `on`, never a replacement. _Avoid:_ wrapper, session alias.
+untouched. For Command Code the overlay becomes the child's `HOME` —
+Command Code has no config-root override — and the session key rides
+the child's `COMMAND_CODE_API_KEY` so headless mode passes Command
+Code's own sign-in gate. Works without a prior `on`; an optional
+convenience beside permanent `on`, never a replacement. _Avoid:_
+wrapper, session alias.
 
 **Install hint** - the official install command and docs URL printed for a
 missing agent binary. Detection never installs agents.
@@ -167,6 +188,8 @@ only (`text-only`).
 the model unpinned, so the agent's own default wins instead of a gateway
 model. Codex refuses it: its profile would inherit a `config.toml` model the
 gateway cannot serve.
+Command Code refuses it: its own default models route to its own gateway,
+not to ai&.
 
 ## Sources of truth
 

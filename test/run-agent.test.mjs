@@ -168,6 +168,411 @@ describe("run-agent launcher", () => {
     }
   });
 
+  // #32
+  test("pi: overlay dir + session dir env, key never in child env, overlay removed", async () => {
+    plantCaptureStub("pi");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["pi", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const agentDir = envText.match(/^PI_CODING_AGENT_DIR=(.*)$/m)?.[1];
+      assert.ok(agentDir, "PI_CODING_AGENT_DIR in child env");
+      assert.ok(agentDir.includes("aiand-pi-"), "overlay is a throwaway mkdtemp dir");
+      const sessionDir = envText.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1];
+      assert.ok(
+        sessionDir?.endsWith(join(".pi", "agent", "sessions")),
+        "session history points at the user's real session dir",
+        String(sessionDir),
+      );
+      // The key rides the overlay auth.json, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      // The CLI has exited: the launcher's cleanup must already have
+      // removed the whole overlay.
+      assert.equal(existsSync(agentDir), false);
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--provider");
+      assert.equal(args[1], "aiand");
+      assert.equal(args[2], "--model");
+      assert.ok(args[3], "a concrete model resolved");
+      // runCli pipes stdin, so the launcher must add --print: upstream Pi
+      // hangs on redirected stdin without an explicit one-shot mode.
+      assert.ok(args.includes("--print"), "--print injected for non-TTY stdin");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("pi: user routing flags cannot override the injected routing", async () => {
+    plantCaptureStub("pi");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "pi",
+          "--",
+          "--api-key",
+          "evil",
+          "--provider=openai",
+          "--model",
+          "gpt-4o",
+          "--models",
+          "a,b",
+          "--print",
+        ],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--provider");
+      assert.equal(args[1], "aiand");
+      assert.equal(args[2], "--model");
+      assert.ok(args[3] !== "gpt-4o", "the user's --model is stripped");
+      assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
+      assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
+      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
+      assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
+      assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // #15
+  test("pi: an owned flag followed by another flag keeps the flag (--model --print)", async () => {
+    plantCaptureStub("pi");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["pi", "--", "--model", "--print"], {}, capture);
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      // The launcher injects its own --print for piped stdin, so the user's
+      // --print surviving the strip shows up twice. The unconditional skip
+      // ate the flag after --model as if it were its value.
+      assert.equal(
+        args.filter((a) => a === "--print").length,
+        2,
+        `expected the user's --print to survive, got: ${args.join(" ")}`,
+      );
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("pi: missing binary -> 127 with the pi install hint", async () => {
+    rmSync(join(binDir, "pi"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["pi"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /Pi is not installed/);
+      assert.match(stderr, /npm install -g --ignore-scripts @earendil-works\/pi-coding-agent/);
+      assert.match(stderr, /https:\/\/pi\.dev/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // omp mirrors pi's overlay launch: throwaway PI_CODING_AGENT_DIR holding the
+  // key, real session history pointed at separately.
+  test("omp: overlay dir + session dir env, key never in child env, overlay removed", async () => {
+    plantCaptureStub("omp");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["omp", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const agentDir = envText.match(/^PI_CODING_AGENT_DIR=(.*)$/m)?.[1];
+      assert.ok(agentDir, "PI_CODING_AGENT_DIR in child env");
+      assert.ok(agentDir.includes("aiand-omp-"), "overlay is a throwaway mkdtemp dir");
+      const sessionDir = envText.match(/^PI_CODING_AGENT_SESSION_DIR=(.*)$/m)?.[1];
+      assert.ok(
+        sessionDir?.endsWith(join(".omp", "agent", "sessions")),
+        "session history points at the user's real session dir",
+        String(sessionDir),
+      );
+      // The key rides the overlay models.yml, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      // The CLI has exited: the launcher's cleanup must already have
+      // removed the whole overlay.
+      assert.equal(existsSync(agentDir), false);
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--model");
+      assert.ok(args[1].startsWith("aiand/"), "a concrete model selector resolved");
+      // runCli pipes stdin, so the launcher must add --print: upstream omp
+      // hangs on redirected stdin without an explicit one-shot mode.
+      assert.ok(args.includes("--print"), "--print injected for non-TTY stdin");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("omp: user routing flags cannot override the injected routing", async () => {
+    plantCaptureStub("omp");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "omp",
+          "--",
+          "--api-key",
+          "evil",
+          "--provider=openai",
+          "--model",
+          "gpt-4o",
+          "--models",
+          "a,b",
+          "--print",
+        ],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--model");
+      assert.ok(args[1].startsWith("aiand/"), "our selector comes first");
+      assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
+      assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
+      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
+      assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
+      assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("omp: missing binary -> 127 with the omp install hint", async () => {
+    rmSync(join(binDir, "omp"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["omp"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /Oh My Pi is not installed/);
+      assert.match(stderr, /omp\.sh\/install/);
+      assert.match(stderr, /https:\/\/omp\.sh/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // copilot mirrors the overlay launch through COPILOT_HOME: the throwaway
+  // dir holds providers.json (with the key) + settings.json, and
+  // COPILOT_MODEL pins the qualified selection the CLI accepts.
+  test("copilot: overlay env + qualified model, key in the overlay file only, overlay removed", async () => {
+    plantStub(
+      binDir,
+      "copilot",
+      `env > "$AIAND_CAPTURE.env"
+cp "$COPILOT_HOME/providers.json" "$AIAND_CAPTURE.providers.json"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+exit 42`,
+    );
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["copilot", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const overlay = envText.match(/^COPILOT_HOME=(.*)$/m)?.[1];
+      assert.ok(overlay?.includes("aiand-copilot-"), "COPILOT_HOME is a throwaway overlay");
+      assert.match(envText, /^COPILOT_MODEL=aiand\/.+$/m, "qualified selection pins the model");
+      assert.match(envText, /^COPILOT_OFFLINE=true$/m, "pure-BYOK mode, no GitHub calls");
+      // The key rides the overlay providers.json, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      assert.match(readFileSync(join(capture, "capture.providers.json"), "utf8"), /sk-test-aiand/);
+      // The child exited: the launcher's cleanup removed the whole overlay.
+      assert.equal(existsSync(overlay), false);
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--no-auto-update");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("copilot: the user's --model cannot override the injected routing", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        ["copilot", "--", "--model", "gpt-4o", "--model=x", "--version"],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, ["--no-auto-update", "--version"]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // #18's filter edge, on copilot's owned flag: an owned flag followed by
+  // another flag keeps the flag.
+  test("copilot: --model --version keeps --version", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["copilot", "--", "--model", "--version"], {}, capture);
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args.at(-1), "--version");
+      assert.ok(!args.includes("--model"));
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("copilot: missing binary -> 127 with the npm install hint", async () => {
+    rmSync(join(binDir, "copilot"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["copilot"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /GitHub Copilot is not installed/);
+      assert.match(stderr, /npm install -g @github\/copilot@/);
+      assert.match(stderr, /docs\.github\.com/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // The desktop app is config-only: run-agent refuses before any session,
+  // pointing at `aiand copilot-app on`.
+  test("copilot-app: run-agent refuses session launches", async () => {
+    mkdirSync(join(home, ".copilot"), { recursive: true });
+    writeFileSync(join(home, ".copilot", "data.db"), "");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(["copilot-app", "--", "--version"], {}, capture);
+      assert.equal(code, 1);
+      assert.match(stderr, /does not support session launches/);
+      assert.match(stderr, /aiand copilot-app on/);
+      assert.equal(existsSync(join(capture, "capture.args")), false, "child never spawned");
+    } finally {
+      rmSync(join(home, ".copilot"), { recursive: true, force: true });
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  // commandcode redirects HOME at a throwaway overlay holding the
+  // provider row, the key credential, and the model pin. The key
+  // reaches the child env only as COMMAND_CODE_API_KEY — the -p
+  // auth gate reads it there (the documented Codex-style exception)
+  // — and DO_NOT_TRACK keeps Command Code's gateway from fingerprinting
+  // it; AIAND_API_KEY itself never crosses.
+  test("commandcode: overlay launch with HOME redirect", async () => {
+    plantStub(
+      binDir,
+      "cmd",
+      `env > "$AIAND_CAPTURE.env"
+cp "$HOME/.commandcode/providers.json" "$AIAND_CAPTURE.providers.json"
+cp "$HOME/.commandcode/auth.json" "$AIAND_CAPTURE.auth.json"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+exit 42`,
+    );
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["commandcode", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const overlayHome = envText.match(/^HOME=(.*)$/m)?.[1];
+      assert.ok(overlayHome, "HOME in child env");
+      assert.ok(
+        overlayHome.includes("aiand-commandcode-"),
+        "HOME redirects at a throwaway overlay",
+        String(overlayHome),
+      );
+      assert.match(
+        envText,
+        /^COMMAND_CODE_API_KEY=sk-test-aiand$/m,
+        "the -p auth gate reads the session key from this var",
+      );
+      assert.match(envText, /^DO_NOT_TRACK=1$/m, "no gateway fingerprinting");
+      // The key value crosses only as COMMAND_CODE_API_KEY; the
+      // session key's own var never reaches the child.
+      assert.doesNotMatch(envText, /^AIAND_API_KEY=/m);
+      // The child exited: the launcher's cleanup must already have
+      // removed the whole overlay.
+      assert.equal(existsSync(overlayHome), false);
+
+      const providers = JSON.parse(readFileSync(join(capture, "capture.providers.json"), "utf8"));
+      assert.equal(providers.provider?.aiand?.managedBy, "aiand");
+      const auth = JSON.parse(readFileSync(join(capture, "capture.auth.json"), "utf8"));
+      assert.equal(auth.aiand?.key, "sk-test-aiand");
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      // runCli pipes stdin, so the launcher must add -p: upstream
+      // Command Code hangs on redirected stdin without an explicit
+      // one-shot mode.
+      assert.ok(args.includes("-p"), "-p injected for non-TTY stdin");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("commandcode: user routing flags cannot override the injected routing", async () => {
+    plantCaptureStub("cmd");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "commandcode",
+          "--",
+          "--model",
+          "evil-model",
+          "--model=evil-model",
+          "--config",
+          "model=openai/gpt-4o",
+          "-m",
+          "openai/gpt-4o",
+          "--version",
+        ],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.ok(!args.includes("evil-model"), "the user's --model value is stripped");
+      assert.ok(!args.includes("--model=evil-model"), "--flag= form stripped");
+      assert.ok(!args.includes("--config"), "the user's --config is stripped");
+      assert.ok(!args.includes("model=openai/gpt-4o"), "the user's --config value is stripped");
+      assert.ok(!args.includes("-m"), "the user's -m is stripped");
+      assert.ok(!args.includes("openai/gpt-4o"), "the user's -m value is stripped");
+      assert.equal(args.at(-1), "--version", "unrelated flags pass verbatim");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("commandcode: missing binary exits 127 with install hint", async () => {
+    rmSync(join(binDir, "cmd"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["commandcode"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /Command Code is not installed/);
+      assert.match(stderr, /npm install -g command-code/);
+      assert.match(stderr, /commandcode\.ai\/docs/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("-- passthrough preserves flags and order verbatim", async () => {
     plantCaptureStub("opencode");
     const capture = captureDir();

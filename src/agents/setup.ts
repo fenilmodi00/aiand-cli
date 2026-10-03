@@ -176,7 +176,10 @@ export async function agentOff(
     };
   }
   if (notes.length > 0) {
-    return { agent: adapter.id, state: "off", note: notes.join(" ") };
+    // `note` is one string by contract (agent.ts prints a single dim line, init
+    // embeds it as `agent — note`, JSON carries it scalar), so a moved-dir strip
+    // per file plus an edited-value note must stay readable: "; " separated.
+    return { agent: adapter.id, state: "off", note: notes.join("; ") };
   }
   return { agent: adapter.id, state: "off" };
 }

@@ -6,6 +6,7 @@ import {
   jsoncDelete,
   jsoncSet,
   parseJsonc,
+  readJsoncObject,
   readTextIfExists,
 } from "../dist/agents/managed-file.js";
 import { withTestEnv } from "./helpers.mjs";
@@ -22,8 +23,17 @@ describe("managed-file read side", () => {
     writeFileSync(present, "hello\n");
     assert.equal(await readTextIfExists(present), "hello\n");
   });
-});
 
+  test("readJsoncObject refuses a JSON-array root, never coerces it to {}", async () => {
+    // An array root reaching jsoncSet would splice into array text —
+    // the same mid-write crash class as invalid JSON (#18 round-2).
+    const file = join(box.dir, "array-root.json");
+    writeFileSync(file, '[{"a":1}]');
+    await assert.rejects(readJsoncObject(file), /is not valid JSON/);
+    writeFileSync(file, '"scalar"');
+    await assert.rejects(readJsoncObject(file), /is not valid JSON/);
+  });
+});
 describe("parseJsonc", () => {
   test("parseJsonc strips a UTF-8 BOM before JSON.parse", () => {
     assert.deepEqual(parseJsonc('\uFEFF{"theme":"system"}'), { theme: "system" });

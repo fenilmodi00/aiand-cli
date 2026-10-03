@@ -42,6 +42,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 
 /* -------------------------------------------------------------------------- */
 /* Scenario layout                                                            */
@@ -108,6 +110,13 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
+  "PI_CODING_AGENT_SESSION_DIR",
+  "COPILOT_HOME",
+  "COPILOT_PROVIDERS_CONFIG",
+  "COPILOT_MODEL",
+  "COPILOT_OFFLINE",
+  "COMMAND_CODE_API_KEY",
   "FORCE_COLOR",
   "STUB_EXIT",
 ];
@@ -167,6 +176,14 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+const PI_DIR = join(MAIN_HOME, ".pi", "agent");
+const PI_MODELS = join(PI_DIR, "models.json");
+const PI_AUTH = join(PI_DIR, "auth.json");
+const PI_SETTINGS = join(PI_DIR, "settings.json");
+const COPILOT_DIR = join(MAIN_HOME, ".copilot");
+const COPILOT_PROVIDERS = join(COPILOT_DIR, "providers.json");
+const COPILOT_SETTINGS = join(COPILOT_DIR, "settings.json");
+const COPILOT_DB = join(COPILOT_DIR, "data.db");
 
 function seedFile(state, path, content) {
   mkdirSync(dirname(path), { recursive: true });
@@ -183,11 +200,31 @@ function sameBytes(path, expected) {
   }
 }
 
+function readCopilotDb(...sqls) {
+  const db = new DatabaseSync(COPILOT_DB, { readOnly: true });
+  try {
+    return sqls.map((sql) => db.prepare(sql).all());
+  } finally {
+    db.close();
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex"];
+// Command Code's binary is `cmd` (`cmdc` on Windows, where `cmd`
+// is the shell), so its stub carries the platform binary name
+// rather than the agent id.
+const STUB_NAMES = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "copilot",
+  "copilot-app",
+  process.platform === "win32" ? "cmdc" : "cmd",
+];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -204,6 +241,29 @@ if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+// Same for the PI_CODING_AGENT_DIR overlay the launcher deletes after exit.
+if (process.env.PI_CODING_AGENT_DIR) {
+  const dir = process.env.PI_CODING_AGENT_DIR;
+  record.overlayMode = fs.statSync(dir + "/auth.json").mode & 0o777;
+  record.overlayAuth = JSON.parse(fs.readFileSync(dir + "/auth.json", "utf8"));
+  record.overlayModels = JSON.parse(fs.readFileSync(dir + "/models.json", "utf8"));
+}
+// ...and the COPILOT_HOME overlay (providers.json + settings.json).
+if (process.env.COPILOT_HOME) {
+  const dir = process.env.COPILOT_HOME;
+  record.copilotMode = fs.statSync(dir + "/providers.json").mode & 0o777;
+  record.copilotProviders = JSON.parse(fs.readFileSync(dir + "/providers.json", "utf8"));
+  record.copilotSettings = JSON.parse(fs.readFileSync(dir + "/settings.json", "utf8"));
+}
+// ...and the HOME overlay the Command Code launcher deletes after
+// exit (providers.json, auth.json, config.json).
+if (process.env.HOME?.includes("aiand-commandcode-")) {
+  const dir = process.env.HOME + "/.commandcode";
+  record.overlayMode = fs.statSync(dir + "/auth.json").mode & 0o777;
+  record.overlayProviders = JSON.parse(fs.readFileSync(dir + "/providers.json", "utf8"));
+  record.overlayAuth = JSON.parse(fs.readFileSync(dir + "/auth.json", "utf8"));
+  record.overlayConfig = JSON.parse(fs.readFileSync(dir + "/config.json", "utf8"));
 }
 fs.writeFileSync(${JSON.stringify(LAUNCHED)} + "/" + name + ".json", JSON.stringify(record, null, 2));
 process.exit(Number(process.env.STUB_EXIT ?? 0));
@@ -419,9 +479,263 @@ const AGENT_DEFS = {
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
     },
   },
+  pi: {
+    bin: "pi",
+    seed(state) {
+      state.created = [];
+      seedFile(
+        state,
+        PI_MODELS,
+        `${JSON.stringify(
+          { providers: { openai: { name: "OpenAI", baseUrl: "https://api.openai.com/v1" } } },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        PI_AUTH,
+        `${JSON.stringify({ openai: { type: "api_key", key: "sk-user-openai" } }, null, 2)}\n`,
+      );
+      seedFile(state, PI_SETTINGS, `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
+    },
+    contents(t) {
+      const models = parseJson(readFileSync(PI_MODELS, "utf8")) ?? {};
+      const aiand = models.providers?.aiand ?? {};
+      t.ok(aiand.api === "openai-completions", "provider speaks openai-completions");
+      t.ok(
+        aiand.baseUrl === "https://api.aiand.com/v1",
+        "provider baseUrl is gateway /v1",
+        String(aiand.baseUrl),
+      );
+      // `aiand models --json` sorts by id while the provider array keeps
+      // gateway order: compare the sets, not the sequences.
+      const ids = (loadCatalog() ?? []).map((m) => m.id);
+      const modelIds = (aiand.models ?? []).map((m) => m.id);
+      t.ok(
+        ids.length === 0 || [...modelIds].sort().join() === [...ids].sort().join(),
+        "provider lists every catalog model",
+        `${modelIds.length} rows, ${ids.length} catalog models`,
+      );
+      const auth = parseJson(readFileSync(PI_AUTH, "utf8")) ?? {};
+      t.ok(
+        auth.aiand?.key === KEY && auth.aiand?.managedBy === "aiand",
+        "auth.json aiand credential carries the key and marker",
+      );
+      t.ok(auth.openai?.key === "sk-user-openai", "user credential survives");
+      const settings = parseJson(readFileSync(PI_SETTINGS, "utf8")) ?? {};
+      t.ok(
+        settings.defaultProvider === "aiand" && settings.defaultModel === modelId(),
+        "settings pin provider and model",
+        `${settings.defaultProvider}/${settings.defaultModel}`,
+      );
+      t.ok(settings.theme === "dark", "user settings survive");
+    },
+  },
+  copilot: {
+    bin: "copilot",
+    seed(state) {
+      state.created = [];
+      seedFile(
+        state,
+        COPILOT_PROVIDERS,
+        `${JSON.stringify(
+          {
+            providers: [
+              {
+                name: "fireworks",
+                type: "openai",
+                baseUrl: "https://api.fireworks.ai/inference/v1",
+              },
+            ],
+            models: [{ id: "kimi", provider: "fireworks" }],
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        COPILOT_SETTINGS,
+        `${JSON.stringify({ theme: "dark", model: "gpt-5.1" }, null, 2)}\n`,
+      );
+    },
+    contents(t) {
+      const providers = parseJson(readFileSync(COPILOT_PROVIDERS, "utf8")) ?? {};
+      const aiand = (providers.providers ?? []).find((row) => row?.name === "aiand");
+      t.ok(aiand?.type === "openai", "provider speaks the openai dialect", String(aiand?.type));
+      t.ok(
+        aiand?.baseUrl === "https://api.aiand.com/v1",
+        "provider baseUrl is gateway /v1",
+        String(aiand?.baseUrl),
+      );
+      t.ok(aiand?.apiKey === KEY, "provider row carries the session key");
+      t.ok(
+        providers.providers?.some((row) => row?.name === "fireworks") &&
+          providers.models?.some((row) => row?.id === "kimi"),
+        "foreign provider and model rows survive",
+      );
+      const ids = (loadCatalog() ?? []).map((m) => m.id);
+      const modelIds = (providers.models ?? [])
+        .filter((row) => row?.provider === "aiand")
+        .map((row) => row.id);
+      t.ok(
+        ids.length === 0 || [...modelIds].sort().join() === [...ids].sort().join(),
+        "one model row per catalog model",
+        `${modelIds.length} rows, ${ids.length} catalog models`,
+      );
+      const settings = parseJson(readFileSync(COPILOT_SETTINGS, "utf8")) ?? {};
+      t.ok(
+        settings.model === `aiand/${modelId()}`,
+        `selection is aiand/${modelId()}`,
+        String(settings.model),
+      );
+      t.ok(settings.theme === "dark", "user settings survive");
+    },
+  },
+  "copilot-app": {
+    bin: "copilot",
+    seed(state) {
+      state.created = [];
+      rmSync(COPILOT_DB, { force: true });
+      mkdirSync(COPILOT_DIR, { recursive: true });
+      // `on` refuses a missing db (the app owns its creation), so the fixture
+      // stands in for a first app launch. Schema per the adapter's sqlite.ts.
+      const db = new DatabaseSync(COPILOT_DB);
+      db.exec(`
+CREATE TABLE model_providers (id TEXT PRIMARY KEY, name TEXT, created_at TEXT, updated_at TEXT, type TEXT, settings_json TEXT, account_id TEXT);
+CREATE TABLE provider_models (id TEXT PRIMARY KEY, provider_id TEXT, model_id TEXT, wire_model TEXT, display_name TEXT, max_prompt_tokens INTEGER, max_output_tokens INTEGER, wire_api_override TEXT, created_at TEXT, updated_at TEXT, supported_reasoning_efforts TEXT, UNIQUE(provider_id, model_id));
+INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'mine', 'openai', '{}');
+`);
+      db.close();
+    },
+    contents(t) {
+      const [providers, models] = readCopilotDb(
+        "SELECT id, name, settings_json FROM model_providers WHERE id LIKE 'aiand-%';",
+        "SELECT model_id FROM provider_models WHERE provider_id LIKE 'aiand-%';",
+      );
+      t.ok(
+        providers.length === 1 && providers[0].name === "ai&",
+        "one owned provider row",
+        JSON.stringify(providers),
+      );
+      const settings = parseJson(String(providers[0]?.settings_json ?? "{}")) ?? {};
+      t.ok(
+        settings.baseUrl === "https://api.aiand.com/v1",
+        "provider baseUrl is gateway /v1",
+        String(settings.baseUrl),
+      );
+      t.ok(
+        String(settings.headersJson ?? "").includes(`Bearer ${KEY}`),
+        "the key rides the Authorization header",
+      );
+      const ids = (loadCatalog() ?? []).map((m) => m.id);
+      const modelIds = models.map((row) => row.model_id);
+      t.ok(
+        ids.length === 0 || [...modelIds].sort().join() === [...ids].sort().join(),
+        "one model row per catalog model",
+        `${modelIds.length} rows, ${ids.length} catalog models`,
+      );
+    },
+    verifyOffExtra(t) {
+      // The db is the app's own file: off must strip our rows, keep the
+      // user's, and never delete the database itself.
+      const [ours, foreign] = readCopilotDb(
+        "SELECT id FROM model_providers WHERE id LIKE 'aiand-%';",
+        "SELECT id FROM model_providers WHERE id = 'user-1';",
+      );
+      t.ok(ours.length === 0, "our provider row is gone after off");
+      t.ok(foreign.length === 1, "the user's provider row survives off");
+      t.ok(existsSync(COPILOT_DB), "the app's database file survives off");
+    },
+  },
+  commandcode: {
+    bin: process.platform === "win32" ? "cmdc" : "cmd",
+    seed(state) {
+      state.created = [];
+      const dir = join(MAIN_HOME, ".commandcode");
+      // A user provider row, the user's own Command Code login
+      // and an openai credential: all must survive on and off.
+      seedFile(
+        state,
+        join(dir, "providers.json"),
+        `${JSON.stringify(
+          { provider: { openai: { name: "OpenAI", baseURL: "https://api.openai.com/v1" } } },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        join(dir, "auth.json"),
+        `${JSON.stringify(
+          {
+            apiKey: "cmd-user-login-key",
+            userName: "user@example.com",
+            userId: "cmd-user-1",
+            keyName: "default",
+            openai: { type: "api", key: "sk-user-openai" },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        join(dir, "config.json"),
+        `${JSON.stringify({ theme: "dark", model: "openai/gpt-5.2" }, null, 2)}\n`,
+      );
+    },
+    contents(t) {
+      const dir = join(MAIN_HOME, ".commandcode");
+      const providers = parseJson(readFileSync(join(dir, "providers.json"), "utf8")) ?? {};
+      const aiand = providers.provider?.aiand ?? {};
+      t.ok(aiand.name === "ai&", "provider.aiand is named ai&", String(aiand.name));
+      t.ok(aiand.managedBy === "aiand", "provider.aiand carries the marker");
+      t.ok(aiand.api === "openai-completions", "provider speaks openai-completions");
+      t.ok(
+        aiand.baseURL === "https://api.aiand.com/v1",
+        "provider baseURL is gateway /v1",
+        String(aiand.baseURL),
+      );
+      t.ok(
+        providers.provider?.openai?.name === "OpenAI",
+        "the user's openai provider row survives",
+      );
+      const auth = parseJson(readFileSync(join(dir, "auth.json"), "utf8")) ?? {};
+      t.ok(
+        auth.aiand?.type === "api" && auth.aiand?.key === KEY,
+        "the aiand credential is the session key",
+      );
+      t.ok(
+        auth.apiKey === "cmd-user-login-key" &&
+          auth.userName === "user@example.com" &&
+          auth.userId === "cmd-user-1" &&
+          auth.keyName === "default",
+        "the user's login fields survive",
+      );
+      t.ok(auth.openai?.key === "sk-user-openai", "the user's openai credential survives");
+      const config = parseJson(readFileSync(join(dir, "config.json"), "utf8")) ?? {};
+      t.ok(
+        config.model === `aiand/${modelId()}`,
+        `the model pin is aiand/${modelId()}`,
+        String(config.model),
+      );
+      t.ok(config.theme === "dark", "user config survives");
+    },
+  },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex"];
+const WIRING_ONE = ["opencode", "claude", "codex", "pi", "copilot", "copilot-app", "commandcode"];
+
+// Whole-registry assertion (`status` lists every shipped adapter) reads the
+// shipped registry instead of a hand-kept list, which goes stale silently as
+// adapters ship. WIRING_ONE stays the cast that has seed fixtures + stub
+// binaries; `init --all` counts that cast, since it wires only DETECTED agents.
+const { AGENTS: SHIPPED_AGENTS } = await import(
+  pathToFileURL(join(dirname(CLI), "agents", "registry.js")).href
+);
+const SHIPPED_AGENT_IDS = SHIPPED_AGENTS.map((agent) => agent.id).sort();
 
 function verifyOffRestore(t, id) {
   const state = agentStates[id];
@@ -1119,7 +1433,7 @@ define("login", "login-status", (t) => {
   t.ok(out.auth?.signed_in === true, "auth.signed_in true");
   const ids = (out.agents ?? []).map((agent) => agent.agent).sort();
   t.ok(
-    JSON.stringify(ids) === JSON.stringify([...WIRING_ONE].sort()),
+    JSON.stringify(ids) === JSON.stringify(SHIPPED_AGENT_IDS),
     "status lists every registered agent",
     JSON.stringify(ids),
   );
@@ -1309,6 +1623,9 @@ define("init", "init-all", (t) => {
   okStatus(t, r, "init --all --json");
   const out = parseJson(r.stdout) ?? {};
   const rows = out.agents ?? [];
+  // WIRING_ONE (not the registry): `init --all` wires only DETECTED agents,
+  // and the stub PATH guarantees exactly the seven above. A real omp
+  // on the host would add an eighth row.
   for (const id of WIRING_ONE) {
     const row = rows.find((a) => a.agent === id);
     t.ok(row?.state === "on", `${id} wired on by --all`, JSON.stringify(row));
@@ -1317,7 +1634,9 @@ define("init", "init-all", (t) => {
   okStatus(t, off, "init --off --json after --all");
   const offOut = parseJson(off.stdout) ?? {};
   t.ok(
-    (offOut.agents ?? []).length === WIRING_ONE.length &&
+    // `>=`, not `===`: a workstation PATH can carry further REAL agents
+    // (omp is seeded by no fixture here) and --all would wire them too.
+    (offOut.agents ?? []).length >= WIRING_ONE.length &&
       (offOut.agents ?? []).every((a) => a.state === "off"),
     "every wired agent off again",
     JSON.stringify(offOut.agents),
@@ -1406,6 +1725,121 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+
+define("launcher", "launcher-pi", (t) => {
+  const r = launchCheck("pi", ["pi", "--", "--dump"]);
+  okStatus(t, r, "run-agent pi");
+  const rec = stubRecord("pi");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    rec.args[0] === "--provider" && rec.args[1] === "aiand" && rec.args.at(-1) === "--dump",
+    "--provider aiand --model <id>, then passthrough",
+  );
+  t.ok(rec.env.PI_CODING_AGENT_DIR?.includes("aiand-pi-"), "overlay is the throwaway dir");
+  t.ok(
+    /\.pi[/\\]agent[/\\]sessions$/.test(rec.env.PI_CODING_AGENT_SESSION_DIR ?? ""),
+    "session history stays in the user's session dir",
+    String(rec.env.PI_CODING_AGENT_SESSION_DIR),
+  );
+  t.ok(rec.overlayMode === 0o600, "overlay auth.json is 0600", String(rec.overlayMode));
+  t.ok(rec.overlayAuth?.aiand?.key === KEY, "the key rides in the overlay, not the env");
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  t.ok(
+    rec.overlayModels?.providers?.aiand?.baseUrl === "https://api.aiand.com/v1",
+    "overlay provider is gateway /v1",
+  );
+  t.ok(!existsSync(rec.env.PI_CODING_AGENT_DIR), "overlay removed after exit");
+});
+
+define("launcher", "launcher-copilot", (t) => {
+  // The launcher overlays a throwaway config dir; it must never wire the
+  // user's real ~/.copilot (that is `copilot on`'s job).
+  const settingsBefore = readFileSync(COPILOT_SETTINGS, "utf8");
+  const r = launchCheck("copilot", ["copilot", "--", "--dump"]);
+  okStatus(t, r, "run-agent copilot");
+  const rec = stubRecord("copilot");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    rec.args[0] === "--no-auto-update" && rec.args.at(-1) === "--dump",
+    "--no-auto-update, then passthrough",
+  );
+  t.ok(rec.env.COPILOT_HOME?.includes("aiand-copilot-"), "overlay is the throwaway dir");
+  t.ok(
+    /^aiand\//.test(rec.env.COPILOT_MODEL ?? ""),
+    "COPILOT_MODEL is aiand-qualified",
+    String(rec.env.COPILOT_MODEL),
+  );
+  t.ok(rec.env.COPILOT_OFFLINE === "true", "COPILOT_OFFLINE=true");
+  t.ok(rec.copilotMode === 0o600, "overlay providers.json is 0600", String(rec.copilotMode));
+  t.ok(
+    rec.copilotProviders?.providers?.[0]?.apiKey === KEY,
+    "the key rides in the overlay, not the env",
+  );
+  t.ok(
+    rec.copilotSettings?.model === rec.env.COPILOT_MODEL,
+    "overlay settings pin the session model",
+    String(rec.copilotSettings?.model),
+  );
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  t.ok(!rec.args.join(" ").includes(KEY), "the key is not in argv");
+  t.ok(!existsSync(rec.env.COPILOT_HOME), "overlay removed after exit");
+  t.ok(
+    readFileSync(COPILOT_SETTINGS, "utf8") === settingsBefore,
+    "the real settings file is untouched",
+  );
+});
+
+define("launcher", "launcher-commandcode", (t) => {
+  // The launcher overlays a throwaway HOME; it must never wire the
+  // user's real ~/.commandcode (that is `commandcode on`'s job).
+  const providersBefore = readFileSync(join(MAIN_HOME, ".commandcode", "providers.json"), "utf8");
+  const r = launchCheck("cmd", ["commandcode", "--", "--dump"]);
+  okStatus(t, r, "run-agent commandcode");
+  const rec = stubRecord("cmd");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    (rec.args[0] === "-p" || rec.args[0] === "--dump") && rec.args.at(-1) === "--dump",
+    "-p (piped stdin) or passthrough first, then the passthrough",
+    JSON.stringify(rec.args),
+  );
+  t.ok(rec.env.HOME?.includes("aiand-commandcode-"), "overlay is the throwaway HOME");
+  // The documented Codex-style exception: the -p gate accepts no
+  // file the overlay carries, so the session key rides the child
+  // env as COMMAND_CODE_API_KEY. run-agent strips AIAND_API_KEY.
+  t.ok(rec.env.COMMAND_CODE_API_KEY === KEY, "the session key gates the headless run");
+  t.ok(rec.env.DO_NOT_TRACK === "1", "telemetry stays off for the session key");
+  t.ok(rec.env.AIAND_API_KEY === undefined, "AIAND_API_KEY is not in the child env");
+  t.ok(
+    Object.entries(rec.env).every(
+      ([name, value]) => name === "COMMAND_CODE_API_KEY" || !String(value).includes(KEY),
+    ),
+    "the key is not in the child env beyond the headless gate",
+  );
+  t.ok(rec.overlayMode === 0o600, "overlay auth.json is 0600", String(rec.overlayMode));
+  t.ok(
+    rec.overlayProviders?.provider?.aiand?.managedBy === "aiand",
+    "overlay provider carries the marker",
+  );
+  t.ok(
+    rec.overlayProviders?.provider?.aiand?.baseURL === "https://api.aiand.com/v1",
+    "overlay provider is gateway /v1",
+    String(rec.overlayProviders?.provider?.aiand?.baseURL),
+  );
+  t.ok(rec.overlayAuth?.aiand?.key === KEY, "the key rides in the overlay auth.json");
+  t.ok(
+    rec.overlayConfig?.model === `aiand/${modelId()}`,
+    "overlay config pins the session model",
+    String(rec.overlayConfig?.model),
+  );
+  t.ok(!existsSync(rec.env.HOME), "overlay removed after exit");
+  t.ok(
+    readFileSync(join(MAIN_HOME, ".commandcode", "providers.json"), "utf8") === providersBefore,
+    "the real providers.json is untouched",
+  );
 });
 
 define("launcher", "launcher-exit-code", (t) => {
