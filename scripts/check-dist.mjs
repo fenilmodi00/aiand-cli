@@ -61,6 +61,9 @@ const { OMP_VERSION } = await import(
 const { COPILOT_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "copilot", "adapter.js")).href
 );
+const { COMMANDCODE_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "commandcode", "install.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
 // One entry per pinned agent install in ci.yml: `regex` captures the pin,
 // `expected` is the version the adapter exports, `label` is the
@@ -103,6 +106,13 @@ const PINS = [
     expected: COPILOT_VERSION,
     message: (pin) =>
       `ci.yml pins @github/copilot@${pin} but the install hint names ${COPILOT_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned command-code",
+    regex: /command-code@([0-9A-Za-z.+-]+)/g,
+    expected: COMMANDCODE_VERSION,
+    message: (pin) =>
+      `ci.yml installs command-code@${pin} but src/agents/commandcode/install.ts pins ${COMMANDCODE_VERSION}`,
   },
 ];
 for (const { label, regex, expected, message } of PINS) {

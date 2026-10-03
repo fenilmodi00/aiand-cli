@@ -14,8 +14,10 @@ breaking changes while the command surface settles.
   OpenAI-compatible dialect with every model from the live catalog, the
   session key in `auth.json` (locked to 0600, marked `managedBy: "aiand"`),
   and `defaultProvider`/`defaultModel` in `settings.json`. `off` removes
-  exactly what `on` added and restores a `defaultModel` it had to set aside
-  because the gateway cannot serve it; one it can serve is kept. Pass
+  exactly what `on` added — including from the config files `on` recorded
+  when the Pi config dir was relocated between the two, so a relocated key
+  literal is never orphaned — and restores a `defaultModel` it had to set
+  aside because the gateway cannot serve it; one it can serve is kept. Pass
   `--model native` to leave Pi's own default model. Reasoning models run at
   their gateway default effort: Pi's client would otherwise send an effort
   level (`medium`) the catalog does not publish for every model, and the
@@ -34,25 +36,32 @@ breaking changes while the command surface settles.
   session key locked to 0600, and the `managedBy: "aiand"` marker; omp
   already bundles the aiand provider, so nothing else is written — and a
   `modelRoles.default` pin in `config.yml`. `off` removes exactly what
-  `on` added; a `modelRoles.default` ai& cannot serve is set aside and put
-  back on `off`, one it can serve is kept. Pass `--model native` to leave
-  omp's own default.
-
+  `on` added — including from the config files `on` recorded when the omp
+  agent dir was relocated between the two, so a relocated key literal is
+  never orphaned; a relocated file that is unreadable reports
+  `stripped: false` with the record kept for a retry. A
+  `modelRoles.default` ai& cannot serve is set aside and put back on
+  `off`, one it can serve is kept. Pass `--model native` to leave omp's
+  own default. The YAML splice keeps flow-sequence values with quoted commas
+  (`modes: ["a,b", c]`) intact rather than splitting inside the quotes.
 - `aiand run-agent omp` launches Oh My Pi on ai& for one session with no omp
   config written under `~/.omp/`: a throwaway overlay becomes
   `PI_CODING_AGENT_DIR` holding the generated provider and the session key
-  (never the child env), while session history still lands in the user's
-  real session directory. User-supplied `--model`/`--provider`/`--api-key`/
-  `--models` passthrough flags are stripped so the routing cannot be
-  overridden; the overlay is removed after the session ends.
+  (never the child env), while session history still lands in omp's XDG data
+  dir (`$XDG_DATA_HOME/omp/sessions`) when the user ran `omp config init-xdg`,
+  else `~/.omp/agent/sessions`. User-supplied `--model`/`--provider`/
+  `--api-key`/`--models` passthrough flags are stripped so the routing cannot
+  be overridden; the overlay is removed after the session ends.
 
 - `aiand copilot on` wires the GitHub Copilot CLI to ai& by BYOK: an `aiand`
   provider row speaking the gateway's OpenAI-compatible dialect, plus one
   model row per catalog model, in `~/.copilot/providers.json` (or
   `$COPILOT_HOME`), and the `aiand/<id>` pin in `~/.copilot/settings.json`
-  that a bare `copilot` launch needs. `off` removes exactly those rows and
-  hands back the `model` selection it replaced; a value you changed in
-  between is kept. The provider row holds the session key literal and no
+  that a bare `copilot` launch needs. `off` removes exactly those rows —
+  including from the config files `on` recorded when the Copilot config dir
+  was relocated between the two, so a relocated key literal is never
+  orphaned — and hands back the `model` selection it replaced; a value you
+  changed in between is kept. The provider row holds the session key literal and no
   GitHub sign-in is involved. `aiand
   run-agent copilot` launches the CLI on ai& for one session with nothing
   written under `~/.copilot`: a throwaway dir becomes `COPILOT_HOME` holding
@@ -68,46 +77,37 @@ breaking changes while the command surface settles.
   `~/.copilot/data.db`, which must exist first - open the app once. The app
   keeps GitHub sign-in even for BYOK providers, and you pick the ai& model in
   its model menu. Quit the app before `on` or `off`, since it rewrites the
-  database as it exits; `--force` escapes the refusal. The app is a GUI, so
-  there is no `run-agent copilot-app`.
+  database as it exits; `--force` escapes the refusal. On Linux, a missing
+  app points at its download page with an "open it once" hint rather than the
+  macOS `brew install --cask` line, which never works there. The app is a
+  GUI, so there is no `run-agent copilot-app`.
+
+- `aiand commandcode on` wires Command Code to ai& through
+  `~/.commandcode/`: an `aiand` provider row speaking the gateway's
+  OpenAI-compatible dialect with every model from the live catalog in
+  `providers.json`, the session key as the `aiand` credential in
+  `auth.json` (locked to 0600), and the `aiand/<id>` model pin in
+  `config.json` — the prefix is what routes a bare `cmd` to the row.
+  `off` removes exactly what `on` added — the row, the credential and
+  the pin — and puts back a model it had to set aside because the
+  gateway cannot serve it; one it can serve is kept. `--model native`
+  is refused: Command Code's own models route to its own gateway, not
+  to ai&. `aiand run-agent commandcode` launches Command Code on ai&
+  for one session with nothing written under `~/.commandcode/`: a
+  throwaway overlay becomes the child's `HOME` holding the generated
+  provider row, credential and model pin, and the session key rides
+  the child's `COMMAND_CODE_API_KEY` so headless mode passes Command
+  Code's own sign-in gate; `--model`, `-m` and `--config` passthrough
+  flags are stripped so the routing cannot be overridden, session
+  history lands in the overlay rather than your real `~/.commandcode/`,
+  and the overlay is removed after the session ends.
 
 ### Fixed
-
-- `aiand run-agent omp` keeps session history in omp's XDG data dir
-  (`$XDG_DATA_HOME/omp/sessions`) when the user ran `omp config init-xdg`;
-  previously the session dir was always `~/.omp/agent/sessions`, so XDG
-  setups wrote history where omp never reads it.
-
-- `aiand omp off` strips the aiand provider block from the config files
-  recorded by `on` when the omp agent dir was relocated between the two,
-  instead of orphaning the key literal in the old directory.
-
-- `aiand omp off` reports `stripped: false` when a relocated config file is
-  unreadable and nothing was stripped yet, instead of a misleading `true`;
-  the record is kept so a retry after the fix still strips.
-
-- `aiand pi off` strips the aiand provider, credential, and defaults from
-  the config files recorded by `on` when the Pi config dir was relocated
-  between the two, instead of orphaning the key literal in the old
-  directory.
-
-- `aiand copilot off` strips the aiand provider rows and model selection
-  from the config files recorded by `on` when the Copilot config dir was
-  relocated between the two, instead of orphaning the key literal in the
-  old directory.
 
 - `aiand <agent> off` lists several notes separated with `; ` instead of
   spaces, so a run-on line like "...config dir moved stripped the..." reads
   as distinct notes; the `--json` note stays a single string.
 
-- `aiand copilot-app on` on Linux points at the app's download page with an
-  "open it once" hint instead of the macOS `brew install --cask` command:
-  the brew line never works on Linux, and the usual state there is the app
-  installed without its config database yet.
-
-- OMP flow-sequence values with quoted commas (`modes: ["a,b", c]`) parse
-  without splitting inside the quotes; previously the comma inside quotes
-  silently produced two items.
 
 ## [0.4.0] - 2026-09-29
 

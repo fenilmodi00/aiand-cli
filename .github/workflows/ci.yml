@@ -32,6 +32,7 @@ jobs:
       - run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       - run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      - run: npm install -g --ignore-scripts command-code@1.74.0
       # Pinned omp for the omp-smoke tripwire below; the installer drops the
       # binary in ~/.local/bin, which later steps need on PATH.
       - run: curl -fsSL https://omp.sh/install | sh -s -- --binary --ref v18.4.4
@@ -58,6 +59,10 @@ jobs:
       # a headless -p round-trip: the schema-drift tripwire for the BYOK
       # provider shape.
       - run: node scripts/copilot-smoke.mjs
+      # Real pinned Command Code accepting the generated providers.json,
+      # auth.json and config.json and a headless -p round-trip: the
+      # schema-drift tripwire for the Command Code managed files.
+      - run: node scripts/commandcode-smoke.mjs
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
       - run: npm run check:dist
       - run: npm run check:public
@@ -169,6 +174,11 @@ jobs:
       # gated run-agent copilot smoke below needs the same-repo key.
       - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
         run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      # Same pinned command-code as the build job (check-dist keeps
+      # both in step); gated with its sibling pins so fork PRs skip
+      # the download.
+      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: npm install -g --ignore-scripts command-code@1.74.0
       # install.ps1 takes -Ref, so Windows pins the same release as the
       # Linux job (check-dist keeps the two in step). The installer only
       # writes the registry User PATH, which later steps do not re-read, so
@@ -200,5 +210,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "run-agent copilot exited $LASTEXITCODE" }
           if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected copilot --version output: $out" }
           Write-Output "copilot via run-agent: $out"
+          $out = (node dist/index.js run-agent commandcode -- --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "run-agent commandcode exited $LASTEXITCODE" }
+          if ($out -notmatch '\d+\.\d+\.\d+') { throw "unexpected commandcode --version output: $out" }
+          Write-Output "commandcode via run-agent: $out"
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}

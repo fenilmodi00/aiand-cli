@@ -116,6 +116,7 @@ const SCRUB = [
   "COPILOT_PROVIDERS_CONFIG",
   "COPILOT_MODEL",
   "COPILOT_OFFLINE",
+  "COMMAND_CODE_API_KEY",
   "FORCE_COLOR",
   "STUB_EXIT",
 ];
@@ -212,7 +213,18 @@ function readCopilotDb(...sqls) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex", "pi", "copilot", "copilot-app"];
+// Command Code's binary is `cmd` (`cmdc` on Windows, where `cmd`
+// is the shell), so its stub carries the platform binary name
+// rather than the agent id.
+const STUB_NAMES = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "copilot",
+  "copilot-app",
+  process.platform === "win32" ? "cmdc" : "cmd",
+];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -243,6 +255,15 @@ if (process.env.COPILOT_HOME) {
   record.copilotMode = fs.statSync(dir + "/providers.json").mode & 0o777;
   record.copilotProviders = JSON.parse(fs.readFileSync(dir + "/providers.json", "utf8"));
   record.copilotSettings = JSON.parse(fs.readFileSync(dir + "/settings.json", "utf8"));
+}
+// ...and the HOME overlay the Command Code launcher deletes after
+// exit (providers.json, auth.json, config.json).
+if (process.env.HOME?.includes("aiand-commandcode-")) {
+  const dir = process.env.HOME + "/.commandcode";
+  record.overlayMode = fs.statSync(dir + "/auth.json").mode & 0o777;
+  record.overlayProviders = JSON.parse(fs.readFileSync(dir + "/providers.json", "utf8"));
+  record.overlayAuth = JSON.parse(fs.readFileSync(dir + "/auth.json", "utf8"));
+  record.overlayConfig = JSON.parse(fs.readFileSync(dir + "/config.json", "utf8"));
 }
 fs.writeFileSync(${JSON.stringify(LAUNCHED)} + "/" + name + ".json", JSON.stringify(record, null, 2));
 process.exit(Number(process.env.STUB_EXIT ?? 0));
@@ -628,9 +649,84 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
       t.ok(existsSync(COPILOT_DB), "the app's database file survives off");
     },
   },
+  commandcode: {
+    bin: process.platform === "win32" ? "cmdc" : "cmd",
+    seed(state) {
+      state.created = [];
+      const dir = join(MAIN_HOME, ".commandcode");
+      // A user provider row, the user's own Command Code login
+      // and an openai credential: all must survive on and off.
+      seedFile(
+        state,
+        join(dir, "providers.json"),
+        `${JSON.stringify(
+          { provider: { openai: { name: "OpenAI", baseURL: "https://api.openai.com/v1" } } },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        join(dir, "auth.json"),
+        `${JSON.stringify(
+          {
+            apiKey: "cmd-user-login-key",
+            userName: "user@example.com",
+            userId: "cmd-user-1",
+            keyName: "default",
+            openai: { type: "api", key: "sk-user-openai" },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      seedFile(
+        state,
+        join(dir, "config.json"),
+        `${JSON.stringify({ theme: "dark", model: "openai/gpt-5.2" }, null, 2)}\n`,
+      );
+    },
+    contents(t) {
+      const dir = join(MAIN_HOME, ".commandcode");
+      const providers = parseJson(readFileSync(join(dir, "providers.json"), "utf8")) ?? {};
+      const aiand = providers.provider?.aiand ?? {};
+      t.ok(aiand.name === "ai&", "provider.aiand is named ai&", String(aiand.name));
+      t.ok(aiand.managedBy === "aiand", "provider.aiand carries the marker");
+      t.ok(aiand.api === "openai-completions", "provider speaks openai-completions");
+      t.ok(
+        aiand.baseURL === "https://api.aiand.com/v1",
+        "provider baseURL is gateway /v1",
+        String(aiand.baseURL),
+      );
+      t.ok(
+        providers.provider?.openai?.name === "OpenAI",
+        "the user's openai provider row survives",
+      );
+      const auth = parseJson(readFileSync(join(dir, "auth.json"), "utf8")) ?? {};
+      t.ok(
+        auth.aiand?.type === "api" && auth.aiand?.key === KEY,
+        "the aiand credential is the session key",
+      );
+      t.ok(
+        auth.apiKey === "cmd-user-login-key" &&
+          auth.userName === "user@example.com" &&
+          auth.userId === "cmd-user-1" &&
+          auth.keyName === "default",
+        "the user's login fields survive",
+      );
+      t.ok(auth.openai?.key === "sk-user-openai", "the user's openai credential survives");
+      const config = parseJson(readFileSync(join(dir, "config.json"), "utf8")) ?? {};
+      t.ok(
+        config.model === `aiand/${modelId()}`,
+        `the model pin is aiand/${modelId()}`,
+        String(config.model),
+      );
+      t.ok(config.theme === "dark", "user config survives");
+    },
+  },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex", "pi", "copilot", "copilot-app"];
+const WIRING_ONE = ["opencode", "claude", "codex", "pi", "copilot", "copilot-app", "commandcode"];
 
 // Whole-registry assertion (`status` lists every shipped adapter) reads the
 // shipped registry instead of a hand-kept list, which goes stale silently as
@@ -1528,8 +1624,8 @@ define("init", "init-all", (t) => {
   const out = parseJson(r.stdout) ?? {};
   const rows = out.agents ?? [];
   // WIRING_ONE (not the registry): `init --all` wires only DETECTED agents,
-  // and the stub PATH guarantees exactly the six above. A real omp on the
-  // host would add a seventh row.
+  // and the stub PATH guarantees exactly the seven above. A real omp
+  // on the host would add an eighth row.
   for (const id of WIRING_ONE) {
     const row = rows.find((a) => a.agent === id);
     t.ok(row?.state === "on", `${id} wired on by --all`, JSON.stringify(row));
@@ -1693,6 +1789,56 @@ define("launcher", "launcher-copilot", (t) => {
   t.ok(
     readFileSync(COPILOT_SETTINGS, "utf8") === settingsBefore,
     "the real settings file is untouched",
+  );
+});
+
+define("launcher", "launcher-commandcode", (t) => {
+  // The launcher overlays a throwaway HOME; it must never wire the
+  // user's real ~/.commandcode (that is `commandcode on`'s job).
+  const providersBefore = readFileSync(join(MAIN_HOME, ".commandcode", "providers.json"), "utf8");
+  const r = launchCheck("cmd", ["commandcode", "--", "--dump"]);
+  okStatus(t, r, "run-agent commandcode");
+  const rec = stubRecord("cmd");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(
+    (rec.args[0] === "-p" || rec.args[0] === "--dump") && rec.args.at(-1) === "--dump",
+    "-p (piped stdin) or passthrough first, then the passthrough",
+    JSON.stringify(rec.args),
+  );
+  t.ok(rec.env.HOME?.includes("aiand-commandcode-"), "overlay is the throwaway HOME");
+  // The documented Codex-style exception: the -p gate accepts no
+  // file the overlay carries, so the session key rides the child
+  // env as COMMAND_CODE_API_KEY. run-agent strips AIAND_API_KEY.
+  t.ok(rec.env.COMMAND_CODE_API_KEY === KEY, "the session key gates the headless run");
+  t.ok(rec.env.DO_NOT_TRACK === "1", "telemetry stays off for the session key");
+  t.ok(rec.env.AIAND_API_KEY === undefined, "AIAND_API_KEY is not in the child env");
+  t.ok(
+    Object.entries(rec.env).every(
+      ([name, value]) => name === "COMMAND_CODE_API_KEY" || !String(value).includes(KEY),
+    ),
+    "the key is not in the child env beyond the headless gate",
+  );
+  t.ok(rec.overlayMode === 0o600, "overlay auth.json is 0600", String(rec.overlayMode));
+  t.ok(
+    rec.overlayProviders?.provider?.aiand?.managedBy === "aiand",
+    "overlay provider carries the marker",
+  );
+  t.ok(
+    rec.overlayProviders?.provider?.aiand?.baseURL === "https://api.aiand.com/v1",
+    "overlay provider is gateway /v1",
+    String(rec.overlayProviders?.provider?.aiand?.baseURL),
+  );
+  t.ok(rec.overlayAuth?.aiand?.key === KEY, "the key rides in the overlay auth.json");
+  t.ok(
+    rec.overlayConfig?.model === `aiand/${modelId()}`,
+    "overlay config pins the session model",
+    String(rec.overlayConfig?.model),
+  );
+  t.ok(!existsSync(rec.env.HOME), "overlay removed after exit");
+  t.ok(
+    readFileSync(join(MAIN_HOME, ".commandcode", "providers.json"), "utf8") === providersBefore,
+    "the real providers.json is untouched",
   );
 });
 

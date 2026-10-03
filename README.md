@@ -88,7 +88,8 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
-and the [GitHub Copilot app](https://github.com/features/ai/github-app).
+and the [GitHub Copilot app](https://github.com/features/ai/github-app),
+and [Command Code](https://commandcode.ai/docs).
 
 ```bash
 aiand opencode on        # route OpenCode through ai&
@@ -224,6 +225,39 @@ there. Quit the app before `on` or `off`, since it rewrites the database as
 it exits and would clobber the change; `--force` goes ahead anyway. The app
 is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
 for permanent wiring.
+
+```bash
+aiand commandcode on    # route Command Code through ai&
+aiand commandcode status
+aiand commandcode off
+aiand run-agent commandcode  # or: one Command Code session on ai&, nothing written
+```
+
+`on` writes an `aiand` provider into `~/.commandcode/providers.json`,
+speaking the gateway's OpenAI-compatible dialect with every model from
+the live catalog, saves the session key as the `aiand` credential in
+`~/.commandcode/auth.json` (readable only by you), and pins `model` to
+`aiand/<id>` in `~/.commandcode/config.json` - the `aiand/` prefix is
+what routes a bare `cmd` to the provider row. Your other providers,
+credentials and settings are untouched. A model ai& cannot serve is set
+aside until `off`; one it can serve is kept. Pass `--model <id>` to
+switch. `--model native` is refused: Command Code's own models route to
+its own gateway, not to ai&. Command Code has no config-root override,
+so its config always lives at `~/.commandcode`. The key sits in
+`auth.json` while Command Code is wired, so keep it out of a dotfiles
+repo.
+
+`off` removes exactly what `on` added - the provider row, the
+credential and the model pin - and each managed file aiand never
+touched comes back byte-identical.
+
+`aiand run-agent commandcode` launches Command Code on ai& for one
+session with nothing written under `~/.commandcode`: a throwaway
+overlay becomes the child's `HOME` holding the generated provider row,
+the session key and the model pin, and the session key also rides the
+child's `COMMAND_CODE_API_KEY`, which is what passes Command Code's
+headless `-p` sign-in gate; the overlay is removed after the session
+ends.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { CliError } from "../cli/errors.js";
 import { writeFileAtomic } from "../config.js";
@@ -387,7 +387,11 @@ export async function readJsoncObject(
     if (error instanceof SyntaxError) throw notValidJsonError(path, hint);
     throw error;
   }
-  return asObject(parsed) ?? {};
+  const object = asObject(parsed);
+  // A JSON-array or scalar root is the same mid-write crash class as
+  // invalid JSON: splicing into it must never happen (#18 round-2).
+  if (object === undefined) throw notValidJsonError(path, hint);
+  return object;
 }
 
 /** Re-parse text an adapter just wrote, which is always an object or empty. */
@@ -426,7 +430,15 @@ export async function createSessionOverlay(
   const dir = await mkdtemp(join(tmpdir(), prefix));
   try {
     for (const [name, contents] of Object.entries(files)) {
-      await writeFile(join(dir, name), contents, { mode: PRIVATE_FILE_MODE });
+      // A relative name with separators nests (e.g. ".commandcode/auth.json"
+      // for config roots resolved from HOME); flat names are unchanged.
+      // Absolute names and `..` segments would escape the throwaway dir.
+      if (isAbsolute(name) || name.split(/[\\/]/).includes("..")) {
+        throw new Error(`overlay file name must stay inside the dir: ${name}`);
+      }
+      const file = join(dir, name);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, contents, { mode: PRIVATE_FILE_MODE });
     }
   } catch (error) {
     await rm(dir, { recursive: true, force: true });

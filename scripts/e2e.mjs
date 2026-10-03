@@ -157,6 +157,7 @@ const SCRUB = [
   "COPILOT_PROVIDERS_CONFIG",
   "COPILOT_MODEL",
   "COPILOT_OFFLINE",
+  "COMMAND_CODE_API_KEY",
   "FORCE_COLOR",
   "STUB_EXIT",
   "AIAND_DIR",
@@ -180,7 +181,19 @@ async function tmpEnv() {
   writeOfflineApiMap(cfg, baseUrl);
 
   // Stub agent binaries: detection + session launch targets.
-  for (const name of ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app"]) {
+  // Command Code's binary is `cmd` (`cmdc` on Windows, where
+  // `cmd` is the shell), so its stub carries the platform
+  // binary name rather than the agent id.
+  for (const name of [
+    "opencode",
+    "claude",
+    "codex",
+    "pi",
+    "omp",
+    "copilot",
+    "copilot-app",
+    process.platform === "win32" ? "cmdc" : "cmd",
+  ]) {
     const stub = join(bin, name);
     writeFileSync(
       stub,
@@ -745,6 +758,121 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     JSON.stringify(copilotAppStatus2),
   );
 
+  // --- commandcode on/off/status --------------------------------------------
+  // Command Code keeps its config in ~/.commandcode: providers.json
+  // (BYOK rows), auth.json (credentials plus the user's own login)
+  // and config.json (the model pin). The `aiand/` prefix on the pin
+  // is what routes to our row; the user's login fields and provider
+  // rows must survive, and off restores all three byte-identical.
+  const commandcodeDir = join(home, ".commandcode");
+  mkdirSync(commandcodeDir, { recursive: true });
+  const ccProvidersPath = join(commandcodeDir, "providers.json");
+  const ccAuthPath = join(commandcodeDir, "auth.json");
+  const ccConfigPath = join(commandcodeDir, "config.json");
+  writeFileSync(
+    ccProvidersPath,
+    `${JSON.stringify(
+      { provider: { openai: { name: "OpenAI", baseURL: "https://api.openai.com/v1" } } },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    ccAuthPath,
+    `${JSON.stringify(
+      {
+        apiKey: "cmd-user-login-key",
+        userName: "user@example.com",
+        userId: "cmd-user-1",
+        keyName: "default",
+        openai: { type: "api", key: "sk-user-openai" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    ccConfigPath,
+    `${JSON.stringify({ theme: "dark", model: "openai/gpt-5.2" }, null, 2)}\n`,
+  );
+  const CC_PROVIDERS_BEFORE = readFileSync(ccProvidersPath);
+  const CC_AUTH_BEFORE = readFileSync(ccAuthPath);
+  const CC_CONFIG_BEFORE = readFileSync(ccConfigPath);
+
+  const ccOn = JSON.parse(cli("commandcode on --json"));
+  check(
+    "commandcode on succeeds",
+    ccOn.state === "on" && ccOn.agent === "commandcode",
+    JSON.stringify(ccOn),
+  );
+  const ccProviders = JSON.parse(readFileSync(ccProvidersPath, "utf8"));
+  check(
+    "commandcode on routes providers.aiand at the loopback double with the marker",
+    ccProviders.provider?.aiand?.baseURL === `${baseUrl}/v1` &&
+      ccProviders.provider?.aiand?.managedBy === "aiand",
+    JSON.stringify(ccProviders.provider?.aiand),
+  );
+  check(
+    "commandcode on keeps the user's openai provider row",
+    ccProviders.provider?.openai?.name === "OpenAI",
+  );
+  const ccAuth = JSON.parse(readFileSync(ccAuthPath, "utf8"));
+  check(
+    "commandcode on bakes the session key into the aiand credential",
+    ccAuth.aiand?.type === "api" && ccAuth.aiand?.key === "sk-e2e-test-key-0000000000000000000000",
+    JSON.stringify(Object.keys(ccAuth)),
+  );
+  check(
+    "commandcode on keeps the user's login fields and openai credential",
+    ccAuth.apiKey === "cmd-user-login-key" &&
+      ccAuth.userName === "user@example.com" &&
+      ccAuth.userId === "cmd-user-1" &&
+      ccAuth.keyName === "default" &&
+      ccAuth.openai?.key === "sk-user-openai",
+    JSON.stringify(Object.keys(ccAuth)),
+  );
+  // Windows has no POSIX permission bits, so the 0600 lock is only
+  // assertable through the mode the write requested (see the pi note
+  // above).
+  if (process.platform !== "win32")
+    check("commandcode on locks auth.json to 0600", (statSync(ccAuthPath).mode & 0o777) === 0o600);
+  const ccConfig = JSON.parse(readFileSync(ccConfigPath, "utf8"));
+  check(
+    "commandcode on pins the model at the catalog default",
+    ccConfig.model === `aiand/${E2E_MODEL.id}`,
+    String(ccConfig.model),
+  );
+  check("commandcode on keeps unrelated config keys", ccConfig.theme === "dark");
+
+  const ccStatus = JSON.parse(cli("commandcode status --json"));
+  check(
+    "commandcode status: on with the default model",
+    ccStatus.state === "on" && ccStatus.model === E2E_MODEL.id,
+    JSON.stringify(ccStatus),
+  );
+
+  cli("commandcode off --json");
+  check(
+    "commandcode off restores all three files byte-identical when untouched",
+    CC_PROVIDERS_BEFORE.equals(readFileSync(ccProvidersPath)) &&
+      CC_AUTH_BEFORE.equals(readFileSync(ccAuthPath)) &&
+      CC_CONFIG_BEFORE.equals(readFileSync(ccConfigPath)),
+  );
+  const ccStatus2 = JSON.parse(cli("commandcode status --json"));
+  check(
+    "commandcode status: off after teardown",
+    ccStatus2.state === "off",
+    JSON.stringify(ccStatus2),
+  );
+  cli("commandcode on --json");
+  cli("restore commandcode --force");
+  check(
+    "restore commandcode --force puts the seeded files back",
+    CC_PROVIDERS_BEFORE.equals(readFileSync(ccProvidersPath)) &&
+      CC_AUTH_BEFORE.equals(readFileSync(ccAuthPath)) &&
+      CC_CONFIG_BEFORE.equals(readFileSync(ccConfigPath)),
+  );
+
   // --- credential storage -----------------------------------------------------
   const keyOut = cli("key export").trim();
   check(
@@ -988,6 +1116,63 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     copilotLaunchArgs.slice(0, 2).join(" "),
   );
 
+  const commandcodeCapture = join(S, "capture-commandcode");
+  let commandcodeLaunchCode = 42;
+  try {
+    execFileSync(process.execPath, [DIST, "run-agent", "commandcode", "--", "--version"], {
+      env: { ...env, AIAND_CAPTURE: commandcodeCapture },
+      encoding: "utf8",
+    });
+    commandcodeLaunchCode = 0;
+  } catch (error) {
+    commandcodeLaunchCode = error.status ?? 42;
+  }
+  check(
+    "run-agent commandcode exits with the child code",
+    commandcodeLaunchCode === 42,
+    `code=${commandcodeLaunchCode}`,
+  );
+  const commandcodeChildEnv = existsSync(`${commandcodeCapture}.env`)
+    ? readFileSync(`${commandcodeCapture}.env`, "utf8")
+    : "";
+  const commandcodeOverlay = commandcodeChildEnv.match(/^HOME=(.*)$/m)?.[1];
+  check(
+    "run-agent commandcode points HOME at a throwaway overlay",
+    Boolean(commandcodeOverlay?.includes("aiand-commandcode-")),
+    commandcodeOverlay ?? "missing",
+  );
+  // The documented Codex-style exception: Command Code's -p gate
+  // accepts no file the overlay carries, so the session key must
+  // ride the child env as COMMAND_CODE_API_KEY. run-agent strips
+  // AIAND_API_KEY itself; DO_NOT_TRACK keeps the key from feeding
+  // Command Code's telemetry.
+  check(
+    "run-agent commandcode carries the session key as COMMAND_CODE_API_KEY",
+    commandcodeChildEnv.match(/^COMMAND_CODE_API_KEY=(.*)$/m)?.[1] ===
+      "sk-e2e-test-key-0000000000000000000000",
+  );
+  check(
+    "run-agent commandcode keeps AIAND_API_KEY out of the child env",
+    !commandcodeChildEnv.includes("AIAND_API_KEY="),
+  );
+  check(
+    "run-agent commandcode silences telemetry",
+    commandcodeChildEnv.match(/^DO_NOT_TRACK=(.*)$/m)?.[1] === "1",
+  );
+  check(
+    "run-agent commandcode removes the throwaway overlay",
+    Boolean(commandcodeOverlay) && !existsSync(commandcodeOverlay),
+  );
+  const commandcodeLaunchArgs = existsSync(`${commandcodeCapture}.args`)
+    ? readFileSync(`${commandcodeCapture}.args`, "utf8").split(/\r?\n/)
+    : [];
+  check(
+    "run-agent commandcode prepends headless mode, then passthrough",
+    commandcodeLaunchArgs[0] === "-p" &&
+      commandcodeLaunchArgs[commandcodeLaunchArgs.length - 2] === "--version",
+    commandcodeLaunchArgs.slice(0, 2).join(" "),
+  );
+
   // A GUI-only adapter must refuse a session launch before the key ceremony
   // and before any child spawn: no capture file can exist.
   const copilotAppCapture = join(S, "capture-copilot-app");
@@ -1051,9 +1236,18 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex, copilot, copilot-app, omp, opencode and pi",
+    "registry ships exactly claude, codex, commandcode, copilot, copilot-app, omp, opencode and pi",
     JSON.stringify(agentIds) ===
-      JSON.stringify(["claude", "codex", "copilot", "copilot-app", "omp", "opencode", "pi"]),
+      JSON.stringify([
+        "claude",
+        "codex",
+        "commandcode",
+        "copilot",
+        "copilot-app",
+        "omp",
+        "opencode",
+        "pi",
+      ]),
     JSON.stringify(agentIds),
   );
 

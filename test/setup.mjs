@@ -18,6 +18,9 @@
 // - COPILOT_HOME / COPILOT_PROVIDERS_CONFIG / COPILOT_MODEL /
 //   COPILOT_OFFLINE unset: the Copilot CLI and app adapters honour them,
 //   so a developer's own setting would point tests at their real ~/.copilot.
+// - COMMAND_CODE_API_KEY unset: the Command Code launcher honours
+//   it, so a developer's own setting would point tests at their
+//   real Command Code login.
 // - FORCE_COLOR unset: it overrides NO_COLOR and forces ANSI on non-TTY
 //   streams, flipping the color and table assertions.
 // - test/net-guard.mjs on NODE_OPTIONS: fetch to anything but loopback fails
@@ -48,6 +51,7 @@ delete process.env.COPILOT_HOME;
 delete process.env.COPILOT_PROVIDERS_CONFIG;
 delete process.env.COPILOT_MODEL;
 delete process.env.COPILOT_OFFLINE;
+delete process.env.COMMAND_CODE_API_KEY;
 delete process.env.FORCE_COLOR;
 
 const guard = `--import=${pathToFileURL(join(import.meta.dirname, "net-guard.mjs")).href}`;

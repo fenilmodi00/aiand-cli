@@ -465,6 +465,114 @@ exit 42`,
       rmSync(capture, { recursive: true, force: true });
     }
   });
+
+  // commandcode redirects HOME at a throwaway overlay holding the
+  // provider row, the key credential, and the model pin. The key
+  // reaches the child env only as COMMAND_CODE_API_KEY — the -p
+  // auth gate reads it there (the documented Codex-style exception)
+  // — and DO_NOT_TRACK keeps Command Code's gateway from fingerprinting
+  // it; AIAND_API_KEY itself never crosses.
+  test("commandcode: overlay launch with HOME redirect", async () => {
+    plantStub(
+      binDir,
+      "cmd",
+      `env > "$AIAND_CAPTURE.env"
+cp "$HOME/.commandcode/providers.json" "$AIAND_CAPTURE.providers.json"
+cp "$HOME/.commandcode/auth.json" "$AIAND_CAPTURE.auth.json"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+exit 42`,
+    );
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["commandcode", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      const overlayHome = envText.match(/^HOME=(.*)$/m)?.[1];
+      assert.ok(overlayHome, "HOME in child env");
+      assert.ok(
+        overlayHome.includes("aiand-commandcode-"),
+        "HOME redirects at a throwaway overlay",
+        String(overlayHome),
+      );
+      assert.match(
+        envText,
+        /^COMMAND_CODE_API_KEY=sk-test-aiand$/m,
+        "the -p auth gate reads the session key from this var",
+      );
+      assert.match(envText, /^DO_NOT_TRACK=1$/m, "no gateway fingerprinting");
+      // The key value crosses only as COMMAND_CODE_API_KEY; the
+      // session key's own var never reaches the child.
+      assert.doesNotMatch(envText, /^AIAND_API_KEY=/m);
+      // The child exited: the launcher's cleanup must already have
+      // removed the whole overlay.
+      assert.equal(existsSync(overlayHome), false);
+
+      const providers = JSON.parse(readFileSync(join(capture, "capture.providers.json"), "utf8"));
+      assert.equal(providers.provider?.aiand?.managedBy, "aiand");
+      const auth = JSON.parse(readFileSync(join(capture, "capture.auth.json"), "utf8"));
+      assert.equal(auth.aiand?.key, "sk-test-aiand");
+
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      // runCli pipes stdin, so the launcher must add -p: upstream
+      // Command Code hangs on redirected stdin without an explicit
+      // one-shot mode.
+      assert.ok(args.includes("-p"), "-p injected for non-TTY stdin");
+      assert.equal(args.at(-1), "--version");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("commandcode: user routing flags cannot override the injected routing", async () => {
+    plantCaptureStub("cmd");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "commandcode",
+          "--",
+          "--model",
+          "evil-model",
+          "--model=evil-model",
+          "--config",
+          "model=openai/gpt-4o",
+          "-m",
+          "openai/gpt-4o",
+          "--version",
+        ],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.ok(!args.includes("evil-model"), "the user's --model value is stripped");
+      assert.ok(!args.includes("--model=evil-model"), "--flag= form stripped");
+      assert.ok(!args.includes("--config"), "the user's --config is stripped");
+      assert.ok(!args.includes("model=openai/gpt-4o"), "the user's --config value is stripped");
+      assert.ok(!args.includes("-m"), "the user's -m is stripped");
+      assert.ok(!args.includes("openai/gpt-4o"), "the user's -m value is stripped");
+      assert.equal(args.at(-1), "--version", "unrelated flags pass verbatim");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("commandcode: missing binary exits 127 with install hint", async () => {
+    rmSync(join(binDir, "cmd"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["commandcode"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.match(stderr, /Command Code is not installed/);
+      assert.match(stderr, /npm install -g command-code/);
+      assert.match(stderr, /commandcode\.ai\/docs/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("-- passthrough preserves flags and order verbatim", async () => {
     plantCaptureStub("opencode");
     const capture = captureDir();
