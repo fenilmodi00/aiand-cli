@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
 import {
+  fsCliError,
   jsoncDelete,
   jsoncSet,
   parseJsonc,
   readJsoncObject,
   readTextIfExists,
 } from "../dist/agents/managed-file.js";
+import { snapshotFiles } from "../dist/agents/snapshot.js";
 import { CliError } from "../dist/cli/errors.js";
-import { withTestEnv } from "./helpers.mjs";
+import { withEnv, withTestEnv } from "./helpers.mjs";
 
 // Pure file helpers: only a scratch dir, no env to isolate.
 const box = withTestEnv("aiand-managed-file-test-", () => {});
@@ -23,6 +25,71 @@ describe("managed-file read side", () => {
     const present = join(box.dir, "hi.txt");
     writeFileSync(present, "hello\n");
     assert.equal(await readTextIfExists(present), "hello\n");
+  });
+
+  test("readTextIfExists maps a file-as-parent (ENOTDIR) to a CliError", async () => {
+    // Fuzz hostile-path (A9): HERMES_HOME pointing at a file made stat throw raw
+    // ENOTDIR, surfacing as `Unexpected error` exit 70.
+    const blocker = join(box.dir, "blocker");
+    writeFileSync(blocker, "in the way\n");
+    await assert.rejects(readTextIfExists(join(blocker, ".env")), (error) => {
+      assert.equal(error.name, "CliError");
+      assert.equal(error.exitCode, 1);
+      assert.match(error.message, /not a directory/);
+      assert.ok(error.message.includes(join(blocker, ".env")), "names the path");
+      assert.match(error.hint ?? "", /Remove or rename/);
+      return true;
+    });
+  });
+
+  test("readTextIfExists maps a directory-as-file (EISDIR) to a CliError", async () => {
+    // Fuzz hostile-path (A10): a directory squatting on the .env path made read
+    // throw raw EISDIR, surfacing as `Unexpected error` exit 70.
+    const dir = join(box.dir, "squatter");
+    mkdirSync(dir, { recursive: true });
+    await assert.rejects(readTextIfExists(dir), (error) => {
+      assert.equal(error.name, "CliError");
+      assert.equal(error.exitCode, 1);
+      assert.match(error.message, /it is a directory/);
+      assert.match(error.hint ?? "", /Remove or rename/);
+      return true;
+    });
+  });
+
+  test("readTextIfExists maps an unreadable file (EACCES) to a CliError", async () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    const locked = join(box.dir, "locked.txt");
+    writeFileSync(locked, "secret\n");
+    chmodSync(locked, 0o000);
+    try {
+      await assert.rejects(readTextIfExists(locked), (error) => {
+        assert.equal(error.name, "CliError");
+        assert.equal(error.exitCode, 1);
+        assert.match(error.message, /permission denied/);
+        return true;
+      });
+    } finally {
+      chmodSync(locked, 0o644);
+    }
+  });
+
+  test("fsCliError passes other errors through as null", () => {
+    const raw = Object.assign(new Error("boom"), { code: "ENOENT" });
+    assert.equal(fsCliError(join(box.dir, "x"), raw), null);
+  });
+
+  test("snapshotFiles maps hostile paths to a CliError, never a raw errno", async () => {
+    // The same hostile-path class through the snapshot path every `on` takes.
+    await withEnv({ AIAND_CONFIG_DIR: join(box.dir, "cfg") }, async () => {
+      const blocker = join(box.dir, "snap-blocker");
+      writeFileSync(blocker, "in the way\n");
+      await assert.rejects(snapshotFiles("managed-file-test", [join(blocker, ".env")]), (error) => {
+        assert.equal(error.name, "CliError");
+        assert.equal(error.exitCode, 1);
+        assert.match(error.message, /not a directory/);
+        return true;
+      });
+    });
   });
 });
 

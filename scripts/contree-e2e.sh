@@ -75,6 +75,12 @@ fi
 contree -S "$SESSION" cd /root
 contree -S "$SESSION" run -s -- 'apt-get update -qq && apt-get install -y -qq procps >/dev/null && command -v pgrep'
 contree -S "$SESSION" tag aiand-sbx:base
+# A pinned real Hermes for launcher-hermes-live (the routed round-trip) —
+# same commit as ci.yml and src/agents/hermes/adapter.ts. It lands in ~/.local/bin
+# (the installer's own publication dir) and reaches the matrix through the
+# run's -e PATH below: the harness's "nothing installed" scenario probes a
+# bare /usr/local/bin:/usr/bin:/bin PATH, which must stay agent-free.
+contree -S "$SESSION" run -s -- 'apt-get install -y -qq git curl ca-certificates libatomic1 >/dev/null && export HOME=/root && curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit 666f313d1d3abd8077291ba464cf0a10f1a6157f --non-interactive --skip-browser --skip-computer-use >/tmp/hermes-install.log 2>&1 && "$HOME/.local/bin/hermes" --version | head -1'
 contree -S "$SESSION" file cp "$tmp/payload.tar.gz" /root/payload.tar.gz
 contree -S "$SESSION" run -s -- 'mkdir -p /work && tar -xzf /root/payload.tar.gz -C /work && node /work/scripts/sbx-test.mjs /work/dist/index.js --plan | tail -1'
 contree -S "$SESSION" tag aiand-sbx:e2e
@@ -87,7 +93,7 @@ printf 'export AIAND_API_KEY=%q\n' "$AIAND_API_KEY" >"$keyfile"
 rc=0
 contree -S "$SESSION" -o plain run --disposable -t 1200 \
   --file "$keyfile:/root/.aiand-api-key-env:m0600" \
-  -e NO_COLOR=1 -e CI=1 \
+  -e HOME=/root -e NO_COLOR=1 -e CI=1 \
   -- bash -lc 'set -a; . /root/.aiand-api-key-env; set +a; node /work/scripts/sbx-test.mjs /work/dist/index.js' || rc=$?
 rm -f "$keyfile"
 keyfile=""

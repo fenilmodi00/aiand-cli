@@ -5,7 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -111,10 +113,17 @@ describe("run-agent launcher", () => {
     plantCaptureStub("opencode");
     const capture = captureDir();
     try {
-      const { code } = await stubCli(["opencode", "--", "--version"], {}, capture);
+      // ANTHROPIC_API_KEY rides along here: the hermes-only child-env
+      // cleanup below must not strip it for other agents.
+      const { code } = await stubCli(
+        ["opencode", "--", "--version"],
+        { ANTHROPIC_API_KEY: "inherited-keep" },
+        capture,
+      );
       assert.equal(code, 42);
 
       const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      assert.match(envText, /^ANTHROPIC_API_KEY=inherited-keep$/m);
       const match = envText.match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
       const config = JSON.parse(match[1]);
       // Key rides in a throwaway 0600 file via {file:} substitution, not
@@ -527,6 +536,26 @@ exit 42`,
     }
   });
 
+  test("--model= inline form validates and launches like the spaced form", async () => {
+    // The launcher's `--flag=value` parsing is shared by --model, --profile,
+    // and --base-url: the inline form must validate against the catalog and
+    // reach the child exactly like `--model <id>`.
+    plantCaptureStub("opencode");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        ["opencode", "--model=aiand/glm-5.3", "--", "extra"],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, ["extra"]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("no agent name -> CliError usage hint", async () => {
     const { code, stderr } = await stubCli([], {}, env.dir);
     assert.equal(code, 1);
@@ -897,4 +926,286 @@ exit 42`,
       }
     });
   }
+});
+
+describe("run-agent hermes launcher", () => {
+  /** A real-shaped HERMES_HOME: state to link back, credentials, config. */
+  function plantHermesReal() {
+    const real = join(env.dir, "hermes-real");
+    rmSync(real, { recursive: true, force: true });
+    mkdirSync(join(real, "sessions"), { recursive: true });
+    mkdirSync(join(real, "plugins", "extra-tool"), { recursive: true });
+    writeFileSync(join(real, "sessions", "s1.json"), '{"s":1}\n');
+    writeFileSync(join(real, "plugins", "extra-tool", "keep.txt"), "tool\n");
+    writeFileSync(
+      join(real, "config.yaml"),
+      'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n',
+    );
+    writeFileSync(
+      join(real, ".env"),
+      'USER_KEY=keep\nANTHROPIC_API_KEY="user-key"\nAIAND_HERMES_BASE_URL="https://stale.example"\n',
+    );
+    return real;
+  }
+
+  test("overlay env/args/cleanup: HERMES_HOME overlay, stripped passthrough, real home intact", async () => {
+    // The overlay is removed when the CLI exits, so the stub snapshots it
+    // (`cp -a` keeps symlinks and modes) while the child is still running.
+    plantStub(
+      binDir,
+      "hermes",
+      `env > "$AIAND_CAPTURE.env"
+printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
+cp -a "$HERMES_HOME" "$AIAND_CAPTURE.overlay"
+exit 42`,
+    );
+    const real = plantHermesReal();
+    const before = [
+      join(real, "config.yaml"),
+      join(real, ".env"),
+      join(real, "sessions", "s1.json"),
+    ].map((path) => readFileSync(path));
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        [
+          "hermes",
+          "--model",
+          "aiand/glm-5.3",
+          "--",
+          "--provider",
+          "x",
+          "--model=y",
+          "-m",
+          "z",
+          "--keep",
+        ],
+        // Inherited ANTHROPIC_* must not reach the hermes child: they
+        // would shadow or confuse the overlay routing.
+        {
+          HERMES_HOME: real,
+          ANTHROPIC_API_KEY: "inherited-anthropic-key",
+          ANTHROPIC_BASE_URL: "https://inherited.example",
+          ANTHROPIC_TOKEN: "inherited-token",
+          CLAUDE_CODE_OAUTH_TOKEN: "inherited-oauth-token",
+          OPENAI_API_KEY: "inherited-openai-key",
+          OPENAI_BASE_URL: "https://inherited-openai.example",
+        },
+        capture,
+      );
+      assert.equal(code, 42);
+
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      // The child sees a temp overlay as HERMES_HOME, never the real home.
+      const homeLine = envText.match(/^HERMES_HOME=(.*)$/m);
+      assert.ok(homeLine, "HERMES_HOME in child env");
+      const overlay = homeLine[1];
+      assert.ok(overlay.includes("aiand-hermes-"), overlay);
+      assert.notEqual(overlay, real);
+      // The session key rides the overlay .env file, never the child env.
+      assert.doesNotMatch(envText, /sk-test-aiand/);
+      assert.doesNotMatch(envText, /AIAND_HERMES_/, "no routing secret in the child env");
+      // Routing pointers ride the child env; inherited ANTHROPIC_* do not:
+      // they would shadow or confuse the overlay routing.
+      assert.match(envText, /^HERMES_INFERENCE_PROVIDER=aiand$/m);
+      assert.match(envText, /^HERMES_MODEL=aiand\/glm-5\.3$/m);
+      assert.match(envText, /^HERMES_INFERENCE_MODEL=aiand\/glm-5\.3$/m);
+      assert.doesNotMatch(envText, /^ANTHROPIC_API_KEY=/m);
+      assert.doesNotMatch(envText, /^ANTHROPIC_BASE_URL=/m);
+      assert.doesNotMatch(envText, /^ANTHROPIC_TOKEN=/m);
+      // #17: the same for the other credential/base-URL routes Hermes
+      // consults — the OAuth token folded into the ANTHROPIC tuple and the
+      // auxiliary-route OPENAI_* pair.
+      assert.doesNotMatch(envText, /^CLAUDE_CODE_OAUTH_TOKEN=/m);
+      assert.doesNotMatch(envText, /^OPENAI_API_KEY=/m);
+      assert.doesNotMatch(envText, /^OPENAI_BASE_URL=/m);
+
+      const copy = join(capture, "capture.overlay");
+      // Overlay .env: 0600, gateway routing, the user's ANTHROPIC_* and
+      // stale AIAND_HERMES_* stripped.
+      const overlayEnv = readFileSync(join(copy, ".env"), "utf8");
+      assert.equal(statSync(join(copy, ".env")).mode & 0o777, 0o600);
+      assert.match(overlayEnv, /AIAND_HERMES_API_KEY="sk-test-aiand"/);
+      assert.match(overlayEnv, /AIAND_HERMES_BASE_URL="https:\/\/api\.aiand\.com\/v1"/);
+      assert.ok(overlayEnv.includes("USER_KEY=keep"), "unrelated user lines carried");
+      assert.ok(!overlayEnv.includes("user-key"), "user ANTHROPIC_API_KEY stripped");
+      assert.ok(!overlayEnv.includes("stale.example"), "stale AIAND_HERMES_BASE_URL stripped");
+
+      // Overlay config.yaml: model pinned in place, user's keys preserved.
+      const overlayConfig = readFileSync(join(copy, "config.yaml"), "utf8");
+      assert.match(overlayConfig, /provider: aiand/);
+      assert.match(overlayConfig, /default: "aiand\/glm-5\.3"/);
+      assert.ok(overlayConfig.includes("key_env: AIAND_HERMES_API_KEY"), "providers.aiand block");
+      assert.ok(overlayConfig.includes('default_model: "aiand/glm-5.3"'));
+      assert.ok(overlayConfig.includes("theme: dark"), "user keys survive");
+      // The overlay's own provider plugin ships as real files.
+      assert.ok(
+        readFileSync(
+          join(copy, "plugins", "model-providers", "aiand", "__init__.py"),
+          "utf8",
+        ).includes("register_provider(aiand)"),
+      );
+      assert.ok(
+        readFileSync(
+          join(copy, "plugins", "model-providers", "aiand", "plugin.yaml"),
+          "utf8",
+        ).includes("kind: model-provider"),
+      );
+
+      // State links back; credentials never do.
+      if (process.platform !== "win32") {
+        assert.equal(
+          readlinkSync(join(copy, "sessions")),
+          join(real, "sessions"),
+          "sessions symlinked back",
+        );
+        assert.equal(
+          readlinkSync(join(copy, "plugins", "extra-tool")),
+          join(real, "plugins", "extra-tool"),
+          "user plugins symlinked back",
+        );
+      }
+      assert.ok(!existsSync(join(copy, "active_profile")));
+
+      // Launcher routing args lead; user --provider/--model/-m overrides
+      // stripped (both forms), rest verbatim.
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, ["--provider", "aiand", "--model", "aiand/glm-5.3", "--keep"]);
+
+      // The real home is byte-identical; the overlay is gone after exit.
+      const after = [
+        join(real, "config.yaml"),
+        join(real, ".env"),
+        join(real, "sessions", "s1.json"),
+      ].map((path) => readFileSync(path));
+      for (let i = 0; i < before.length; i += 1) assert.ok(before[i].equals(after[i]));
+      assert.equal(existsSync(overlay), false, "overlay removed after exit");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("hermes --model native is the normal catalog error; an unknown model refuses before spawn", async () => {
+    // Native never reaches the binary (a bare --provider exits 2), so
+    // run-agent keeps the ordinary catalog-membership error for the
+    // literal and hermes never spawns. Unknown ids fail the same way.
+    plantMarkerStub("hermes");
+    const capture = captureDir();
+    const marker = join(capture, "marker");
+    try {
+      const r = await stubCli(["hermes", "--model", "native"], { AIAND_MARKER: marker }, capture);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /not in the catalog/);
+      assert.equal(existsSync(marker), false, "hermes never spawned");
+
+      // An id that is not in the catalog fails before any spawn.
+      const bogus = await stubCli(
+        ["hermes", "--model", "definitely-bogus"],
+        { AIAND_MARKER: marker },
+        capture,
+      );
+      assert.equal(bogus.code, 1);
+      assert.match(bogus.stderr, /not in the catalog/);
+      assert.equal(existsSync(marker), false, "hermes never spawned");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("the generic strip never eats a flag or a dash-leading prompt", async () => {
+    // Owned routing flags drop only a plain-word value: --print after
+    // --model is its own flag, and `-- -explain` is a prompt, not a value.
+    // The launcher's own routing args still lead the child argv.
+    plantCaptureStub("hermes");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        ["hermes", "--", "--model", "--print", "-m", "--", "-explain"],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.deepEqual(args, [
+        "--provider",
+        "aiand",
+        "--model",
+        "aiand/glm-5.3",
+        "--print",
+        "--",
+        "-explain",
+      ]);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("SIGINT removes the hermes overlay before exit", async () => {
+    if (process.platform === "win32") return;
+    plantLingerStub("hermes");
+    const real = plantHermesReal();
+    const capture = captureDir();
+    const doneFile = join(capture, "done");
+    const child = spawn(process.execPath, [BIN, "run-agent", "hermes"], {
+      env: launcherEnv(capture, { AIAND_DONE: doneFile, HERMES_HOME: real }),
+      stdio: "ignore",
+    });
+    try {
+      // Poll the env dump until HERMES_HOME shows the live overlay.
+      const captureEnv = join(capture, "capture.env");
+      const deadline = Date.now() + WAIT_TIMEOUT_MS;
+      let envText = "";
+      while (Date.now() < deadline) {
+        if (existsSync(captureEnv)) {
+          envText = readFileSync(captureEnv, "utf8");
+          if (/^HERMES_HOME=/m.test(envText)) break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const overlay = envText.match(/^HERMES_HOME=(.*)$/m)?.[1];
+      assert.ok(overlay, "overlay path captured");
+      assert.ok(existsSync(overlay), "overlay live while the child runs");
+      child.kill("SIGINT");
+      const exitCode = await new Promise((resolve) => child.on("exit", resolve));
+      assert.equal(exitCode, 130);
+      assert.equal(existsSync(overlay), false, "overlay removed before exit");
+    } finally {
+      writeFileSync(doneFile, "done");
+      child.kill("SIGKILL");
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("native stays a catalog error for the wired adapters", async () => {
+    // Hermes keeps the same catalog error as every other adapter now:
+    // opencode and codex must behave exactly as before.
+    plantMarkerStub("opencode");
+    const capture = captureDir();
+    const marker = join(capture, "marker");
+    try {
+      const r = await stubCli(["opencode", "--model", "native"], { AIAND_MARKER: marker }, capture);
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, /not in the catalog/);
+      assert.equal(existsSync(marker), false, "opencode never spawned");
+
+      plantMarkerStub("codex");
+      const codexMarker = join(capture, "codex-marker");
+      const c = await stubCli(
+        ["codex", "--model", "native"],
+        { AIAND_MARKER: codexMarker },
+        capture,
+      );
+      assert.equal(c.code, 1);
+      assert.match(c.stderr, /not in the catalog/);
+      assert.equal(existsSync(codexMarker), false, "codex never spawned");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("run-agent --help lists hermes", async () => {
+    const { code, stdout } = await runCli(["run-agent", "--help"], { env: launcherEnv(env.dir) });
+    assert.equal(code, 0);
+    assert.match(stdout, /\bhermes\b/);
+  });
 });

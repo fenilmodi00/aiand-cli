@@ -277,6 +277,16 @@ describe("on: explicit --model", () => {
     });
     assert.equal(code, 0, stderr);
   });
+
+  test("launcherOnlyRefusal names the agent and the per-session path", () => {
+    // The one shared refusal launcher-only adapters throw from on/off and
+    // print in --help: no persistent wiring exists, every session goes
+    // through `aiand run-agent`.
+    assert.equal(
+      setup.launcherOnlyRefusal({ label: "Example Agent" }),
+      "Example Agent runs on ai& per session only.",
+    );
+  });
 });
 
 // --- init: detection and non-interactive hints ------------------------------------
@@ -346,6 +356,27 @@ describe("init: detection", () => {
       "no checkbox chrome",
     );
     assert.equal(err, "");
+  });
+
+  test("non-TTY init --json with only hermes detected lists it as wireable", async () => {
+    // #16 hermes is a wired adapter now: a hermes-only machine offers it for
+    // wiring, where the launcher-only note used to be the whole offering.
+    const hermesBin = join(dirname(stubBin), "hermes-only-bin");
+    mkdirSync(hermesBin, { recursive: true });
+    plantStub(hermesBin, "hermes");
+    try {
+      const { code, stdout } = await cli(["init", "--json"], {
+        env: { PATH: hermeticPath(hermesBin, "/usr/bin") },
+      });
+      assert.equal(code, 0);
+      assert.deepEqual(JSON.parse(stdout), {
+        agents: [],
+        message: "Non-interactive: pass --all or name agents.",
+        detected: ["hermes"],
+      });
+    } finally {
+      rmSync(hermesBin, { recursive: true, force: true });
+    }
   });
 });
 

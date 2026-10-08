@@ -10,6 +10,8 @@
 // - CLAUDE_CONFIG_DIR unset: the Claude Code adapter honours it, so a
 //   developer's own setting would point tests at their real settings.json.
 // - CODEX_HOME unset: the same for the Codex adapter and its profile file.
+// - HERMES_HOME unset: the Hermes adapter honours it, so a developer's own
+//   setting would point tests at their real ~/.hermes instead of the temp home.
 // - PI_CODING_AGENT_DIR / PI_CODING_AGENT_SESSION_DIR unset: the Pi adapter
 //   honours them, so a developer's own setting would point tests at their
 //   real Pi config and session history.
@@ -52,6 +54,7 @@ if (!process.env.AIAND_TEST_STUB_BIN) {
 process.env.AIAND_NO_BROWSER = "1";
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CODEX_HOME;
+delete process.env.HERMES_HOME;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.PI_CODING_AGENT_SESSION_DIR;
 delete process.env.PI_CONFIG_DIR;
@@ -60,6 +63,7 @@ delete process.env.COPILOT_HOME;
 delete process.env.COPILOT_PROVIDERS_CONFIG;
 delete process.env.COPILOT_MODEL;
 delete process.env.COPILOT_OFFLINE;
+delete process.env.HERMES_HOME;
 delete process.env.FORCE_COLOR;
 
 const guard = `--import=${pathToFileURL(join(import.meta.dirname, "net-guard.mjs")).href}`;

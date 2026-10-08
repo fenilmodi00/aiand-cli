@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { CliError } from "../cli/errors.js";
 import { configDir, writeFileAtomic } from "../config.js";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, pathIsInside } from "../fsutil.js";
+import { fsCliError } from "./managed-file.js";
 
 const MANIFEST_FILE = "latest.json";
 
@@ -89,12 +90,22 @@ export async function snapshotFiles(agentId: string, files: string[]): Promise<s
     try {
       await stat(file);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        // HERMES_HOME pointing at a file (ENOTDIR), an unreadable path
+        // (EACCES/EPERM): refuse cleanly exit 1, never a raw stack exit 70.
+        throw fsCliError(file, error) ?? error;
+      }
       existed = false;
     }
     if (existed) {
       const backupPath = join(snapDir, copyNameFor(file));
-      await copyFile(file, backupPath);
+      try {
+        await copyFile(file, backupPath);
+      } catch (error) {
+        // A directory squatting on a managed-file path (EISDIR) refuses the
+        // same clean way.
+        throw fsCliError(file, error) ?? error;
+      }
       entries.push({ path: file, backupPath, existed: true });
     } else {
       entries.push({ path: file, existed: false });

@@ -61,6 +61,9 @@ const { OMP_VERSION } = await import(
 const { COPILOT_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "copilot", "adapter.js")).href
 );
+const { HERMES_COMMIT } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "adapter.js")).href
+);
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
 // One entry per pinned agent install in ci.yml: `regex` captures the pin,
 // `expected` is the version the adapter exports, `label` is the
@@ -113,6 +116,38 @@ for (const { label, regex, expected, message } of PINS) {
     assert.equal(pin, expected, message(pin));
   }
 }
+
+// The live matrix installs a pinned Hermes the same way; every `--commit`
+// pin in ci.yml or scripts/contree-e2e.sh must match
+// src/agents/hermes/adapter.ts or the copies drift apart silently. The
+// user-facing install hint carries the same pin, so a missing binary never
+// installs unaudited bytes.
+const hermesPinFiles = [
+  [".github/workflows/ci.yml", ciYml],
+  ["scripts/contree-e2e.sh", readFileSync(join(repoRoot, "scripts", "contree-e2e.sh"), "utf8")],
+];
+const hermesPins = hermesPinFiles.flatMap(([file, text]) =>
+  [...text.matchAll(/--commit ([0-9a-f]{7,40})/g)].map((m) => [file, m[1]]),
+);
+assert.ok(
+  hermesPins.length > 0,
+  "ci.yml or scripts/contree-e2e.sh should install a Hermes pinned with --commit",
+);
+for (const [file, pin] of hermesPins) {
+  assert.equal(
+    pin,
+    HERMES_COMMIT,
+    `${file} installs hermes --commit ${pin} but src/agents/hermes/adapter.ts pins ${HERMES_COMMIT}`,
+  );
+}
+const { hermesAdapter } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "adapter.js")).href
+);
+assert.ok(
+  hermesAdapter.install.command.includes(`--commit ${HERMES_COMMIT}`),
+  `the hermes install hint must carry --commit ${HERMES_COMMIT}, got: ${hermesAdapter.install.command}`,
+);
+
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,

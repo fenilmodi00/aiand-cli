@@ -87,17 +87,18 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Claude Code](https://code.claude.com/docs),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
-and the [GitHub Copilot app](https://github.com/features/ai/github-app).
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
+the [GitHub Copilot app](https://github.com/features/ai/github-app)
+and [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research).
 
-`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp` and
-`aiand copilot` open the agent on ai&, and `aiand code` opens the default
+`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
+`aiand copilot` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
 one, OpenCode. If you are signed out, aiand signs you in. If the agent is
 missing and its install command is an npm install, aiand offers to install
 it with the install command shown by `aiand <agent> --help`; other install
 hints are printed with no offer. If the agent is not wired
 yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp` and `copilot` use ai& afterwards too.
+`codex --profile aiand`, `pi`, `omp`, `copilot` and `hermes` use ai& afterwards too.
 
 Everything after the agent name goes to the agent as typed, such as
 `aiand claude -p "explain this repo"`. Put aiand's own flags before the
@@ -249,6 +250,41 @@ is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
 for permanent wiring. Bare `aiand copilot-app` wires the app and tells you
 how to open it yourself — aiand cannot launch a GUI app, and anything after
 `copilot-app` errors.
+
+```bash
+aiand hermes on          # route Hermes through ai&
+aiand hermes status
+aiand hermes off
+aiand run-agent hermes   # launch Hermes on ai& for one session, nothing written
+```
+
+`on` ships a dedicated `aiand` model provider as a `model-provider` plugin
+under `~/.hermes/plugins/model-providers/aiand`, adds a `providers.aiand`
+block to `~/.hermes/config.yaml`, and bakes your key into `~/.hermes/.env`
+(mode 0600) under a dedicated name, so the key never rides the child process
+environment. The generated provider carries each model's published reasoning
+levels (GLM 5.3 offers low, high, and max); Hermes's own default level
+(medium) is clamped to one the model accepts, and a level left unset runs at
+the model's weakest published level. The top-level model pins from the live
+catalog: pass
+`--model <id>` to switch, or `--model native` to leave the model section
+exactly as it is (Hermes needs a default to send, so ai& never deletes one).
+Your other providers, plugins, sessions, and own edits are left alone.
+
+`off` removes only what aiand wrote. If a config ever ends up in a state you
+do not want, `aiand restore hermes --force` puts back the exact files from
+before aiand first touched it.
+
+`run-agent` routes one session through a throwaway `HERMES_HOME` overlay
+without a prior `on`: your sessions, skills, memories, logs, and own plugins
+are symlinked back so they stay native and resumable, while credentials exist
+only inside the overlay and the real `~/.hermes` — including its
+`config.yaml` — is never written. The overlay ships the same dedicated
+`aiand` model provider, and its `config.yaml` pins the model from the live
+catalog: `--model <id>` to choose (a session launch always names a model, so
+`--model native` is the usual catalog error). `--provider`, `--model`, and `-m` in the arguments after `--` are
+stripped so nothing can override the injected routing, and the overlay is
+removed after the session ends — success, failure, or Ctrl-C.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

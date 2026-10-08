@@ -1,6 +1,6 @@
-import { openSession, requestJson } from "../api/client.js";
+import { publicRequest } from "../api/client.js";
 import { requireSessionKey } from "../auth/session.js";
-import { ApiError, CliError } from "../cli/errors.js";
+import { ApiError, CliError, SYNTHETIC_STATUS } from "../cli/errors.js";
 import { resolveProfile } from "../config.js";
 import { getCatalog, resolveDefault, validateCatalogModel, visionLabel } from "./catalog.js";
 import { notInstalledError } from "./launch.js";
@@ -44,6 +44,53 @@ export type AgentStatusResult = {
 };
 
 /**
+ * The refusal launcher-only adapters share: they have no persistent wiring,
+ * so every session goes through `aiand run-agent`. One source for the text
+ * `agentOn`/`agentOff` throw and `aiand <id> --help` prints.
+ */
+export function launcherOnlyRefusal(adapter: AgentAdapter): string {
+  return `${adapter.label} runs on ai& per session only.`;
+}
+
+/**
+ * The rejected-key advice `on` refuses with before any write, mirroring the
+ * 401 hints request() gives at request time: under an env key the fix is the
+ * variable, under a stored key it is a fresh login.
+ */
+function rejectedKeyError(): CliError {
+  if (process.env.AIAND_API_KEY) {
+    return new CliError("Your AIAND_API_KEY was rejected.", {
+      hint: "Check the key, or unset it to use your stored login instead.",
+    });
+  }
+  return new CliError("Your key was rejected.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+/**
+ * One authenticated probe of `/v1/models` before any write: a key the
+ * gateway rejects (401) refuses with the rejected-key advice instead of
+ * being baked into agent configs. Unreachable/other failures pass through —
+ * the catalog fetch below owns those errors, and a seeded cache keeps
+ * offline runs working.
+ */
+async function validateSessionKey(key: string, apiUrl: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await publicRequest(`${apiUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === SYNTHETIC_STATUS.UNREACHABLE) return;
+    throw error;
+  }
+  // Drain either way so the socket is freed; only the status matters here.
+  await response.arrayBuffer().catch(() => {});
+  if (response.status === 401) throw rejectedKeyError();
+}
+
+/**
  * Turn an agent on: detect the binary, resolve a session key, resolve the
  * model from the live catalog, snapshot when inactive, then let the
  * adapter write its config. An already-active probe skips the snapshot so
@@ -55,7 +102,7 @@ export async function agentOn(
 ): Promise<AgentOnResult> {
   // Launcher-only adapters have no persistent wiring to turn on.
   if (adapter.launcherOnly) {
-    throw new CliError(`${adapter.label} runs on ai& per session only.`, {
+    throw new CliError(launcherOnlyRefusal(adapter), {
       hint: `Use: aiand run-agent ${adapter.id}`,
     });
   }
@@ -64,20 +111,8 @@ export async function agentOn(
   // Install hint, never a login ceremony for a binary that isn't there.
   if (!adapter.detect().installed) throw notInstalledError(adapter);
   const session = await requireSessionKey(opts.profile);
-  // The catalog endpoint is public, so a garbage env key would otherwise
-  // pass the fetch below and get baked into the agent's files (the first
-  // auth'd call would then 401 at session time). One authenticated request
-  // up front: a rejected key refuses on before any write. Only a 401
-  // refuses — an unreachable gateway must not block a cache-served on.
-  const apiSession = await openSession(resolveProfile(opts.profile));
-  try {
-    await requestJson(apiSession, { path: "/v1/models" });
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 401) throw error;
-  }
 
   const probe = await adapter.probe();
-
   // Pre-write guards run before any snapshot: refusing must never leave a
   // half-state behind, and --force must escape the gate.
   if (adapter.enableGuard) {
@@ -85,6 +120,9 @@ export async function agentOn(
   }
 
   const profile = resolveProfile(opts.profile);
+  // The key is validated before anything is written: a rejected key refuses
+  // here, never baked into an agent config.
+  await validateSessionKey(session.key, profile.apiUrl);
   const catalog = await getCatalog(profile.apiUrl);
 
   let model: string;

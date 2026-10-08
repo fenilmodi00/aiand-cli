@@ -24,7 +24,8 @@ Options
   -h, --help             show this help
 
 Everything after \`--\` (and any bare positional before it) is passed to the
-agent's binary verbatim — flags, files, and arguments are forwarded untouched.
+agent's binary as-is, except the routing flags the adapter owns — those are
+stripped so the injected wiring cannot be overridden.
 
 Try: aiand run-agent opencode -- --version`;
 

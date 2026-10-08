@@ -304,6 +304,59 @@ describe("trust boundaries", () => {
     );
   });
 
+  test("credential-embedded base URLs refuse without echoing the secret", () => {
+    // Fuzz E5: undici refuses to construct the request and its reason echoes
+    // the URL, so userinfo would land in terminal output. Refuse at set time
+    // — and the refusal itself must never carry the secret.
+    const fake = "fake-secret-xyz";
+    for (const url of [
+      `https://user:${fake}@host.example/`,
+      `https://user:${fake}@host.example/v1`,
+      `https://${fake}@host.example/`,
+    ]) {
+      assert.throws(
+        () => config.assertHttpsBaseUrl(url),
+        (error) => {
+          assert.equal(error.name, "CliError");
+          assert.match(error.message, /must not embed credentials/);
+          assert.ok(!`${error.message}${error.hint ?? ""}`.includes(fake), "no echo");
+          return true;
+        },
+      );
+    }
+    config.assertHttpsBaseUrl("https://host.example/");
+  });
+
+  test("/v1-suffixed base URLs refuse with the origin advice", () => {
+    // Fuzz E4: adapters append /v1 themselves, so a suffixed URL doubles to
+    // /v1/v1 and the gateway misdiagnoses a 401 as an expired key.
+    for (const url of [
+      "https://api.aiand.com/v1",
+      "https://api.aiand.com/v1/",
+      "https://host.example/api/v1",
+    ]) {
+      assert.throws(
+        () => config.assertNoV1Suffix(url),
+        (error) => {
+          assert.equal(error.name, "CliError");
+          assert.match(error.message, /must not end in "\/v1"/);
+          assert.match(error.hint ?? "", /origin/);
+          return true;
+        },
+      );
+    }
+    // Origins, deeper paths, and lookalike hosts pass.
+    for (const url of [
+      "https://api.aiand.com",
+      "https://api.aiand.com/",
+      "https://host.example/api/v2",
+      "https://v1",
+      "http://127.0.0.1:9/stub/401",
+    ]) {
+      config.assertNoV1Suffix(url);
+    }
+  });
+
   test("null credential entry fails readable instead of TypeError", async () => {
     writeFileSync(config.credentialsPath(), JSON.stringify({ default: null }), { mode: 0o600 });
     await assert.rejects(

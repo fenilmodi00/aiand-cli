@@ -232,6 +232,26 @@ export function assertHttpsBaseUrl(url: string): void {
   });
 }
 
+/**
+ * Refuse a `/v1`-suffixed base URL at set time: adapters append `/v1`
+ * themselves (hermes/codex/opencode reach `/v1/chat/completions` that way),
+ * so a suffixed URL doubles to `/v1/v1/...` and the gateway answers with a
+ * misdiagnosed 401. Pass the origin instead.
+ */
+export function assertNoV1Suffix(url: string): void {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return;
+  }
+  if (pathname.replace(/\/+$/, "").endsWith("/v1")) {
+    throw new CliError(`Base URL must not end in "/v1" (got "${url}").`, {
+      hint: "Pass the origin instead — ai& appends /v1 where the agent needs it.",
+    });
+  }
+}
+
 /** A credentials.json entry; the secret appears inline only in the legacy shape. */
 type StoredCredential = Credential & { access_token?: string; refresh_token?: string };
 

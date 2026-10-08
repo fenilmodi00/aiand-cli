@@ -25,8 +25,38 @@ export async function readTextIfExists(file: string): Promise<string> {
     return await readFile(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
+    // A file where a directory should be (ENOTDIR), a directory where a
+    // file should be (EISDIR), or an unreadable path (EACCES/EPERM) reads as
+    // a clean CliError exit 1 naming the path — never a raw stack exit 70.
+    throw fsCliError(file, error) ?? error;
   }
+}
+
+/**
+ * Filesystem errors that mean the path is unusable rather than missing:
+ * ENOTDIR (a file squats where a directory should be), EISDIR (a directory
+ * squats where a file should be), EACCES/EPERM (unreadable). Shared by
+ * readTextIfExists and snapshotFiles so every adapter refuses these paths
+ * cleanly. Returns null for any other error, which stays raw.
+ */
+export function fsCliError(file: string, error: unknown): CliError | null {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  if (code === "ENOTDIR") {
+    return new CliError(`Cannot read ${file}: a parent path is not a directory.`, {
+      hint: "Remove or rename the file blocking the path, then try again.",
+    });
+  }
+  if (code === "EISDIR") {
+    return new CliError(`Cannot read ${file}: it is a directory.`, {
+      hint: "Remove or rename the directory blocking the path, then try again.",
+    });
+  }
+  if (code === "EACCES" || code === "EPERM") {
+    return new CliError(`Cannot read ${file}: permission denied.`, {
+      hint: "Check the path is readable, then try again.",
+    });
+  }
+  return null;
 }
 /**
  * Parse JSONC the way OpenCode accepts it: one string-aware scan strips line

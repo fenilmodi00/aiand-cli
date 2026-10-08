@@ -1,5 +1,5 @@
 import { type ParseArgsConfig, parseArgs } from "node:util";
-import { assertHttpsBaseUrl } from "../config.js";
+import { assertHttpsBaseUrl, assertNoV1Suffix } from "../config.js";
 import { CliError } from "./errors.js";
 
 type OptionsConfig = NonNullable<ParseArgsConfig["options"]>;
@@ -48,6 +48,9 @@ export function parse(argv: string[], options: OptionsConfig = {}): Parsed {
   const baseUrl = parsed.values["base-url"];
   if (typeof baseUrl === "string") {
     assertHttpsBaseUrl(baseUrl);
+    // Adapters append /v1 themselves: refuse a suffixed flag before it
+    // doubles to /v1/v1 and misdiagnoses as an expired key.
+    assertNoV1Suffix(baseUrl);
     process.env.AIAND_BASE_URL = baseUrl;
   }
 

@@ -42,7 +42,8 @@ export type Session = {
 
 export async function openSession(profile: ResolvedProfile): Promise<Session> {
   // Whitespace-only is unset: a truthy read would wire a literal all-spaces
-  // key into agent configs.
+  // key into agent configs. Padding wires trimmed (like login's stdin read)
+  // instead of baking whitespace that 401s every request.
   const fromEnv = process.env.AIAND_API_KEY?.trim() || undefined;
   if (fromEnv) return { profile, token: fromEnv, credential: null };
 
@@ -229,14 +230,27 @@ async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
       throw cancelled();
     }
     const reason = cause instanceof Error ? cause.message : String(cause);
+    // Undici interpolates the request URL into its refusal reasons, so a
+    // credential-embedded base URL would echo userinfo here: scrub it.
+    // The origin below never carries userinfo (WHATWG origin is
+    // scheme + host + port), so only the reason needs scrubbing.
     throw new ApiError(
       SYNTHETIC_STATUS.UNREACHABLE,
-      `Could not reach ${new URL(url).origin}: ${reason}`,
+      `Could not reach ${new URL(url).origin}: ${scrubCredentials(reason)}`,
       {
         hint: "Check your network, or point at another environment with --base-url / AIAND_BASE_URL.",
       },
     );
   }
+}
+
+/**
+ * Redact `://user:pass@` userinfo from an error string (undici refusal
+ * reasons carry the full request URL). The replacement names the redaction
+ * so a scrubbed message is recognizable as one.
+ */
+export function scrubCredentials(text: string): string {
+  return text.replace(/:\/\/[^/\s@]+@/g, "://[redacted]@");
 }
 
 async function toApiError(response: Response, envKey = false): Promise<ApiError> {
