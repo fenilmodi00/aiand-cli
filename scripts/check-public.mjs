@@ -68,6 +68,8 @@ const RULES = [
       match.startsWith("@ai-sdk/") ||
       match.startsWith("@opencode-ai/") ||
       match.startsWith("@anthropic-ai/") ||
+      match.startsWith("@mariozechner/") ||
+      match.startsWith("@oh-my-pi/") ||
       match.startsWith("@openai/") ||
       match.startsWith("@earendil-works/") ||
       match.startsWith("@deepseek-ai/") ||
@@ -84,7 +86,9 @@ const RULES = [
     pattern: /\b[A-Z]{2,6}-\d{1,6}\b/g,
 
     allow: (match) =>
-      /^(?:RFC|UTF|SHA|ISO|ANSI|OSC|AES|RSA|HTTP|IPv|EC|P|CVE|SLSA|ES)-?\d/i.test(match),
+      /^(?:RFC|UTF|SHA|ISO|ANSI|OSC|AES|RSA|HTTP|IPv|EC|P|CVE|SLSA|ES)-?\d/i.test(match) ||
+      // Catalog ids such as GLM-5.3 contain this shape. The dot ends the match.
+      match === "GLM-5",
     hint: "Internal ticket identifiers must not be published.",
   },
   {

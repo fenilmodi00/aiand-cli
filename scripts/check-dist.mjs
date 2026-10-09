@@ -46,9 +46,9 @@ for (const command of COMMANDS) {
   assert.equal(typeof command.run, "function", `command ${command.name} needs a run function`);
 }
 
-// CI installs a pinned OpenCode and a pinned Pi for the live tests; each
-// must be the release the CLI's install hint names, or the two drift
-// apart silently.
+// CI installs a pinned OpenCode, Pi, omp and Copilot for the live tests;
+// each must be the release the CLI's install hint names, or the two
+// drift apart silently.
 const { OPENCODE_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "opencode", "adapter.js")).href
 );
@@ -60,6 +60,9 @@ const { OMP_VERSION } = await import(
 );
 const { COPILOT_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "copilot", "adapter.js")).href
+);
+const { DSH_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "dsh", "adapter.js")).href
 );
 const ciYml = readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8");
 // One entry per pinned agent install in ci.yml: `regex` captures the pin,
@@ -104,6 +107,13 @@ const PINS = [
     expected: COPILOT_VERSION,
     message: (pin) =>
       `ci.yml pins @github/copilot@${pin} but the install hint names ${COPILOT_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned @deepseek-ai/dsh",
+    regex: /@deepseek-ai\/dsh@([0-9A-Za-z.+-]+)/g,
+    expected: DSH_VERSION,
+    message: (pin) =>
+      `ci.yml installs @deepseek-ai/dsh@${pin} but src/agents/dsh/adapter.ts pins ${DSH_VERSION}`,
   },
 ];
 for (const { label, regex, expected, message } of PINS) {

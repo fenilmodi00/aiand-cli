@@ -38,6 +38,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,6 +123,8 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "DSH_HOME",
+  "AIAND_DSH_API_KEY",
   "PI_CODING_AGENT_DIR",
   "PI_CONFIG_DIR",
   "XDG_DATA_HOME",
@@ -189,6 +192,8 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+const DSH_PATCH = join(MAIN_HOME, ".dsh", "cordis.patch.yml");
+const DSH_CREDS = join(MAIN_HOME, ".dsh", ".credentials.yaml");
 const PI_DIR = join(MAIN_HOME, ".pi", "agent");
 const PI_MODELS = join(PI_DIR, "models.json");
 const PI_AUTH = join(PI_DIR, "auth.json");
@@ -232,7 +237,7 @@ function readCopilotDb(...sqls) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app"];
+const STUB_NAMES = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "dsh"];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -249,6 +254,15 @@ if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+if (process.env.DSH_HOME) {
+  // dsh's throwaway home: capture what it held before cleanup removes it.
+  try {
+    record.dshCredsMode = fs.statSync(process.env.DSH_HOME + "/.credentials.yaml").mode & 0o777;
+    record.dshPatch = fs.readFileSync(process.env.DSH_HOME + "/cordis.patch.yml", "utf8");
+  } catch {
+    record.dshPatch = null;
+  }
 }
 // Same for the PI_CODING_AGENT_DIR overlay the launcher deletes
 // after exit: pi's overlay holds models.json + auth.json, omp's
@@ -486,6 +500,82 @@ const AGENT_DEFS = {
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
     },
   },
+  dsh: {
+    bin: "dsh",
+    seed(state) {
+      state.created = [];
+      // A foreign patch row and a foreign credential ref: the
+      // user's own dsh composition, which on/off must leave
+      // byte for byte alone (the seeds check in
+      // verifyOffRestore).
+      state.cfg = seedFile(
+        state,
+        DSH_PATCH,
+        "# user comment\n- id: session-persistence-jsonl\n  name: '@deepseek-ai/dsh-session-persistence-jsonl'\n  config:\n    root: ~/.dsh/sessions\n",
+      );
+      seedFile(state, DSH_CREDS, "version: 1\nrefs:\n  USER_DSH_KEY: sk-user-dsh\n");
+    },
+    contents(t) {
+      const text = readFileSync(DSH_PATCH, "utf8");
+      t.ok(text.includes("- id: llm-pi-ai"), "the llm-pi-ai route row exists");
+      t.ok(text.includes("x-aiand: true"), "ownership marker present");
+      t.ok(
+        text.includes("apiKeyEnv: AIAND_DSH_API_KEY"),
+        "the key resolves through the credential ref",
+      );
+      t.ok(text.includes("baseURL: https://api.aiand.com/v1"), "provider baseURL is gateway /v1");
+      t.ok(
+        text.includes("- id: agent-default-model") && text.includes("provider: aiand"),
+        "the default-model row routes aiand",
+      );
+      const model = /- id: agent-default-model[\s\S]*?\n\s+model: (.+)$/m.exec(text)?.[1];
+      const ids = (loadCatalog() ?? []).map((m) => m.id);
+      t.ok(
+        ids.length === 0 || ids.includes(model?.replace(/^'|'$/g, "")),
+        "default model is a catalog id",
+        String(model),
+      );
+      t.ok(
+        text.includes("- id: session-persistence-jsonl") && text.includes("# user comment"),
+        "user patch row survives",
+      );
+      t.ok(!text.includes(KEY), "the key is not in the patch file");
+      const creds = readFileSync(DSH_CREDS, "utf8");
+      t.ok(
+        creds.includes(`AIAND_DSH_API_KEY: ${KEY}`),
+        "the credentials file carries the session key",
+      );
+      t.ok(creds.includes("USER_DSH_KEY: sk-user-dsh"), "user credential ref survives");
+      t.ok(
+        (statSync(DSH_CREDS).mode & 0o777) === 0o600,
+        "credentials file is 0600",
+        (statSync(DSH_CREDS).mode & 0o777).toString(8),
+      );
+    },
+    // The seeded files survive off byte-identically (the
+    // seeds check above); a $DSH_HOME with nothing seeded is
+    // the other half of the contract: `on` creates both
+    // files and `off` removes them again.
+    verifyOffExtra(t) {
+      const scratch = join(S, "dsh-created");
+      const env = mainEnv({ DSH_HOME: scratch });
+      const on = cli(["dsh", "on", "--json"], {
+        env,
+        timeout: WIRING_TIMEOUT_MS,
+      });
+      okStatus(t, on, "dsh on (created-files scenario)");
+      const off = cli(["dsh", "off", "--json"], {
+        env,
+        timeout: GATEWAY_TIMEOUT_MS,
+      });
+      okStatus(t, off, "dsh off (created-files scenario)");
+      t.ok(!existsSync(join(scratch, "cordis.patch.yml")), "aiand-created patch file removed");
+      t.ok(
+        !existsSync(join(scratch, ".credentials.yaml")),
+        "aiand-created credentials file removed",
+      );
+    },
+  },
   pi: {
     bin: "pi",
     seed(state) {
@@ -703,7 +793,7 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app"];
+const WIRING_ONE = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "dsh"];
 
 // Whole-registry assertion (`status` lists every shipped adapter) reads the
 // shipped registry instead of a hand-kept list, which goes stale silently as
@@ -1702,6 +1792,45 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+
+define("launcher", "launcher-dsh", (t) => {
+  const r = launchCheck("dsh", ["dsh", "--", "--patch", "/tmp/x.yml", "--dump"]);
+  okStatus(t, r, "run-agent dsh");
+  const rec = stubRecord("dsh");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  // Piped stdin => the headless one-shot profile; a passthrough --patch
+  // would outrank the injected rows in dsh's composition, so the launcher
+  // owns the flag and --dump survives.
+  t.ok(
+    rec.args[0] === "--profile" && rec.args[1] === "headless",
+    "headless profile",
+    rec.args.join(" "),
+  );
+  t.ok(!rec.args.includes("--patch"), "--patch stripped from the passthrough");
+  t.ok(rec.args.at(-1) === "--dump", "passthrough forwarded after the profile");
+  const overlay = rec.env.DSH_HOME;
+  t.ok(
+    overlay && overlay !== join(MAIN_HOME, ".dsh"),
+    "DSH_HOME points at the throwaway",
+    String(overlay),
+  );
+  t.ok(rec.dshPatch?.includes("x-aiand: true"), "the overlay holds the aiand route rows");
+  t.ok(
+    rec.dshPatch === null || rec.dshPatch.includes("baseURL: https://api.aiand.com/v1"),
+    "the route points at the gateway",
+  );
+  t.ok(rec.dshCredsMode === 0o600, "the overlay key file is 0600", String(rec.dshCredsMode));
+  t.ok(
+    !Object.values(rec.env).includes(KEY) && !Object.values(rec.env).includes(SMOKE_KEY),
+    "the session key never rides the child env",
+  );
+  t.ok(overlay && !existsSync(overlay), "the throwaway home is removed after exit");
+  // The launch must not have wired the real home: whatever the dsh
+  // wiring cells left behind stays free of our marker and the key.
+  const real = existsSync(DSH_PATCH) ? readFileSync(DSH_PATCH, "utf8") : "";
+  t.ok(!real.includes("x-aiand: true"), "nothing of ours in the real patch layer");
 });
 
 define("launcher", "launcher-pi", (t) => {

@@ -103,6 +103,11 @@ export function validateCatalogModel(catalog: Model[], id: string, flag = "--mod
   });
 }
 
+/** Whether `id` names a catalog model. Adapters keep a user's model only
+ * while the gateway still serves it; this is that test. */
+export const inCatalog = (catalog: Model[], id: unknown): id is string =>
+  typeof id === "string" && catalog.some((model) => model.id === id);
+
 /**
  * Pick the model written into agent configs: an explicit profile model wins
  * when it still exists in the catalog, then the curated default order, then

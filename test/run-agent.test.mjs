@@ -169,6 +169,37 @@ describe("run-agent launcher", () => {
     }
   });
 
+  // dsh routes through a throwaway $DSH_HOME overlay whose rows the
+  // launcher owns: a passthrough --patch would outrank them in dsh's
+  // composition, so both flag forms are dropped and the session key
+  // never rides the child env.
+  test("dsh: overlay $DSH_HOME carries the key file, --patch is stripped", async () => {
+    plantCaptureStub("dsh");
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(
+        ["dsh", "--", "--patch", "/tmp/evil.yml", "--patch=/x.yml", "--port", "8080"],
+        {},
+        capture,
+      );
+      assert.equal(code, 42);
+      const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      // The piped-stdin launcher starts the headless one-shot profile.
+      assert.deepEqual(args.slice(0, 2), ["--profile", "headless"]);
+      assert.ok(!args.includes("--patch") && !args.includes("/tmp/evil.yml"));
+      assert.ok(!args.some((a) => a.startsWith("--patch=")));
+      assert.deepEqual(args.slice(-2), ["--port", "8080"], "unrelated flags pass verbatim");
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      assert.doesNotMatch(envText, /sk-test-aiand/, "the key never rides the child env");
+      // DSH_HOME points at the throwaway overlay, which cleanup removed.
+      const overlay = /^DSH_HOME=(.*)$/m.exec(envText)[1];
+      assert.ok(overlay && overlay !== join(home, ".dsh"));
+      assert.equal(existsSync(overlay), false, "the overlay dir is gone after the exit");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("pi: overlay dir + session dir env, key never in child env, overlay removed", async () => {
     plantCaptureStub("pi");
     const capture = captureDir();
@@ -231,6 +262,15 @@ describe("run-agent launcher", () => {
       );
       assert.equal(code, 42);
       const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
+      assert.equal(args[0], "--provider");
+      assert.equal(args[1], "aiand");
+      assert.equal(args[2], "--model");
+      assert.ok(args[3] !== "gpt-4o", "the user's --model is stripped");
+      assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
+      assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
+      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
+      assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
+      assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
       assert.equal(args[0], "--provider");
       assert.equal(args[1], "aiand");
       assert.equal(args[2], "--model");

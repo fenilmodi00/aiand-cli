@@ -7,6 +7,58 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- `aiand dsh on` wires DeepSeek Harness to ai& through `$DSH_HOME`
+  (or `~/.dsh`): an `aiand` provider route replacing the `llm-pi-ai`
+  row in `cordis.patch.yml`, speaking the gateway's OpenAI-compatible
+  chat dialect with every model from the live catalog, and a marked
+  `agent-default-model` pin. The key rides in `$DSH_HOME/.credentials.yaml`
+  as a credential ref dsh resolves on every request (locked to 0600),
+  never as a literal in the patch YAML. `off` removes exactly what
+  `on` added, including from the files `on` recorded when the dsh
+  home moved in between, and puts back a default it had to set aside
+  because the gateway cannot serve it; one it can serve is kept, and
+  your own rows survive both verbs. Pass `--model <id>` to switch;
+  `--model native` is refused, since DeepSeek Harness's own default
+  needs a DeepSeek key the gateway cannot serve. `aiand run-agent dsh`
+  runs one session with the real `~/.dsh` config and credentials
+  untouched: a throwaway `$DSH_HOME` holds the same rows and the key,
+  dsh starts in its `web` profile on a terminal and answers a piped
+  task headless, session history still lands in the real
+  `~/.dsh/sessions`, and the overlay is removed after the session ends.
+  Bare `aiand dsh` opens DeepSeek Harness the way `aiand code` does —
+  wiring it with `on` when it is not wired yet, offering the npm install
+  after a yes when missing, then running dsh with your args verbatim.
+  Each model's published reasoning levels pass through: GLM-5.3 offers
+  low, high, and max, an omitted level runs at the engine default (max
+  on GLM-5.3), and the route states `supportsReasoningEffort: true`
+  rather than `false`, which dropped the parameter. (#21, thanks @fenilmodi00)
+
+### Fixed
+
+- `aiand dsh on` refuses a hand-written `llm-pi-ai` row carrying any user
+  config — not just `providers` — instead of replacing the whole row and
+  deleting settings like `timeoutMs`.
+- `aiand dsh on` reads a row's `id` from any first-level key of the item
+  (`-\n  id: llm-pi-ai`, `- name: ...` before `id:`), so a hand-edited
+  `cordis.patch.yml` in those shapes no longer makes `on` append a second
+  `llm-pi-ai` row whose whole-config replace silently drops the user's
+  providers.
+- `aiand dsh on` warns when a `$DSH_HOME/profiles/<profile>/cordis.patch.yml`
+  layer also configures `llm-pi-ai`: the home layer replaces the entry's
+  whole config, so Web UI providers are hidden while the aiand route is on.
+
+- Both one-line installers end with an agent summary: which coding-agent
+  binaries (`opencode`, `claude`, `pi`, `omp`) are on `PATH`, install
+  hints for the missing ones, and a nudge to run `aiand init`. Wiring
+  still never happens at install time. `npm ci` also passes
+  `--prefer-offline`, so re-runs and updates reuse the npm cache.
+- `install.ps1` ships without a UTF-8 BOM, so `irm ... | iex` no longer
+  prints `The term '#' is not recognized` and `The term 'param' is not
+  recognized`: `irm` delivers the BOM as a character, which stops line 1
+  from parsing as a comment and demotes the `param()` block.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added

@@ -138,6 +138,54 @@ print_install_notes() {
   done
 }
 
+# Coding-agent binaries the installer looks for, in display order. The
+# opencode/claude hint commands must stay identical to src/agents/detect.ts
+# INSTALL_HINTS (scripts/install-behavior.mjs checks); pi/omp are probed for
+# newer CLI releases that wire them, with their upstream install commands.
+agent_install_hint() {
+  case "$1" in
+    opencode) echo "npm install -g opencode-ai@1.18.32" ;;
+    claude) echo "npm install -g @anthropic-ai/claude-code" ;;
+    pi) echo "npm install -g @mariozechner/pi-coding-agent" ;;
+    omp) echo "bun install -g @oh-my-pi/pi-coding-agent" ;;
+  esac
+}
+
+# Post-install summary on stdout (like Note: lines): which supported agents
+# are on PATH and the `aiand init` nudge. Nudge only: wiring needs an
+# interactive sign-in, so the installer never runs init itself.
+print_agent_summary() {
+  local id detected="" missing=""
+  for id in opencode claude pi omp; do
+    if command -v "${id}" >/dev/null 2>&1; then
+      detected="${detected} ${id}"
+    else
+      missing="${missing} ${id}"
+    fi
+  done
+  detected="${detected# }"
+  missing="${missing# }"
+  if [[ -z "${detected}" ]]; then
+    echo "No coding agents detected on this machine."
+    for id in opencode claude pi omp; do
+      echo "  ${id}  Install it with: $(agent_install_hint "${id}")"
+    done
+    echo "Install one, then run 'aiand init'."
+    return 0
+  fi
+  echo "Detected agents:"
+  for id in ${detected}; do
+    echo "  ✓ ${id}"
+  done
+  if [[ -n "${missing}" ]]; then
+    echo "Not installed:"
+    for id in ${missing}; do
+      echo "  ${id}  Install it with: $(agent_install_hint "${id}")"
+    done
+  fi
+  echo "Next: run 'aiand init' to wire them to ai&."
+}
+
 node_meets_minimum() {
   local version major minor
   version="$(node -p "process.versions.node" 2>/dev/null || echo "0.0.0")"
@@ -414,7 +462,12 @@ activate_staged_install() {
 verify_built_cli() {
   local source_dir="$1" node_bin expected actual
   node_bin="$(command -v node)"
-  expected="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version' -- "${source_dir}/package.json" 2>/dev/null || true)"
+  # Shell-native version read (no node spawn): match "version" followed by
+  # a quoted value anywhere, so pretty-printed and minified package.json
+  # both work. The top-level version precedes any dependency block, so the
+  # first match is the staged version. `|| true`: under pipefail, head
+  # closing early must not fail the install; empty still fails closed below.
+  expected="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${source_dir}/package.json" | head -n 1 || true)"
   if [[ -z "${expected}" ]]; then
     echo "error: staged aiand verification failed; the existing installation was left unchanged." >&2
     exit 1
@@ -442,7 +495,9 @@ ensure_build() {
   fi
   # --omit=dev would drop the TypeScript compiler the build needs; the CLI
   # itself ships zero runtime dependencies, so node_modules never runs.
-  if ! (cd "${source_dir}" && npm ci --ignore-scripts --no-fund --no-audit --loglevel="${npm_loglevel}"); then
+  # --prefer-offline reuses the npm cache on re-runs/updates and falls back
+  # to the network on a cold machine.
+  if ! (cd "${source_dir}" && npm ci --ignore-scripts --no-fund --no-audit --prefer-offline --loglevel="${npm_loglevel}"); then
     echo "error: staged aiand verification failed; the existing installation was left unchanged." >&2
     exit 1
   fi
@@ -722,6 +777,7 @@ main() {
   install_cli_launcher "${final_dir}"
 
   print_install_notes
+  print_agent_summary
   log "Done. Run 'aiand --version' to check the install."
 }
 

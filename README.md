@@ -87,17 +87,19 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Claude Code](https://code.claude.com/docs),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
-and the [GitHub Copilot app](https://github.com/features/ai/github-app).
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
+[GitHub Copilot app](https://github.com/features/ai/github-app),
+[DeepSeek Harness](https://deepseek.com/en/harness/).
 
-`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp` and
-`aiand copilot` open the agent on ai&, and `aiand code` opens the default
-one, OpenCode. If you are signed out, aiand signs you in. If the agent is
-missing and its install command is an npm install, aiand offers to install
-it with the install command shown by `aiand <agent> --help`; other install
-hints are printed with no offer. If the agent is not wired
-yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp` and `copilot` use ai& afterwards too.
+`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
+`aiand copilot` and `aiand dsh` open the agent on ai&, and `aiand code`
+opens the default one, OpenCode. If you are signed out, aiand signs you in.
+If the agent is missing and its install command is an npm install, aiand
+offers to install it with the install command shown by
+`aiand <agent> --help`; other install hints are printed with no offer. If the
+agent is not wired yet, aiand runs `on` (below), so the plain `opencode`,
+`claude`, `codex --profile aiand`, `pi`, `omp`, `copilot` and `dsh` use ai&
+afterwards too.
 
 Everything after the agent name goes to the agent as typed, such as
 `aiand claude -p "explain this repo"`. Put aiand's own flags before the
@@ -249,6 +251,45 @@ is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
 for permanent wiring. Bare `aiand copilot-app` wires the app and tells you
 how to open it yourself — aiand cannot launch a GUI app, and anything after
 `copilot-app` errors.
+
+```bash
+aiand dsh                # open DeepSeek Harness on ai&, wiring it first if needed
+aiand dsh on             # wire DeepSeek Harness through ai&
+aiand dsh status         # check what dsh is actually configured to use
+aiand dsh off            # remove exactly what aiand added
+aiand run-agent dsh      # or: one dsh session on ai&, your ~/.dsh config and keys untouched
+```
+
+`on` writes two rows into `$DSH_HOME/cordis.patch.yml` (or
+`~/.dsh/cordis.patch.yml`): an `aiand` route on dsh's pi-ai adapter,
+speaking the gateway's OpenAI-compatible chat dialect with every model
+from the live catalog, and the default-model pin fresh sessions start
+on. Each model keeps the reasoning levels the catalog publishes.
+GLM-5.3 offers low, high, and max. A level the model does not publish
+stays hidden. If you leave the level unset, the engine default runs,
+and on GLM-5.3 that default is max. dsh never rewrites the patch layer itself, so your own rows survive
+`on` and `off`; `on` refuses a hand-written `llm-pi-ai` row that
+already declares providers. The key never appears in the YAML: it rides
+in `$DSH_HOME/.credentials.yaml` (readable only by you), and dsh
+resolves the ref on every request. A default ai& cannot serve is set
+aside until `off`; one it can serve is kept. Pass `--model <id>` to
+switch; `--model native` is refused, like Codex, because DeepSeek
+Harness's own default needs a DeepSeek key the gateway cannot serve.
+The config root moves wholesale with `$DSH_HOME`.
+
+`off` removes exactly what aiand wrote, including from the files `on`
+recorded when `$DSH_HOME` moved in between, and puts back a default it
+set aside. `status` reports what dsh is actually configured to use,
+read from the patch file itself. If a config ever ends up in a state you
+do not want, `aiand restore dsh --force` puts back the exact files from
+before aiand first touched them.
+
+`aiand run-agent dsh` runs one session with the real `~/.dsh` config and
+credentials untouched: a throwaway `$DSH_HOME` holds the same rows and the
+session key, and dsh starts in its `web` profile on a terminal or
+answers one piped task headless and exits. Session history still lands
+in your real `~/.dsh/sessions`, and the throwaway home is removed
+after the session ends.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

@@ -84,9 +84,12 @@ when coverage goes up; never lower it to land a change.
   round-trip for Oh My Pi's YAML), `scripts/copilot-smoke.mjs` (a real pinned
   Copilot CLI accepting the providers.json `on` generates and a headless `-p`
   round-trip, including provider-qualified selection of a slashed catalog
-  id), the offline `sbx-test.mjs --smoke`, `check:dist`, and `check:public`.
-  With the `AIAND_API_KEY` secret (pushes to main and pull requests from
-  branches of this repository), the test run includes the live OpenCode run.
+  id), `scripts/dsh-smoke.mjs` (a real pinned DeepSeek Harness accepting the
+  `$DSH_HOME` rows aiand generates and a headless round-trip through the
+  loopback double — the schema-drift tripwire for dsh's patch layer), the
+  offline `sbx-test.mjs --smoke`, `check:dist`, and `check:public`. With the
+  `AIAND_API_KEY` secret (pushes to main and pull requests from branches of
+  this repository), the test run includes the live OpenCode run.
 - `live`: the full `sbx-test.mjs` matrix against the real gateway, on the same
   events. Fork pull requests get no secrets and skip it.
 - `installer` / `installer-windows`: a real install into an isolated home on

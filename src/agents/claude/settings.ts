@@ -1,6 +1,6 @@
 import type { Model } from "../../api/models.js";
 import { DEFAULT_BASE_URL, trimSlash } from "../../config.js";
-import { resolveDefault } from "../catalog.js";
+import { inCatalog, resolveDefault } from "../catalog.js";
 import { asObject } from "../managed-file.js";
 import { buildModelPicker } from "./picker.js";
 
@@ -70,8 +70,8 @@ export function claudeBaseUrl(baseUrl?: string): string {
   return trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL;
 }
 
-export const inCatalog = (catalog: Model[], id: string): boolean =>
-  catalog.some((model) => model.id === id);
+/** Shared across adapters; re-exported for this module's consumers. */
+export { inCatalog };
 
 const aliasName = (model: string): string => model.replace(/\[1m\]$/i, "").toLowerCase();
 

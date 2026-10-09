@@ -1,4 +1,4 @@
-﻿# aiand one-line installer for Windows (PowerShell 5.1+).
+# aiand one-line installer for Windows (PowerShell 5.1+).
 #
 #   Invoke-RestMethod https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | Invoke-Expression
 #   .\install.ps1
@@ -89,15 +89,17 @@ function Show-AiandIntro {
     $useColor = Test-SupportsColor
     if ($useColor) { [Console]::Error.WriteLine("$esc[1;36m") }
     # 8 wordmark lines; leading spaces are significant for column alignment.
-    [Console]::Error.WriteLine('  █████████    █████   ██████')
-    [Console]::Error.WriteLine('  ███░░░░░███ ░░███   ███░░███')
-    [Console]::Error.WriteLine(' ░███    ░███  ░███  ░░██████')
-    [Console]::Error.WriteLine(' ░███████████  ░███   ██████')
-    [Console]::Error.WriteLine(' ░███░░░░░███  ░███ ░███░░███')
-    [Console]::Error.WriteLine(' ░███    ░███  ░███ ░███ ░░███')
-    [Console]::Error.WriteLine(' █████   █████ █████░░█████░███')
-    [Console]::Error.WriteLine('░░░░░   ░░░░░ ░░░░░  ░░░░░ ░░░')
-    if ($useColor) { [Console]::Error.WriteLine("$esc[0m") }
+    # Pure ASCII: with the BOM gone, Windows PowerShell 5.1 reads this file
+    # as ANSI, where the UTF-8 block bytes decode into cp1252 smart quotes
+    # that break the parser (0x91 inside a single-quoted literal).
+    [Console]::Error.WriteLine('  #########    #####   ######')
+    [Console]::Error.WriteLine('  ###.....### ....   ###..###')
+    [Console]::Error.WriteLine(' .###    .###  .###  ..######')
+    [Console]::Error.WriteLine(' .###########  .###   ######')
+    [Console]::Error.WriteLine(' .###.....###  .### ###..###')
+    [Console]::Error.WriteLine(' .###    .###  .### ### .###')
+    [Console]::Error.WriteLine(' #####   ##### #####..#####.###')
+    [Console]::Error.WriteLine('.....   .... .....  ..... ...')
     [Console]::Error.WriteLine('')
 }
 function Add-InstallNote {
@@ -107,6 +109,42 @@ function Add-InstallNote {
 function Write-InstallNotes {
     if ($script:InstallNotes.Count -eq 0) { return }
     foreach ($note in $script:InstallNotes) { Write-Output "Note: $note" }
+}
+# Coding-agent binaries the installer looks for, in display order. The
+# opencode/claude hint commands must stay identical to src/agents/detect.ts
+# INSTALL_HINTS (scripts/install-behavior.mjs checks); pi/omp are probed for
+# newer CLI releases that wire them, with their upstream install commands.
+function Get-AgentInstallHint {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    if ($Id -eq 'opencode') { return 'npm install -g opencode-ai@1.18.32' }
+    if ($Id -eq 'claude') { return 'npm install -g @anthropic-ai/claude-code' }
+    if ($Id -eq 'pi') { return 'npm install -g @mariozechner/pi-coding-agent' }
+    if ($Id -eq 'omp') { return 'bun install -g @oh-my-pi/pi-coding-agent' }
+    return ''
+}
+# Post-install summary on stdout (like Note: lines): which supported agents
+# are on PATH and the `aiand init` nudge. Nudge only: wiring needs an
+# interactive sign-in, so the installer never runs init itself.
+function Write-AgentSummary {
+    $order = @('opencode', 'claude', 'pi', 'omp')
+    $detected = @()
+    $missing = @()
+    foreach ($id in $order) {
+        if (Get-Command $id -ErrorAction SilentlyContinue) { $detected += $id } else { $missing += $id }
+    }
+    if ($detected.Count -eq 0) {
+        Write-Output 'No coding agents detected on this machine.'
+        foreach ($id in $order) { Write-Output ("  $id  Install it with: " + (Get-AgentInstallHint -Id $id)) }
+        Write-Output "Install one, then run 'aiand init'."
+        return
+    }
+    Write-Output 'Detected agents:'
+    foreach ($id in $detected) { Write-Output ("  " + [char]0x2713 + " $id") }
+    if ($missing.Count -gt 0) {
+        Write-Output 'Not installed:'
+        foreach ($id in $missing) { Write-Output ("  $id  Install it with: " + (Get-AgentInstallHint -Id $id)) }
+    }
+    Write-Output "Next: run 'aiand init' to wire them to ai&."
 }
 # Only https://github.com/aiandlabs/aiand-cli(.git) may be a URL source.
 # Local paths stay allowed: they carry no network trust decision.
@@ -359,7 +397,9 @@ function Ensure-Build {
     if ($env:AIAND_INSTALL_VERBOSE -eq '1') { $npmLoglevel = 'notice' }
     # --omit=dev would drop the TypeScript compiler the build needs; the CLI
     # itself ships zero runtime dependencies, so node_modules never runs.
-    try { Push-Location $SourceDir; try { & npm ci --ignore-scripts --no-fund --no-audit --loglevel="$npmLoglevel" 2>&1; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' } } finally { Pop-Location } } catch { throw 'error: staged aiand verification failed; the existing installation was left unchanged.' }
+    # --prefer-offline reuses the npm cache on re-runs/updates and falls
+    # back to the network on a cold machine.
+    try { Push-Location $SourceDir; try { & npm ci --ignore-scripts --no-fund --no-audit --prefer-offline --loglevel="$npmLoglevel" 2>&1; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' } } finally { Pop-Location } } catch { throw 'error: staged aiand verification failed; the existing installation was left unchanged.' }
     try {
         Push-Location $SourceDir
         try {
@@ -592,6 +632,7 @@ function Invoke-Main {
     Write-Step 'Installing CLI...'
     Install-CliLauncher -SourceDir $finalDir
     Write-InstallNotes
+    Write-AgentSummary
     Write-Step "Done. Run 'aiand --version' to check the install."
 }
 try {
