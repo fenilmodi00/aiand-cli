@@ -24,6 +24,27 @@ breaking changes while the command surface settles.
   under Anthropic names. A `modelPicker` of your own is kept, and `off`
   removes only the one `on` wrote. `aiand run-agent claude` lists them too.
 
+### Changed
+
+- Terminal color detection is tier-aware (`colorTier`): truecolor terminals
+  get exact colors, everything else falls back to the nearest xterm-256
+  color, and `FORCE_COLOR=3` opts into truecolor. The banner's brand red now
+  respects the tier instead of always emitting truecolor sequences.
+- The first bare `aiand` on a terminal plays a short welcome animation
+  (alt-screen block slide resolving into the wordmark, any key skips) before
+  the launcher menu; later runs skip straight to the menu. `AIAND_NO_WELCOME=1`
+  disables it without recording it as seen. Piped stdio is untouched.
+- On a TTY the run-agent routing banner right-aligns a dim `ai& models`
+  detail, and the post-session footer becomes a multi-line session receipt
+  (spent / in / cached / out, compact tokens, agent label, duration). Pipes
+  keep the single-line footer.
+
+### Fixed
+
+- Bare `aiand` no longer hangs after the launcher menu exits or steals
+  keystrokes from the launched agent: the menu now releases stdin's read
+  handle on every exit path.
+
 ## [0.3.0] - 2026-09-28
 
 ### Added

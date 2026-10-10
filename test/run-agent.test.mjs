@@ -26,7 +26,10 @@ import {
 } from "./helpers.mjs";
 
 const { run, routingBanner } = await import("../dist/commands/run-agent.js");
-const { sumSessionUsage, sessionUsageFooter } = await import("../dist/commands/session-usage.js");
+const { sessionReceipt, sumSessionUsage, sessionUsageFooter } = await import(
+  "../dist/commands/session-usage.js"
+);
+const { _setColorEnabled } = await import("../dist/cli/output.js");
 
 // --- Stub-agent scaffolding ------------------------------------------------
 // A temp bin dir holds shell stub scripts that dump the child env + argv to
@@ -429,6 +432,30 @@ describe("run-agent launcher", () => {
     assert.equal(routingBanner("X", ""), "aiand ▸ Routing X → ai&");
   });
 
+  test("routingBanner right-aligns a dim detail on a TTY width", () => {
+    const line = routingBanner("Claude Code", "zai-org/glm-5.3", "ai& models", 80);
+    // 51 visible columns + padding to the 76-column cap lands the detail
+    // at the right edge (min(76, max(24, width-2))).
+    assert.match(
+      line,
+      /^aiand ▸ Routing Claude Code → ai& \(zai-org\/glm-5\.3\)\s{25}(?:\x1b\[2m)?ai& models(?:\x1b\[22m)?$/,
+    );
+  });
+
+  test("routingBanner drops the detail when the line already fills the width", () => {
+    assert.equal(
+      routingBanner("Claude Code", "zai-org/glm-5.3", "ai& models", 40),
+      "aiand ▸ Routing Claude Code → ai& (zai-org/glm-5.3)",
+    );
+  });
+
+  test("routingBanner without a width keeps the piped form exactly", () => {
+    assert.equal(
+      routingBanner("Claude Code", "zai-org/glm-5.3", "ai& models"),
+      "aiand ▸ Routing Claude Code → ai& (zai-org/glm-5.3)",
+    );
+  });
+
   test("successful launch prints the banner to stderr before child output", async () => {
     plantStub(binDir, "opencode", `echo child-marker >&2\n${CAPTURE_STUB}`);
     const capture = captureDir();
@@ -621,6 +648,76 @@ describe("session usage footer", () => {
         currency: "jpy",
       }),
       "aiand ▸ session: 1 in / 1 out · ¥2.5000 (jpy)",
+    );
+  });
+});
+
+describe("session receipt", () => {
+  test("renders four cells with header and bold spend at TTY width", () => {
+    _setColorEnabled(true);
+    try {
+      const receipt = sessionReceipt(
+        {
+          inputTokens: 123456,
+          outputTokens: 78901,
+          cachedTokens: 456789,
+          cost: 0.05612,
+          currency: "usd",
+        },
+        "Claude Code",
+        305_000,
+        80,
+      );
+      const lines = receipt.split("\n");
+      assert.match(lines[1], /Session receipt · Claude Code · 5min/);
+      assert.match(lines[2], /\x1b\[1m\$0\.06\x1b\[22m\s+123\.5K\s+456\.8K\s+78\.9K$/);
+      assert.match(lines[3].trimEnd(), /spent\s+in\s+cached\s+out$/);
+    } finally {
+      _setColorEnabled(false);
+    }
+  });
+
+  test("falls back to two cells below width 34", () => {
+    const receipt = sessionReceipt(
+      { inputTokens: 10, outputTokens: 5, cachedTokens: 0, cost: 0.02, currency: null },
+      "OpenCode",
+      30_000,
+      30,
+    );
+    const lines = receipt.split("\n");
+    assert.match(lines[2], /\$0\.02\s+5$/);
+    assert.match(lines[3].trimEnd(), /spent\s+out$/);
+    assert.doesNotMatch(lines[3], /cached/);
+  });
+
+  test("sub-cent costs keep four decimals; non-finite prints the dash", () => {
+    const tiny = sessionReceipt(
+      { inputTokens: 100, outputTokens: 50, cachedTokens: 0, cost: 0.0012, currency: "usd" },
+      "X",
+      5_400_000,
+      80,
+    );
+    assert.match(tiny.split("\n")[1], /1h 30m$/);
+    assert.match(tiny.split("\n")[2], /\$0\.0012/);
+
+    const nanCost = sessionReceipt(
+      { inputTokens: 1, outputTokens: 1, cachedTokens: 0, cost: Number.NaN, currency: "usd" },
+      "X",
+      30_000,
+      80,
+    );
+    assert.match(nanCost.split("\n")[2], /\$—/);
+  });
+
+  test("null when the session has no tokens", () => {
+    assert.equal(
+      sessionReceipt(
+        { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cost: 0, currency: null },
+        "X",
+        1000,
+        80,
+      ),
+      null,
     );
   });
 });

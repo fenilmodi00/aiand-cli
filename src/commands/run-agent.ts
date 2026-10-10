@@ -7,7 +7,7 @@ import { CliError, EXIT } from "../cli/errors.js";
 import { err, out, style } from "../cli/output.js";
 import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
-import { fetchSessionUsage, sessionUsageFooter } from "./session-usage.js";
+import { fetchSessionUsage, sessionReceipt, sessionUsageFooter } from "./session-usage.js";
 
 // Aligns agent labels with the Options column below.
 const HELP_ID_WIDTH = 28;
@@ -113,11 +113,24 @@ function inlineValue(token: string, name: string): string {
 
 /**
  * One-session routing line, printed to stderr after the session key resolves
- * and before the agent binary spawns.
+ * and before the agent binary spawns. On a TTY (width given) a dim detail is
+ * right-aligned on the same line, TogetherLink-style; without a width the
+ * line stays exactly the piped form.
  */
-export function routingBanner(agentLabel: string, model: string | undefined): string {
+export function routingBanner(
+  agentLabel: string,
+  model: string | undefined,
+  detail?: string,
+  width?: number,
+): string {
   const suffix = model ? ` (${model})` : "";
-  return `aiand ▸ Routing ${agentLabel} → ai&${suffix}`;
+  const line = `aiand ▸ Routing ${agentLabel} → ai&${suffix}`;
+  if (detail === undefined || width === undefined) return line;
+  const target = Math.min(76, Math.max(24, width - 2));
+  // The banner text is plain ASCII before the dim detail; length == columns.
+  const visible = line.length;
+  if (visible >= target) return line;
+  return `${line}${" ".repeat(target - visible)}${style.dim(detail)}`;
 }
 
 export async function run(argv: string[]): Promise<void> {
@@ -181,7 +194,8 @@ export async function run(argv: string[]): Promise<void> {
     baseUrl,
   });
 
-  err(routingBanner(adapter.label, split.model ?? profile.model));
+  const routingWidth = process.stderr.isTTY ? process.stderr.columns : undefined;
+  err(routingBanner(adapter.label, split.model ?? profile.model, "ai& models", routingWidth));
 
   // Default signal disposition would kill the parent before finally runs,
   // orphaning the adapter's throwaway key file (chat/run trap SIGINT the same way).
@@ -247,8 +261,22 @@ export async function run(argv: string[]): Promise<void> {
   // silent on any failure, after cleanup so the exit code is never touched.
   try {
     const totals = await fetchSessionUsage(logSession, sessionStart);
-    const footer = totals === null ? null : sessionUsageFooter(totals);
-    if (footer !== null) err(style.dim(footer));
+    // TTY gets the multi-line receipt; pipes keep the one-line footer.
+    if (process.stderr.isTTY) {
+      const receipt =
+        totals === null
+          ? null
+          : sessionReceipt(
+              totals,
+              adapter.label,
+              Date.now() - sessionStart,
+              process.stderr.columns ?? 80,
+            );
+      if (receipt !== null) err(receipt);
+    } else {
+      const footer = totals === null ? null : sessionUsageFooter(totals);
+      if (footer !== null) err(style.dim(footer));
+    }
   } catch {
     // The footer is decoration: its failure must never surface over exit code.
   }

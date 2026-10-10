@@ -10,6 +10,7 @@ import { printBanner } from "./cli/ui/banner.js";
 import { runLauncherMenu } from "./cli/ui/menu.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
+import { configDir } from "./fsutil.js";
 import { finalizeOnVersionChange } from "./housekeeping/finalize.js";
 import { checkForUpdate } from "./housekeeping/update.js";
 
@@ -159,6 +160,12 @@ async function main(): Promise<number> {
     printBanner({ version: VERSION });
     return 0;
   }
+  // Not listed in help.
+  if (first === "welcome") {
+    const { playWelcome } = await import("./cli/ui/welcome.js");
+    await playWelcome();
+    return 0;
+  }
 
   if (!first) {
     // Bare `aiand` on a terminal is the launcher menu (TogetherLink's `tlink`
@@ -166,6 +173,17 @@ async function main(): Promise<number> {
     // by splitLeadingGlobals and is meaningless to the menu's dispatch, so it
     // is stripped instead of forwarded to run-agent.
     if (isInteractive()) {
+      // Lazy: bare `aiand` must not pay for the welcome module when the
+      // animation has already played (or is disabled).
+      const { playWelcome, shouldPlayWelcome, markWelcomePlayed } = await import(
+        "./cli/ui/welcome.js"
+      );
+      const stateDir = configDir();
+      // AIAND_NO_WELCOME suppresses without marking, so it re-enables later.
+      if (process.env.AIAND_NO_WELCOME !== "1" && shouldPlayWelcome(stateDir)) {
+        await playWelcome();
+        markWelcomePlayed(stateDir);
+      }
       const code = await runLauncherMenu({
         argv: [...globalArgs.filter((arg) => arg !== "--json"), ...rest],
       });

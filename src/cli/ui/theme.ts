@@ -1,33 +1,14 @@
-import { colorsEnabled } from "./color.js";
+import { colorTier, tierFg } from "./color.js";
 
 /** SGR reset. */
 const RESET = "\x1b[39m";
 
-/** ai& brand — banner art and truecolor theme (from aiand.com). */
+/** ai& brand — banner art and the theme accent (from aiand.com). */
 const BRAND = {
   red: "#C70007",
 } as const;
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const raw = hex.replace("#", "");
-  const n = Number.parseInt(raw, 16);
-  return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
-}
-
-function fgHex(hex: string): string {
-  const { r, g, b } = hexToRgb(hex);
-  return `\x1b[38;2;${r};${g};${b}m`;
-}
-
 type StyleFn = (text: string) => string;
-
-function wrap(open: string, close: string): StyleFn {
-  return (text) => `${open}${text}${close}`;
-}
-
-function plainHex(hex: string): StyleFn {
-  return wrap(fgHex(hex), RESET);
-}
 
 export type Theme = {
   color: boolean;
@@ -36,20 +17,25 @@ export type Theme = {
 };
 
 /**
- * Banner-only truecolor theme. Command tables still use cli/output.ts.
- * Color on/off is decided solely by colorsEnabled(stream).
+ * Banner theme. Command tables still use cli/output.ts. The color tier (not
+ * just on/off) decides the brand encoding, so an ansi256 terminal gets the
+ * nearest cube color instead of raw truecolor escapes.
  */
-export function createTheme(stream: { isTTY?: boolean } = process.stdout): Theme {
-  const color = colorsEnabled(stream);
+export function createTheme(
+  stream: { isTTY?: boolean } = process.stdout,
+  env: NodeJS.ProcessEnv = process.env,
+): Theme {
+  const tier = colorTier(stream, env);
 
-  if (!color) {
-    const plain = (text: string) => text;
+  if (tier === "none") {
+    const plain: StyleFn = (text) => text;
     return { color: false, brand: plain, muted: plain };
   }
 
+  const brandOpen = tierFg(tier, BRAND.red);
   return {
     color: true,
-    brand: plainHex(BRAND.red),
-    muted: wrap("\x1b[2m", "\x1b[22m"),
+    brand: (text) => `${brandOpen}${text}${RESET}`,
+    muted: (text) => `\x1b[2m${text}\x1b[22m`,
   };
 }

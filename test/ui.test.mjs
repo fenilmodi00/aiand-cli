@@ -13,7 +13,7 @@ withTestEnv("aiand-ui-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = cfg;
 });
 
-const { colorsEnabled } = await import("../dist/cli/ui/color.js");
+const { colorTier, colorsEnabled, tierFg } = await import("../dist/cli/ui/color.js");
 const { printBanner } = await import("../dist/cli/ui/banner.js");
 const { BANNER_ART } = await import("../dist/cli/ui/banners/art.js");
 const { stripBannerMarkup, normalizeBannerArt } = await import("../dist/cli/ui/banner-render.js");
@@ -36,6 +36,76 @@ describe("ui color", () => {
     withEnv({ NO_COLOR: undefined, FORCE_COLOR: undefined }, () => {
       assert.equal(colorsEnabled({ isTTY: false }), false);
     }));
+});
+
+describe("ui color tier", () => {
+  const tier = (isTTY, changes) =>
+    withEnv(
+      {
+        NO_COLOR: undefined,
+        FORCE_COLOR: undefined,
+        TERM: undefined,
+        COLORTERM: undefined,
+        TERM_PROGRAM: undefined,
+        WT_SESSION: undefined,
+        KITTY_WINDOW_ID: undefined,
+        ...changes,
+      },
+      () => colorTier({ isTTY }, process.env),
+    );
+
+  test("NO_COLOR wins over a TTY", async () => {
+    assert.equal(await tier(true, { NO_COLOR: "1", FORCE_COLOR: "3" }), "none");
+  });
+
+  test("FORCE_COLOR=3 forces truecolor even off-tty", async () => {
+    assert.equal(await tier(false, { FORCE_COLOR: "3" }), "truecolor");
+  });
+
+  test("FORCE_COLOR=1 on a TTY-less stream is still ansi256, not truecolor", async () => {
+    assert.equal(await tier(false, { FORCE_COLOR: "1" }), "ansi256");
+  });
+
+  test("dumb TERM disables color on a TTY", async () => {
+    assert.equal(await tier(true, { TERM: "dumb" }), "none");
+  });
+
+  test("plain TTY with no truecolor signals is ansi256", async () => {
+    assert.equal(await tier(true, { TERM: "xterm-256color" }), "ansi256");
+  });
+
+  test("COLORTERM=truecolor upgrades a TTY", async () => {
+    assert.equal(await tier(true, { TERM: "xterm-256color", COLORTERM: "truecolor" }), "truecolor");
+  });
+
+  test("WT_SESSION marks Windows Terminal truecolor", async () => {
+    assert.equal(
+      await tier(true, { TERM: "xterm-256color", WT_SESSION: "some-guid" }),
+      "truecolor",
+    );
+  });
+
+  test("non-tty without FORCE_COLOR is none", async () => {
+    assert.equal(await tier(false, {}), "none");
+  });
+
+  test("tierFg never emits truecolor escapes on the ansi256 tier", () => {
+    assert.match(tierFg("ansi256", "#C70007"), /^\x1b\[38;5;\d+m$/);
+    assert.doesNotMatch(tierFg("ansi256", "#C70007"), /38;2/);
+  });
+
+  test("tierFg maps the brand red into the red cube on ansi256", () => {
+    // #C70007 → nearest xterm color must be a red-family index (16..21 or 52..57…).
+    const esc = tierFg("ansi256", "#C70007");
+    const idx = Number(esc.match(/38;5;(\d+)/)?.[1]);
+    assert.ok(idx >= 16 && idx < 232, `expected a cube/gray index, got ${idx}`);
+    assert.notEqual(idx >= 232, true, "brand red must not map to the gray ramp");
+  });
+
+  test("tierFg emits truecolor on the truecolor tier and nothing on none", () => {
+    assert.equal(tierFg("truecolor", "#C70007"), "\x1b[38;2;199;0;7m");
+    assert.equal(tierFg("none", "#C70007"), "");
+  });
 });
 
 describe("ui banner", () => {

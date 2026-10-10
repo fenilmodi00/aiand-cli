@@ -35,33 +35,44 @@ export async function runLauncherMenu(opts: {
   input?: PromptInput;
   output?: PromptOutput;
 }): Promise<number> {
+  // #57: runPrompt's restore leaves stdin resumed (login's piped read needs
+  // that), but a resumed TTY read handle also holds the event loop open, so
+  // bare `aiand` would hang after the menu and race the launched agent for
+  // keystrokes. Pause on the way out; a later prompt resumes it (idempotent).
+  const input = opts.input ?? process.stdin;
   let expanded = false;
-  for (let i = 0; i < 2; i++) {
-    const picked = await promptSelect({
-      message: "What do you want to run?",
-      choices: launcherMenuChoices({ includeMissing: expanded }),
-      input: opts.input,
-      output: opts.output,
-    });
-    if (picked === null) {
-      out(style.dim("Cancelled."));
-      return 130;
-    }
-    if (picked === "quit") return 0;
-    if (picked === "show-more") {
-      expanded = true;
-      continue;
-    }
-    if (picked === "wire") {
-      // Lazy: bare `aiand` must not pay for command modules it never runs.
-      const init = await import("../../commands/init.js");
-      await init.run(opts.argv);
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const picked = await promptSelect({
+        message: "What do you want to run?",
+        choices: launcherMenuChoices({ includeMissing: expanded }),
+        input,
+        output: opts.output,
+      });
+      if (picked === null) {
+        out(style.dim("Cancelled."));
+        return 130;
+      }
+      if (picked === "quit") return 0;
+      if (picked === "show-more") {
+        expanded = true;
+        continue;
+      }
+      if (picked === "wire") {
+        // Lazy: bare `aiand` must not pay for command modules it never runs
+        // (startup latency; static imports would load every command eagerly).
+        const { run: runInit } = await import("../../commands/init.js");
+        await runInit(opts.argv);
+        return 0;
+      }
+      // Lazy: run-agent loads only when an agent is picked (same reason).
+      const { run: runAgent } = await import("../../commands/run-agent.js");
+      await runAgent([picked, ...opts.argv]);
       return 0;
     }
-    // Lazy: run-agent loads only when an agent is picked.
-    const runAgent = await import("../../commands/run-agent.js");
-    await runAgent.run([picked, ...opts.argv]);
     return 0;
+  } finally {
+    // #57: every exit path releases stdin's read handle.
+    input.pause();
   }
-  return 0;
 }
