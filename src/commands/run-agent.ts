@@ -37,6 +37,7 @@ type Invocation = {
   profile: string | undefined;
   baseUrl: string | undefined;
   help: boolean;
+  json: boolean;
   passthrough: string[];
 };
 
@@ -57,6 +58,7 @@ function splitInvocation(argv: string[]): Invocation {
   let profile: string | undefined;
   let baseUrl: string | undefined;
   let help = false;
+  let json = false;
   const prepend: string[] = [];
 
   let i = 0;
@@ -69,6 +71,11 @@ function splitInvocation(argv: string[]): Invocation {
     }
     if (token === "--help" || token === "-h") {
       help = true;
+      i += 1;
+    } else if (token === "--json") {
+      // A USAGE global, not an agent flag: consumed here so it never leaks
+      // into the child's argv, and recorded to mute the usage footer.
+      json = true;
       i += 1;
     } else if (token === "--model") {
       model = takeValue(head, i, "--model");
@@ -96,7 +103,7 @@ function splitInvocation(argv: string[]): Invocation {
     }
   }
 
-  return { agent, model, profile, baseUrl, help, passthrough: [...prepend, ...tail] };
+  return { agent, model, profile, baseUrl, help, json, passthrough: [...prepend, ...tail] };
 }
 
 function takeValue(head: string[], i: number, name: string): string {
@@ -259,26 +266,30 @@ export async function run(argv: string[]): Promise<void> {
   // Post-session usage footer: best-effort only — the fetch aborts itself at
   // its own deadline (a hung socket would otherwise keep the process alive),
   // silent on any failure, after cleanup so the exit code is never touched.
-  try {
-    const totals = await fetchSessionUsage(logSession, sessionStart);
-    // TTY gets the multi-line receipt; pipes keep the one-line footer.
-    if (process.stderr.isTTY) {
-      const receipt =
-        totals === null
-          ? null
-          : sessionReceipt(
-              totals,
-              adapter.label,
-              Date.now() - sessionStart,
-              process.stderr.columns ?? 80,
-            );
-      if (receipt !== null) err(receipt);
-    } else {
-      const footer = totals === null ? null : sessionUsageFooter(totals);
-      if (footer !== null) err(style.dim(footer));
+  // --json mutes it: machine-readable stdout must not share the terminal
+  // with exit decoration.
+  if (!split.json) {
+    try {
+      const totals = await fetchSessionUsage(logSession, sessionStart);
+      // TTY gets the multi-line receipt; pipes keep the one-line footer.
+      if (process.stderr.isTTY) {
+        const receipt =
+          totals === null
+            ? null
+            : sessionReceipt(
+                totals,
+                adapter.label,
+                Date.now() - sessionStart,
+                process.stderr.columns ?? 80,
+              );
+        if (receipt !== null) err(receipt);
+      } else {
+        const footer = totals === null ? null : sessionUsageFooter(totals);
+        if (footer !== null) err(style.dim(footer));
+      }
+    } catch {
+      // The footer is decoration: its failure must never surface over exit code.
     }
-  } catch {
-    // The footer is decoration: its failure must never surface over exit code.
   }
 }
 

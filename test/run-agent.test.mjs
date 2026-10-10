@@ -752,6 +752,41 @@ describe("run-agent session usage footer", () => {
     });
   });
 
+  test("--json suppresses the usage footer even when the logs report usage", async () => {
+    await withMockGateway(async ({ url }) => {
+      const base = `${url}/stub/session-usage`;
+      seedCatalogCache(cfg, { baseUrl: base, models: CATALOG });
+      plantCaptureStub("opencode");
+      const capture = captureDir();
+      try {
+        const { code, stderr } = await stubCli(
+          ["opencode", "--json"],
+          { AIAND_BASE_URL: base },
+          capture,
+        );
+        assert.equal(code, 42);
+        assert.doesNotMatch(stderr, /aiand ▸ session:/);
+        assert.doesNotMatch(stderr, /Session receipt/);
+      } finally {
+        seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+        rmSync(capture, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("--json is not forwarded to the agent binary", async () => {
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["opencode", "--json"], {}, capture);
+      assert.equal(code, 42);
+      // The capture stub writes the child's argv to AIAND_CAPTURE.args.
+      const args = readFileSync(join(capture, "capture.args"), "utf8");
+      assert.doesNotMatch(args, /--json/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("a gateway with no /logs route prints no footer, exit code unaffected", async () => {
     await withMockGateway(async ({ url }) => {
       const base = `${url}/stub/logs-404`;
