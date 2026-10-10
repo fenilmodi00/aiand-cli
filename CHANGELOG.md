@@ -47,6 +47,9 @@ breaking changes while the command surface settles.
 - `aiand run-agent --json` no longer leaks `--json` into the launched
   agent's own argv, and the post-session usage footer is suppressed under
   `--json` so machine-readable output stays undecorated.
+- Piping output into a consumer that exits early (`aiand models | head`)
+  crashed the CLI with an unhandled EPIPE stack trace; it now exits quietly
+  with its own exit code, like any Unix tool (#50).
 
 ## [0.3.0] - 2026-09-28
 

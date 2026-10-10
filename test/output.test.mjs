@@ -16,7 +16,9 @@ function capture(fn) {
   } finally {
     process.stdout.write = original;
   }
-  return lines.join("").split("\n").filter(Boolean);
+  // out() writes EOL, which is \r\n on Windows: normalize so assertions
+  // see the same lines on every platform.
+  return lines.join("").replaceAll("\r\n", "\n").split("\n").filter(Boolean);
 }
 
 function columns(s) {

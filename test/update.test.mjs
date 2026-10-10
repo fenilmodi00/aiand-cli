@@ -175,7 +175,7 @@ describe("checkForUpdate", () => {
 describe("updateInstallHint", () => {
   test("install.sh launch returns a runnable bash command", () => {
     assert.equal(
-      updateInstallHint({ launched: "/tmp/fixture/.aiand/cli/dist/index.js" }),
+      updateInstallHint({ platform: "linux", launched: "/tmp/fixture/.aiand/cli/dist/index.js" }),
       "bash ~/.aiand/cli/install.sh",
     );
   });
@@ -202,7 +202,11 @@ describe("updateInstallHint", () => {
 
   test("AIAND_DIR launch returns the install hint", () => {
     assert.equal(
-      updateInstallHint({ launched: "/opt/aiand/dist/index.js", aiandDir: "/opt/aiand" }),
+      updateInstallHint({
+        platform: "linux",
+        launched: "/opt/aiand/dist/index.js",
+        aiandDir: "/opt/aiand",
+      }),
       "bash ~/.aiand/cli/install.sh",
     );
   });

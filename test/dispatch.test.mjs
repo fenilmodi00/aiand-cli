@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -11,6 +12,7 @@ import {
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
 import {
+  BIN,
   CLOSED_URL,
   cliEnv,
   FAKE_API_KEY,
@@ -99,6 +101,23 @@ describe("dispatch subprocess", () => {
     const parsed = JSON.parse(stdout);
     assert.ok(parsed.auth && typeof parsed.auth === "object");
     assert.ok(Array.isArray(parsed.agents));
+  });
+
+  // #50: a downstream consumer closing the pipe (head, less) must not turn
+  // the next stdout write into an unhandled EPIPE crash with a stack trace —
+  // the CLI exits quietly with its code instead (Unix SIGPIPE semantics).
+  test("a closed stdout pipe exits cleanly, not with an EPIPE crash", async () => {
+    const child = spawn(process.execPath, [BIN, "--help"], {
+      env: freshEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    // Kill the read end immediately: every write after this is EPIPE.
+    child.stdout.destroy();
+    const code = await new Promise((resolve) => child.on("close", (c) => resolve(c ?? 1)));
+    assert.equal(code, 0);
+    assert.doesNotMatch(stderr, /EPIPE|Unexpected error/);
   });
 });
 

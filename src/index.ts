@@ -247,6 +247,15 @@ async function main(): Promise<number> {
   return 0;
 }
 
+// A downstream consumer (head, less, a closed socket) closing the pipe turns
+// the next stdout write into an EPIPE crash with a stack trace. Dying quietly
+// with SIGPIPE semantics is what a Unix tool does; the process still exits
+// with its code from exitCode above.
+process.stdout?.on?.("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EPIPE") process.exit(process.exitCode ?? 0);
+  throw e;
+});
+
 if (isMain()) {
   main()
     .then((code) => {
