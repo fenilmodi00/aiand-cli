@@ -16,6 +16,9 @@
 //   /stub/500/*          every endpoint answers 500 (gateway outage).
 //   /stub/two-orgs/*     /api/orgs lists two Orgs (First Org, Second Org).
 //   /stub/vision-catalog/* /v1/models serves one vision + one text-only model.
+//   /stub/hung-logs/*    /logs accepts the request and never replies; every
+//                        other route behaves as the happy path, so the
+//                        footer fetch must abort for the CLI to exit.
 //   (no prefix)          happy path: 200 identity + orgs.
 //
 // Response shapes match src/api/account.ts (/api/user, /api/orgs) and
@@ -159,7 +162,40 @@ const server = createServer((req, res) => {
   }
 
   if (rest === "/logs") {
+    if (scenario === "hung-logs") return; // accept the request, never reply
     if (scenario === "logs-404") return reply(res, 404, { error: "not_found" });
+    if (scenario === "session-usage") {
+      // Footer fixture: one entry a minute before "now" (must be filtered
+      // out client-side) and one at request time (must be summed). The
+      // query check pins the bounded single-page fetch (range + limit).
+      if (url.searchParams.get("range") !== "1h" || url.searchParams.get("limit") !== "100") {
+        return reply(res, 500, { error: "unexpected logs query" });
+      }
+      const now = Date.now();
+      const entry = (id, input_tokens, output_tokens, cost, created_at) => ({
+        id,
+        model: "aiand/glm-5.3",
+        api_key: "sk-test",
+        status_code: 200,
+        ttft_ms: null,
+        latency_ms: null,
+        input_tokens,
+        output_tokens,
+        cached_tokens: 10,
+        cost,
+        currency: "usd",
+        created_at,
+      });
+      return reply(res, 200, {
+        data: [
+          entry("log-old", 999999, 888888, "9.9999", new Date(now - 60_000).toISOString()),
+          entry("log-new", 1000, 200, "0.0123", new Date(now).toISOString()),
+        ],
+        has_more: false,
+        next_after: null,
+        next_after_id: null,
+      });
+    }
     return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
   }
 

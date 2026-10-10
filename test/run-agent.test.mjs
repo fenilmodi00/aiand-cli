@@ -21,10 +21,12 @@ import {
   seedCatalogCache,
   WAIT_TIMEOUT_MS,
   withEnv,
+  withMockGateway,
   withTestEnv,
 } from "./helpers.mjs";
 
-const { run } = await import("../dist/commands/run-agent.js");
+const { run, routingBanner } = await import("../dist/commands/run-agent.js");
+const { sumSessionUsage, sessionUsageFooter } = await import("../dist/commands/session-usage.js");
 
 // --- Stub-agent scaffolding ------------------------------------------------
 // A temp bin dir holds shell stub scripts that dump the child env + argv to
@@ -412,6 +414,64 @@ describe("run-agent launcher", () => {
     }
   });
 
+  test("routingBanner includes the model parenthetical when a model resolves", () => {
+    assert.equal(
+      routingBanner("Claude Code", "zai-org/glm-5.3"),
+      "aiand ▸ Routing Claude Code → ai& (zai-org/glm-5.3)",
+    );
+  });
+
+  test("routingBanner omits the parenthetical when no model resolves", () => {
+    assert.equal(routingBanner("OpenCode", undefined), "aiand ▸ Routing OpenCode → ai&");
+  });
+
+  test("routingBanner treats an empty model as absent", () => {
+    assert.equal(routingBanner("X", ""), "aiand ▸ Routing X → ai&");
+  });
+
+  test("successful launch prints the banner to stderr before child output", async () => {
+    plantStub(binDir, "opencode", `echo child-marker >&2\n${CAPTURE_STUB}`);
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(["opencode", "--model", "aiand/glm-5.3"], {}, capture);
+      assert.equal(code, 42);
+      const banner = "aiand ▸ Routing OpenCode → ai& (aiand/glm-5.3)";
+      assert.ok(stderr.includes(banner), `banner in stderr:\n${stderr}`);
+      assert.ok(
+        stderr.indexOf(banner) < stderr.indexOf("child-marker"),
+        `banner before child output:\n${stderr}`,
+      );
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("omitted --model prints the banner without a model parenthetical", async () => {
+    plantCaptureStub("opencode");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(["opencode"], {}, capture);
+      assert.equal(code, 42);
+      assert.match(stderr, /aiand ▸ Routing OpenCode → ai&/);
+      assert.doesNotMatch(stderr, /aiand ▸ Routing OpenCode → ai& \(/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("missing binary prints no routing banner", async () => {
+    rmSync(join(binDir, "opencode"), { force: true });
+    const capture = captureDir();
+    const path = stubsOnlyPath();
+    try {
+      const { code, stderr } = await stubCli(["opencode"], { PATH: path }, capture);
+      assert.equal(code, 127);
+      assert.doesNotMatch(stderr, /▸ Routing/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("http loopback --base-url passes https validation", async () => {
     // Same sessionless env: the failure must come from a later stage
     // (session, detection), never the https guard.
@@ -469,4 +529,168 @@ describe("run-agent launcher", () => {
       }
     });
   }
+});
+
+describe("session usage footer", () => {
+  test("sumSessionUsage treats null tokens as 0 and adds entries up", () => {
+    const totals = sumSessionUsage([
+      { input_tokens: 100, output_tokens: null, cached_tokens: 5, cost: 0.5, currency: "usd" },
+      { input_tokens: null, output_tokens: 40, cached_tokens: null, cost: 0.25, currency: null },
+    ]);
+    assert.deepEqual(totals, {
+      inputTokens: 100,
+      outputTokens: 40,
+      cachedTokens: 5,
+      cost: 0.75,
+      currency: "usd",
+    });
+  });
+
+  test("sumSessionUsage parses cost strings and drops NaN costs", () => {
+    const totals = sumSessionUsage([
+      { input_tokens: 1, output_tokens: 1, cached_tokens: null, cost: "0.0123", currency: null },
+      {
+        input_tokens: 1,
+        output_tokens: 1,
+        cached_tokens: null,
+        cost: "not-a-number",
+        currency: null,
+      },
+    ]);
+    assert.equal(totals.cost, 0.0123);
+    assert.equal(totals.inputTokens, 2);
+  });
+
+  test("sessionUsageFooter is null when in+out tokens are zero", () => {
+    assert.equal(
+      sessionUsageFooter({
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 7,
+        cost: 0.5,
+        currency: null,
+      }),
+      null,
+    );
+  });
+
+  test("sessionUsageFooter formats thousands and 4-decimal USD", () => {
+    assert.equal(
+      sessionUsageFooter({
+        inputTokens: 45231,
+        outputTokens: 8210,
+        cachedTokens: 0,
+        cost: 0.0123,
+        currency: null,
+      }),
+      "aiand ▸ session: 45,231 in / 8,210 out · $0.0123",
+    );
+  });
+
+  test("sessionUsageFooter renders cached tokens only when nonzero", () => {
+    assert.equal(
+      sessionUsageFooter({
+        inputTokens: 45231,
+        outputTokens: 8210,
+        cachedTokens: 12004,
+        cost: 0.0123,
+        currency: null,
+      }),
+      "aiand ▸ session: 45,231 in / 8,210 out · 12,004 cached · $0.0123",
+    );
+  });
+
+  test("sessionUsageFooter appends the lowercase code for non-usd", () => {
+    assert.equal(
+      sessionUsageFooter({
+        inputTokens: 12,
+        outputTokens: 3,
+        cachedTokens: 0,
+        cost: 1.2345,
+        currency: "eur",
+      }),
+      "aiand ▸ session: 12 in / 3 out · 1.2345 (eur)",
+    );
+    // A known symbol still prefixes the amount, then the code.
+    assert.equal(
+      sessionUsageFooter({
+        inputTokens: 1,
+        outputTokens: 1,
+        cachedTokens: 0,
+        cost: 2.5,
+        currency: "jpy",
+      }),
+      "aiand ▸ session: 1 in / 1 out · ¥2.5000 (jpy)",
+    );
+  });
+});
+
+describe("run-agent session usage footer", () => {
+  test("stderr footer after child exit sums only this session's entries", async () => {
+    await withMockGateway(async ({ url }) => {
+      const base = `${url}/stub/session-usage`;
+      seedCatalogCache(cfg, { baseUrl: base, models: CATALOG });
+      // Echo a marker from the child so the footer's position after the
+      // session (not before spawn) is observable on the same stream.
+      plantStub(binDir, "opencode", `echo child-marker >&2\n${CAPTURE_STUB}`);
+      const capture = captureDir();
+      try {
+        const { code, stdout, stderr } = await stubCli(
+          ["opencode"],
+          { AIAND_BASE_URL: base },
+          capture,
+        );
+        assert.equal(code, 42);
+        const footer = "aiand ▸ session: 1,000 in / 200 out · 10 cached · $0.0123";
+        assert.ok(stderr.includes(footer), `footer in stderr:\n${stderr}`);
+        assert.ok(
+          stderr.indexOf("child-marker") < stderr.indexOf(footer),
+          `footer after child output:\n${stderr}`,
+        );
+        assert.doesNotMatch(stdout, /aiand ▸ session:/);
+      } finally {
+        seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+        rmSync(capture, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("a gateway with no /logs route prints no footer, exit code unaffected", async () => {
+    await withMockGateway(async ({ url }) => {
+      const base = `${url}/stub/logs-404`;
+      seedCatalogCache(cfg, { baseUrl: base, models: CATALOG });
+      plantCaptureStub("opencode");
+      const capture = captureDir();
+      try {
+        const { code, stderr } = await stubCli(["opencode"], { AIAND_BASE_URL: base }, capture);
+        assert.equal(code, 42);
+        assert.doesNotMatch(stderr, /aiand ▸ session:/);
+      } finally {
+        seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+        rmSync(capture, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("a hung /logs reply aborts at the deadline: exit bounded, no footer", async () => {
+    await withMockGateway(async ({ url }) => {
+      const base = `${url}/stub/hung-logs`;
+      seedCatalogCache(cfg, { baseUrl: base, models: CATALOG });
+      plantCaptureStub("opencode");
+      const capture = captureDir();
+      const started = Date.now();
+      try {
+        const { code, stderr } = await stubCli(["opencode"], { AIAND_BASE_URL: base }, capture);
+        // The child's code still propagates, and the footer fetch's abort
+        // (~1.5s) bounds the exit: without it, the hung fetch socket keeps
+        // the event loop alive and runCli never resolves.
+        assert.equal(code, 42);
+        assert.doesNotMatch(stderr, /aiand ▸ session:/);
+        assert.ok(Date.now() - started < 10_000, "exit bounded by the abort");
+      } finally {
+        seedCatalogCache(cfg, { baseUrl: "https://api.aiand.com", models: CATALOG });
+        rmSync(capture, { recursive: true, force: true });
+      }
+    });
+  });
 });

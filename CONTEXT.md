@@ -88,6 +88,12 @@ injected into its environment or a throwaway overlay, leaving user files
 untouched. Works without a prior `on`; an optional convenience beside
 permanent `on`, never a replacement. _Avoid:_ wrapper, session alias.
 
+**Launcher menu** - the interactive picker that bare `aiand` opens on a
+terminal: pick an installed agent for a one-session Launcher run, wire agents
+permanently, or see install commands for agents not yet installed. Piped
+stdio never opens it — that prints the plain help text. _Avoid:_ dashboard,
+home screen.
+
 **Install hint** - the official install command and docs URL printed for a
 missing agent binary. Detection never installs agents.
 

@@ -5,7 +5,9 @@ import { findAgent } from "./agents/registry.js";
 import { VERSION } from "./api/client.js";
 import { ApiError, CliError, EXIT } from "./cli/errors.js";
 import { err, out, style } from "./cli/output.js";
+import { isInteractive } from "./cli/prompt.js";
 import { printBanner } from "./cli/ui/banner.js";
+import { runLauncherMenu } from "./cli/ui/menu.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
 import { finalizeOnVersionChange } from "./housekeeping/finalize.js";
@@ -13,7 +15,7 @@ import { checkForUpdate } from "./housekeeping/update.js";
 
 const USAGE = `${style.bold("aiand")} -- the ai& command line interface
 
-Usage
+  aiand                          pick what to run (launcher menu)
   aiand <command> [options]
   aiand <agent> [on|off|status] [options]
 
@@ -158,7 +160,24 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  if (!first || first === "help") {
+  if (!first) {
+    // Bare `aiand` on a terminal is the launcher menu (TogetherLink's `tlink`
+    // experience); piped stdio keeps the plain help text. `--json` is consumed
+    // by splitLeadingGlobals and is meaningless to the menu's dispatch, so it
+    // is stripped instead of forwarded to run-agent.
+    if (isInteractive()) {
+      const code = await runLauncherMenu({
+        argv: [...globalArgs.filter((arg) => arg !== "--json"), ...rest],
+      });
+      // Same housekeeping pass as the agent/command dispatch paths above;
+      // 130 is a cancel — the user backed out, don't follow with noise.
+      if (code !== 130) await runSystemHousekeeping();
+      return code;
+    }
+    showHelp();
+    return 0;
+  }
+  if (first === "help") {
     const topicName = rest.slice(1).find((arg) => !arg.startsWith("-"));
     if (!topicName) {
       showHelp();

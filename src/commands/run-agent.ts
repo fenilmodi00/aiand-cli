@@ -1,11 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { getCatalog, validateCatalogModel } from "../agents/catalog.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
+import type { Session } from "../api/client.js";
 import { requireSessionKey } from "../auth/session.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { out, style } from "../cli/output.js";
+import { err, out, style } from "../cli/output.js";
 import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
+import { fetchSessionUsage, sessionUsageFooter } from "./session-usage.js";
 
 // Aligns agent labels with the Options column below.
 const HELP_ID_WIDTH = 28;
@@ -109,6 +111,15 @@ function inlineValue(token: string, name: string): string {
   return value;
 }
 
+/**
+ * One-session routing line, printed to stderr after the session key resolves
+ * and before the agent binary spawns.
+ */
+export function routingBanner(agentLabel: string, model: string | undefined): string {
+  const suffix = model ? ` (${model})` : "";
+  return `aiand ▸ Routing ${agentLabel} → ai&${suffix}`;
+}
+
 export async function run(argv: string[]): Promise<void> {
   const split = splitInvocation(argv);
   if (split.help) {
@@ -170,6 +181,8 @@ export async function run(argv: string[]): Promise<void> {
     baseUrl,
   });
 
+  err(routingBanner(adapter.label, split.model ?? profile.model));
+
   // Default signal disposition would kill the parent before finally runs,
   // orphaning the adapter's throwaway key file (chat/run trap SIGINT the same way).
   let cleaned = false;
@@ -192,6 +205,13 @@ export async function run(argv: string[]): Promise<void> {
   // The adapter's own injection carries the key; a leaked AIAND_API_KEY would hand it to every process the agent spawns.
   delete env.AIAND_API_KEY;
   Object.assign(env, launch.env);
+
+  // Footer inputs, captured before spawn: the session start for the
+  // client-side created_at filter, and a Session built from the already
+  // resolved key. credential is null on purpose — the footer must never
+  // rotate a key or prompt at exit; a stale token just fails into no footer.
+  const logSession: Session = { profile, token: session.key, credential: null };
+  const sessionStart = Date.now();
 
   try {
     // Spawn the agent binary with an argument array. A Windows `.cmd` shim
@@ -220,6 +240,17 @@ export async function run(argv: string[]): Promise<void> {
     process.removeListener("SIGINT", onSigint);
     process.removeListener("SIGTERM", onSigterm);
     await doCleanup();
+  }
+
+  // Post-session usage footer: best-effort only — the fetch aborts itself at
+  // its own deadline (a hung socket would otherwise keep the process alive),
+  // silent on any failure, after cleanup so the exit code is never touched.
+  try {
+    const totals = await fetchSessionUsage(logSession, sessionStart);
+    const footer = totals === null ? null : sessionUsageFooter(totals);
+    if (footer !== null) err(style.dim(footer));
+  } catch {
+    // The footer is decoration: its failure must never surface over exit code.
   }
 }
 

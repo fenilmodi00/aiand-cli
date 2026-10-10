@@ -9,6 +9,14 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Bare `aiand` on a terminal opens a launcher menu: pick an installed agent
+  for a one-session run, wire agents permanently, or see install commands for
+  agents you do not have yet. Piped stdio still prints the help text.
+- `aiand run-agent <agent>` prints a routing banner (`aiand ▸ Routing Claude
+  Code → ai& (zai-org/glm-5.3)`) to stderr before the agent starts, and a
+  usage footer with the tokens and cost the account logged while the session
+  ran after it exits, read from the request logs. Both are quiet on any
+  failure and never touch the exit code.
 - `aiand claude on` lists every ai& model in Claude Code's `/model` picker,
   through its `modelPicker` setting: Claude Code only discovers gateway models
   whose id contains "claude", so ai&'s never appeared there. The built-in

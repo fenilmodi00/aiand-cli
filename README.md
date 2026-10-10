@@ -14,7 +14,7 @@ configuration, so you can get straight to building.
 npm install -g @aiand/cli  # Requires Node.js 22 or newer.
 aiand login                # Sign in through your browser
 aiand opencode on          # Add ai& to OpenCode
-opencode
+aiand                      # Launcher menu: pick an agent to run
 ```
 
 Prefer a quick prompt?
@@ -63,6 +63,7 @@ run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 
 | Command | What it does |
 | --- | --- |
+| `aiand` | The launcher menu: pick what to run |
 | `aiand login` / `logout` | Start or end this machine's session |
 | `aiand whoami` | Identity, organization, and key expiry |
 | `aiand status` | Sign-in state plus every agent's wiring |

@@ -38,6 +38,8 @@ export type LogQuery = {
   limit?: number;
   after?: string;
   afterId?: string;
+  /** Abort the in-flight request (footer deadline); the socket must not outlive the caller. */
+  signal?: AbortSignal;
 };
 
 export async function getLogs(session: Session, query: LogQuery = {}): Promise<LogPage> {
@@ -51,6 +53,7 @@ export async function getLogs(session: Session, query: LogQuery = {}): Promise<L
         after: query.after,
         after_id: query.afterId,
       },
+      signal: query.signal,
     });
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
