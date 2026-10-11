@@ -46,7 +46,9 @@ describe("plaintext tier", () => {
     process.env.AIAND_KEY_STORAGE = "plaintext";
     try {
       await secrets.storeSecret("p1", "x");
-      assert.equal(statSync(join(env.dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
+      if (process.platform !== "win32") {
+        assert.equal(statSync(join(env.dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
+      }
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -114,9 +116,13 @@ describe("encrypted file tier", () => {
     try {
       await secrets.storeSecret("p1", "x");
       const keyFile = join(env.dir, "secret-store.key");
-      assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+      if (process.platform !== "win32") {
+        assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+      }
       assert.equal(statSync(keyFile).size, 32);
-      assert.equal(statSync(join(env.dir, "secret-store.json")).mode & 0o777, 0o600);
+      if (process.platform !== "win32") {
+        assert.equal(statSync(join(env.dir, "secret-store.json")).mode & 0o777, 0o600);
+      }
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -332,7 +338,11 @@ describe("openSession never rotates a pasted key", () => {
   });
 });
 
-describe("macOS security interactive write", () => {
+describe("macOS security interactive write", {
+  // win32 has no keychain tier at all (probeKeychain returns false before any
+  // tool is probed), so the darwin-faked path below cannot be reached there.
+  skip: process.platform === "win32",
+}, () => {
   const BLOB = '{"access_token":"sk-test-1","refresh_token":"rt-1"}';
 
   test("the -i command carries the secret on stdin, never in argv", () => {

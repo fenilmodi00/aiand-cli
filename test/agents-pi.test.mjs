@@ -154,6 +154,7 @@ describe("pi adapter", () => {
   });
 
   test("auth.json is written 0600", async () => {
+    if (process.platform === "win32") return;
     seedUserFiles();
     await piAdapter.enable(enableInput());
     const mode = statSync(authPath()).mode & 0o777;
@@ -562,6 +563,7 @@ describe("pi adapter", () => {
   });
 
   test("off restores the file's pre-on mode; a file on created stays private", async () => {
+    if (process.platform === "win32") return;
     // A user's auth.json normally holds their own credentials at 0600; off
     // must not widen it back to the umask default when dropping our key.
     const seed = seedUserFiles();
@@ -573,6 +575,7 @@ describe("pi adapter", () => {
   });
 
   test("off keeps a file on created private when the user added a credential", async () => {
+    if (process.platform === "win32") return;
     // on created auth.json (no prior mode to restore); the user adds their
     // own key mid-wire; off hands that file back at 0600, never 0644.
     writeJson(settingsPath(), { theme: "dark" });

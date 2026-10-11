@@ -72,7 +72,9 @@ describe("claude on", () => {
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "200000");
     assert.deepEqual(permissions.deny, ["WebSearch"]);
-    assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
+    }
     assert.equal(result.model, MAIN);
     assert.equal(result.catalogModel, MAIN);
     assert.doesNotMatch(readFileSync(addedJsonPath(), "utf8"), /sk-test-key/);
@@ -283,7 +285,9 @@ describe("claude off", () => {
     await claudeAdapter.enable(enableInput());
     await claudeAdapter.disable();
     assert.equal(readFileSync(settingsPath(), "utf8"), original);
-    assert.equal(statSync(settingsPath()).mode & 0o777, 0o644);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(settingsPath()).mode & 0o777, 0o644);
+    }
   });
 
   test("a client setting the user already had comes back on off", async () => {
@@ -472,7 +476,9 @@ describe("claude refreshKey", () => {
       false,
     );
     assert.equal(readSettings().env.ANTHROPIC_AUTH_TOKEN, "sk-new");
-    assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
+    }
   });
 
   test("an unmarked config is not touched", async () => {
@@ -492,7 +498,9 @@ describe("claude sessionLaunch", () => {
     assert.deepEqual(launch.env, {});
     assert.equal(launch.args[0], "--settings");
     const file = launch.args[1];
-    assert.equal(statSync(file).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(file).mode & 0o777, 0o600);
+    }
     const settings = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(settings.model, MAIN);
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-launch-1");

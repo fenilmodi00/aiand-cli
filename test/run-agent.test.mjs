@@ -17,6 +17,7 @@ import {
   harnessEnv,
   hermeticPath,
   plantStub,
+  removeStub,
   runCli,
   seedCatalogCache,
   WAIT_TIMEOUT_MS,
@@ -267,7 +268,7 @@ describe("run-agent launcher", () => {
   });
 
   test("pi: missing binary -> 127 with the pi install hint", async () => {
-    rmSync(join(binDir, "pi"), { force: true });
+    removeStub(binDir, "pi");
     const capture = captureDir();
     const path = stubsOnlyPath();
     try {
@@ -353,7 +354,7 @@ describe("run-agent launcher", () => {
   });
 
   test("omp: missing binary -> 127 with the omp install hint", async () => {
-    rmSync(join(binDir, "omp"), { force: true });
+    removeStub(binDir, "omp");
     const capture = captureDir();
     const path = stubsOnlyPath();
     try {
@@ -472,7 +473,7 @@ exit 42`,
   });
 
   test("copilot: missing binary -> 127 with the npm install hint", async () => {
-    rmSync(join(binDir, "copilot"), { force: true });
+    removeStub(binDir, "copilot");
     const capture = captureDir();
     const path = stubsOnlyPath();
     try {
@@ -639,7 +640,7 @@ exit 42`,
     // The hermetic PATH hides any real opencode install (the launcher would
     // spawn it and hang on a TTY), and the stub earlier tests planted is
     // removed, so detect() misses: 127 + install hint.
-    rmSync(join(binDir, "opencode"), { force: true });
+    removeStub(binDir, "opencode");
     const capture = captureDir();
     const path = stubsOnlyPath();
     try {
@@ -655,7 +656,7 @@ exit 42`,
   test("signed-out + missing binary -> 127 with install hint, never a login", async () => {
     // Detect runs before session: no Env key and no binary is still 127 +
     // Install hint, never "Not logged in" or a login ceremony.
-    rmSync(join(binDir, "opencode"), { force: true });
+    removeStub(binDir, "opencode");
     const capture = captureDir();
     const path = stubsOnlyPath();
     try {

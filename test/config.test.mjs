@@ -156,11 +156,14 @@ describe("credential file permissions", () => {
   test("is created 0600", async () => {
     await withEnv({ AIAND_KEY_STORAGE: "plaintext" }, async () => {
       await config.saveCredential("p", { access_token: "sk-a", refresh_token: "r", expires_at: 1 });
-      assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
+      if (process.platform !== "win32") {
+        assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
+      }
     });
   });
 
   test("is re-tightened on rewrite, not left at whatever it was", async () => {
+    if (process.platform === "win32") return;
     await withEnv({ AIAND_KEY_STORAGE: "plaintext" }, async () => {
       await config.saveCredential("p", { access_token: "sk-b", refresh_token: "r", expires_at: 2 });
       const path = config.credentialsPath();
@@ -205,13 +208,16 @@ describe("credential storage", () => {
           refresh_token: "r",
           expires_at: 1,
         });
-        assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
-        assert.equal(statSync(join(dir, "secret-store.key")).mode & 0o777, 0o600);
+        if (process.platform !== "win32") {
+          assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
+          assert.equal(statSync(join(dir, "secret-store.key")).mode & 0o777, 0o600);
+        }
       },
     );
   });
 
   test("is re-tightened on rewrite, not left at whatever it was", async () => {
+    if (process.platform === "win32") return;
     await withEnv(
       { AIAND_KEY_STORAGE: "file", AIAND_SECRET_STORE_MASTER_KEY: MASTER_KEY },
       async () => {

@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PWSH_SMOKE_TIMEOUT_MS = 60_000;
@@ -71,6 +71,11 @@ function childEnv(home, extra = {}) {
     AIAND_DIR: undefined,
     AIAND_UNINSTALL_FORCE: undefined,
     AIAND_SOURCE: undefined,
+    // Both names of the knob are scrubbed: a leaked AIAND_FAST_INSTALL would
+    // drive the same install as AIAND_PUBLISHED_RELEASE and print a
+    // deprecation note the case did not ask for.
+    AIAND_FAST_INSTALL: undefined,
+    AIAND_PUBLISHED_RELEASE: undefined,
     ...extra,
   };
 }
@@ -775,6 +780,293 @@ if (!HAS_BASH) {
     }
   } catch (error) {
     check("re-run update harness", false, String(error?.message ?? error).split("\n")[0]);
+  }
+}
+
+// --- case 12b: source provenance messages are pinned --------------------------
+// Stage 3 says where the tree came from. A cloned source announces itself from
+// the staging sibling; an in-place install (install.sh living inside an
+// @aiand/cli checkout) says so instead. Neither string was asserted, so the
+// two messages could drift apart from install.sh and install.ps1 unnoticed.
+if (!HAS_BASH) {
+  check("source provenance messages skipped (no bash)", true, "bash not installed");
+} else {
+  try {
+    const caseDir = mkdtempSync(join(tmpdir(), "aiand-install-behavior-"));
+    try {
+      const home = join(caseDir, "home");
+      mkdirSync(home, { recursive: true });
+      const installer = copiedInstaller(caseDir);
+
+      const cloneSrc = join(caseDir, "cloned-src");
+      gitInitRunnableCli(cloneSrc, "0.0.0-clone");
+      const cloned = runBash(
+        [installer],
+        childEnv(home, {
+          AIAND_SOURCE: cloneSrc,
+          AIAND_SKIP_BUILD: "1",
+          AIAND_NO_MODIFY_PATH: "1",
+        }),
+      );
+      check(
+        "cloned source reports using source from",
+        (cloned.stderr ?? "").includes(`Using source from ${cloneSrc}`),
+        (cloned.stderr ?? "").split("\n").find((l) => l.startsWith("Using ")) ?? "",
+      );
+      check(
+        "cloned source does not claim a local source",
+        !(cloned.stderr ?? "").includes("Using local source"),
+        (cloned.stderr ?? "").split("\n").find((l) => l.includes("Using local source")) ?? "",
+      );
+
+      // In-place: install.sh lives inside the checkout, so SCRIPT_DIR is an
+      // @aiand/cli package and the installer uses it without cloning.
+      // AIAND_SOURCE keeps pointing at it so the npm registry is never
+      // probed first — without it the published path would win.
+      const localSrc = join(caseDir, "local-src");
+      gitInitRunnableCli(localSrc, "0.0.0-local");
+      copyFileSync(join(ROOT, "install.sh"), join(localSrc, "install.sh"));
+      const home2 = join(caseDir, "home-local");
+      mkdirSync(home2, { recursive: true });
+      const local = runBash(
+        [join(localSrc, "install.sh")],
+        childEnv(home2, {
+          AIAND_SOURCE: localSrc,
+          AIAND_SKIP_BUILD: "1",
+          AIAND_NO_MODIFY_PATH: "1",
+        }),
+      );
+      check(
+        "in-place local source reports using local source",
+        (local.stderr ?? "").includes("Using local source"),
+        (local.stderr ?? "").split("\n").find((l) => l.startsWith("Using ")) ?? "",
+      );
+      check(
+        "in-place local source announces no source to clone",
+        !(local.stderr ?? "").includes("Using source from"),
+        (local.stderr ?? "").split("\n").find((l) => l.includes("Using source from")) ?? "",
+      );
+    } finally {
+      rmSync(caseDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    check(
+      "source provenance messages harness",
+      false,
+      String(error?.message ?? error).split("\n")[0],
+    );
+  }
+}
+
+// --- case 13: the published release installs prebuilt, else source build --
+// Two sub-cases over one local tarball (gitInitRunnableCli repacked with the
+// npm `package/` prefix): a reachable manifest URL installs the extracted
+// dist without any clone/build, and an unreachable one builds from source
+// and still ends with a working CLI.
+if (!HAS_BASH) {
+  check("published release path skipped (no bash)", true, "bash not installed");
+} else {
+  try {
+    const caseDir = mkdtempSync(join(tmpdir(), "aiand-install-behavior-"));
+    try {
+      const home = join(caseDir, "home");
+      mkdirSync(home, { recursive: true });
+      // Repack the runnable source repo the way npm publishes it: members are
+      // prefixed with `package/`, which is what --strip-components=1 expects.
+      const srcDir = join(caseDir, "src");
+      gitInitRunnableCli(srcDir, "9.9.9-release");
+      const tarball = join(caseDir, "release.tgz");
+      // Stage a `package/` root holding exactly what the npm tarball ships
+      // (package.json + dist/, no .git, no node_modules), then tar that root:
+      // taring srcDir itself would name `package` inside a checkout that has
+      // no such member.
+      const pkgRoot = join(caseDir, "pkg");
+      mkdirSync(join(pkgRoot, "package", "dist"), { recursive: true });
+      copyFileSync(join(srcDir, "package.json"), join(pkgRoot, "package", "package.json"));
+      copyFileSync(join(srcDir, "dist", "index.js"), join(pkgRoot, "package", "dist", "index.js"));
+      execFileSync("tar", ["-czf", tarball, "-C", pkgRoot, "package"]);
+      const manifestPath = join(caseDir, "manifest.json");
+      writeFileSync(
+        manifestPath,
+        `${JSON.stringify(
+          { version: "9.9.9-release", dist: { tarball: pathToFileURL(tarball).href } },
+          null,
+          2,
+        )}\n`,
+      );
+      const manifestUrl = pathToFileURL(manifestPath).href;
+
+      // Published path: reachable manifest, no AIAND_SOURCE (so the registry
+      // is actually consulted). No knob is set, which is the default install.
+      const installer = copiedInstaller(caseDir);
+      const release = runBash(
+        [installer],
+        childEnv(home, { AIAND_RELEASE_URL: manifestUrl, AIAND_NO_MODIFY_PATH: "1" }),
+      );
+      check(
+        "published release install exits zero",
+        (release.status ?? 1) === 0,
+        (release.stderr ?? "").split("\n").find((l) => /error/i.test(l)) ??
+          `status=${release.status}`,
+      );
+      check(
+        "published release path reports using the published release",
+        (release.stderr ?? "").includes("Using the published release"),
+        (release.stderr ?? "").split("\n").find((l) => /published|Building from/.test(l)) ??
+          "(no note)",
+      );
+      check(
+        "published release path never builds from source",
+        !(release.stderr ?? "").includes("Building from source (registry unavailable)."),
+        (release.stderr ?? "").split("\n").find((l) => l.includes("Building from source")) ?? "",
+      );
+      check(
+        "default install mentions no deprecation note",
+        !(release.stderr ?? "").includes("AIAND_FAST_INSTALL is deprecated"),
+        (release.stderr ?? "").split("\n").find((l) => l.includes("deprecated")) ?? "",
+      );
+      const releaseCheckout = join(home, ".aiand", "cli");
+      check(
+        "published release path stages only dist/ and package.json from the tarball",
+        existsSync(releaseCheckout) &&
+          existsSync(join(releaseCheckout, "dist", "index.js")) &&
+          existsSync(join(releaseCheckout, "package.json")),
+        existsSync(releaseCheckout) ? readdirSync(releaseCheckout).join(",") : "(no checkout)",
+      );
+      check(
+        "published release path extracts no cloned sources",
+        existsSync(releaseCheckout) &&
+          !existsSync(join(releaseCheckout, ".git")) &&
+          !existsSync(join(releaseCheckout, "node_modules")),
+        existsSync(releaseCheckout) ? readdirSync(releaseCheckout).join(",") : "(no checkout)",
+      );
+      // Uninstall reads the ownership marker, so a published-release install
+      // must still be removable exactly like a cloned one.
+      check(
+        "published release path leaves an installer-owned checkout (uninstall works)",
+        existsSync(join(releaseCheckout, OWNERSHIP_MARKER)),
+        join(releaseCheckout, OWNERSHIP_MARKER),
+      );
+      const releaseRun = runBash(
+        [join(home, ".local", "bin", "aiand"), "--version"],
+        childEnv(home),
+      );
+      check(
+        "published release launcher reports the tarball version",
+        (releaseRun.status ?? 1) === 0 && (releaseRun.stdout ?? "").trim() === "9.9.9-release",
+        (releaseRun.stdout ?? "").trim() || `status=${releaseRun.status}`,
+      );
+      const releaseHelp = runBash([join(home, ".local", "bin", "aiand"), "--help"], childEnv(home));
+      check(
+        "published release launcher answers --help",
+        (releaseHelp.status ?? 1) === 0,
+        `status=${releaseHelp.status}`,
+      );
+
+      // The deprecated alias still drives the install and must say so once.
+      const homeAlias = join(caseDir, "home-alias");
+      mkdirSync(homeAlias, { recursive: true });
+      const aliasRun = runBash(
+        [installer],
+        childEnv(homeAlias, {
+          AIAND_RELEASE_URL: manifestUrl,
+          AIAND_NO_MODIFY_PATH: "1",
+          AIAND_FAST_INSTALL: "1",
+        }),
+      );
+      check(
+        "deprecated AIAND_FAST_INSTALL still installs and warns",
+        (aliasRun.status ?? 1) === 0 &&
+          (aliasRun.stderr ?? "").includes(
+            "AIAND_FAST_INSTALL is deprecated; use AIAND_PUBLISHED_RELEASE.",
+          ),
+        (aliasRun.stderr ?? "").split("\n").find((l) => /deprecated|error/i.test(l)) ??
+          `status=${aliasRun.status}`,
+      );
+
+      // Only the new name: the alias is the only difference, so stderr must
+      // stay free of the deprecation note.
+      const homeNew = join(caseDir, "home-new-name");
+      mkdirSync(homeNew, { recursive: true });
+      const newNameRun = runBash(
+        [installer],
+        childEnv(homeNew, {
+          AIAND_RELEASE_URL: manifestUrl,
+          AIAND_NO_MODIFY_PATH: "1",
+          AIAND_PUBLISHED_RELEASE: "1",
+        }),
+      );
+      check(
+        "AIAND_PUBLISHED_RELEASE alone installs with no deprecation note",
+        (newNameRun.status ?? 1) === 0 &&
+          !(newNameRun.stderr ?? "").includes("AIAND_FAST_INSTALL is deprecated"),
+        (newNameRun.stderr ?? "").split("\n").find((l) => /deprecated|error/i.test(l)) ??
+          `status=${newNameRun.status}`,
+      );
+
+      // Source build: the manifest URL is unreachable and no AIAND_SOURCE
+      // names a source, so the published path is attempted, fails, and the
+      // installer says why before building from source.
+      const home2 = join(caseDir, "home-source-build");
+      mkdirSync(home2, { recursive: true });
+      const sourceBuild = runBash(
+        [installer],
+        childEnv(home2, {
+          AIAND_RELEASE_URL: pathToFileURL(join(caseDir, "missing-manifest.json")).href,
+          AIAND_SOURCE: undefined,
+          AIAND_SKIP_BUILD: "1",
+          AIAND_NO_MODIFY_PATH: "1",
+        }),
+      );
+      check(
+        "source build install exits zero",
+        (sourceBuild.status ?? 1) === 0,
+        (sourceBuild.stderr ?? "").split("\n").find((l) => /error/i.test(l)) ??
+          `status=${sourceBuild.status}`,
+      );
+      check(
+        "source build explains why it rebuilt from source",
+        (sourceBuild.stderr ?? "").includes("Building from source (registry unavailable)."),
+        (sourceBuild.stderr ?? "").split("\n").find((l) => /published|Building from/.test(l)) ??
+          "(no note)",
+      );
+      check(
+        "source build cloned the default source instead of extracting the tarball",
+        existsSync(join(home2, ".aiand", "cli", ".git")),
+        join(home2, ".aiand", "cli"),
+      );
+      // Cloning is the whole point of this sub-case, so the clone announcement
+      // and the in-place message must not be confused for each other.
+      check(
+        "cloned source build reports the source it used",
+        (sourceBuild.stderr ?? "").includes(
+          "Using source from https://github.com/aiandlabs/aiand-cli.git",
+        ),
+        (sourceBuild.stderr ?? "").split("\n").find((l) => l.startsWith("Using ")) ?? "",
+      );
+      check(
+        "cloned source build does not claim a local source",
+        !(sourceBuild.stderr ?? "").includes("Using local source"),
+        (sourceBuild.stderr ?? "").split("\n").find((l) => l.includes("Using local source")) ?? "",
+      );
+      const sourceBuildRun = runBash(
+        [join(home2, ".local", "bin", "aiand"), "--version"],
+        childEnv(home2),
+      );
+      // No AIAND_SOURCE names the repo, so this clones the real default source
+      // and installs the published version — the point is that a working CLI
+      // still lands after the registry is unreachable.
+      check(
+        "source build launcher still runs a working CLI",
+        (sourceBuildRun.status ?? 1) === 0 &&
+          /^\d+\.\d+\.\d+/.test((sourceBuildRun.stdout ?? "").trim()),
+        sourceBuildRun.stdout?.trim() || `status=${sourceBuildRun.status}`,
+      );
+    } finally {
+      rmSync(caseDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    check("published release path harness", false, String(error?.message ?? error).split("\n")[0]);
   }
 }
 

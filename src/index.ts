@@ -136,35 +136,6 @@ function showHelp(topicHelp?: string): void {
   out(homeScreen());
 }
 
-/** The command that upgrades this install: the installer for a launcher
- * install, npm otherwise. */
-export function updateInstallHint(opts?: {
-  platform?: NodeJS.Platform;
-  launched?: string;
-  aiandDir?: string | undefined;
-}): string {
-  const platform = opts?.platform ?? process.platform;
-  // Copy-pasteable: curl users have no install.sh on PATH.
-  const installHint =
-    platform === "win32"
-      ? '& "$env:USERPROFILE\\.aiand\\cli\\install.ps1"'
-      : "bash ~/.aiand/cli/install.sh";
-  const launched = opts?.launched ?? process.argv[1] ?? "";
-  const normalizedLaunched = launched.replace(/\\/g, "/");
-  if (normalizedLaunched.includes("/.aiand/")) {
-    return installHint;
-  }
-  const aiandDir = opts?.aiandDir ?? process.env.AIAND_DIR;
-  if (aiandDir) {
-    const normalizedDir = aiandDir.replace(/\\/g, "/").replace(/\/+$/, "");
-    const trimmedLaunched = normalizedLaunched.replace(/\/+$/, "");
-    if (trimmedLaunched === normalizedDir || trimmedLaunched.startsWith(`${normalizedDir}/`)) {
-      return installHint;
-    }
-  }
-  return "npm install -g @aiand/cli";
-}
-
 /**
  * Background housekeeping shown only on an interactive terminal with a real
  * command (never --version, never --json, never CI). Update notice and
@@ -179,15 +150,17 @@ async function runSystemHousekeeping(): Promise<void> {
     process.env.CI === undefined;
   if (!interactive) return;
 
+  // AIAND_AUTO_UPDATE=0 silences just the background notice; the daily
+  // check-switches below still apply, and `aiand update --check` still works.
   const [update, notes] = await Promise.all([
-    checkForUpdate().catch(() => undefined),
+    process.env.AIAND_AUTO_UPDATE === "0"
+      ? Promise.resolve(null)
+      : checkForUpdate().catch(() => undefined),
     finalizeOnVersionChange().catch(() => []),
   ]);
   if (update) {
     err(
-      style.dim(
-        `Update available: v${update.current} → v${update.latest}  (${updateInstallHint()})`,
-      ),
+      style.dim(`Update available: v${update.current} → v${update.latest}  (run \`aiand update\`)`),
     );
   }
   for (const note of notes) err(style.dim(note));

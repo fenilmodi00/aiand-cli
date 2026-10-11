@@ -160,7 +160,9 @@ describe("logs --follow", () => {
       child.kill("SIGINT");
       const code = await closed;
       const elapsed = Date.now() - t0;
-      assert.equal(code, 0);
+      // On win32 the SIGINT terminates the process outright, so `close` reports
+      // a null code instead of the 0 the clean handler path leaves behind.
+      assert.ok(code === 0 || (process.platform === "win32" && code === null), `exit ${code}`);
       assert.ok(
         elapsed < FOLLOW_EXIT_BUDGET_MS,
         `follow took ${elapsed}ms to exit after SIGINT (interval 30s)`,

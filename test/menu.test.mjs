@@ -943,7 +943,9 @@ test("promptMenu a 256-color terminal paints the focus fill", async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   output.columns = 80;
-  await withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1" }, async () => {
+  // colorSupport() reads COLORTERM before the FORCE_COLOR fallback, so a host
+  // exporting COLORTERM=truecolor must not turn this into a 24-bit assertion.
+  await withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1", COLORTERM: undefined }, async () => {
     const started = promptMenu({
       message: "Pick one",
       items: [{ value: "a", label: "Only row", group: "Account" }],

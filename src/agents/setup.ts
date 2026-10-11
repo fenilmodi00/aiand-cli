@@ -3,7 +3,7 @@ import { requireSessionKey } from "../auth/session.js";
 import { ApiError, CliError } from "../cli/errors.js";
 import { resolveProfile } from "../config.js";
 import { getCatalog, resolveDefault, validateCatalogModel, visionLabel } from "./catalog.js";
-import { notInstalledError } from "./launch.js";
+import { installIfMissing, notInstalledError, runAgentBinary } from "./launch.js";
 import { discardSnapshot, hasSnapshot, snapshotCovers, snapshotFiles } from "./snapshot.js";
 import type { AgentAdapter } from "./types.js";
 
@@ -12,6 +12,8 @@ import type { AgentAdapter } from "./types.js";
  * pre-aiand snapshot), `agentOff` subtracts what aiand added, and
  * `agentStatus` reads the ground-truth config state (on/off) without
  * trusting any local bookkeeping. The snapshot backs `restore --force`, not `off`.
+ * `agentSession` runs the adapter's own one-process wiring instead: nothing is
+ * written outside the throwaway files the adapter creates for that spawn.
  */
 
 export type AgentOnOptions = {
@@ -158,6 +160,99 @@ export async function agentOn(
     }
     throw error;
   }
+}
+
+/**
+ * Run an adapter's own one-process wiring, the way `aiand run-agent` does:
+ * resolve the session, build the ephemeral launch, spawn the agent, and clean
+ * up after it. Returns the model the adapter ran on; the `--session` flag of
+ * `aiand <agent> [on]` reuses this so the persistent path stays the only
+ * place `enable` writes.
+ */
+export async function agentSession(
+  adapter: AgentAdapter,
+  opts: { model?: string; profile?: string; passthrough?: string[]; install?: boolean } = {},
+): Promise<string> {
+  // Same refusal order as run-agent.ts: capability before session, so an
+  // unsupported adapter never starts a login ceremony.
+  if (adapter.configOnly) {
+    throw new CliError(`${adapter.label} is a desktop app; aiand wires it but cannot launch it.`, {
+      hint: `Run \`aiand ${adapter.id} on\` for permanent wiring.`,
+    });
+  }
+  if (adapter.launcherOnly) {
+    throw new CliError(`${adapter.label} runs on ai& per session only.`, {
+      hint: `Use: aiand run-agent ${adapter.id}`,
+    });
+  }
+  const launch = adapter.sessionLaunch;
+  if (!launch) {
+    throw new CliError(`${adapter.label} does not support --session.`, {
+      hint: `Run \`aiand ${adapter.id} on\` for permanent wiring.`,
+    });
+  }
+
+  // `aiand <agent> --session` is the bare open path, so it offers the npm
+  // install just like `aiand <agent>`; `on --session` does not.
+  if (opts.install) await installIfMissing(adapter);
+  if (!adapter.detect().installed) throw notInstalledError(adapter);
+
+  const session = await requireSessionKey(opts.profile);
+  const profile = resolveProfile(opts.profile);
+  const catalog = await getCatalog(profile.apiUrl);
+  const unpinned = opts.model === "native" && adapter.allowUnpinnedModel === true;
+  if (opts.model !== undefined && !unpinned) validateCatalogModel(catalog, opts.model);
+
+  const resolved = await launch({
+    apiKey: session.key,
+    model: opts.model,
+    profileModel: profile.model,
+    profileName: profile.name,
+    catalog,
+    baseUrl: profile.apiUrl,
+  });
+
+  // The reported model: an explicit --model, else the catalog default.
+  // ponytail: an adapter with its own preferred order (claude's claude
+  // adapter) may pin a different model inside its sessionLaunch, and
+  // SessionLaunch does not report back which one it chose; extend
+  // SessionLaunch with `model` if the JSON report must match exactly.
+  const model = opts.model ?? resolveDefault(catalog, profile.model);
+
+  // Child env = inherited, plus the adapter's own injection; the adapter's
+  // injection carries the key, so the spawn env starts scrubbed.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  // The adapter's own injection carries the key; a leaked AIAND_API_KEY would
+  // hand it to every process the agent spawns.
+  delete env.AIAND_API_KEY;
+  // Adapters that route outside the child env list the inherited names that
+  // would shadow that routing; the launcher drops them so its own injection wins.
+  for (const k of adapter.shadowEnv ?? []) delete env[k];
+  Object.assign(env, resolved.env);
+
+  // The adapter may own routing flags in the passthrough: drop the user's
+  // `--flag value` and `--flag=value` forms so the injected routing cannot be
+  // overridden. Everything else passes verbatim. A value is only consumed when
+  // it is not itself a flag, so `--model --print` keeps --print and a trailing
+  // `--model` eats nothing.
+  const ownedFlags = resolved.stripPassthroughFlags ?? [];
+  const passthrough: string[] = [];
+  const input = opts.passthrough ?? [];
+  for (let i = 0; i < input.length; i += 1) {
+    const token = input[i]!;
+    if (ownedFlags.includes(token)) {
+      // `--flag value`: the value is the next token, when present and not
+      // itself a flag.
+      const next = input[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
+    passthrough.push(token);
+  }
+
+  await runAgentBinary(adapter, [...(resolved.args ?? []), ...passthrough], env, resolved.cleanup);
+  return model;
 }
 
 /**

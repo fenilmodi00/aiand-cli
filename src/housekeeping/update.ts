@@ -1,6 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
 import { publicJson, VERSION } from "../api/client.js";
+import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { configDir, writeFileAtomic } from "../config.js";
 import { DAY_MS, HOUR_MS, SECOND_MS } from "../time.js";
 
@@ -10,9 +13,22 @@ const FETCH_TIMEOUT_MS = 3 * SECOND_MS;
 
 const REGISTRY_URL = "https://registry.npmjs.org/@aiand/cli/latest";
 
+/** The launcher checkout install.sh creates, under AIAND_DIR when set. */
+const DEFAULT_INSTALL_DIR = join(".aiand", "cli");
+
+/** An npm global install: <prefix>/…/node_modules/@aiand/cli/dist/index.js. */
+const NPM_PACKAGE_SEGMENT = "node_modules/@aiand/cli";
+
 export type UpdateInfo = {
   current: string;
   latest: string;
+};
+
+/** How this CLI was installed, which decides how it upgrades itself. */
+export type InstallKind = {
+  kind: "installer" | "npm" | "source";
+  /** The checkout root: for `installer`, the dir holding install.sh. */
+  root?: string;
 };
 
 type UpdateCache = {
@@ -132,4 +148,101 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     await writeUpdateCache({ checkedAt: Date.now(), ok: false }).catch(() => {});
     return null;
   }
+}
+
+/**
+ * Fetch the newest published version, straight from the registry: the
+ * foreground check behind `aiand update` must never be answered by the
+ * 24h background cache, or a stale notice would decide whether to upgrade.
+ * Throws when the registry cannot be reached or has no version.
+ */
+export async function fetchLatestVersion(): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const data = await publicJson<{ version?: string }>(REGISTRY_URL, {
+      signal: controller.signal,
+    });
+    if (typeof data?.version !== "string") throw new Error("registry response missing version");
+    return data.version;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * How this install was made, from where the running entry point lives: the
+ * launcher's own checkout (`root` is the dir holding install.sh), an npm
+ * global prefix, or a source checkout. Only the launcher's checkouts get
+ * `root`, so `aiand update` never hands an arbitrary dev checkout to
+ * install.sh.
+ */
+export function detectInstallKind(): InstallKind {
+  const fromEnv = process.env.AIAND_DIR;
+  const root = fromEnv ? resolve(fromEnv) : join(homedir(), DEFAULT_INSTALL_DIR);
+  let launched: string;
+  try {
+    launched = realpathSync(process.argv[1] ?? "");
+  } catch {
+    return { kind: "source" };
+  }
+  // The launcher runs <root>/dist/index.js; a checkout run in place
+  // (`AIAND_DIR=/repo aiand update`) upgrades the same way.
+  const inRoot = launched === root || relative(root, launched).split(sep)[0] !== "..";
+  if (inRoot) {
+    if (launched === join(root, "dist", "index.js") || isAiandCheckout(root)) {
+      return { kind: "installer", root };
+    }
+  }
+  // An npm global install runs <prefix>/lib/node_modules/@aiand/cli/dist/index.js.
+  return launched.replace(/\\/g, "/").includes(`/${NPM_PACKAGE_SEGMENT}/`)
+    ? { kind: "npm" }
+    : { kind: "source" };
+}
+
+/** True when the checkout at `path` is our own package, not a stray dir. */
+function isAiandCheckout(path: string): boolean {
+  try {
+    const parsed = JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as {
+      name?: string;
+    };
+    return parsed.name === "@aiand/cli";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run `command` with inherited stdio and resolve its exit code (null when
+ * the child was killed outright). `extraEnv` layers on top of the parent
+ * env, which is always scrubbed of AIAND_API_KEY first: an installer runs
+ * third-party code and must never inherit the session key.
+ */
+export async function runInstallScript(
+  command: string,
+  args: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+): Promise<number | null> {
+  const env = { ...process.env, ...extraEnv };
+  delete env.AIAND_API_KEY;
+  const { promise, resolve, reject } = Promise.withResolvers<number | null>();
+  // npm is a .cmd shim on Windows, which cannot be spawned directly.
+  const resolved = process.platform === "win32" ? resolveWindowsCommand(command, args, env) : null;
+  if (resolved === null && process.platform === "win32") {
+    reject(Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" }));
+    return promise;
+  }
+  const child = spawn(resolved?.command ?? command, resolved?.args ?? args, {
+    env,
+    stdio: "inherit",
+    windowsVerbatimArguments: resolved?.verbatim,
+  });
+  child.once("error", reject);
+  child.once("exit", (status, signal) => resolve(status ?? (signal ? 1 : null)));
+  return promise;
+}
+
+/** The absolute path of the running entry point, for the post-update probe. */
+export function launchedEntry(): string {
+  return realpathSync(process.argv[1] ?? "");
 }

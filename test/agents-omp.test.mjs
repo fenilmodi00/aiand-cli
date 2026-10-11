@@ -121,8 +121,16 @@ describe("omp adapter", () => {
     assert.match(ompAdapter.install.command, /oh-my-pi\/releases\/download\/v\d+\.\d+\.\d+\/omp-/);
     assert.doesNotMatch(ompAdapter.install.command, /\|\s*sh\b/);
     assert.doesNotMatch(ompAdapter.install.command, /omp\.sh\/install/);
-    assert.match(ompAdapter.install.command, /\/\.local\/bin\/omp/);
-    assert.match(ompAdapter.install.command, /sha256sum -c -|shasum -a 256 -c -/);
+    // The destination and the digest check are platform-specific: win32 lands
+    // an omp.exe under a PowerShell one-liner and verifies with Get-FileHash,
+    // while POSIX writes ~/.local/bin/omp and pipes into sha256sum/shasum.
+    if (process.platform === "win32") {
+      assert.match(ompAdapter.install.command, /\.local\\bin/);
+      assert.match(ompAdapter.install.command, /Get-FileHash/);
+    } else {
+      assert.match(ompAdapter.install.command, /\/\.local\/bin\/omp/);
+      assert.match(ompAdapter.install.command, /sha256sum -c -|shasum -a 256 -c -/);
+    }
     assert.equal(ompAdapter.install.url, "https://omp.sh");
     assert.deepEqual(ompAdapter.managedFiles(), [modelsPath(), configPath()]);
   });

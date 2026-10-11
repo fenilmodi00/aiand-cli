@@ -198,18 +198,35 @@ export async function withFetch(stub, fn) {
  * PATH for a child CLI: test/setup.mjs's keychain stubs first, then `dirs`.
  * `hermeticPath(dirname(process.execPath))` is a machine where no agent (and
  * no `which`) resolves; add a stub dir plus /usr/bin to detect only stubs.
+ *
+ * On win32 the System32 dirs are appended: detectBinary() probes with
+ * `where.exe`, which lives there. A POSIX-only PATH strips it, so every
+ * detection probe fails and no agent is ever "installed" — /usr/bin and /bin
+ * simply do not exist on this platform, so nothing else is re-admitted.
  */
 export function hermeticPath(...dirs) {
-  return [process.env.AIAND_TEST_STUB_BIN, ...dirs].filter(Boolean).join(delimiter);
+  const base = [process.env.AIAND_TEST_STUB_BIN, ...dirs].filter(Boolean);
+  if (process.platform === "win32") {
+    const root = process.env.SystemRoot ?? "C:\\Windows";
+    base.push(`${root}\\System32`, `${root}\\System32\\WindowsPowerShell\\v1.0`);
+  }
+  return base.join(delimiter);
 }
 
 /**
  * The test/setup.mjs isolation vars (network guard, no browser, keychain
  * stubs) to carry into a child whose env is built from scratch instead of
- * from process.env.
+ * from process.env. PATHEXT too on win32: `where` lists a bare file plus its
+ * `.cmd` mirror only when PATHEXT is set, and findWindowsExecutable() rejects
+ * the extensionless one — without it every win32 stub spawn resolves to null.
  */
 export function harnessEnv() {
-  const keys = ["NODE_OPTIONS", "AIAND_NO_BROWSER", "AIAND_TEST_STUB_BIN"];
+  const keys = [
+    "NODE_OPTIONS",
+    "AIAND_NO_BROWSER",
+    "AIAND_TEST_STUB_BIN",
+    ...(process.platform === "win32" ? ["PATHEXT"] : []),
+  ];
   return Object.fromEntries(
     keys.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]),
   );
@@ -244,13 +261,93 @@ export function runCli(args, { env = process.env, input, stdin = "pipe" } = {}) 
   });
 }
 
+/**
+ * The win32 mirror of one POSIX-sh stub body: a `<name>-stub.cjs` shim plus
+ * the `<name>.cmd` launcher spawn finds through PATHEXT. The POSIX body is
+ * replayed statement by statement, so a capture stub still writes the same
+ * `.env` / `.args` files the tests read. `$VAR` expansions resolve against the
+ * child's own environment (test bodies only ever use `$AIAND_*`, `$COPILOT_HOME`
+ * or `"$@"`), a `printf <text>` with no redirect goes to stdout (the tasklist
+ * stub's output is the assertion), and a trailing `exit N` sets the exit code.
+ */
+function plantWin32Stub(dir, name, script) {
+  const statements = script
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  // A POSIX double-quoted token becomes a JS string expression. Emit each
+  // literal segment through JSON.stringify (backslashes, quotes, control
+  // chars all escaped correctly) and splice `$VAR` in as a real lookup, so a
+  // Windows path like C:\Users\...\npm-args stays one path.
+  const jsString = (literal) =>
+    literal
+      .split(/\$([A-Za-z_][A-Za-z0-9_]*)/g)
+      .map((part, i) =>
+        i % 2 === 1 ? `(process.env.${part} ?? '')` : part === "" ? "''" : JSON.stringify(part),
+      )
+      .join(" + ");
+  const lines = ["const fs = require('fs');"];
+  for (const line of statements) {
+    const exit = line.match(/^exit\s+(\d+)$/);
+    const envFile = line.match(/^env\s*>\s*"([^"]+)"$/);
+    const argvFile = line.match(/^printf\s+'%s\\n'\s+"\$@"\s*>\s*"([^"]+)"$/);
+    const touch = line.match(/^touch\s+"([^"]+)"$/);
+    const copy = line.match(/^cp\s+"([^"]+)"\s+"([^"]+)"$/);
+    const textFile = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"\s*>\s*"([^"]+)"/);
+    const stdout = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"$/);
+    if (exit) {
+      lines.push(`process.exitCode = ${exit[1]};`);
+    } else if (argvFile) {
+      lines.push(
+        `fs.writeFileSync(${jsString(argvFile[1])}, process.argv.slice(2).join('\\n') + '\\n');`,
+      );
+    } else if (envFile) {
+      lines.push(
+        `fs.writeFileSync(${jsString(envFile[1])}, Object.entries(process.env).map(([k, v]) => k + '=' + v).join('\\n'));`,
+      );
+    } else if (touch) {
+      lines.push(`fs.closeSync(fs.openSync(${jsString(touch[1])}, 'w'));`);
+    } else if (copy) {
+      lines.push(`fs.copyFileSync(${jsString(copy[1])}, ${jsString(copy[2])});`);
+    } else if (textFile) {
+      lines.push(`fs.writeFileSync(${jsString(textFile[2])}, ${jsString(textFile[1])} + '\\n');`);
+    } else if (stdout) {
+      lines.push(`process.stdout.write(${jsString(stdout[1])} + '\\n');`);
+    } else {
+      lines.push(
+        `require('child_process').execSync(${JSON.stringify(line)}, { stdio: 'inherit' });`,
+      );
+    }
+  }
+  const shimPath = join(dir, `${name}-stub.cjs`);
+  writeFileSync(shimPath, `${lines.join("\n")}\n`);
+  writeFileSync(
+    join(dir, `${name}.cmd`),
+    `@echo off\r\n"${process.execPath}" "${shimPath}" %*\r\n`,
+  );
+}
+
 /** Write an executable POSIX-sh stub `name` into `dir`; returns its path. */
 export function plantStub(dir, name, script = "exit 0") {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, name);
   writeFileSync(path, `#!/bin/sh\n${script}\n`);
   chmodSync(path, 0o755);
+  if (process.platform === "win32") plantWin32Stub(dir, name, script);
   return path;
+}
+
+/**
+ * Delete a planted stub and its win32 mirrors. A test that makes a stub
+ * "not installed" must drop both files: on win32 `where` resolves the `.cmd`
+ * mirror even when the extensionless file is gone, so removing only the
+ * POSIX half leaves the agent detected.
+ */
+export function removeStub(dir, name) {
+  for (const suffix of ["", ".cmd", "-stub.cjs"]) {
+    rmSync(join(dir, `${name}${suffix}`), { force: true });
+  }
 }
 
 /**

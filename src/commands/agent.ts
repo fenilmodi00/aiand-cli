@@ -1,6 +1,6 @@
 import { installIfMissing, runAgentBinary } from "../agents/launch.js";
 import { AGENTS } from "../agents/registry.js";
-import { agentOff, agentOn, agentStatus } from "../agents/setup.js";
+import { agentOff, agentOn, agentSession, agentStatus } from "../agents/setup.js";
 import type { AgentAdapter, Verb } from "../agents/types.js";
 import { requireSessionKey } from "../auth/session.js";
 import { bool, type Parsed, parse, str } from "../cli/args.js";
@@ -13,6 +13,7 @@ const VERBS: Verb[] = ["on", "off", "status"];
 export function agentHelp(adapter: AgentAdapter): string {
   const flags = [
     "      --model <id>        model to route (default: catalog preferred)",
+    "      --session           run on ai& for one session; writes no config",
     "      --force             escape quit-guards when the app holds config in memory",
     "      --json              machine-readable output",
     "      --profile <name>    use a stored profile",
@@ -30,7 +31,7 @@ export function agentHelp(adapter: AgentAdapter): string {
     : `  aiand [--profile <name>] ${adapter.id} [args…]`;
   const openPara = adapter.configOnly
     ? `  With no verb, aiand wires ${adapter.label} to ai& (a missing agent prints its install command; npm installs run after a yes). Then open the GitHub Copilot app yourself and pick the ai& model in its model menu.`
-    : `  With no verb, aiand opens ${adapter.label} on ai&: a missing agent prints its install command (npm installs run after a yes), it wires it with \`on\` when it is not wired yet, then runs ${adapter.bin} with your args verbatim. Put aiand's own flags before the agent name, and \`--\` before an arg that is a verb.`;
+    : `  With no verb, aiand opens ${adapter.label} on ai&: a missing agent prints its install command (npm installs run after a yes), it wires it with \`on\` when it is not wired yet, then runs ${adapter.bin} with your args verbatim. Put aiand's own flags before the agent name, and \`--\` before an arg that is a verb. \`--session\` skips the wiring entirely: the agent runs on ai& for one session, and nothing is written to your config.`;
   return `${style.bold(`aiand ${adapter.id}`)} -- ${adapter.label} on ai&
 
 Usage
@@ -61,17 +62,31 @@ export async function runAgentCommand(
   globalArgs: string[] = [],
 ): Promise<void> {
   const [first] = argv;
+  // Everything after the first `--` is the agent's own argv, byte-for-byte:
+  // a `--session` in there belongs to the agent, not to aiand (the same rule
+  // that lets `aiand claude -- on` open on the "on" verb).
+  const sep = argv.indexOf("--");
+  const head = sep === -1 ? argv : argv.slice(0, sep);
+  // `--session` is aiand's own flag even on the open path, so it is stripped
+  // from what the agent sees; a `--session` after `--` is the agent's.
+  const tail = sep === -1 ? [] : argv.slice(sep + 1);
+  const own = head.filter((token) => token !== "--session");
+  const passthrough = first === "--" ? tail : [...own, ...tail];
+
   if (first !== "-h" && first !== "--help" && !VERBS.includes(first as Verb)) {
-    return runOpen(adapter, first === "--" ? argv.slice(1) : argv, globalArgs);
+    return runOpen(adapter, passthrough, globalArgs, head.includes("--session"));
   }
 
   // Only agent-specific flags here; json/profile/base-url/help come from
   // GLOBAL_OPTIONS so `-h` keeps its short (see args.ts preserve-short).
+  // The tail is the agent's own argv, so its flags never reach the parser:
+  // `aiand <agent> on -- --session` is the agent's flag, not a wiring mode.
   const options = {
     model: { type: "string" },
     force: { type: "boolean", default: false },
+    session: { type: "boolean", default: false },
   } as const;
-  const parsed = parse([...argv, ...globalArgs], options);
+  const parsed = parse([...head, ...globalArgs], options);
 
   if (bool(parsed, "help")) return out(agentHelp(adapter));
 
@@ -92,14 +107,32 @@ export async function runAgentCommand(
   }
 }
 
+/** The one line printed after a --session spawn, so it is never a surprise. */
+const SESSION_NOTE = "This session ran on ai&; your config was not changed.";
+
 async function runOpen(
   adapter: AgentAdapter,
   passthrough: string[],
   globalArgs: string[],
+  session: boolean,
 ): Promise<void> {
   const target = parse(globalArgs);
   const profile = str(target, "profile");
   const retarget = profile !== undefined || str(target, "base-url") !== undefined;
+  // --session lives after the agent name, so the agent's own args pass
+  // through untouched; it is matched from aiand's side of `--` and consumed,
+  // never forwarded to the agent.
+  if (session) {
+    const model = await agentSession(adapter, { profile, passthrough, install: true });
+    // `--json` is a leading global (`aiand --json claude --session`); the
+    // flagged form after the agent name arrives here inside `globalArgs`
+    // too, so parse the batch rather than assuming one position.
+    if (parse(globalArgs).values.json === true) {
+      json({ agent: adapter.id, mode: "session", model, files: [] });
+    }
+    err(style.dim(SESSION_NOTE));
+    return;
+  }
   await installIfMissing(adapter);
   if (retarget || !(await adapter.probe()).active) {
     const result = await agentOn(adapter, { profile });
@@ -133,6 +166,15 @@ async function runOpen(
 }
 
 async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): Promise<void> {
+  if (bool(parsed, "session")) {
+    const result = await agentSession(adapter, {
+      model: str(parsed, "model"),
+      profile: str(parsed, "profile"),
+    });
+    if (jsonOut) json({ agent: adapter.id, mode: "session", model: result, files: [] });
+    err(style.dim(SESSION_NOTE));
+    return;
+  }
   const result = await agentOn(adapter, {
     model: str(parsed, "model"),
     force: bool(parsed, "force"),

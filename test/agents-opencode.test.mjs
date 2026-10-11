@@ -1198,7 +1198,9 @@ describe("opencode sessionLaunch", () => {
     assert.match(config.provider.aiand.options.apiKey, /^\{file:.+\}$/);
     const keyFile = config.provider.aiand.options.apiKey.slice("{file:".length, -1);
     assert.equal(readFileSync(keyFile, "utf8"), "sk-launch-1");
-    assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(keyFile).mode & 0o777, 0o600);
+    }
     await launch.cleanup();
     assert.equal(existsSync(keyFile), false);
     assert.equal(config.provider.aiand.options.baseURL, "https://api.aiand.com/v1");

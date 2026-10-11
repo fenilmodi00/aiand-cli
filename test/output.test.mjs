@@ -26,7 +26,9 @@ function capture(fn) {
   } finally {
     process.stdout.write = original;
   }
-  return lines.join("").split("\n").filter(Boolean);
+  // `out()` appends os.EOL, so on win32 every row ends "\r\n": drop the CR
+  // before splitting, or each row's measured width is one column too wide.
+  return lines.join("").replace(/\r\n/g, "\n").split("\n").filter(Boolean);
 }
 
 function columns(s) {

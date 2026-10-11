@@ -107,7 +107,9 @@ jobs:
           cache: npm
       # Install into an isolated HOME from the checkout itself (no network
       # clone: AIAND_SOURCE points at actions/checkout's copy) and assert
-      # the launcher reports this PR's package.json version.
+      # the launcher reports this PR's package.json version. AIAND_SOURCE
+      # exercises the source path (cloned or copied, then built); it skips
+      # the published-release path entirely.
       - run: |
           set -euo pipefail
           export ISOLATED_HOME="$RUNNER_TEMP/aiand-install-home"
@@ -136,7 +138,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Local-checkout path ($PSScriptRoot is the checkout, no GitHub clone).
+      # Local-source path ($PSScriptRoot is the checkout, no GitHub clone).
       # AIAND_NO_MODIFY_PATH=1 keeps CI off the runner's real HKCU\Environment.
       - run: |
           $iso = Join-Path $env:RUNNER_TEMP 'aiand-install-home'
@@ -162,7 +164,7 @@ jobs:
           if (Test-Path $cmd) { throw "uninstall left $cmd" }
           if (Test-Path $shim) { throw "uninstall left $shim" }
         shell: powershell
-      # install.ps1 above built dist/ in this checkout (local-checkout path).
+      # install.ps1 above built dist/ in this checkout (local source path).
       # e2e.mjs runs the adapter matrix plus its win32 install.ps1 uninstall
       # cases, which no other job exercises.
       - run: node scripts/e2e.mjs

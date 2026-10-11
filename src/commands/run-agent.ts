@@ -1,10 +1,9 @@
-import { getCatalog, validateCatalogModel } from "../agents/catalog.js";
-import { notInstalledError, runAgentBinary } from "../agents/launch.js";
+import { notInstalledError } from "../agents/launch.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
-import { requireSessionKey } from "../auth/session.js";
+import { agentSession } from "../agents/setup.js";
 import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
-import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
+import { assertHttpsBaseUrl } from "../config.js";
 
 // Aligns agent labels with the Options column below.
 const HELP_ID_WIDTH = 28;
@@ -116,6 +115,8 @@ export async function run(argv: string[]): Promise<void> {
   }
   if (split.baseUrl !== undefined) {
     assertHttpsBaseUrl(split.baseUrl);
+    // The launcher resolves the profile, which reads AIAND_BASE_URL, so an
+    // override has to land in the env (parse() does the same for other commands).
     process.env.AIAND_BASE_URL = split.baseUrl;
   }
 
@@ -145,58 +146,9 @@ export async function run(argv: string[]): Promise<void> {
     });
   }
 
-  const session = await requireSessionKey(split.profile);
-
-  const profile = resolveProfile(split.profile);
-  const baseUrl = profile.apiUrl;
-  const catalog = await getCatalog(baseUrl);
-
-  // --model is validated against the live catalog; without it the adapter
-  // picks, with the profile default on hand for adapters that need one.
-  // Adapters that opt in via allowUnpinnedModel read the literal "native"
-  // as "leave the model unpinned"; every other adapter keeps the ordinary
-  // catalog-membership error for it.
-  const unpinned = split.model === "native" && adapter.allowUnpinnedModel === true;
-  if (split.model !== undefined && !unpinned) validateCatalogModel(catalog, split.model);
-
-  const launch = await adapter.sessionLaunch({
-    apiKey: session.key,
+  await agentSession(adapter, {
     model: split.model,
-    profileModel: profile.model,
-    profileName: profile.name,
-    catalog,
-    baseUrl,
+    profile: split.profile,
+    passthrough: split.passthrough,
   });
-
-  // Child env = inherited, plus the adapter's own injection.
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  // The adapter's own injection carries the key; a leaked AIAND_API_KEY would hand it to every process the agent spawns.
-  delete env.AIAND_API_KEY;
-  // Adapters that route outside the child env list the inherited names that
-  // would shadow that routing; the launcher drops them so its own injection wins.
-  for (const k of adapter.shadowEnv ?? []) delete env[k];
-  Object.assign(env, launch.env);
-
-  // The adapter may own routing flags in the passthrough (e.g. Pi's
-  // --provider/--model/--api-key): drop the user's `--flag value` and
-  // `--flag=value` forms so the injected routing cannot be overridden.
-  // Everything else passes verbatim. A value is only consumed when it is
-  // not itself a flag, so `--model --print` keeps --print and a trailing
-  // `--model` eats nothing.
-  const ownedFlags = launch.stripPassthroughFlags ?? [];
-  const passthrough: string[] = [];
-  for (let i = 0; i < split.passthrough.length; i += 1) {
-    const token = split.passthrough[i]!;
-    if (ownedFlags.includes(token)) {
-      // `--flag value`: the value is the next token, when present and not
-      // itself a flag.
-      const next = split.passthrough[i + 1];
-      if (next !== undefined && !next.startsWith("-")) i += 1;
-      continue;
-    }
-    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
-    passthrough.push(token);
-  }
-
-  await runAgentBinary(adapter, [...(launch.args ?? []), ...passthrough], env, launch.cleanup);
 }

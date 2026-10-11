@@ -1,15 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
-import { BIN, withEnv, withFetch, withTestEnv } from "./helpers.mjs";
+import { withEnv, withFetch, withTestEnv } from "./helpers.mjs";
 
 const { compareVersions, checkForUpdate } = await import("../dist/housekeeping/update.js");
 const { VERSION } = await import("../dist/api/client.js");
-const { updateInstallHint } = await import("../dist/index.js");
 
 // Build a version string safely above the local one (same part count).
 function newerVersion(version) {
@@ -169,76 +165,5 @@ describe("checkForUpdate", () => {
       assert.equal(info, null);
       assert.equal(readCache().ok, false);
     });
-  });
-});
-
-describe("updateInstallHint", () => {
-  test("install.sh launch returns a runnable bash command", () => {
-    assert.equal(
-      updateInstallHint({ launched: "/tmp/fixture/.aiand/cli/dist/index.js" }),
-      "bash ~/.aiand/cli/install.sh",
-    );
-  });
-
-  test("win32 install returns a runnable ps1 path", () => {
-    assert.equal(
-      updateInstallHint({
-        platform: "win32",
-        launched: "C:\\Users\\u\\.aiand\\cli\\dist\\index.js",
-      }),
-      '& "$env:USERPROFILE\\.aiand\\cli\\install.ps1"',
-    );
-  });
-
-  test("npm-global launch still returns npm install", () => {
-    assert.equal(
-      updateInstallHint({
-        launched: "/usr/local/lib/node_modules/@aiand/cli/dist/index.js",
-        aiandDir: "",
-      }),
-      "npm install -g @aiand/cli",
-    );
-  });
-
-  test("AIAND_DIR launch returns the install hint", () => {
-    assert.equal(
-      updateInstallHint({ launched: "/opt/aiand/dist/index.js", aiandDir: "/opt/aiand" }),
-      "bash ~/.aiand/cli/install.sh",
-    );
-  });
-
-  test("never returns the old re-run placeholder", () => {
-    const hints = [
-      updateInstallHint({ launched: "/tmp/fixture/.aiand/cli/dist/index.js" }),
-      updateInstallHint({
-        platform: "win32",
-        launched: "C:\\Users\\u\\.aiand\\cli\\dist\\index.js",
-      }),
-      updateInstallHint({
-        launched: "/usr/local/lib/node_modules/@aiand/cli/dist/index.js",
-        aiandDir: "",
-      }),
-    ];
-    for (const hint of hints) {
-      assert.doesNotMatch(hint, /re-run install/);
-    }
-  });
-});
-
-describe("updateInstallHint default launched path", () => {
-  // No explicit `launched`: the hint reads process.argv[1], so run it in a
-  // child whose argv[1] is an npm-global install path.
-  test("an npm-global argv[1] prints npm install", async () => {
-    const { stdout } = await promisify(execFile)(
-      process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        `import { updateInstallHint } from ${JSON.stringify(pathToFileURL(BIN).href)}; console.log("HINT:" + updateInstallHint());`,
-        "/usr/local/lib/node_modules/@aiand/cli/dist/index.js",
-      ],
-      { env: { ...process.env, AIAND_DIR: "" } },
-    );
-    assert.match(stdout, /HINT:npm install -g @aiand\/cli/);
   });
 });

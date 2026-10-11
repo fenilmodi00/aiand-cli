@@ -164,17 +164,18 @@ function paint(canvas: Cell[][], theme: Theme): string {
     .map((row) => {
       let out = "";
       let open: CellColor | undefined;
+      let run = "";
       for (const cell of row) {
-        const next = cell.color;
-        if (next !== open) {
-          if (open) out += "\x1b[39m";
-          out += next ? theme.fg(next)(cell.char) : cell.char;
-          open = next;
-        } else {
-          out += cell.char;
+        if (cell.color !== open) {
+          // Flush the finished run in one piece: theme.fg wraps the whole run,
+          // so a contiguous same-color label stays a single SGR + reset.
+          out += open ? theme.fg(open)(run) : run;
+          run = "";
+          open = cell.color;
         }
+        run += cell.char;
       }
-      if (open) out += "\x1b[39m";
+      out += open ? theme.fg(open)(run) : run;
       return out.replace(/\s+$/u, "");
     })
     .join("\n");

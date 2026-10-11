@@ -24,26 +24,34 @@ const plainTheme = () => createTheme({ isTTY: true }, { NO_COLOR: "1", FORCE_COL
 
 const cli = (args) => runCli(args, { env: cliEnv({ NO_COLOR: "1" }) });
 
+// The terminal vars that decide colorSupport()/colorsEnabled(): clear them so a
+// host exporting COLORTERM=truecolor (a Windows terminal does) cannot turn a
+// 256-color expectation into a truecolor one.
+const TERM_ENV = { NO_COLOR: undefined, FORCE_COLOR: undefined, COLORTERM: undefined };
+
 describe("ui color", () => {
+  // colorSupport() reads COLORTERM before the FORCE_COLOR fallback, so a host
+  // exporting COLORTERM=truecolor would hand a 256-color test a truecolor
+  // resolution. Clear it alongside the vars under test.
   test("disables color when NO_COLOR is set", () =>
-    withEnv({ NO_COLOR: "1" }, () => {
+    withEnv({ ...TERM_ENV, NO_COLOR: "1" }, () => {
       assert.equal(colorsEnabled({ isTTY: true }), false);
     }));
 
   test("enables color when FORCE_COLOR is set on a non-tty stream", () =>
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1" }, () => {
+    withEnv({ ...TERM_ENV, FORCE_COLOR: "1" }, () => {
       assert.equal(colorsEnabled({ isTTY: false }), true);
     }));
 
   test("disables color on non-tty streams by default", () =>
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: undefined }, () => {
+    withEnv(TERM_ENV, () => {
       assert.equal(colorsEnabled({ isTTY: false }), false);
     }));
 });
 
 describe("ui theme", () => {
   test("truecolor paints the brand red as 24-bit foreground", () =>
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "3", AIAND_THEME: "dark" }, () => {
+    withEnv({ ...TERM_ENV, FORCE_COLOR: "3", AIAND_THEME: "dark" }, () => {
       const theme = createTheme({ isTTY: true });
       assert.equal(theme.color, true);
       assert.equal(theme.support, "truecolor");
@@ -51,14 +59,14 @@ describe("ui theme", () => {
     }));
 
   test("xterm-256 fallback emits a 256-color index, not 24-bit", () =>
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "1", AIAND_THEME: "dark" }, () => {
+    withEnv({ ...TERM_ENV, FORCE_COLOR: "1", AIAND_THEME: "dark" }, () => {
       const theme = createTheme({ isTTY: true });
       assert.equal(theme.support, "256");
       assert.match(theme.brand("x"), /^\x1b\[38;5;\d+mx\x1b\[39m$/);
     }));
 
   test("NO_COLOR yields plain text for every style", () =>
-    withEnv({ NO_COLOR: "1", FORCE_COLOR: undefined }, () => {
+    withEnv({ ...TERM_ENV, NO_COLOR: "1" }, () => {
       const theme = createTheme({ isTTY: true });
       assert.equal(theme.color, false);
       for (const styled of [theme.brand, theme.accent, theme.success, theme.bold, theme.muted]) {
@@ -67,20 +75,17 @@ describe("ui theme", () => {
     }));
 
   test("AIAND_THEME=light picks the light palette", () =>
-    withEnv({ NO_COLOR: undefined, FORCE_COLOR: "3", AIAND_THEME: "light" }, () => {
+    withEnv({ ...TERM_ENV, FORCE_COLOR: "3", AIAND_THEME: "light" }, () => {
       assert.equal(createTheme({ isTTY: true }).palette.accent, "#E2091A");
     }));
 
   test("COLORFGBG light background picks the light palette", () =>
-    withEnv(
-      { NO_COLOR: undefined, FORCE_COLOR: "3", AIAND_THEME: undefined, COLORFGBG: "0;15" },
-      () => {
-        assert.equal(createTheme({ isTTY: true }).palette.fill, "#EEE9E9");
-      },
-    ));
+    withEnv({ ...TERM_ENV, FORCE_COLOR: "3", AIAND_THEME: undefined, COLORFGBG: "0;15" }, () => {
+      assert.equal(createTheme({ isTTY: true }).palette.fill, "#EEE9E9");
+    }));
 
   test("NO_COLOR leaves every theme style a plain pass-through", () =>
-    withEnv({ NO_COLOR: "1", FORCE_COLOR: undefined }, () => {
+    withEnv({ ...TERM_ENV, NO_COLOR: "1" }, () => {
       const theme = createTheme({ isTTY: true });
       assert.equal(theme.color, false);
       // Every style, curried or not, returns the text unchanged.

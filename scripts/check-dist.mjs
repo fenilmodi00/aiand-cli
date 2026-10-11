@@ -22,7 +22,10 @@ assert.equal(
   "#!/usr/bin/env node",
   `${binPath} must start with a node shebang, got: ${firstLine}`,
 );
-assert.ok(stats.mode & 0o111, `${binPath} is not executable (mode ${stats.mode.toString(8)})`);
+assert.ok(
+  process.platform === "win32" || stats.mode & 0o111,
+  `${binPath} is not executable (mode ${stats.mode.toString(8)})`,
+);
 
 const reported = execFileSync(process.execPath, [fileURLToPath(binUrl), "--version"], {
   encoding: "utf8",

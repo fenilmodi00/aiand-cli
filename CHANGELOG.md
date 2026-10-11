@@ -9,6 +9,26 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand update` upgrades this install in place. The update check is always a
+  live registry read (`--check` reports and exits 1 when a newer version
+  exists, `--json` prints `{current, latest, installKind, upToDate}`), an
+  upgrade asks before running unless `--yes` is given, and the installer runs
+  with inherited stdio and `AIAND_NO_MODIFY_PATH=1` so it never edits shell rc
+  files. A launcher install re-runs `~/.aiand/cli/install.sh`, an npm global
+  install runs `npm install -g @aiand/cli@<latest>`, and a source checkout is
+  refused with the command to run by hand. After the install child exits the
+  version is re-verified through the launched entry, so a PATH shadow is
+  reported instead of passing silently. `aiand upgrade` is an alias.
+  `AIAND_AUTO_UPDATE=0` silences the background update notice only.
+
+- `aiand <agent> --session` and `aiand <agent> on --session` run the agent on
+  ai& for one session without writing any persistent config: the adapter's own
+  `sessionLaunch` wiring (the one `aiand run-agent <agent>` uses) layers a
+  throwaway file or overlay over the user's config, the agent runs, and the
+  launcher removes it after the child exits. `--session --json` reports
+  `{agent, mode:"session", model, files:[]}`. Adapters that cannot launch a
+  session (`copilot-app`, the desktop app) refuse with a clear error.
+
 - A terminal-native interactive surface. `aiand` with no command now prints
   a home screen — brand header and version, then titled sections of
   `command  description` rows aligned on one column — in place of the old
@@ -36,6 +56,16 @@ breaking changes while the command surface settles.
 
 - `aiand welcome` renders the animated wordmark; `aiand banner` stays as an
   alias for it.
+
+- The installer's two install paths are now named by what they install rather
+  than by a speed ranking: the published path installs the npm release
+  tarball with its already-built `dist/`, and the source path installs your own
+  source, cloned or copied and built. `AIAND_PUBLISHED_RELEASE` (1 requires the
+  published release, 0 requires source, unset tries published then source)
+  replaces `AIAND_FAST_INSTALL`, which is still honoured as a deprecated alias
+  printing `AIAND_FAST_INSTALL is deprecated; use AIAND_PUBLISHED_RELEASE.` —
+  keep using it if you must, but move to the new name. Only vocabulary and the
+  path names change: every staging, ownership, and launcher guard is unchanged.
 
 - `aiand` with no command on a terminal now opens an interactive menu instead
   of printing the static home screen: a search bar that filters agents and
@@ -65,6 +95,45 @@ breaking changes while the command surface settles.
   testable without a terminal.
 
 ### Fixed
+
+- The first-run splash's version label no longer renders as two separate color
+  runs on a colored terminal: `paint()` coalesced only the cells after a run's
+  first character, so `v0.6.0` was emitted as `ESC[38;5;246mv ESC[39m0.6.0 ESC[39m`
+  and the literal `v0.6.0` never appeared contiguously in the byte stream. Any
+  consumer matching the styled output (tests, log capture, screen diff) read a
+  split label; a contiguous same-color run is now one opening sequence, the
+  run's characters, then one reset.
+
+- `aiand update --yes` is accepted again. The flag was documented in the help
+  and read by the command, but never declared in the argument parser, so
+  `aiand update --yes` failed with "Unknown option '--yes'" before reaching the
+  confirmation or the install child.
+
+- `aiand --json <agent> --session` now reports the session instead of printing
+  nothing. The bare open path parsed the global flags from the wrong position,
+  so `--json` was dropped and no machine-readable output was produced, while
+  the equivalent `<agent> on --session --json` always worked.
+
+- The prebuilt-release install path no longer requires `curl`. It fetched the
+  release manifest and tarball with `curl -fsSL`, so on systems without curl
+  (Alpine and other minimal images ship busybox `wget`) the install silently
+  built from source instead, costing ~30 seconds. It now fetches with
+  `node`, which the installer already requires.
+
+- The test suite now runs on Windows. Stub agent binaries were written as
+  extensionless `#!/bin/sh` files, which Windows `spawn` cannot execute, so
+  every stub-driven test failed with `127` instead of the stub's exit code;
+  the stubs are now mirrored as `.cmd` on Windows the way the installer and
+  e2e harnesses already did. Permission assertions (`0600`) are POSIX-only and
+  now guarded, since NTFS cannot express owner-only bits, and the theme tests
+  no longer inherit a host's `COLORTERM` when they assert the xterm-256
+  fallback.
+
+- Claude Code sessions no longer silently run on the user's own Anthropic
+  subscription when a `CLAUDE_CODE_OAUTH_TOKEN` is exported in the shell: the
+  token is now blanked in the wiring `on` writes and deleted from the child
+  env of every launcher path, so an aiand session cannot bill a plan the
+  command did not route.
 
 - Selecting `key` in the menu no longer fails with "No verb given. Verbs:
   export" — `key` takes a verb, so the menu now runs `aiand key export`.

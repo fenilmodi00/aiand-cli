@@ -61,8 +61,9 @@ describe("snapshot manifest", () => {
     assert.equal(manifest.files[0].existed, false);
     assert.equal(manifest.files[0].backupPath, undefined);
 
-    const mode = statSync(manifestPath).mode & 0o777;
-    assert.equal(mode, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(manifestPath).mode & 0o777, 0o600);
+    }
   });
 
   test("restore without a manifest returns false, without touching files", async () => {

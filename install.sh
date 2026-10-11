@@ -11,6 +11,12 @@
 # untouched. Nothing under ~/.config/aiand (profiles, credentials, agent
 # snapshots) is ever touched — updating the CLI never unwires your agents.
 #
+# By default the installer installs the published release: the npm tarball
+# already ships a compiled `dist/`, so that path needs only Node.js and tar.
+# `AIAND_SOURCE` installs from your own source instead — a local path, fork,
+# or URL — which is cloned or copied and built, so git and npm are required
+# too. When the registry cannot be reached, the installer builds from source.
+#
 # `uninstall` turns every aiand-routed agent `off` first (via the installed
 # CLI's `aiand init --off`, aborting before deleting anything when off fails
 # so snapshots stay retryable), then removes the launcher and the
@@ -26,6 +32,16 @@
 #   AIAND_INSTALL_VERBOSE=1              show full npm output
 #   AIAND_UNINSTALL_FORCE=1              on uninstall, skip turning agents off
 #   AIAND_NO_MODIFY_PATH=1               never touch shell rc PATH entries
+#   AIAND_PUBLISHED_RELEASE=1            install only the published release
+#                                        (npm tarball) and error if it cannot
+#                                        be installed
+#   AIAND_PUBLISHED_RELEASE=0            skip the published release and build
+#                                        from source
+#   AIAND_PUBLISHED_RELEASE unset        try the published release, else build
+#                                        from source
+#   AIAND_FAST_INSTALL=1|0               deprecated alias for
+#                                        AIAND_PUBLISHED_RELEASE; still works
+#   AIAND_RELEASE_URL=…|/local/path      manifest to read instead of npm
 #   NO_COLOR                             disable ANSI colors in this script
 set -euo pipefail
 
@@ -37,7 +53,17 @@ MIN_NODE_MINOR=0
 MIN_NODE_VERSION="${MIN_NODE_MAJOR}"
 INSTALL_NOTES=()
 STAGING_DIR=""
+PUBLISHED_RELEASE_VERSION=""
 INSTALL_STAGE_TOTAL=5
+# The manifest naming the published release. Overridable so tests can point at
+# a local tarball; unset means the real npm registry.
+RELEASE_MANIFEST_URL="${AIAND_RELEASE_URL:-https://registry.npmjs.org/@aiand/cli/latest}"
+# Printed when the published release cannot be used, before `main` takes the
+# source-build path, which needs the full toolchain (git, npm) present.
+SOURCE_BUILD_NOTE="Building from source (registry unavailable)."
+# The renamed knob's old spelling is folded in here so `main` and the rest of
+# this script only ever see the new name.
+AIAND_PUBLISHED_RELEASE="${AIAND_PUBLISHED_RELEASE:-${AIAND_FAST_INSTALL:-}}"
 
 # When install.sh is piped (curl | bash), BASH_SOURCE[0] is unset; fall
 # through to the clone path below. Otherwise, prefer the checkout this
@@ -67,6 +93,16 @@ log() {
     printf '\033[1;36m==>\033[0m %s\n' "$*" >&2
   else
     printf '==> %s\n' "$*" >&2
+  fi
+}
+
+# A secondary explanation, dimmed under NO_COLOR-less terminals so it reads as
+# a side note rather than a step (mirrors log's diagnostic-stream rule).
+dim_note() {
+  if supports_color; then
+    printf '\033[2m%s\033[0m\n' "$*" >&2
+  else
+    printf '%s\n' "$*" >&2
   fi
 }
 
@@ -323,10 +359,116 @@ ensure_toolchain() {
   done
 }
 
-# Stage 3, clone path: verify the live INSTALL_DIR may be replaced, then
+# Fetches the npm release tarball for the published version and extracts its
+# prebuilt `dist/` next to its `package.json`, skipping the clone, `npm ci`,
+# and `tsc` entirely (the tarball ships `dist/`, so there is nothing to build).
+# The staged tree is byte-identical to a built checkout except for `.git`,
+# so `activate_staged_install` / `verify_staged_cli` / the launcher all keep
+# working unchanged. Any failure — no network, no node, no tar, a missing or
+# malformed member, a version mismatch — returns non-zero and `main` builds
+# from source instead with the old install untouched. Returns 0 with
+# STAGING_DIR set and PUBLISHED_RELEASE_VERSION=true on success.
+stage_published_release() {
+  local manifest_url="$1" manifest="" tarball_url staging_dir members
+  # node is already required (and verified) before this path runs, so fetching
+  # with it keeps the published path free of a curl dependency — Alpine and
+  # other minimal images ship busybox wget, not curl.
+  command -v node >/dev/null 2>&1 || return 1
+  command -v tar >/dev/null 2>&1 || return 1
+
+  manifest="$(node -e '
+    const url = process.argv[1];
+    // A file:// URL (the test harness serves its fixtures that way) is read
+    // directly: node fetch() cannot open file://, and a plain read keeps the
+    // harness independent of any HTTP server.
+    const local = url.startsWith("file://")
+      ? Promise.resolve(require("node:fs").readFileSync(new URL(url), "utf8"))
+      : fetch(url, { signal: AbortSignal.timeout(60_000) })
+          .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))));
+    local.then((t) => process.stdout.write(t)).catch(() => process.exit(1));
+  ' "${manifest_url}")" || return 1
+  # Parse before writing anything: a malformed manifest must not leave a
+  # half-staged tree behind. One node call (the only dependency the installer
+  # already requires) validates the shape and prints the tarball URL. The
+  # version itself is not needed: verify_staged_cli compares the extracted
+  # package.json's version against what dist/index.js reports, which is the
+  # same guarantee with no duplicated parsing.
+  local parsed
+  parsed="$(printf '%s' "${manifest}" | node -e '
+    let body = "";
+    process.stdin.on("data", (chunk) => (body += chunk)).on("end", () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        process.exit(1);
+      }
+      const version = parsed && parsed.version;
+      const tarball = parsed && parsed.dist && parsed.dist.tarball;
+      if (typeof version !== "string" || typeof tarball !== "string" || !version || !tarball) {
+        process.exit(1);
+      }
+      process.stdout.write(tarball);
+    });
+  ' 2>/dev/null)" || return 1
+  tarball_url="${parsed}"
+
+  mkdir -p "$(dirname "${INSTALL_DIR}")"
+  staging_dir="$(mktemp -d "$(dirname "${INSTALL_DIR}")/.cli-staging-XXXXXX")" || return 1
+
+  if ! node -e '
+    const [url, out] = process.argv.slice(1);
+    const finish = (body) => {
+      require("node:fs").writeFileSync(out, Buffer.from(body));
+    };
+    const local = url.startsWith("file://")
+      ? Promise.resolve(require("node:fs").readFileSync(new URL(url)))
+      : fetch(url, { signal: AbortSignal.timeout(300_000) })
+          .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))));
+    local.then(finish).catch(() => process.exit(1));
+  ' "${tarball_url}" "${staging_dir}.tgz" 2>/dev/null; then
+    rm -rf -- "${staging_dir}"
+    return 1
+  fi
+  # Extract only the two members the launcher and verify_staged_cli need, and
+  # list them first so a tarball missing either is rejected instead of
+  # silently producing a broken checkout. `--strip-components=1` drops the
+  # `package/` prefix npm always adds; GNU tar and BSD tar both support it.
+  # `grep -v '/$'` keeps directory entries out: GNU tar treats a named
+  # directory in --files-from as a prefix, so one would swallow the rest of
+  # the list. `grep -v '\.\.'` keeps a crafted tarball from naming
+  # `package/dist/../..` members (tar refuses them, but the failure would
+  # read as a broken release).
+  members="$(tar -tzf "${staging_dir}.tgz" 2>/dev/null |
+    grep -E '^package/(dist/.+|package\.json)$' |
+    grep -v '/$' |
+    grep -v '\.\.' || true)"
+  if [[ -z "${members}" ]] || ! grep -qE '^package/package\.json$' <<<"${members}"; then
+    rm -rf -- "${staging_dir}" "${staging_dir}.tgz"
+    return 1
+  fi
+  # </dev/null: tar reads stdin for some remote/streaming backends and would
+  # otherwise consume the caller's input.
+  if ! tar -xzf "${staging_dir}.tgz" -C "${staging_dir}" \
+    --strip-components=1 -T <(printf '%s\n' "${members}") </dev/null; then
+    rm -rf -- "${staging_dir}" "${staging_dir}.tgz"
+    return 1
+  fi
+  rm -f -- "${staging_dir}.tgz"
+  if [[ ! -f "${staging_dir}/dist/index.js" || ! -f "${staging_dir}/package.json" ]]; then
+    rm -rf -- "${staging_dir}"
+    return 1
+  fi
+  mark_installer_owned "${staging_dir}"
+  STAGING_DIR="${staging_dir}"
+  PUBLISHED_RELEASE_VERSION="true"
+  return 0
+}
+
+# Stage 3, source path: verify the live INSTALL_DIR may be replaced, then
 # clone SOURCE into a staging sibling. Sets STAGING_DIR on success; any
 # failure exits 1 with the old install untouched.
-clone_to_staging() {
+stage_source() {
   if ! is_allowlisted_source "${SOURCE}"; then
     echo "error: AIAND_SOURCE is not an allowlisted https://github.com/aiandlabs/aiand-cli URL" >&2
     exit 1
@@ -374,9 +516,12 @@ clone_to_staging() {
     exit 1
   fi
   mark_installer_owned "${STAGING_DIR}"
+  # Announce the source here: stage 3 prints nothing else on this path, so a
+  # cloned build was otherwise indistinguishable from an in-place one.
+  log "Using source from ${SOURCE}"
 }
 
-# Stage 5, clone path: swap the staged checkout in for INSTALL_DIR. Runs only
+# Stage 5, source path: swap the staged checkout in for INSTALL_DIR. Runs only
 # after the staged build verified; on any failure the previous install is
 # restored. Clears STAGING_DIR on success so the EXIT trap is a no-op.
 activate_staged_install() {
@@ -408,10 +553,10 @@ activate_staged_install() {
   STAGING_DIR=""
 }
 
-# Run the built CLI's entry point the way the launcher will, before any
+# Run the staged CLI's entry point the way the launcher will, before any
 # launcher is written: the reported version must equal the staged
 # package.json version and --help must exit 0.
-verify_built_cli() {
+verify_staged_cli() {
   local source_dir="$1" node_bin expected actual
   node_bin="$(command -v node)"
   expected="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version' -- "${source_dir}/package.json" 2>/dev/null || true)"
@@ -432,6 +577,11 @@ verify_built_cli() {
 
 ensure_build() {
   local source_dir="$1"
+  # The published path stages an already-built dist/ from the release
+  # tarball, so there is nothing to compile and no need for git/npm at all.
+  if [[ -n "${PUBLISHED_RELEASE_VERSION}" && -f "${source_dir}/dist/index.js" ]]; then
+    return
+  fi
   if [[ "${AIAND_SKIP_BUILD:-}" == "1" && -f "${source_dir}/dist/index.js" ]]; then
     return
   fi
@@ -690,29 +840,60 @@ main() {
   fi
   refuse_foreign_launcher "${HOME}/.local/bin/aiand"
 
+  # The alias still drives the install, so say so once rather than silently
+  # honouring a name the header documents only as an alias.
+  if [[ -n "${AIAND_FAST_INSTALL:-}" ]]; then
+    dim_note "AIAND_FAST_INSTALL is deprecated; use AIAND_PUBLISHED_RELEASE."
+  fi
+
   show_intro
   stage 1 'Checking platform and install location'
-  stage 2 'Checking Node.js, git, and npm'
-  ensure_toolchain
 
-  local source_dir from_clone=0
-  stage 3 'Fetching source'
-  if [[ -n "${SCRIPT_DIR}" ]] && is_aiand_cli_package "${SCRIPT_DIR}/package.json"; then
-    log "Using local checkout"
-    source_dir="${SCRIPT_DIR}"
-  else
-    clone_to_staging
-    source_dir="${STAGING_DIR}"
-    from_clone=1
+  local source_dir staged=0 source_build_note=""
+  # The published path needs only node and tar, so it is attempted before
+  # the toolchain check; the source-build path needs git and npm too. With an
+  # explicit AIAND_SOURCE the user asked for that source, so the published
+  # path is skipped and no "registry unavailable" note is printed: the source
+  # was the plan, not the second choice.
+  if [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]]; then
+    if stage_published_release "${RELEASE_MANIFEST_URL}"; then
+      stage 3 'Fetching source'
+      log "Using the published release"
+      staged=1
+      source_dir="${STAGING_DIR}"
+    elif [[ "${AIAND_PUBLISHED_RELEASE:-}" == "1" ]]; then
+      # AIAND_PUBLISHED_RELEASE=1 is a promise, not a preference: fail instead
+      # of quietly building from source instead.
+      echo "error: AIAND_PUBLISHED_RELEASE=1 was set but the published release could not be installed; the existing installation was left unchanged." >&2
+      exit 1
+    else
+      source_build_note="${SOURCE_BUILD_NOTE}"
+    fi
+  fi
+
+  if ((staged == 0)); then
+    stage 2 'Checking Node.js, git, and npm'
+    ensure_toolchain
+    stage 3 'Fetching source'
+    [[ -n "${source_build_note}" ]] && dim_note "${source_build_note}"
+    if [[ -n "${SCRIPT_DIR}" ]] && is_aiand_cli_package "${SCRIPT_DIR}/package.json"; then
+      log "Using local source"
+      source_dir="${SCRIPT_DIR}"
+    else
+      stage_source
+      source_dir="${STAGING_DIR}"
+      staged=1
+    fi
   fi
 
   stage 4 'Building and verifying'
+  # The published path stages an already-built dist/; the source path builds it.
   ensure_build "${source_dir}"
-  verify_built_cli "${source_dir}"
+  verify_staged_cli "${source_dir}"
 
   stage 5 'Activating the verified installation'
   local final_dir
-  if ((from_clone)); then
+  if ((staged)); then
     activate_staged_install "${source_dir}"
     final_dir="${INSTALL_DIR}"
   else

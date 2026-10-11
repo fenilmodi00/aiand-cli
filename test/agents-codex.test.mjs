@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { enableInput as baseEnableInput, catalogModel, withTestEnv } from "./helpers.mjs";
+import {
+  enableInput as baseEnableInput,
+  catalogModel,
+  plantStub,
+  withTestEnv,
+} from "./helpers.mjs";
 
 withTestEnv("aiand-codex-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
@@ -10,6 +15,11 @@ withTestEnv("aiand-codex-test-", (dir) => {
   process.env.AIAND_API_KEY = "sk-test-123";
   mkdirSync(process.env.AIAND_HOME, { recursive: true });
   mkdirSync(process.env.AIAND_CONFIG_DIR, { recursive: true });
+  // probe() resolves the auth command through PATH, so a hermetic `aiand`
+  // launcher stands in for a real install: without it, a machine that has
+  // no ai& on PATH (a bare CI box) reads every probe as inactive.
+  plantStub(join(dir, "launcher"), "aiand");
+  process.env.PATH = [join(dir, "launcher"), process.env.PATH].filter(Boolean).join(delimiter);
 });
 
 const { codexAdapter } = await import("../dist/agents/codex/adapter.js");
@@ -80,9 +90,11 @@ describe("codex on", () => {
     assert.match(text, /^web_search = "disabled"$/m);
     assert.match(text, /^base_url = "https:\/\/api\.aiand\.com\/v1"$/m);
     assert.match(text, /^wire_api = "responses"$/m);
+    // win32 records the resolved .cmd path, because Codex spawns the command
+    // without a PATHEXT lookup (same assertion as scripts/e2e.mjs:415).
     assert.match(
       text,
-      /^\[model_providers\.aiand\.auth\]\ncommand = "aiand"\nargs = \["key", "export"\]$/m,
+      /^\[model_providers\.aiand\.auth\]\ncommand = "(?:aiand|.*\\aiand\.cmd)"\nargs = \["key", "export"\]$/m,
     );
     assert.match(text, /^in_app_browser = false\nview_image = false$/m);
     assert.doesNotMatch(text, /\[tools\]/);
@@ -142,7 +154,7 @@ describe("codex on", () => {
     await codexAdapter.enableGuard({ force: true });
     await snapshotFiles("codex", [profilePath()]);
     await codexAdapter.enable(enableInput());
-    assert.match(readProfile(), /command = "aiand"/);
+    assert.match(readProfile(), /command = "(?:aiand|.*\\aiand\.cmd)"/);
     const off = await codexAdapter.disable();
     assert.ok(off.notes.some((n) => n.includes("aiand restore codex --force")));
   });

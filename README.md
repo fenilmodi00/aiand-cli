@@ -40,7 +40,7 @@ irm https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | iex
 
 The installer will modify your shell, `AIAND_NO_MODIFY_PATH=1` to skip permanent PATH changes while still adding the CLI to the installer's process PATH.
 
-To update the CLI, run the install command again.
+To update the CLI, run `aiand update` (or run the install command again).
 
 To uninstall a copy from the installer:
 
@@ -56,6 +56,27 @@ Uninstall turns off every agent aiand wired, then removes the CLI. Your
 profiles and credentials under `~/.config/aiand` are kept. For an npm install,
 run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 
+## Install sources
+
+The installer installs the published release by default. It reads the npm
+manifest, downloads the release tarball, and stages its already-built `dist/`,
+so no clone, `npm ci`, or TypeScript build runs and only Node.js and `tar` are
+needed. When the registry cannot be reached it builds from source instead,
+which needs `git` and `npm`; a failed stage still leaves the previous install
+untouched.
+
+Set `AIAND_SOURCE` to a local path or an allowlisted `https://` URL to install
+from your own source — a fork, a specific checkout, or a CI workspace — and
+that source is cloned or copied and built. Running the installer from inside a
+checkout uses that checkout. `AIAND_RELEASE_URL` reads a different manifest for
+the published release; tests use a local tarball.
+
+`AIAND_PUBLISHED_RELEASE` takes three states. `1` requires the published
+release and errors when the registry cannot be reached, `0` requires source,
+and unset tries the published release and then source. `AIAND_FAST_INSTALL` is
+the deprecated alias for `AIAND_PUBLISHED_RELEASE`, and the installer says so
+when it is set.
+
 
 ## Commands
 
@@ -69,6 +90,7 @@ run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 | `aiand <agent> on\|off\|status` | Wire a coding agent to ai&, or unwire it |
 | `aiand init` | Detect installed agents and wire them in one go |
 | `aiand run-agent <agent>` | Run an agent on ai& for one session only |
+| `aiand <agent> --session` | Run a coding agent on ai& for one session, no config written |
 | `aiand restore <agent> --force` | Put an agent's config back as it was before aiand |
 | `aiand run <prompt>` | One prompt, streamed to stdout |
 | `aiand chat` | Interactive conversation |
@@ -78,6 +100,7 @@ run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 | `aiand orgs` | Organizations you belong to |
 | `aiand config` | Profiles and defaults |
 | `aiand key export` | Print the active key, for piping into another tool |
+| `aiand update` | Update ai& to the latest version (`--check` reports only) |
 
 Most commands take `--json`, and every command takes `--help`.
 
@@ -149,6 +172,8 @@ aiand claude on          # route Claude Code through ai&
 aiand claude status
 aiand claude off
 aiand run-agent claude   # launch Claude Code on ai&, nothing written
+aiand claude --session   # the same, from the agent's own command
+aiand claude on --session
 ```
 
 `on` writes an `env` block into `~/.claude/settings.json` (or
@@ -374,6 +399,7 @@ Flags win over environment variables, which win over the stored profile.
 | `AIAND_SECRET_STORE_MASTER_KEY` | 64 hex characters; your own key for the encrypted file |
 | `AIAND_NO_BROWSER=1` | Never open a browser; print the sign-in link instead |
 | `AIAND_UPDATE_CHECK=0` or `NO_UPDATE_CHECK=1` | Turn off the daily update notice |
+| `AIAND_AUTO_UPDATE=0` | Turn off the background update notice (foreground `aiand update` still works) |
 | `NO_COLOR` | Turn off color |
 
 ## Exit codes

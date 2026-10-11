@@ -441,6 +441,10 @@ export const claudeAdapter: AgentAdapter = {
   probe,
   enable,
   disable,
+  // Claude Code prefers its own OAuth token over any API key, so a shell that
+  // has one would silently bill the user's subscription instead of ai&. Both
+  // launchers (run-agent, agentSession) delete these before the spawn.
+  shadowEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {
     const path = await wiredSettingsPath();
     const raw = await readTextIfExists(path);

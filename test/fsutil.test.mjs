@@ -32,6 +32,7 @@ after(() => {
 
 describe("writeFileAtomic", () => {
   test("writes through a symlink instead of replacing the link", async () => {
+    if (process.platform === "win32") return; // symlinkSync needs Developer Mode
     const sandbox = mkdtempSync(join(dir, "link-"));
     const real = join(sandbox, "real.json");
     const link = join(sandbox, "link.json");
@@ -59,7 +60,9 @@ describe("writeFileAtomic", () => {
     const next = '{"new":true}\n';
     await writeFileAtomic(target, next);
     assert.equal(readFileSync(target, "utf8"), next);
-    assert.equal(statSync(target).mode & 0o777, 0o640);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(target).mode & 0o777, 0o640);
+    }
     assert.deepEqual(
       readdirSync(sandbox).filter((name) => name.endsWith(".tmp")),
       [],
@@ -67,6 +70,7 @@ describe("writeFileAtomic", () => {
   });
 
   test("writes through a relative symlink", async () => {
+    if (process.platform === "win32") return; // symlinkSync needs Developer Mode
     const sandbox = mkdtempSync(join(dir, "rel-"));
     const real = join(sandbox, "real.json");
     const link = join(sandbox, "link.json");
@@ -84,7 +88,9 @@ describe("writeFileAtomic", () => {
     chmodSync(thirdParty, 0o755);
     const target = join(thirdParty, "nested", "config.json");
     await writeFileAtomic(target, '{"ok":true}\n', { mode: 0o600 });
-    assert.equal(statSync(thirdParty).mode & 0o777, 0o755);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(thirdParty).mode & 0o777, 0o755);
+    }
     assert.equal(readFileSync(target, "utf8"), '{"ok":true}\n');
   });
 
@@ -110,7 +116,9 @@ describe("writeFileAtomic", () => {
     chmodSync(nested, 0o755);
     const target = join(nested, "state.json");
     await writeFileAtomic(target, '{"ok":true}\n', { mode: 0o600 });
-    assert.equal(statSync(nested).mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(nested).mode & 0o777, 0o700);
+    }
     assert.equal(readFileSync(target, "utf8"), '{"ok":true}\n');
   });
 
@@ -133,6 +141,7 @@ describe("writeFileAtomic", () => {
   });
 
   test("replaces a broken symlink with a regular file", async () => {
+    if (process.platform === "win32") return; // symlinkSync needs Developer Mode
     const sandbox = mkdtempSync(join(dir, "broken-"));
     const link = join(sandbox, "link.json");
     symlinkSync(join(sandbox, "missing.json"), link);

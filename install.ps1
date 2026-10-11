@@ -285,7 +285,7 @@ function Set-InstallerOwned {
     $exclude = Join-Path $Dir '.git/info/exclude'
     try { if (Test-Path (Split-Path -Parent $exclude)) { "/$OwnershipMarker" | Out-File -FilePath $exclude -Encoding ascii -Append } } catch { }
 }
-# Stage 3, clone path: verify the live dir may be replaced, then clone SOURCE
+# Stage 3, source path: verify the live dir may be replaced, then clone SOURCE
 # into a staging sibling. Sets StagingDir; failure exits with old install kept.
 function Clone-ToStaging {
     Assert-AllowlistedHttpsUri -Uri $Source
@@ -315,7 +315,7 @@ function Clone-ToStaging {
     try { & git clone --quiet --depth 1 $Source $script:StagingDir 2>$null; if ($LASTEXITCODE -ne 0) { throw 'clone failed' } } catch { throw "error: failed to clone $Source; the existing installation was left unchanged." }
     Set-InstallerOwned -Dir $script:StagingDir
 }
-# Stage 5, clone path: swap the staged checkout in for INSTALL_DIR. Runs only
+# Stage 5, source path: swap the staged checkout in for INSTALL_DIR. Runs only
 # after the staged build verified; on failure the previous install is restored.
 function Activate-StagedInstall {
     param([Parameter(Mandatory = $true)][string]$StagingPath)
@@ -575,7 +575,7 @@ function Invoke-Main {
     $fromClone = $false
     if ($script:ScriptDir -ne '' -and (Test-AiandCliPackage (Join-Path $script:ScriptDir 'package.json'))) {
         Write-Stage -Number 3 -Message 'Fetching source'
-        Write-Step 'Using local checkout'
+        Write-Step 'Using local source'
         $sourceDir = $script:ScriptDir
     } else {
         Write-Stage -Number 3 -Message 'Fetching source'

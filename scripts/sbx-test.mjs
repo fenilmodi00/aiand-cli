@@ -41,7 +41,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
@@ -65,8 +65,13 @@ const NOCFG = join(S, "nocfg");
 // reach /usr/bin/security and sign in (then log out) the real login keychain.
 const NOKEYCHAIN = join(S, "nokeychain");
 mkdirSync(NOKEYCHAIN, { recursive: true });
+// spawn looks up PATHEXT on win32, where a shebang file named after the tool
+// is invisible: write the batch equivalent instead. `exit /b 1` keeps the
+// "no keychain tier" semantics the matrix depends on.
+const nokeychainExit =
+  process.platform === "win32" ? "@echo off\r\nexit /b 1\r\n" : "#!/bin/sh\nexit 1\n";
 for (const tool of ["security", "secret-tool"]) {
-  writeFileSync(join(NOKEYCHAIN, tool), "#!/bin/sh\nexit 1\n");
+  writeFileSync(join(NOKEYCHAIN, tool), nokeychainExit);
   chmodSync(join(NOKEYCHAIN, tool), 0o755);
 }
 // A minimal bin dir for the "clean" scenarios. The CLI detects agents by
@@ -77,7 +82,7 @@ for (const tool of ["security", "secret-tool"]) {
 // which would otherwise leak into the clean scenario.
 const CLEAN_BIN = join(S, "clean-bin");
 mkdirSync(CLEAN_BIN, { recursive: true });
-writeFileSync(join(CLEAN_BIN, "which"), "#!/bin/sh\nexit 1\n");
+writeFileSync(join(CLEAN_BIN, "which"), nokeychainExit);
 chmodSync(join(CLEAN_BIN, "which"), 0o755);
 
 const argv = process.argv.slice(2);
@@ -141,7 +146,12 @@ function baseEnv(home, cfg, { stubs = true, key = KEY_EFFECTIVE, extra = {} } = 
   env.AIAND_CONFIG_DIR = cfg;
   if (key === null) delete env.AIAND_API_KEY;
   else env.AIAND_API_KEY = key;
-  env.PATH = `${NOKEYCHAIN}:${stubs ? `${BIN}:${PATH_REAL}` : PATH_BARE}`;
+  // The stubs come first so planted agents win over the base image's real
+  // installs; the delimiter is `;` on win32, where `:` would glue the whole
+  // list into one entry and hide every stub from `where`.
+  env.PATH = [NOKEYCHAIN, stubs ? BIN : null, stubs ? PATH_REAL : PATH_BARE]
+    .filter(Boolean)
+    .join(delimiter);
   Object.assign(env, extra);
   return env;
 }
@@ -281,6 +291,11 @@ process.exit(Number(process.env.STUB_EXIT ?? 0));
     const path = join(BIN, name);
     writeFileSync(path, `#!/bin/sh\nexec "${NODE}" ${STUB_JS} ${name} "$@"\n`);
     chmodSync(path, 0o755);
+    if (process.platform === "win32") {
+      // spawn looks up PATHEXT, so a shebang file named after the agent is
+      // invisible; the recorder itself already runs under node.
+      writeFileSync(join(BIN, `${name}.cmd`), `@echo off\r\n"${NODE}" "${STUB_JS}" ${name} %*\r\n`);
+    }
   }
 }
 
@@ -1682,7 +1697,11 @@ define("launcher", "launcher-claude", (t) => {
     rec.args[0] === "--settings" && rec.args.at(-1) === "--dump",
     "--settings, then passthrough",
   );
-  t.ok(rec.settingsMode === 0o600, "throwaway settings file is 0600", String(rec.settingsMode));
+  t.ok(
+    process.platform === "win32" || rec.settingsMode === 0o600,
+    "throwaway settings file is 0600",
+    String(rec.settingsMode),
+  );
   t.ok(rec.settings?.env?.ANTHROPIC_AUTH_TOKEN === KEY, "the key rides in the settings file");
   t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
   t.ok(!existsSync(rec.args[1]), "throwaway settings file removed after exit");
@@ -1720,7 +1739,11 @@ define("launcher", "launcher-pi", (t) => {
     "session history stays in pi's own per-cwd session dir",
     String(rec.env.PI_CODING_AGENT_SESSION_DIR),
   );
-  t.ok(rec.overlayMode === 0o600, "overlay auth.json is 0600", String(rec.overlayMode));
+  t.ok(
+    process.platform === "win32" || rec.overlayMode === 0o600,
+    "overlay auth.json is 0600",
+    String(rec.overlayMode),
+  );
   t.ok(rec.overlayAuth?.aiand?.key === KEY, "the key rides in the overlay, not the env");
   t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
   t.ok(
@@ -1754,7 +1777,11 @@ define("launcher", "launcher-omp", (t) => {
     "session history stays in the user's session dir",
     String(rec.env.PI_CODING_AGENT_SESSION_DIR),
   );
-  t.ok(rec.overlayMode === 0o600, "overlay models.yml is 0600", String(rec.overlayMode));
+  t.ok(
+    process.platform === "win32" || rec.overlayMode === 0o600,
+    "overlay models.yml is 0600",
+    String(rec.overlayMode),
+  );
   t.ok(
     rec.overlayModels?.includes(`apiKey: ${KEY}`),
     "the key rides in the overlay models.yml, not the env",
@@ -1794,7 +1821,11 @@ define("launcher", "launcher-copilot", (t) => {
     String(rec.env.COPILOT_MODEL),
   );
   t.ok(rec.env.COPILOT_OFFLINE === "true", "COPILOT_OFFLINE=true");
-  t.ok(rec.copilotMode === 0o600, "overlay providers.json is 0600", String(rec.copilotMode));
+  t.ok(
+    process.platform === "win32" || rec.copilotMode === 0o600,
+    "overlay providers.json is 0600",
+    String(rec.copilotMode),
+  );
   t.ok(
     rec.copilotProviders?.providers?.[0]?.apiKey === KEY,
     "the key rides in the overlay, not the env",
