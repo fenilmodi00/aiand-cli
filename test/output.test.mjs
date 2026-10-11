@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
 
-const { table, sparkline, delta, relativeTime, num, style, isStyleEnabled, _setColorEnabled } =
-  await import("../dist/cli/output.js");
+const {
+  table,
+  sparkline,
+  delta,
+  relativeTime,
+  num,
+  style,
+  isStyleEnabled,
+  _setColorEnabled,
+  clipToWidth,
+  spinner,
+} = await import("../dist/cli/output.js");
 
 function capture(fn) {
   const lines = [];
@@ -140,3 +150,77 @@ describe("style", () => {
     }
   });
 });
+
+describe("clipToWidth", () => {
+  test("returns the line unchanged when it already fits", () => {
+    assert.equal(clipToWidth("short", 40), "short");
+  });
+
+  test("truncates with an ellipsis when it overflows", () => {
+    const out = clipToWidth("a much longer line than the budget allows", 12);
+    assert.ok(out.length < 40, `expected a short line, got ${JSON.stringify(out)}`);
+    assert.match(out, /…$/);
+  });
+
+  test("counts a wide code point as two columns", () => {
+    // "全" is two columns wide, so at a budget of 3 only one fits plus the
+    // ellipsis, and the clip must not split it.
+    const out = clipToWidth("全全全全", 3);
+    assert.match(out, /…$/);
+    assert.ok(visible(out) <= 3, `expected <=3 columns, got ${JSON.stringify(out)}`);
+  });
+});
+
+describe("spinner", () => {
+  test("a non-TTY stderr gets no frames and still prints the final line", async () => {
+    const chunks = [];
+    const original = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
+    try {
+      const spin = spinner("working");
+      spin.stop("done");
+    } finally {
+      process.stderr.write = original;
+      Object.defineProperty(process.stderr, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+    // No frame bytes, just the final line.
+    assert.doesNotMatch(chunks.join(""), /⠋|⠙|⠹/);
+    assert.match(chunks.join(""), /done/);
+  });
+
+  test("a TTY stderr gets frames, and stop clears them", async () => {
+    const chunks = [];
+    const original = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    try {
+      const spin = spinner("working");
+      // One frame lands within the first tick interval.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      spin.stop();
+    } finally {
+      process.stderr.write = original;
+      Object.defineProperty(process.stderr, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+    assert.match(chunks.join(""), /working/);
+    assert.match(chunks.join(""), /2K/, "stop clears the line");
+  });
+});
+
+/** Visible width of a string, ignoring ANSI, for the clip assertions. */
+const visible = (line) => line.replace(/\x1b\[[0-9;?]*m/g, "").length;

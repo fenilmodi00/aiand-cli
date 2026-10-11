@@ -7,6 +7,68 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- A terminal-native interactive surface. `aiand` with no command now prints
+  a home screen — brand header and version, then titled sections of
+  `command  description` rows aligned on one column — in place of the old
+  text block, and `aiand welcome` plays a first-run splash
+  on an alternate screen: a block runner travels in from the left while the
+  three-color mark travels in from the right, they collide into a `✦` burst,
+  and the wordmark lands as a two-tone title — `AI` in white, `AND` in ai&
+  red — with the version beneath. It plays once per fresh install
+  (a counter in `welcome.json`, never in CI, never on a pipe, skipped by any
+  keypress) and `aiand welcome` replays it. Prompt lists are restyled the same
+  way: the focused row is a filled chip carrying a `▌` accent bar with the
+  label in bold and the trailing hint right-aligned. Colors come from a
+  two-palette brand theme (dark by default, light when `AIAND_THEME=light` or
+  the terminal reports a light background), drawn as truecolor with an
+  xterm-256 fallback and plain text under `NO_COLOR`.
+
+- Recolored the interactive surface to the ai& brand: the palette is the ai&
+  red gradient `#EF2635` / `#E2091A` / `#C70007` over warm neutrals.
+  Menu chrome (focus bars, search highlights, section titles) now uses the
+  gradient's bright stop, the wordmark and splash title keep the deep red,
+  and the focused-row fill is ai& graphite `#303037` (light: `#EEE9E9`).
+  Unused palette roles and the unused six-color chart ramp were removed.
+
+### Changed
+
+- `aiand welcome` renders the animated wordmark; `aiand banner` stays as an
+  alias for it.
+
+- `aiand` with no command on a terminal now opens an interactive menu instead
+  of printing the static home screen: a search bar that filters agents and
+  commands as you type, grouped rows each showing its command and a state
+  badge, the focused row's description under a rule, a scrolling window with
+  `↑ n more` markers, and a footer of key hints (`↑↓ move`, `enter open`,
+  `type to search` and `esc quit`, swapping to `esc clear` once a query is
+  entered). Enter runs the chosen agent or command and the menu comes back, so
+  one `aiand` session covers several tasks, and a number jumps straight to that
+  row. The header prints the wordmark in the ai& brand red with the accent
+  orange, the version flush right, and the tagline under two logo dots; the
+  orange carries menu chrome while the red stays for errors. A pipe still
+  prints the static home screen, so scripts and `aiand | less` keep working,
+  and `--json` never opens the menu.
+- A signed-out `aiand` now shows a two-row sign-in menu first — browser
+  approval or a pasted API key — and only shows the full command menu once a
+  credential exists, so a first-time user is never dropped into a menu where
+  every row fails.
+- The menu now opens with **Set up every agent I have** (`aiand init --all`),
+  wiring every installed agent in one go, and splits agents into *Agents* and
+  *More agents*. An agent under *More agents* is one ai& supports that this
+  machine is missing; Enter offers its install and then wires it, the same as
+  the bare command.
+- The menu header prints the `AI&` wordmark in place of the two status dots,
+  and the tagline drops the brand name the wordmark already carries.
+- The menu row builders moved to `src/cli/menu-items.ts`, so the row shape is
+  testable without a terminal.
+
+### Fixed
+
+- Selecting `key` in the menu no longer fails with "No verb given. Verbs:
+  export" — `key` takes a verb, so the menu now runs `aiand key export`.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added

@@ -81,6 +81,24 @@ run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 
 Most commands take `--json`, and every command takes `--help`.
 
+`aiand` with no command opens an interactive menu. Signed out it shows the two
+ways in — browser approval or a pasted API key. Signed in, the first row is
+**Set up every agent I have**, which wires every installed agent in one go (the
+same as `aiand init --all`); below it, installed agents sit under *Agents*, and
+agents ai& supports but this machine is missing sit under *More agents* — Enter
+on one of those offers its install and then wires it, exactly as
+`aiand <agent>` does.
+
+Type to search agents and commands, `↑`/`↓` or `Tab` to move, `1-9` to jump
+straight to a row, `Enter` to open it, and `Esc` to quit. Each row shows the
+command it runs and, where one applies, a state badge; the focused row's
+description sits under a rule. A pipe gets the static home screen instead, so
+`aiand | less` still works.
+
+`AIAND_THEME=light` switches the colors to the light palette, which is picked
+automatically when your terminal reports a light background. `NO_COLOR` turns
+all color off, and terminals without truecolor get the xterm-256 palette.
+
 ## Coding agents
 
 aiand currently supports [OpenCode](https://opencode.ai),

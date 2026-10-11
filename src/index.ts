@@ -4,48 +4,136 @@ import { fileURLToPath } from "node:url";
 import { findAgent } from "./agents/registry.js";
 import { VERSION } from "./api/client.js";
 import { ApiError, CliError, EXIT } from "./cli/errors.js";
+import { promptMenu } from "./cli/menu.js";
+import { INIT_ALL_ACTION, mainMenuItems, signInItems, signInMode } from "./cli/menu-items.js";
 import { err, out, style } from "./cli/output.js";
-import { printBanner } from "./cli/ui/banner.js";
+import { renderHome } from "./cli/ui/home.js";
+import { playSplash } from "./cli/ui/splash.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
 import { COMMANDS, findCommand, suggest } from "./commands/index.js";
+import * as initCommand from "./commands/init.js";
+import * as loginCommand from "./commands/login.js";
+import { activeProfileName, loadCredential } from "./config.js";
 import { finalizeOnVersionChange } from "./housekeeping/finalize.js";
 import { checkForUpdate } from "./housekeeping/update.js";
+import { hasPlayedWelcome, markWelcomePlayed } from "./housekeeping/welcome.js";
 
-const USAGE = `${style.bold("aiand")} -- the ai& command line interface
+/** The home screen tagline, shared by the menu and the static screen. */
+const HOME_TAGLINE = "Agents and inference.";
 
-Usage
-  aiand <command> [options]
-  aiand <agent> [args…]
-  aiand <agent> on|off|status [options]
+/** Agents in display order, for the home screen's agent section. */
+function agentRows(): Array<[string, string]> {
+  return [
+    ["aiand code", "Open OpenCode on ai&, the default agent"],
+    ["aiand <agent> [args…]", "open a coding agent on ai&, set up as needed"],
+    ["aiand <agent> on|off|status", "wire a coding agent to ai&"],
+  ];
+}
 
-Commands
-${COMMANDS.map((c) => `  ${c.name.padEnd(9)} ${c.summary}`).join("\n")}
+/** The home screen: brand header, then sections of command rows. */
+export function homeScreen(version = VERSION): string {
+  return renderHome({
+    brand: "aiand",
+    version,
+    tagline: HOME_TAGLINE,
+    sections: [
+      {
+        title: "Agents",
+        rows: agentRows(),
+      },
+      {
+        title: "Commands",
+        rows: COMMANDS.map((command) => [command.name, command.summary]),
+      },
+      {
+        title: "Get started",
+        rows: [
+          ["aiand login", "Sign in with a browser approval"],
+          ["aiand code", "Open the default agent on ai&"],
+          ['aiand run "hello"', "Send one prompt and print the answer"],
+        ],
+      },
+    ],
+    notes: [
+      "Global options: --profile <name>, --base-url <url>, --json. Run `aiand <command> --help` for a command's own flags.",
+    ],
+  });
+}
 
-Agents
-  aiand code [args…]             open OpenCode on ai&, the default agent
-  aiand <agent> [args…]          open a coding agent on ai&, set up as needed
-  aiand <agent> on|off|status    wire a coding agent to ai&
-  aiand init                     detect and wire agents
-  aiand run-agent <agent>        run a coding agent for one session
-  aiand status                   show auth and agent wiring
+/** Run one sign-in flow, committing to the full menu when it succeeds. */
+async function runSignIn(mode: "browser" | "paste"): Promise<void> {
+  await loginCommand.run(mode === "paste" ? ["--paste"] : []);
+  await runSystemHousekeeping();
+  out("");
+}
 
-Global options
-  --profile <name>    use a stored profile
-  --base-url <url>    point at a different API endpoint
-  --json              machine-readable output
-  -h, --help          help for any command
-  -v, --version       print the version
+/**
+ * The interactive main menu. When nobody is signed in it shows only the two
+ * sign-in steps — browser approval or a pasted API key — because nothing else
+ * in the menu can work yet. Once signed in it shows the full menu: pick one
+ * action, run it, then show the menu again, until the user quits. Only an
+ * explicit quit, a cancel, or opening an agent (which takes over the
+ * terminal) leaves the loop for good.
+ */
+async function runMainMenu(): Promise<void> {
+  for (;;) {
+    const signedIn = Boolean(await loadCredential(activeProfileName()).catch(() => null));
 
-Get started
-  aiand code
-  aiand run "hello"
+    const picked = await promptMenu({
+      message: signedIn ? "What do you want to run?" : "Sign in to get started",
+      brand: { name: "AI&", tagline: HOME_TAGLINE, version: VERSION },
+      items: signedIn ? mainMenuItems() : signInItems(),
+    });
+    if (picked === null) return;
 
-Run \`aiand <command> --help\` for a command's own flags.`;
+    if (picked === "__quit") return;
+
+    const signIn = signInMode(picked);
+    if (signIn) {
+      await runSignIn(signIn);
+      // Sign-in either succeeded (loop again, now with the full menu) or threw
+      // a CliError the top-level handler prints.
+      continue;
+    }
+
+    // The one-shot setup row: wire every installed agent in one go.
+    if (picked === INIT_ALL_ACTION) {
+      out("");
+      await initCommand.run(["--all"]);
+      await runSystemHousekeeping();
+      out("");
+      continue;
+    }
+
+    const agent = findAgent(picked);
+    if (agent) {
+      out("");
+      await runAgentCommand(agent, [], []);
+      await runSystemHousekeeping();
+      // An agent owns the terminal for its whole run; redrawing the menu on
+      // top of it would clobber its final frame.
+      return;
+    }
+    const command = findCommand(picked);
+    if (command) {
+      out("");
+      // `key` takes a verb, so the menu falls back to the one it prints with.
+      const argv = process.argv.includes("--json") ? ["--json"] : [];
+      await command.run([...(picked === "key" ? ["export"] : argv)]);
+      await runSystemHousekeeping();
+      out("");
+      continue;
+    }
+    return;
+  }
+}
 
 function showHelp(topicHelp?: string): void {
-  printBanner({ version: VERSION });
-  out("");
-  out(topicHelp ?? USAGE);
+  if (topicHelp) {
+    out(topicHelp);
+    return;
+  }
+  out(homeScreen());
 }
 
 /** The command that upgrades this install: the installer for a launcher
@@ -106,7 +194,7 @@ async function runSystemHousekeeping(): Promise<void> {
 }
 
 /**
- * Split leading `--profile`/`--base-url`/`--json` (USAGE globals) off argv so
+ * Split leading `--profile`/`--base-url`/`--json` (global flags) off argv so
  * `aiand --profile foo status` works like `aiand status --profile foo`. The
  * leading flags are returned separately and re-appended to the command's argv
  * after dispatch, so per-command `parse()` still sees them.
@@ -156,12 +244,30 @@ async function main(): Promise<number> {
   const restArgs = rest.slice(1);
 
   // Not listed in help.
-  if (first === "banner") {
-    printBanner({ version: VERSION });
+  if (first === "welcome" || first === "banner") {
+    await playSplash({ version: VERSION, animation: true });
+    await markWelcomePlayed().catch(() => {});
     return 0;
   }
 
   if (!first || first === "help") {
+    // First bare run on a fresh install plays the splash, then the menu.
+    // Never in CI, never on --json, never twice.
+    if (!first) {
+      const wantsJson = globalArgs.includes("--json");
+      const interactive =
+        process.stdout.isTTY === true && !wantsJson && process.env.CI === undefined;
+      if (interactive && !hasPlayedWelcome()) {
+        await playSplash({ version: VERSION });
+        await markWelcomePlayed().catch(() => {});
+      }
+      // A terminal gets the interactive menu; a pipe gets the static home
+      // screen, so scripts and `aiand | less` keep working.
+      if (interactive) {
+        await runMainMenu();
+        return 0;
+      }
+    }
     const topicName = rest.slice(1).find((arg) => !arg.startsWith("-"));
     if (!topicName) {
       showHelp();

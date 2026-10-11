@@ -1,12 +1,17 @@
 import process from "node:process";
-import { CliError } from "../cli/errors.js";
-import { cancelled } from "./errors.js";
-import { clipToWidth, style } from "./output.js";
+import { CliError, cancelled } from "./errors.js";
+import { clipToWidth, style, visibleWidth } from "./output.js";
+import { GLYPH } from "./ui/glyphs.js";
+import { createTheme, hexTo256, type Theme } from "./ui/theme.js";
 
 /**
  * Interactive prompt primitive: a space-to-toggle checkbox that drives a
  * shared raw-mode render/keypress loop and accepts injectable input/output
  * streams so it can be exercised without a real terminal.
+ *
+ * The focused row is a filled chip carrying a `▌` accent bar, the label in
+ * bold, and the trailing hint right-aligned. The loop itself is unchanged —
+ * injectable streams, Esc/q cancel, Ctrl-C restore.
  */
 
 const HIDE_CURSOR = "\x1b[?25l";
@@ -14,7 +19,6 @@ const SHOW_CURSOR = "\x1b[?25h";
 const CLEAR_LINE = "\x1b[2K";
 
 const OK = "\u2713";
-const POINTER = "\u203a";
 
 export const KEY = Object.freeze({
   UP: "\x1b[A",
@@ -33,6 +37,8 @@ const FALLBACK_COLUMNS = 80;
 const MIN_COLUMNS = 20;
 /** Rows visible at once before the list scrolls. */
 const DEFAULT_PAGE_SIZE = 10;
+/** Gutter in front of every row: the `▌` bar column. */
+const ROW_GUTTER = "  ";
 
 export type Choice = { value: string; label: string; hint?: string };
 
@@ -51,23 +57,21 @@ export interface PromptInput {
 export interface PromptOutput {
   write(chunk: string): void;
   columns?: number;
+  rows?: number;
 }
 
 /** Buffers incomplete CSI sequences across input chunks. */
 export function createKeyParser(): {
-  hasPendingEsc(): boolean;
   push(chunk: string): string[];
   flush(): string[];
+  hasPendingEsc(): boolean;
 } {
   let pending = "";
   return {
-    hasPendingEsc() {
-      return pending === "\x1b";
-    },
     push(chunk: string): string[] {
-      const keys: string[] = [];
       const text = pending + chunk;
       pending = "";
+      const keys: string[] = [];
       let i = 0;
       while (i < text.length) {
         if (text[i] === "\x1b") {
@@ -97,7 +101,6 @@ export function createKeyParser(): {
       }
       return keys;
     },
-    /** Flush a buffered lone Esc (or trailing bytes) at chunk/stream end. */
     flush(): string[] {
       const keys: string[] = [];
       if (pending === "\x1b") {
@@ -107,6 +110,9 @@ export function createKeyParser(): {
       }
       pending = "";
       return keys;
+    },
+    hasPendingEsc(): boolean {
+      return pending === "\x1b";
     },
   };
 }
@@ -139,7 +145,6 @@ async function runPrompt<T>({
 
   input.setRawMode(true);
   input.resume();
-  input.setEncoding("utf8");
   output.write(HIDE_CURSOR);
 
   let prevLines = 0;
@@ -272,6 +277,40 @@ function windowFor(
   return { start, end: start + pageSize };
 }
 
+/** The theme's focus-fill background SGR, or "" when color is off. */
+function focusFill(theme: Theme): string {
+  if (!theme.color) return "";
+  if (theme.support === "truecolor") {
+    const [r, g, b] = hexRgb(theme.palette.fill);
+    return `\x1b[48;2;${r};${g};${b}m`;
+  }
+  return `\x1b[48;5;${hexTo256(theme.palette.fill)}m`;
+}
+
+function hexRgb(hex: string): [number, number, number] {
+  const n = Number.parseInt(hex.replace("#", ""), 16);
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
+
+/**
+ * Focused-row chip: a `▌` accent bar, the label in bold, the trailing hint
+ * right-aligned, all over the theme's focus fill.
+ */
+function focusedRow(theme: Theme, label: string, right: string, width: number): string {
+  const bar = theme.hex(theme.palette.accent)(GLYPH.focusBar);
+  const hint = right ? theme.muted(right) : "";
+  const fill = focusFill(theme);
+  const body = `${bar} ${theme.bold(label)}`;
+  const gap = " ".repeat(Math.max(1, width - visibleWidth(body) - visibleWidth(hint) - 1));
+  const inner = `${body}${gap}${hint}`;
+  return fill ? `${fill}${inner}\x1b[49m\x1b[39m` : inner;
+}
+
+/** Renderable inner width, matching the loop's own clip width. */
+function rowWidth(output: PromptOutput): number {
+  return Math.max(MIN_COLUMNS, output.columns || FALLBACK_COLUMNS);
+}
+
 function renderRows<T>({
   items,
   index,
@@ -286,19 +325,23 @@ function renderRows<T>({
   const { start, end } = windowFor(items, index, pageSize);
   const rows: string[] = [];
   if (start > 0) {
-    rows.push(style.dim(`  ↑ ${start} more`));
+    rows.push(style.dim(`  ${GLYPH.up} ${start} more`));
   }
   for (let i = start; i < end; i += 1) {
     rows.push(renderRow(items[i] as T, i === index, i));
   }
   if (end < items.length) {
-    rows.push(style.dim(`  ↓ ${items.length - end} more`));
+    rows.push(style.dim(`  ${GLYPH.down} ${items.length - end} more`));
   }
   return rows;
 }
 
 function summaryLine(output: PromptOutput, message: string, answer: string): void {
   output.write(`${style.cyan(OK)} ${message} ${style.bold(answer)}\n`);
+}
+
+function rowHint(choice: Choice): string {
+  return choice.hint ?? "";
 }
 
 /**
@@ -333,17 +376,24 @@ export async function promptCheckbox({
     input,
     output,
     renderLines: () => [
-      style.bold(`${POINTER} ${message}`),
+      `${GLYPH.prompt} ${message}`,
       ...renderRows({
         items: choices,
         index,
         pageSize,
         renderRow: (choice, active, i) => {
           const box = checked[i] ? style.cyan(`[${OK}]`) : style.dim("[ ]");
-          const hint = choice.hint ? ` ${style.dim(choice.hint)}` : "";
-          return active
-            ? `${style.cyan(POINTER)} ${box} ${choice.label}${hint}`
-            : `  ${box} ${choice.label}${hint}`;
+          const hint = rowHint(choice);
+          if (active) {
+            return focusedRow(
+              createTheme({ isTTY: true }),
+              `${box} ${choice.label}`,
+              hint,
+              rowWidth(output),
+            );
+          }
+          const body = `${ROW_GUTTER}${box} ${choice.label}`;
+          return hint ? `${body}  ${style.dim(hint)}` : body;
         },
       }),
       style.dim("Space toggle · Enter confirm · Esc cancel"),
@@ -404,16 +454,18 @@ export async function promptSelect({
     input,
     output,
     renderLines: () => [
-      style.bold(`${POINTER} ${message}`),
+      `${GLYPH.prompt} ${message}`,
       ...renderRows({
         items: choices,
         index,
         pageSize,
         renderRow: (choice, active) => {
-          const hint = choice.hint ? ` ${style.dim(choice.hint)}` : "";
-          return active
-            ? `${style.cyan(POINTER)} ${choice.label}${hint}`
-            : `  ${choice.label}${hint}`;
+          const hint = rowHint(choice);
+          if (active) {
+            return focusedRow(createTheme({ isTTY: true }), choice.label, hint, rowWidth(output));
+          }
+          const body = `${ROW_GUTTER}${choice.label}`;
+          return hint ? `${body}  ${style.dim(hint)}` : body;
         },
       }),
       style.dim("Enter confirm · Esc cancel"),

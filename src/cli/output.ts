@@ -102,6 +102,30 @@ function width(s: string): number {
   return columns;
 }
 
+/**
+ * Visible column count, ignoring ANSI SGR sequences and counting wide
+ * code points as two. The one width helper the UI layer shares, so a row
+ * layout and a clip never disagree.
+ */
+export function visibleWidth(text: string): number {
+  const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
+  let count = 0;
+  for (const char of plain) count += isWideCodePoint(char.codePointAt(0) ?? 0) ? 2 : 1;
+  return count;
+}
+
+/** Right-pad `text` to a visible width. */
+export function padEnd(text: string, width: number): string {
+  return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
+}
+
+/** Clip to a visible width, ending in an ellipsis when it overflows. */
+export function ellipsize(text: string, width: number): string {
+  if (visibleWidth(text) <= width) return text;
+  if (width <= 1) return "\u2026";
+  return `${text.slice(0, width - 1)}\u2026`;
+}
+
 /** Visible-column truncate; drops styling on overflow and appends an ellipsis. */
 export function clipToWidth(line: string, columns: number): string {
   if (width(line) <= columns) return line;
