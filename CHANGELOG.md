@@ -96,6 +96,13 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Piping into a consumer that exits early (`aiand models | head`) crashed the
+  CLI with an unhandled `EPIPE` stack trace when the downstream closed the
+  pipe. The CLI now exits quietly with its resolved exit code, matching Unix
+  `SIGPIPE` semantics; a regression test spawns the built CLI, destroys the
+  pipe's read end immediately, and asserts a clean exit with no `EPIPE` on
+  stderr.
+
 - The first-run splash's version label no longer renders as two separate color
   runs on a colored terminal: `paint()` coalesced only the cells after a run's
   first character, so `v0.6.0` was emitted as `ESC[38;5;246mv ESC[39m0.6.0 ESC[39m`
