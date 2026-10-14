@@ -1,13 +1,6 @@
 import { chmod, mkdir, rm, rmdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import {
-  agentHome,
-  DEFAULT_BASE_URL,
-  isRoutableBaseUrl,
-  trimSlash,
-  writeFileAtomic,
-} from "../../config.js";
+import { writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
@@ -19,7 +12,6 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
-  ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
 import {
@@ -48,112 +40,30 @@ import {
   setHermesModelProvider,
   stripHermesProvider,
 } from "./routing.js";
+import {
+  HERMES_BIN,
+  HERMES_ID,
+  type HermesRecord,
+  hermesBaseUrl,
+  hermesBlockIsOurs,
+  hermesConfigPath,
+  hermesEnvPath,
+  hermesHome,
+  hermesInitPyPath,
+  hermesPluginYamlPath,
+  hermesProviderDir,
+  probe,
+} from "./state.js";
 import { joinYamlLines, splitYamlLines } from "./yaml.js";
 
 /**
  * The Hermes Agent adapter (Nous Research, binary `hermes`, home
  * `~/.hermes`). Persistent wiring rides a dedicated `aiand` model provider
  * shipped as a plugin; sessions without a prior `on` ride the throwaway
- * overlay from overlay.ts, rendered by the same routing.ts builder.
+ * overlay from overlay.ts, rendered by the same routing.ts builder. The
+ * shared file paths, the `on` record and the ownership question live in
+ * state.ts.
  */
-const HERMES_ID = "hermes";
-const HERMES_BIN = "hermes";
-
-// HERMES_COMMIT / HERMES_INSTALL_SHA256 / HERMES_INSTALL live in install.ts,
-// which scripts/check-dist.mjs reads the pin from alongside the script's
-// other agent pins (no re-export: knip would flag the pass-through).
-/** Hermes's home: the real one persistent wiring writes, the launcher overlays. */
-const hermesHome = () => process.env.HERMES_HOME || join(agentHome(), ".hermes");
-const hermesEnvPath = () => join(hermesHome(), ".env");
-const hermesConfigPath = () => join(hermesHome(), "config.yaml");
-const hermesProviderDir = () =>
-  join(hermesHome(), "plugins", "model-providers", HERMES_PROVIDER_ID);
-const hermesInitPyPath = () => join(hermesProviderDir(), "__init__.py");
-const hermesPluginYamlPath = () => join(hermesProviderDir(), "plugin.yaml");
-/**
- * What enable() recorded so off can tell its values from the user's. The
- * baked key never appears here: only raw `model:` lines (ids, no secrets),
- * file modes, created flags, and the shadowed env lines off hands back.
- */
-type HermesRecord = {
-  /** Raw `provider:` line before on (undefined = absent, or already ours). */
-  previousProviderLine?: string;
-  /** Raw `default:` line before on (undefined = absent). */
-  previousDefaultLine?: string;
-  /** The default this on wrote; off hands back or removes it. */
-  wroteDefault?: string;
-  /** Whether this on routed the top-level provider through aiand. */
-  wroteProvider?: boolean;
-  /** Base URL this on wrote into the provider block; refreshKey's repoint proof. */
-  wroteBaseUrl?: string;
-  /** File mode before `on` wrote it, per file off rewrites. */
-  previousEnvMode?: number;
-  previousConfigMode?: number;
-  /** Whether each file is ours to unlink once stripped empty. */
-  createdEnv?: boolean;
-  createdConfig?: boolean;
-  createdPlugin?: boolean;
-  /** User ANTHROPIC_* lines enable() set aside; off appends them back. */
-  strippedEnvLines?: string[];
-};
-
-/**
- * The base URL the `aiand` provider dials: `--base-url` + `/v1`, or the
- * production gateway. Hermes's `chat_completions` transport posts to
- * `${base_url}/chat/completions` (OpenAI-compatible: the docs show
- * `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`, and "if a
- * server implements /v1/chat/completions, you can point Hermes at it"), so
- * the stored base_url carries `/v1` like codex/opencode to reach
- * `/v1/chat/completions` (and `/v1/models` for discovery).
- */
-function hermesBaseUrl(baseUrl?: string): string {
-  return `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
-}
-/**
- * The one ownership rule every verb shares: the `providers.aiand` block is
- * ours while our stamp sits on it, or while the prior on's record plus a
- * key_env still naming the dedicated var prove it (a Hermes rewrite may
- * drop the stamp). A repointed block is the user's even with a live record;
- * a foreign block merely named `aiand` never passes.
- */
-function hermesBlockIsOurs(configText: string, added: HermesRecord | null): boolean {
-  if (hasHermesMarker(configText)) return true;
-  return added !== null && readProviderField(configText, "key_env") === HERMES_PROVIDER_API_KEY_ENV;
-}
-async function probe(): Promise<ProbeResult> {
-  try {
-    const [configText, envText] = await Promise.all([
-      readTextIfExists(hermesConfigPath()),
-      readTextIfExists(hermesEnvPath()),
-    ]);
-    if (!hasProviderAiand(configText)) return { active: false, model: null };
-    const marked = hasHermesMarker(configText);
-    // Always load the record: wroteBaseUrl is how a stamped block that the
-    // user repointed stops counting as on. A missing record falls back to
-    // the gateway default, same as refreshKey.
-    const added = await getAddedState<HermesRecord>(HERMES_ID);
-    if (!hermesBlockIsOurs(configText, marked ? null : added))
-      return { active: false, model: null };
-    // Same repoint rule as refreshKey and off: a block aimed at the user's
-    // origin or env var is not routing through ai&, even with the stamp.
-    if (readProviderField(configText, "key_env") !== HERMES_PROVIDER_API_KEY_ENV) {
-      return { active: false, model: null };
-    }
-    if (readProviderField(configText, "base_url") !== (added?.wroteBaseUrl ?? hermesBaseUrl())) {
-      return { active: false, model: null };
-    }
-    if (!isRoutableBaseUrl(readProviderField(configText, "base_url"))) {
-      return { active: false, model: null };
-    }
-    if (readEnvValue(envText, HERMES_PROVIDER_API_KEY_ENV) === undefined) {
-      return { active: false, model: null };
-    }
-    return { active: true, model: readModelField(configText, "default") ?? null };
-  } catch {
-    // A file mid-edit must not wedge `hermes status`.
-    return { active: false, model: null };
-  }
-}
 async function enable(input: EnableInput): Promise<EnableResult> {
   const envPath = hermesEnvPath();
   const configPath = hermesConfigPath();
@@ -217,6 +127,11 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   const currentDefault = readModelField(rawConfig, "default");
   const currentProviderLine = modelFieldLine(rawConfig, "provider");
   const currentDefaultLine = modelFieldLine(rawConfig, "default");
+  // The model section's base_url is dropped by every routing path below, so
+  // its raw line is captured the same way the default's is: the first pre-
+  // aiand capture stays authoritative across a re-`on`.
+  const currentBaseUrlLine = modelFieldLine(rawConfig, "base_url");
+  const previousBaseUrlLine = prior?.previousBaseUrlLine ?? currentBaseUrlLine;
   const warnings: string[] = [];
 
   // A re-`on` keeps the first capture authoritative (the file holds our
@@ -344,6 +259,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     createdEnv: envModeBefore === undefined,
     createdConfig: configModeBefore === undefined,
     createdPlugin: !initExisted && !yamlExisted,
+    previousBaseUrlLine,
     strippedEnvLines: strippedEnvLines.length > 0 ? strippedEnvLines : undefined,
   } satisfies HermesRecord);
 
@@ -416,6 +332,16 @@ async function disable(): Promise<DisableResult> {
       configText = restoreHermesModelLine(configText, "provider", added.previousProviderLine);
     } else if (current !== undefined) {
       notes.push("left model.provider because you edited it");
+    }
+  }
+  // The model section's base_url: on dropped it so the routed request could
+  // not ride the user's own endpoint, so off puts the line back. A line the
+  // user wrote in between is theirs and stays, with a note.
+  if (added?.previousBaseUrlLine !== undefined) {
+    if (modelFieldLine(configText, "base_url") === undefined) {
+      configText = restoreHermesModelLine(configText, "base_url", added.previousBaseUrlLine);
+    } else {
+      notes.push("left model.base_url because you edited it");
     }
   }
   // A file our on created that is now empty is unlinked, never left as a

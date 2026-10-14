@@ -647,4 +647,41 @@ describe("stale model.base_url is dropped when routing through aiand", () => {
     }
     assert.throws(() => setHermesModelProvider(seed), /multi-line `model.base_url`/);
   });
+
+  test("off hands the dropped line back where the section can take it", () => {
+    // on drops the line so the routed request cannot ride the user's own
+    // endpoint; off must not lose it. The round trip restores the section's
+    // own key order, and a second off is a no-op.
+    const seeded =
+      'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"\n';
+    const line = modelFieldLine(seeded, "base_url");
+    assert.equal(line, '  base_url: "https://openrouter.ai/api/v1"');
+    const routed = pinHermesModel(seeded, "m-1");
+    assert.ok(!routed.includes("openrouter.ai"), "on dropped the endpoint");
+    const restored = restoreHermesModelLine(routed, "base_url", line);
+    assert.equal(
+      restored,
+      'theme: dark\nmodel:\n  provider: aiand\n  default: "m-1"\n  base_url: "https://openrouter.ai/api/v1"\n',
+    );
+    // The line is back, so a second restore refuses to stack it: it reads as
+    // the user's own and the caller notes it instead.
+    assert.equal(restoreHermesModelLine(restored, "base_url", line), restored);
+    assert.equal(modelFieldLine(restored, "base_url"), line);
+  });
+
+  test("off leaves a base_url the user wrote in between", () => {
+    // A base_url that appeared while we were wired is theirs: the restore
+    // replaces the recorded line's slot rather than stacking a second key.
+    const routed =
+      'model:\n  provider: aiand\n  default: "m-1"\n  base_url: "https://user.example/v1"\n';
+    const out = restoreHermesModelLine(
+      routed,
+      "base_url",
+      '  base_url: "https://openrouter.ai/api/v1"',
+    );
+    assert.equal(
+      out,
+      'model:\n  provider: aiand\n  default: "m-1"\n  base_url: "https://openrouter.ai/api/v1"\n',
+    );
+  });
 });

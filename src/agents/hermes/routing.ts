@@ -171,7 +171,10 @@ export function readModelField(text: string, field: "provider" | "default"): str
 }
 
 /** The raw source line of one `model:` field, so off can hand back the exact bytes. */
-export function modelFieldLine(text: string, field: "provider" | "default"): string | undefined {
+export function modelFieldLine(
+  text: string,
+  field: "provider" | "default" | "base_url",
+): string | undefined {
   const lines = splitYamlLines(text).lines;
   const section = sectionRange(lines, "model");
   if (!section) return undefined;
@@ -180,7 +183,9 @@ export function modelFieldLine(text: string, field: "provider" | "default"): str
   const pattern =
     field === "provider"
       ? new RegExp(`^${indent}provider\\s*:`)
-      : new RegExp(`^${indent}(?:"?default"?|model)\\s*:`);
+      : field === "base_url"
+        ? new RegExp(`^${indent}base_url\\s*:`)
+        : new RegExp(`^${indent}(?:"?default"?|model)\\s*:`);
   return body.find((line) => pattern.test(line));
 }
 /**
@@ -484,7 +489,7 @@ export function setHermesModelProvider(text: string): string {
 /** Put one recorded `model:` line back (or delete the field when none was recorded). */
 export function restoreHermesModelLine(
   text: string,
-  field: "provider" | "default",
+  field: "provider" | "default" | "base_url",
   recorded: string | undefined,
 ): string {
   const { lines, trailingNewline, eol } = splitYamlLines(text);
@@ -496,7 +501,9 @@ export function restoreHermesModelLine(
   const pattern =
     field === "provider"
       ? new RegExp(`^${indent}provider\\s*:`)
-      : new RegExp(`^${indent}(?:"?default"?|model)\\s*:`);
+      : field === "base_url"
+        ? new RegExp(`^${indent}base_url\\s*:`)
+        : new RegExp(`^${indent}(?:"?default"?|model)\\s*:`);
   const at = body.findIndex((line) => pattern.test(line));
   // Replacing or deleting a multi-line value's header alone strands its
   // body (block scalar, folded body) — refuse instead.
@@ -513,6 +520,10 @@ export function restoreHermesModelLine(
       const providerKey = new RegExp(`^${indent}provider\\s*:`);
       const providerAt = body.findIndex((line) => providerKey.test(line));
       body.splice(providerAt !== -1 ? providerAt + 1 : body.length, 0, recorded);
+    } else if (field === "base_url") {
+      // Last, after the fields pinHermesModel writes in front of it, so the
+      // section's own key order survives the round trip.
+      body.push(recorded);
     } else {
       // First, where pinHermesModel puts the provider line.
       body.unshift(recorded);

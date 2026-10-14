@@ -635,6 +635,27 @@ describe("hermes adapter: persistent on/off", () => {
     assert.ok(!readFileSync(envPath(), "utf8").includes("AIAND_HERMES_API_KEY"));
   });
 
+  test("on drops a model.base_url and off hands it back byte-identically", async () => {
+    // A fresh Hermes install seeds an active OpenRouter base_url in the model
+    // section, and Hermes prefers it over the provider's own endpoint once
+    // the provider matches — so on must drop it or the ai& key rides to
+    // OpenRouter. The line is the user's, so off puts it back.
+    const seed =
+      'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput({ model: "zai-org/glm-5.3" }));
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the endpoint cannot ride the routed request");
+    assert.ok(wired.includes("  provider: aiand"), "routed through aiand");
+    assert.ok(wired.includes("theme: dark") && wired.includes("other:\n  key: 1"), "rest intact");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.ok(readFileSync(configPath(), "utf8") === before, "the file is byte-identical again");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
   test("off: a stamp-dropped block with our key_env still strips on the record", async () => {
     // The record backstops a Hermes rewrite that dropped the
     // unknown stamp key, while the dedicated key_env still proves the block
