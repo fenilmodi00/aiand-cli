@@ -213,6 +213,36 @@ test("an expiring key another process already rotated is reused, not rotated aga
   );
 });
 
+test("a padded env key or stored key wires trimmed", async () => {
+  const cfg = process.env.AIAND_CONFIG_DIR;
+  const credentials = (token) => {
+    writeFileSync(
+      join(cfg, "credentials.json"),
+      `${JSON.stringify({
+        default: {
+          origin: "device",
+          expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
+          storage: "plaintext",
+        },
+      })}\n`,
+    );
+    writeFileSync(
+      join(cfg, "credentials-plaintext.json"),
+      `${JSON.stringify({ default: JSON.stringify({ access_token: token, refresh_token: `rt-${token}` }) })}\n`,
+    );
+  };
+  credentials("sk-padded");
+  await withEnv({ ...REFRESH_ENV, AIAND_API_KEY: "  sk-env-padded  " }, async () => {
+    const session = await openSession(config.resolveProfile("default"));
+    assert.equal(session.token, "sk-env-padded", "the env key wires trimmed");
+  });
+  delete process.env.AIAND_API_KEY;
+  await withEnv(REFRESH_ENV, async () => {
+    const session = await openSession(config.resolveProfile("default"));
+    assert.equal(session.token, "sk-padded", "the stored key wires trimmed");
+  });
+});
+
 test("staggered second 401 reloads persisted refresh_token after first rotation", async () => {
   const cfg = process.env.AIAND_CONFIG_DIR;
   writeFileSync(

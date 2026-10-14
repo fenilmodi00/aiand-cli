@@ -1235,6 +1235,7 @@ describe("opencode sessionLaunch", () => {
     await withLaunch({ model: "zai-org/glm-5.3" }, (config) => {
       const glm = config.provider.aiand.models["zai-org/glm-5.3"];
       assert.equal(glm.reasoning, true);
+      assert.deepEqual(glm.reasoning_options, [{ type: "effort", values: ["low", "high", "max"] }]);
       assert.equal(glm.tool_call, true);
       assert.equal(glm.limit.context, 1048576);
       // cost = per-million price from the catalog
@@ -1246,6 +1247,7 @@ describe("opencode sessionLaunch", () => {
       assert.equal(vision.attachment, true);
       assert.deepEqual(vision.modalities.input, ["text", "image"]);
       assert.equal(vision.reasoning, false);
+      assert.equal(vision.reasoning_options, undefined);
     });
   });
 });

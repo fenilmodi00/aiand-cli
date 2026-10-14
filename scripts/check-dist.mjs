@@ -113,6 +113,64 @@ for (const { label, regex, expected, message } of PINS) {
     assert.equal(pin, expected, message(pin));
   }
 }
+
+// The live matrix installs a pinned Hermes the same way; every `--commit`
+// pin in ci.yml or scripts/contree-e2e.sh must match
+// src/agents/hermes/install.ts or the copies drift apart silently. The
+// user-facing install hint carries the same pin, so a missing binary never
+// installs unaudited bytes. The pin is imported here rather than beside the
+// version PINS above: the hash lives outside src/agents/hermes/adapter.ts,
+// and the cross-file sweep below reads surfaces PINS has no entry for.
+const { HERMES_COMMIT, HERMES_INSTALL_SHA256 } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "install.js")).href
+);
+const hermesPinFiles = [
+  [".github/workflows/ci.yml", ciYml],
+  ["scripts/contree-e2e.sh", readFileSync(join(repoRoot, "scripts", "contree-e2e.sh"), "utf8")],
+];
+const hermesPins = hermesPinFiles.flatMap(([file, text]) =>
+  [...text.matchAll(/--commit ([0-9a-f]{7,40})/g)].map((m) => [file, m[1]]),
+);
+assert.ok(
+  hermesPins.length > 0,
+  "ci.yml or scripts/contree-e2e.sh should install a Hermes pinned with --commit",
+);
+for (const [file, pin] of hermesPins) {
+  assert.equal(
+    pin,
+    HERMES_COMMIT,
+    `${file} installs hermes --commit ${pin} but src/agents/hermes/install.ts pins ${HERMES_COMMIT}`,
+  );
+}
+// The same installer is checked by digest before it runs, in both files: a
+// stale literal passes sha256sum only as long as the downloaded bytes match,
+// so the digest drifts from HERMES_INSTALL_SHA256 whenever the pinned commit
+// moves and nobody re-records it.
+const hermesDigests = hermesPinFiles.flatMap(([file, text]) =>
+  [...text.matchAll(/echo "([0-9a-f]{64})\s+\S*install\.sh"\s*\|\s*sha256sum -c/g)].map((m) => [
+    file,
+    m[1],
+  ]),
+);
+assert.ok(
+  hermesDigests.length > 0,
+  "ci.yml or scripts/contree-e2e.sh should verify the hermes installer with its sha256",
+);
+for (const [file, digest] of hermesDigests) {
+  assert.equal(
+    digest,
+    HERMES_INSTALL_SHA256,
+    `${file} verifies the hermes installer against ${digest} but src/agents/hermes/install.ts pins ${HERMES_INSTALL_SHA256}`,
+  );
+}
+const { hermesAdapter } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "adapter.js")).href
+);
+assert.ok(
+  hermesAdapter.install.command.includes(`--commit ${HERMES_COMMIT}`),
+  `the hermes install hint must carry --commit ${HERMES_COMMIT}, got: ${hermesAdapter.install.command}`,
+);
+
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
   runtimeDeps,

@@ -254,6 +254,20 @@ describe("config set --profile", () => {
     assert.equal(stored.profiles.work.model, "picked");
     assert.equal(stored.profiles.default?.model, undefined);
   });
+
+  test("api-url and auth-url refuse a /v1-suffixed URL before the write", async () => {
+    // Remote origins are already refused as a path; the shared guard is what
+    // catches the loopback origin a test double would otherwise serve.
+    for (const key of ["api-url", "auth-url"]) {
+      await assert.rejects(
+        () => cmd.run(["set", key, "http://127.0.0.1:1234/v1"]),
+        (err) => err.name === "CliError" && /must not end in "\/v1"/.test(err.message),
+      );
+    }
+    const stored = config.loadConfig();
+    assert.equal(stored.profiles.default?.apiUrl, undefined);
+    assert.equal(stored.profiles.default?.authUrl, undefined);
+  });
 });
 
 describe("trust boundaries", () => {
@@ -302,6 +316,31 @@ describe("trust boundaries", () => {
         /embed credentials/.test(err.message) &&
         !JSON.stringify(err).includes("secret-pass"),
     );
+  });
+
+  test("base URL with a query or fragment is refused at set time", () => {
+    // A search or hash survives the origin check and later 404s with no
+    // advice; refuse it where the path is refused.
+    assert.throws(
+      () => config.assertHttpsBaseUrl("https://api.aiand.com/?x=1"),
+      (err) => err.name === "CliError" && /query or fragment/.test(err.message),
+    );
+    assert.throws(
+      () => config.assertHttpsBaseUrl("https://api.aiand.com#frag"),
+      (err) => err.name === "CliError" && /query or fragment/.test(err.message),
+    );
+  });
+
+  test("assertNoV1Suffix refuses a /v1-suffixed URL, loopback included", () => {
+    for (const url of ["https://api.aiand.com/v1", "http://localhost:1234/v1", "https://x/v1/"]) {
+      assert.throws(
+        () => config.assertNoV1Suffix(url),
+        (err) => err.name === "CliError" && /must not end in "\/v1"/.test(err.message),
+      );
+    }
+    // Unparseable input passes here: assertHttpsBaseUrl owns that refusal.
+    config.assertNoV1Suffix("not a url");
+    config.assertNoV1Suffix("https://api.aiand.com");
   });
 
   test("null credential entry fails readable instead of TypeError", async () => {

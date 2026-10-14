@@ -5,6 +5,7 @@ import { err, fields, json, out, style } from "../cli/output.js";
 import {
   activeProfileName,
   assertHttpsBaseUrl,
+  assertNoV1Suffix,
   assertSafeProfileName,
   configPath,
   credentialsPath,
@@ -101,10 +102,12 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
   switch (key) {
     case "api-url":
       assertHttpsBaseUrl(value);
+      assertNoV1Suffix(value);
       await updateProfile(name, { apiUrl: value });
       break;
     case "auth-url":
       assertHttpsBaseUrl(value);
+      assertNoV1Suffix(value);
       await updateProfile(name, { authUrl: value });
       break;
     case "model":

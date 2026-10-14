@@ -4,7 +4,7 @@ import { AGENTS, findAgent } from "../agents/registry.js";
 import { requireSessionKey } from "../auth/session.js";
 import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
-import { assertHttpsBaseUrl, resolveProfile } from "../config.js";
+import { assertHttpsBaseUrl, assertNoV1Suffix, resolveProfile } from "../config.js";
 
 // Aligns agent labels with the Options column below.
 const HELP_ID_WIDTH = 28;
@@ -24,7 +24,8 @@ Options
   -h, --help             show this help
 
 Everything after \`--\` (and any bare positional before it) is passed to the
-agent's binary verbatim — flags, files, and arguments are forwarded untouched.
+agent's binary as-is, except the routing flags the adapter owns — those are
+stripped so the injected wiring cannot be overridden.
 
 Try: aiand run-agent opencode -- --version`;
 
@@ -116,6 +117,10 @@ export async function run(argv: string[]): Promise<void> {
   }
   if (split.baseUrl !== undefined) {
     assertHttpsBaseUrl(split.baseUrl);
+    // Like `--base-url` at parse time (args.ts) and `config set api-url`:
+    // adapters append /v1 themselves, so a suffixed URL doubles to
+    // /v1/v1/... and the gateway misdiagnoses it as an expired key.
+    assertNoV1Suffix(split.baseUrl);
     process.env.AIAND_BASE_URL = split.baseUrl;
   }
 

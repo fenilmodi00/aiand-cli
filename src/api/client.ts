@@ -35,6 +35,8 @@ export const HEADERS = {
 
 export type Session = {
   profile: ResolvedProfile;
+  /** Padding wires trimmed (like login's stdin read) instead of baking
+   * whitespace that 401s every request. */
   token: string;
   /** null under AIAND_API_KEY: nothing stored, nothing to rotate. */
   credential: LoadedCredential | null;
@@ -42,7 +44,8 @@ export type Session = {
 
 export async function openSession(profile: ResolvedProfile): Promise<Session> {
   // Whitespace-only is unset: a truthy read would wire a literal all-spaces
-  // key into agent configs.
+  // key into agent configs. Padding trims: the header serializes as
+  // "Bearer  sk-…  " otherwise and the gateway 401s it.
   const fromEnv = process.env.AIAND_API_KEY?.trim() || undefined;
   if (fromEnv) return { profile, token: fromEnv, credential: null };
 
@@ -52,12 +55,12 @@ export async function openSession(profile: ResolvedProfile): Promise<Session> {
   // A pasted key has no refresh token: rotation is impossible and a 401 must
   // surface as the plain hint, so hand it back as-is regardless of expiry.
   if (!stored.refresh_token) {
-    return { profile, token: stored.access_token, credential: stored };
+    return { profile, token: stored.access_token.trim(), credential: stored };
   }
 
   const secondsLeft = (stored.expires_at ?? 0) - nowSeconds();
   if (secondsLeft > ROTATE_BEFORE_SECONDS) {
-    return { profile, token: stored.access_token, credential: stored };
+    return { profile, token: stored.access_token.trim(), credential: stored };
   }
   return { profile, ...(await refresh(profile, stored, { expiring: true })) };
 }
@@ -228,7 +231,16 @@ async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
     if (cause instanceof Error && cause.name === "AbortError") {
       throw cancelled();
     }
-    const reason = cause instanceof Error ? cause.message : String(cause);
+    // Undici interpolates the request URL into its refusal reasons, so a
+    // credential-embedded base URL would echo userinfo here: scrub the
+    // `://user:pass@` run out of the reason. The origin below never
+    // carries userinfo (WHATWG origin is scheme + host + port), so only
+    // the reason needs scrubbing; the replacement names the redaction so
+    // a scrubbed message is recognizable as one.
+    const reason = (cause instanceof Error ? cause.message : String(cause)).replace(
+      /\/\/[^/@\s]+@/g,
+      "//[redacted]@",
+    );
     throw new ApiError(
       SYNTHETIC_STATUS.UNREACHABLE,
       `Could not reach ${new URL(url).origin}: ${reason}`,
