@@ -562,3 +562,89 @@ describe("multi-line quoted .env values", () => {
     assert.deepEqual(out.droppedUserLines, ['ANTHROPIC_API_KEY="u']);
   });
 });
+
+describe("stale model.base_url is dropped when routing through aiand", () => {
+  // A fresh Hermes install copies cli-config.yaml.example, whose model
+  // section carries an active OpenRouter base_url. Hermes's
+  // _api_key_provider_runtime prefers model.base_url over the provider's own
+  // endpoint whenever model.provider matches, so the line must go or the
+  // ai& key is sent to OpenRouter (401 "Missing Authentication header").
+  const SEED =
+    "theme: dark\n" +
+    "model:  # keep the section\n" +
+    "  # provider pick\n" +
+    '  provider: "auto"\n' +
+    '  base_url: "https://openrouter.ai/api/v1"\n' +
+    "  api_mode: chat_completions\n" +
+    "  temperature: 0.4\n" +
+    '  default: "user-model"\n';
+
+  test("pinHermesModel drops it and keeps every other line", () => {
+    const pinned = pinHermesModel(SEED, "m-1");
+    assert.equal(
+      pinned,
+      "theme: dark\n" +
+        "model:  # keep the section\n" +
+        "  # provider pick\n" +
+        "  provider: aiand\n" +
+        '  default: "m-1"\n' +
+        "  api_mode: chat_completions\n" +
+        "  temperature: 0.4\n",
+    );
+    assert.ok(!pinned.includes("openrouter.ai"), "the endpoint is gone");
+  });
+
+  test("setHermesModelProvider drops it in the same pass as the provider flip", () => {
+    const out = setHermesModelProvider(SEED);
+    assert.equal(
+      out,
+      "theme: dark\n" +
+        "model:  # keep the section\n" +
+        "  # provider pick\n" +
+        "  provider: aiand\n" +
+        "  api_mode: chat_completions\n" +
+        "  temperature: 0.4\n" +
+        '  default: "user-model"\n',
+    );
+  });
+
+  test("routing twice over the routed config is byte-identical", () => {
+    const once = pinHermesModel(SEED, "m-1");
+    assert.equal(pinHermesModel(once, "m-1"), once);
+    assert.equal(setHermesModelProvider(once), once);
+    // The persistent `on` path never re-pins a default it kept.
+    const kept = setHermesModelProvider(SEED);
+    assert.equal(setHermesModelProvider(kept), kept);
+  });
+
+  test("a dropped base_url's trailing comment survives its own line", () => {
+    const out = setHermesModelProvider(
+      'model:\n  provider: auto\n  base_url: "https://openrouter.ai/api/v1"  # keep\n  api_mode: chat_completions\n',
+    );
+    assert.ok(!out.includes("openrouter.ai"), "the endpoint is gone");
+    assert.ok(out.includes("  # keep\n"), "the comment survived as its own line");
+    assert.equal(out, "model:\n  provider: aiand\n  # keep\n  api_mode: chat_completions\n");
+  });
+
+  test("model.api_key is left alone: no aiand path reads it", () => {
+    // Hermes reads model.api_key only behind the bare-custom/openrouter
+    // fallback gate (provider auto/custom/openrouter); a registry provider
+    // never consults it. Only the endpoint hijack is removed.
+    const out = pinHermesModel(
+      'model:\n  provider: auto\n  base_url: "https://openrouter.ai/api/v1"\n  api_key: "sk-user"\n',
+      "m-1",
+    );
+    assert.equal(out, 'model:\n  provider: aiand\n  default: "m-1"\n  api_key: "sk-user"\n');
+  });
+
+  test("a block-scalar base_url refuses instead of stranding its body", () => {
+    const seed = "model:\n  provider: auto\n  base_url: |\n    https://openrouter.ai/api/v1\n";
+    for (const edit of [() => pinHermesModel(seed, "m-1"), () => setHermesModelProvider(seed)]) {
+      assert.throws(
+        () => edit(),
+        (err) => err instanceof CliError,
+      );
+    }
+    assert.throws(() => setHermesModelProvider(seed), /multi-line `model.base_url`/);
+  });
+});

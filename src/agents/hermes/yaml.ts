@@ -2,7 +2,7 @@
 // (the repo's 650-line module gate). Not a YAML parser: unrelated keys,
 // sections, and comments survive every edit byte-identical. Generic
 // primitives only — the guards that turn un-editable shapes into by-hand
-// hints live in routing.ts.
+// hints live in yaml-probes.ts.
 
 // YAML double-quoted escapes (YAML 1.2 §5.7). JSON.parse rejects the
 // YAML-only ones (`\_`, `\L`, `\a`, `\x41`, ...) that PyYAML emits for
@@ -69,7 +69,7 @@ export function unquoteYaml(value: string): string {
  * instead of writing invalid YAML beside the flow container. A lone `[]`
  * is deliberately NOT dropped: that is a real empty sequence, and
  * swallowing it would clobber a user's list (omp yaml.ts:522 policy) —
- * routing.ts refuses it with INVALID_CONFIG_HINT instead.
+ * yaml-probes.ts refuses it with INVALID_CONFIG_HINT instead.
  */
 export function dropLoneFlowLine(lines: string[], at: number, end: number): boolean {
   let only = -1;
