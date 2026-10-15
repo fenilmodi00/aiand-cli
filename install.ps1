@@ -1,4 +1,4 @@
-﻿﻿# aiand one-line installer for Windows (PowerShell 5.1+) -- TASTING BUILD.
+﻿# aiand one-line installer for Windows (PowerShell 5.1+) -- TASTING BUILD.
 #
 #   Invoke-RestMethod https://raw.githubusercontent.com/fenilmodi00/aiand-cli/v2-tasting/install.ps1 | Invoke-Expression
 #   .\install.ps1
