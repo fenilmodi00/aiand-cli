@@ -877,12 +877,16 @@ main() {
   # was the plan, not the second choice.
   #
   # A build that ships TASTING_BRANCH is served from this fork's branch, never
-  # from the npm registry, so the published path is disabled there. Test runs
-  # that explicitly opt out of the published release (AIAND_PUBLISHED_RELEASE=0)
-  # keep the upstream behavior, because they are exercising the source path
-  # itself rather than this build's default.
+  # from the npm registry, so the published path is disabled for the tasting
+  # build's own default. A test or developer that points AIAND_RELEASE_URL at a
+  # fixture, or sets AIAND_PUBLISHED_RELEASE explicitly, is asking for the
+  # published path, so it stays enabled there.
   local published_path=1
-  if [[ -n "${TASTING_BRANCH:-}" && -z "${AIAND_SOURCE:-}" && "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]]; then
+  if [[ -n "${TASTING_BRANCH:-}" ]] \
+    && [[ -z "${AIAND_SOURCE:-}" ]] \
+    && [[ -z "${AIAND_RELEASE_URL:-}" ]] \
+    && [[ -z "${AIAND_PUBLISHED_RELEASE:-}" ]] \
+    && [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
     published_path=0
   fi
   if ((published_path)) && [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]]; then
