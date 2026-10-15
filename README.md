@@ -58,6 +58,25 @@ Uninstall turns off every agent aiand wired, then removes the CLI. Your
 profiles and credentials under `~/.config/aiand` are kept. For an npm install,
 run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
 
+### Trying a branch before it is released
+
+The installer refuses remotes outside `github.com/aiandlabs/aiand-cli`, so a
+branch or fork is tried by passing the local checkout:
+
+```bash
+AIAND_SOURCE=$PWD bash install.sh
+```
+
+To go back to the release, run the release install again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
+```
+
+Both installs live in the same `~/.aiand/cli` directory and the same
+`~/.local/bin/aiand` launcher, so whichever installer ran last wins. Run the
+launcher's own `uninstall` (above) to remove it.
+
 
 ## Commands
 

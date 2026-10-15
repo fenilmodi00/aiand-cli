@@ -26,6 +26,12 @@ breaking changes while the command surface settles.
 
 ### Changed
 
+- The README documents trying an unreleased branch: the installer only accepts
+  `github.com/aiandlabs/aiand-cli` as a URL source, so a branch or fork is
+  installed from its local checkout with `AIAND_SOURCE=$PWD bash install.sh`,
+  which reuses the same `~/.aiand/cli` directory and `~/.local/bin/aiand`
+  launcher as the release install.
+
 - Terminal color detection is tier-aware (`colorTier`): truecolor terminals
   get exact colors, everything else falls back to the nearest xterm-256
   color, and `FORCE_COLOR=3` opts into truecolor. The banner's brand red now
