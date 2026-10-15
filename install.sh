@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# aiand one-line installer.
+# aiand one-line installer — TASTING BUILD.
 #
-#   curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/v2-tasting/install.sh | bash
 #   bash install.sh uninstall [--force]
+#
+# This is a tasting build of the V2 UX (home screen, interactive menu,
+# search, session flow). It installs from this repository's `v2-tasting`
+# branch, not the published release, so that anyone with Node.js 22+ can run
+# it with one command and no git or npm install steps of their own beyond
+# what the build needs. Everything else matches the released installer: the
+# staged build is verified before any launcher is written, `~/.config/aiand`
+# is never touched, and `uninstall` is safe to run.
 #
 # Clones the CLI into ~/.aiand/cli, builds it with the project's own
 # toolchain, and drops an `aiand` launcher on PATH via ~/.local/bin.
@@ -11,22 +19,17 @@
 # untouched. Nothing under ~/.config/aiand (profiles, credentials, agent
 # snapshots) is ever touched — updating the CLI never unwires your agents.
 #
-# By default the installer installs the published release: the npm tarball
-# already ships a compiled `dist/`, so that path needs only Node.js and tar.
-# `AIAND_SOURCE` installs from your own source instead — a local path, fork,
-# or URL — which is cloned or copied and built, so git and npm are required
-# too. When the registry cannot be reached, the installer builds from source.
-#
 # `uninstall` turns every aiand-routed agent `off` first (via the installed
-# CLI's `aiand init --off`, aborting before deleting anything when off fails
-# so snapshots stay retryable), then removes the launcher and the
-# checkout. Profiles, credentials, and snapshots under ~/.config/aiand are
-# intentionally kept. An existing ~/.local/bin/aiand this installer did not
-# write is never overwritten, executed, or removed.
+# CLI's `aiand init --off`, aborting before deleting anything when `off` fails
+# so snapshots stay retryable), then removes the launcher and the checkout.
+# Profiles, credentials, and snapshots under ~/.config/aiand are intentionally
+# kept. An existing ~/.local/bin/aiand this installer did not write is never
+# overwritten, executed, or removed.
 #
 # Knobs (environment only; no flags):
 #   AIAND_SOURCE=https://…|/local/path   where to clone from (https URLs
-#                                        must be github.com/aiandlabs/aiand-cli)
+#                                        must be github.com/aiandlabs/aiand-cli
+#                                        or this tasting fork's branch)
 #   AIAND_DIR=~/.aiand/cli               where the source lives
 #   AIAND_SKIP_BUILD=1                   reuse the existing dist/ build
 #   AIAND_INSTALL_VERBOSE=1              show full npm output
@@ -45,8 +48,12 @@
 #   NO_COLOR                             disable ANSI colors in this script
 set -euo pipefail
 
-DEFAULT_SOURCE="https://github.com/aiandlabs/aiand-cli.git"
+DEFAULT_SOURCE="https://github.com/fenilmodi00/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
+# The tasting build always clones its own branch: the default clone is
+# source-less (shallow, no branch), so the branch is pinned here and the
+# must-match check in clone_to_staging is widened to accept it.
+TASTING_BRANCH="v2-tasting"
 INSTALL_DIR="${AIAND_DIR:-${HOME}/.aiand/cli}"
 MIN_NODE_MAJOR=22
 MIN_NODE_MINOR=0
@@ -157,6 +164,12 @@ is_allowlisted_source() {
     path="/${rest#*/}"
   else
     path="/"
+  fi
+  # The released installer allows only aiandlabs/aiand-cli. This tasting build
+  # also allows this fork's repo, because that is where the v2-tasting branch
+  # lives and the whole point of the build is one curl command.
+  if [[ "${path}" == "/fenilmodi00/aiand-cli.git" || "${path}" == "/fenilmodi00/aiand-cli" ]]; then
+    return 0
   fi
   [[ "${path}" == "/aiandlabs/aiand-cli.git" || "${path}" == "/aiandlabs/aiand-cli" ]]
 }
@@ -511,8 +524,10 @@ stage_source() {
 
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   STAGING_DIR="$(mktemp -d "$(dirname "${INSTALL_DIR}")/.cli-staging-XXXXXX")"
-  if ! git clone --quiet --depth 1 "${SOURCE}" "${STAGING_DIR}"; then
-    echo "error: failed to clone ${SOURCE}; the existing installation was left unchanged." >&2
+  # --branch pins the clone to the tasting branch so a fork whose default
+  # branch is something else still installs the build this installer ships.
+  if ! git clone --quiet --depth 1 --branch "${TASTING_BRANCH}" "${SOURCE}" "${STAGING_DIR}"; then
+    echo "error: failed to clone ${SOURCE} (branch ${TASTING_BRANCH}); the existing installation was left unchanged." >&2
     exit 1
   fi
   mark_installer_owned "${STAGING_DIR}"
@@ -855,7 +870,7 @@ main() {
   # explicit AIAND_SOURCE the user asked for that source, so the published
   # path is skipped and no "registry unavailable" note is printed: the source
   # was the plan, not the second choice.
-  if [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]]; then
+  if [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]] && [[ -z "${TASTING_BRANCH:-}" ]]; then
     if stage_published_release "${RELEASE_MANIFEST_URL}"; then
       stage 3 'Fetching source'
       log "Using the published release"

@@ -1,8 +1,14 @@
-﻿# aiand one-line installer for Windows (PowerShell 5.1+).
+﻿﻿# aiand one-line installer for Windows (PowerShell 5.1+) -- TASTING BUILD.
 #
-#   Invoke-RestMethod https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | Invoke-Expression
+#   Invoke-RestMethod https://raw.githubusercontent.com/fenilmodi00/aiand-cli/v2-tasting/install.ps1 | Invoke-Expression
 #   .\install.ps1
 #   .\install.ps1 uninstall [--force]
+#
+# Tasting build of the V2 UX (home screen, interactive menu, search, session
+# flow). It installs from this repository's `v2-tasting` branch so anyone can
+# run it with one command. Everything else matches the released installer:
+# the staged build is verified before any launcher is written,
+# ~/.config/aiand is never touched, and `uninstall` is safe.
 #
 # Clones the CLI into ~/.aiand/cli, builds it with the project's own
 # toolchain, and drops `aiand` launchers on PATH via ~/.local/bin.
@@ -15,7 +21,8 @@
 # so snapshots stay retryable), then removes the launchers and checkout.
 #
 # Knobs (environment only; no flags):
-#   AIAND_SOURCE  where to clone from (https URLs must be github.com/aiandlabs/aiand-cli)
+#   AIAND_SOURCE  where to clone from (https URLs must be github.com/aiandlabs/aiand-cli
+#                  or this tasting fork's repo)
 #   AIAND_DIR ($HOME\.aiand\cli)  where the source lives
 #   AIAND_SKIP_BUILD=1  reuse the existing dist/ build
 #   AIAND_INSTALL_VERBOSE=1  show full npm output
@@ -29,7 +36,10 @@ param(
 $ErrorActionPreference = 'Stop'
 # TLS 1.2 for all downloads; 5.1 defaults to TLS 1.0 which hosts reject.
 try { [Net.ServicePointManager]::SecurityProtocol = ([Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12) } catch { }
-$DefaultSource = 'https://github.com/aiandlabs/aiand-cli.git'
+$DefaultSource = 'https://github.com/fenilmodi00/aiand-cli.git'
+# Tasting build: always install the v2-tasting branch of this fork, never the
+# published npm release, so the one-command install runs the build under review.
+$script:TastingBranch = 'v2-tasting'
 # Prefer env (USERPROFILE, then HOME) so CI can isolate without relying on
 # the automatic $HOME, which PowerShell 5.1 snapshots at process start.
 if ($env:USERPROFILE -and $env:USERPROFILE.Trim() -ne '') { $UserHome = $env:USERPROFILE.Trim() } elseif ($env:HOME -and $env:HOME.Trim() -ne '') { $UserHome = $env:HOME.Trim() } else { $UserHome = [string]$HOME }
@@ -125,6 +135,9 @@ function Assert-AllowlistedHttpsUri {
     $slash = $rest.IndexOf('/')
     if ($slash -lt 0) { $hostPart = $rest; $pathPart = '/' } else { $hostPart = $rest.Substring(0, $slash); $pathPart = $rest.Substring($slash) }
     if ($hostPart -ne 'github.com') { throw 'error: AIAND_SOURCE is not an allowlisted https://github.com/aiandlabs/aiand-cli URL' }
+    # The released installer allows only aiandlabs/aiand-cli. This tasting
+    # build also allows this fork's repo, where the v2-tasting branch lives.
+    if ($pathPart -eq '/fenilmodi00/aiand-cli.git' -or $pathPart -eq '/fenilmodi00/aiand-cli') { return }
     if ($pathPart -ne '/aiandlabs/aiand-cli.git' -and $pathPart -ne '/aiandlabs/aiand-cli') { throw 'error: AIAND_SOURCE is not an allowlisted https://github.com/aiandlabs/aiand-cli URL' }
 }
 function Publish-EnvironmentChange {
@@ -312,7 +325,7 @@ function Clone-ToStaging {
     $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 6)
     $script:StagingDir = (Join-Path $parent ".cli-staging-$suffix")
     if (Test-Path $script:StagingDir) { Remove-Item -Recurse -Force $script:StagingDir }
-    try { & git clone --quiet --depth 1 $Source $script:StagingDir 2>$null; if ($LASTEXITCODE -ne 0) { throw 'clone failed' } } catch { throw "error: failed to clone $Source; the existing installation was left unchanged." }
+    try { & git clone --quiet --depth 1 --branch $script:TastingBranch $Source $script:StagingDir 2>$null; if ($LASTEXITCODE -ne 0) { throw 'clone failed' } } catch { throw "error: failed to clone $Source (branch $($script:TastingBranch)); the existing installation was left unchanged." }
     Set-InstallerOwned -Dir $script:StagingDir
 }
 # Stage 5, source path: swap the staged checkout in for INSTALL_DIR. Runs only
