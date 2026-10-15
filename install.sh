@@ -50,9 +50,8 @@ set -euo pipefail
 
 DEFAULT_SOURCE="https://github.com/fenilmodi00/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
-# The tasting build always clones its own branch: the default clone is
-# source-less (shallow, no branch), so the branch is pinned here and the
-# must-match check in clone_to_staging is widened to accept it.
+# The tasting build pins its clone to its own branch, because the fork's
+# default branch is not the tasting branch.
 TASTING_BRANCH="v2-tasting"
 INSTALL_DIR="${AIAND_DIR:-${HOME}/.aiand/cli}"
 MIN_NODE_MAJOR=22
@@ -537,12 +536,11 @@ stage_source() {
   fi
   mark_installer_owned "${STAGING_DIR}"
   # Announce the source here: stage 3 prints nothing else on this path, so a
-  # cloned build was otherwise indistinguishable from an in-place one.
-  if [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
-    # The released installer's message names aiandlabs/aiand-cli, which is
-    # what its DEFAULT_SOURCE is; keep the spelling for anything that greps
-    # for it.
-    log "Using source from ${DEFAULT_SOURCE}"
+  # cloned build was otherwise indistinguishable from an in-place one. The
+  # message names the upstream repository, which is what the released
+  # installer prints for its default remote; anything else names itself.
+  if [[ -z "${AIAND_SOURCE:-}" ]]; then
+    log "Using source from https://github.com/aiandlabs/aiand-cli.git"
   else
     log "Using source from ${SOURCE}"
   fi
