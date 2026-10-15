@@ -538,7 +538,14 @@ stage_source() {
   mark_installer_owned "${STAGING_DIR}"
   # Announce the source here: stage 3 prints nothing else on this path, so a
   # cloned build was otherwise indistinguishable from an in-place one.
-  log "Using source from ${SOURCE}"
+  if [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
+    # The released installer's message names aiandlabs/aiand-cli, which is
+    # what its DEFAULT_SOURCE is; keep the spelling for anything that greps
+    # for it.
+    log "Using source from ${DEFAULT_SOURCE}"
+  else
+    log "Using source from ${SOURCE}"
+  fi
 }
 
 # Stage 5, source path: swap the staged checkout in for INSTALL_DIR. Runs only
