@@ -870,7 +870,17 @@ main() {
   # explicit AIAND_SOURCE the user asked for that source, so the published
   # path is skipped and no "registry unavailable" note is printed: the source
   # was the plan, not the second choice.
-  if [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]] && [[ -z "${TASTING_BRANCH:-}" ]]; then
+  #
+  # A build that ships TASTING_BRANCH is served from this fork's branch, never
+  # from the npm registry, so the published path is disabled there. Test runs
+  # that explicitly opt out of the published release (AIAND_PUBLISHED_RELEASE=0)
+  # keep the upstream behavior, because they are exercising the source path
+  # itself rather than this build's default.
+  local published_path=1
+  if [[ -n "${TASTING_BRANCH:-}" && -z "${AIAND_SOURCE:-}" && "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]]; then
+    published_path=0
+  fi
+  if ((published_path)) && [[ "${AIAND_PUBLISHED_RELEASE:-}" != "0" ]] && [[ -z "${AIAND_SOURCE:-}" ]]; then
     if stage_published_release "${RELEASE_MANIFEST_URL}"; then
       stage 3 'Fetching source'
       log "Using the published release"
