@@ -325,7 +325,8 @@ function Clone-ToStaging {
     $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 6)
     $script:StagingDir = (Join-Path $parent ".cli-staging-$suffix")
     if (Test-Path $script:StagingDir) { Remove-Item -Recurse -Force $script:StagingDir }
-    try { & git clone --quiet --depth 1 --branch $script:TastingBranch $Source $script:StagingDir 2>$null; if ($LASTEXITCODE -ne 0) { throw 'clone failed' } } catch { throw "error: failed to clone $Source (branch $($script:TastingBranch)); the existing installation was left unchanged." }
+    $cloneArgs = if ($Source -eq $DefaultSource) { @('--branch', $script:TastingBranch) } else { @() }
+    try { & git clone --quiet --depth 1 @cloneArgs $Source $script:StagingDir 2>$null; if ($LASTEXITCODE -ne 0) { throw 'clone failed' } } catch { throw "error: failed to clone $Source; the existing installation was left unchanged." }
     Set-InstallerOwned -Dir $script:StagingDir
 }
 # Stage 5, source path: swap the staged checkout in for INSTALL_DIR. Runs only

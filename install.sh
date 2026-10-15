@@ -524,10 +524,15 @@ stage_source() {
 
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   STAGING_DIR="$(mktemp -d "$(dirname "${INSTALL_DIR}")/.cli-staging-XXXXXX")"
-  # --branch pins the clone to the tasting branch so a fork whose default
-  # branch is something else still installs the build this installer ships.
-  if ! git clone --quiet --depth 1 --branch "${TASTING_BRANCH}" "${SOURCE}" "${STAGING_DIR}"; then
-    echo "error: failed to clone ${SOURCE} (branch ${TASTING_BRANCH}); the existing installation was left unchanged." >&2
+  # The default remote is this fork, whose default branch is not the tasting
+  # branch, so the clone pins it. An explicit AIAND_SOURCE (a local checkout,
+  # or a remote the caller chose) is cloned as-is: no branch override.
+  local clone_ref=()
+  if [[ "${SOURCE}" == "${DEFAULT_SOURCE}" ]]; then
+    clone_ref=(--branch "${TASTING_BRANCH}")
+  fi
+  if ! git clone --quiet --depth 1 "${clone_ref[@]}" "${SOURCE}" "${STAGING_DIR}"; then
+    echo "error: failed to clone ${SOURCE}; the existing installation was left unchanged." >&2
     exit 1
   fi
   mark_installer_owned "${STAGING_DIR}"
