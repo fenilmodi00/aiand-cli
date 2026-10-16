@@ -12,7 +12,7 @@ import {
   writeFileAtomic,
 } from "../../config.js";
 import { existingFileMode } from "../../fsutil.js";
-import { resolveDefault } from "../catalog.js";
+import { inCatalog, resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
 import { readTextIfExists } from "../managed-file.js";
 import {
@@ -262,9 +262,6 @@ function foldDottedKeys(sections: TomlSection[]): TomlSection[] {
   }
   return folded;
 }
-
-const inCatalog = (catalog: Model[], id: unknown): id is string =>
-  typeof id === "string" && catalog.some((model) => model.id === id);
 
 async function readProfile(
   path = currentProfilePath(),

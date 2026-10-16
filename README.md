@@ -88,17 +88,18 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
-the [GitHub Copilot app](https://github.com/features/ai/github-app)
+the [GitHub Copilot app](https://github.com/features/ai/github-app),
+[DeepSeek Harness](https://deepseek.com/en/harness/),
 and [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research).
 
 `aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
-`aiand copilot` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
+`aiand copilot`, `aiand dsh` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
 one, OpenCode. If you are signed out, aiand signs you in. If the agent is
 missing and its install command is an npm install, aiand offers to install
 it with the install command shown by `aiand <agent> --help`; other install
 hints are printed with no offer. If the agent is not wired
 yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp`, `copilot` and `hermes` use ai& afterwards too.
+`codex --profile aiand`, `pi`, `omp`, `copilot`, `dsh` and `hermes` use ai& afterwards too.
 
 Everything after the agent name goes to the agent as typed, such as
 `aiand claude -p "explain this repo"`. Put aiand's own flags before the
@@ -296,6 +297,48 @@ catalog: `--model <id>` to choose (a session launch always names a model, so
 `--model native` is the usual catalog error). `--provider`, `--model`, and `-m` in the arguments after `--` are
 stripped so nothing can override the injected routing, and the overlay is
 removed after the session ends — success, failure, or Ctrl-C.
+aiand dsh                # open DeepSeek Harness on ai&, wiring it first if needed
+aiand dsh on             # wire DeepSeek Harness through ai&
+aiand dsh status         # check what dsh is actually configured to use
+aiand dsh off            # remove exactly what aiand added
+aiand run-agent dsh      # or: one dsh session on ai&, your ~/.dsh config and keys untouched
+```
+
+`on` writes two rows into `$DSH_HOME/cordis.patch.yml` (or
+`~/.dsh/cordis.patch.yml`): an `aiand` route on dsh's pi-ai adapter,
+speaking the gateway's OpenAI-compatible chat dialect with every model
+from the live catalog, and the default-model pin fresh sessions start
+on. Each model keeps the reasoning levels the catalog publishes, except a
+level dsh's own schema does not name — `none` is the lowest level of most
+models and dsh would refuse the whole route over it, so it is dropped rather
+than written. GLM-5.3 offers low, high, and max. A level the model does not
+publish stays hidden. If you leave the level unset, the engine default runs,
+and on GLM-5.3 that default is max. dsh never rewrites the patch layer
+itself, so your own rows survive `on` and `off`; `on` refuses a
+hand-written `llm-pi-ai` row that already carries any config of your own
+— not just `providers`. The key never appears in the YAML: it rides in
+`$DSH_HOME/.credentials.yaml` (readable only by you), and dsh resolves
+the ref on every request. A default ai& cannot serve is set aside until
+`off`; one it can serve is kept. Pass `--model <id>` to switch;
+`--model native` is refused, like Codex, because DeepSeek Harness's own
+default needs a DeepSeek key the gateway cannot serve. The config root
+moves wholesale with `$DSH_HOME`.
+
+`off` removes exactly what aiand wrote, including from the files `on`
+recorded when `$DSH_HOME` moved in between, and puts back a default it
+set aside. `status` reports what dsh is actually configured to use,
+read from the patch file itself. If a config ever ends up in a state you
+do not want, `aiand restore dsh --force` puts back the exact files from
+before aiand first touched them.
+
+`aiand run-agent dsh` runs one session with the real `~/.dsh` config and
+credentials untouched: a throwaway `$DSH_HOME` holds the same rows and the
+session key, and dsh starts in its `web` profile on a terminal or
+answers one piped task headless and exits. Session history still lands
+in your real `~/.dsh/sessions`, and the throwaway home is removed
+after the session ends. A `--patch` overlay of your own is dropped on
+this path — it would outrank the injected routing — while a profile you
+named stands.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

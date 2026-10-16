@@ -12,8 +12,8 @@ agent's native wire format, so the CLI never runs a local proxy, translator,
 or daemon to serve one. _Avoid:_ relay, proxy.
 
 **Wire format** - the request/response dialect an agent speaks: OpenAI-compatible chat
-(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app, and Hermes through
-its dedicated `aiand` provider) or Anthropic Messages
+(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app, DeepSeek Harness,
+and Hermes through its dedicated `aiand` provider) or Anthropic Messages
 (Claude Code) or OpenAI Responses (Codex).
 The CLI points the agent at the gateway in its own dialect; it never translates between dialects.
 
@@ -27,8 +27,8 @@ primary product surface; `init` and the launcher are conveniences layered
 over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app and hermes.
-One adapter per agent. _Avoid:_ harness, integration, connector.
+shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app,
+dsh and hermes. One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
 which config files it owns, and how to enable, disable, and probe it. It lives
@@ -108,6 +108,9 @@ and `off` stay tolerant when a Hermes rewrite drops the stamp (the AddedState
 record backstops it). The generated plugin also declares each model's published
 reasoning levels, so Hermes clamps a user's pick onto them and an unset level
 runs at the model's engine default.
+For dsh it is `x-aiand: true` on the `aiand` provider route inside the
+home patch layer (`cordis.patch.yml`): dsh passes unknown profile keys
+through, and it never rewrites that layer itself, so unknown keys survive.
 
 **restore** - `aiand restore <agent> --force`: the break-glass byte-for-byte
 snapshot restore. Overwrites any edits made since `on`, which is why it is
@@ -213,6 +216,12 @@ one. The catalog publishes it as `reasoning_effort_default`.
 Hermes's generated provider publishes its levels through `supported_reasoning_efforts`
 and hands an unset level back to the model's engine default.
 
+Dsh names a fixed level set of its own (`off` … `max`) in the route's schema,
+and the catalog publishes levels that set does not include — `none` is the
+lowest of most models. A level dsh does not name is dropped from the model's
+`reasoningEfforts`, never renamed: one unmappable key fails the whole route's
+validation, so dsh would boot with no route at all.
+
 **Vision** - whether a catalog model accepts image input (`vision`) or text
 only (`text-only`).
 
@@ -222,7 +231,9 @@ model. Codex refuses it: its profile would inherit a `config.toml` model the
 gateway cannot serve. Hermes never deletes a `model.default` to get there —
 with none, the stock binary sends an empty model and every turn is rejected
 (0.21.5) — and its launcher takes no `native` at all, since the binary needs
-`--provider` and `--model` together.
+`--provider` and `--model` together. Dsh refuses it too: its own default is
+the official DeepSeek route, which needs a DeepSeek key the gateway cannot
+supply.
 
 ## Sources of truth
 

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { CliError } from "../../cli/errors.js";
 import { agentHome, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
+import { inCatalog } from "../catalog.js";
 import { detectBinary } from "../detect.js";
 import {
   asObject,
@@ -45,7 +46,6 @@ import {
   FOREIGN_PROVIDER_KEYS,
   fastModel,
   gatewayEnv,
-  inCatalog,
   isAlias,
   MAIN_SLOTS,
   MARKER_KEY,

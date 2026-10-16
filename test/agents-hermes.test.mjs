@@ -401,8 +401,8 @@ describe("hermes adapter: persistent on/off", () => {
     const record = readAddedState();
     assert.ok(!JSON.stringify(record).includes("sk-test-hermes-enable"));
     assert.equal(record.wroteDefault, "zai-org/glm-5.3");
-    assert.equal(record.previousDefaultLine, '  default: "user-model"');
-    assert.equal(record.previousProviderLine, '  provider: "auto"');
+    assert.equal(record.previousDefaultSpot.line, '  default: "user-model"');
+    assert.equal(record.previousProviderSpot.line, '  provider: "auto"');
 
     // Probe reads the real files back.
     assert.deepEqual(await hermes.hermesAdapter.probe(), {
@@ -633,6 +633,27 @@ describe("hermes adapter: persistent on/off", () => {
     assert.ok(after.includes("  aiand:"), "the rewrite stays");
     assert.ok(after.includes("key_env: USER_ANTHROPIC_KEY"));
     assert.ok(!readFileSync(envPath(), "utf8").includes("AIAND_HERMES_API_KEY"));
+  });
+
+  test("on drops a model.base_url and off hands it back byte-identically", async () => {
+    // A fresh Hermes install seeds an active OpenRouter base_url in the model
+    // section, and Hermes prefers it over the provider's own endpoint once
+    // the provider matches — so on must drop it or the ai& key rides to
+    // OpenRouter. The line is the user's, so off puts it back.
+    const seed =
+      'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput({ model: "zai-org/glm-5.3" }));
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the endpoint cannot ride the routed request");
+    assert.ok(wired.includes("  provider: aiand"), "routed through aiand");
+    assert.ok(wired.includes("theme: dark") && wired.includes("other:\n  key: 1"), "rest intact");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.ok(readFileSync(configPath(), "utf8") === before, "the file is byte-identical again");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
   });
 
   test("off: a stamp-dropped block with our key_env still strips on the record", async () => {
@@ -1156,6 +1177,163 @@ describe("hermes adapter: persistent on/off", () => {
     assert.equal(run.code, 0, run.stderr);
     run = await runCli(["hermes", "status", "--json"], { env: cliEnv(base) });
     assert.equal(JSON.parse(run.stdout).state, "off");
+  });
+
+  // The on→off round trip must hand back the exact bytes for every shape a
+  // real stock file uses: the restored line goes back to the spot it left,
+  // not the end of the section, so the file is byte-identical afterwards.
+  test("on/off round trip: the stock example's field order and position", async () => {
+    // The real ~/.hermes/hermes-agent/cli-config.yaml.example, trimmed to the
+    // model section: `default` first, the provider's comment block, then
+    // base_url, then another top-level section below.
+    const seed = [
+      "# =============================================================================",
+      "model:",
+      "  # Default model to use (can be overridden with --model flag)",
+      '  default: "anthropic/claude-opus-4.6"',
+      "  ",
+      "  # Inference provider selection:",
+      '  #   "auto"         - Auto-detect from credentials (default)',
+      '  #   "openrouter"   - OpenRouter (requires: OPENROUTER_API_KEY)',
+      '  provider: "auto"',
+      "  ",
+      "  # API configuration (falls back to OPENROUTER_API_KEY env var)",
+      '  base_url: "https://openrouter.ai/api/v1"',
+      "",
+      "  # streaming: true",
+      "",
+      "kanban:",
+      "  column: todo",
+      "",
+    ].join("\n");
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput({ model: "zai-org/glm-5.3" }));
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the user's endpoint cannot ride the request");
+    assert.ok(wired.includes("kanban:\n  column: todo"), "the rest of the config stays");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.equal(readFileSync(configPath(), "utf8") === before, true, "byte-identical after off");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
+  test("on/off round trip: base_url first in the model section", async () => {
+    const seed =
+      'theme: dark\nmodel:\n  base_url: "https://openrouter.ai/api/v1"\n  provider: "auto"\n  default: "user-model"\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput());
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the user's endpoint cannot ride the request");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.equal(readFileSync(configPath(), "utf8") === before, true, "byte-identical after off");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
+  test("on/off round trip: base_url only field in the model section", async () => {
+    // A body-less section after the drop: the restore must not lose the only
+    // field, which is what left the config empty before.
+    const seed =
+      'theme: dark\nmodel:\n  base_url: "https://openrouter.ai/api/v1"\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    assert.ok(before.trim() !== "", "the seed is not empty");
+    await hermes.hermesAdapter.enable(enableInput());
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the user's endpoint cannot ride the request");
+    assert.ok(wired.includes("theme: dark"), "the rest of the config stays");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.equal(readFileSync(configPath(), "utf8") === before, true, "byte-identical after off");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
+  test("on/off round trip: base_url's trailing comment survives exactly once", async () => {
+    const seed =
+      'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"  # my router\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput());
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the user's endpoint cannot ride the request");
+    assert.equal(wired.split("# my router").length - 1, 1, "the note stays once while on");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.equal(readFileSync(configPath(), "utf8") === before, true, "byte-identical after off");
+    assert.equal(
+      readFileSync(configPath(), "utf8").split("# my router").length - 1,
+      1,
+      "the note is not duplicated",
+    );
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
+  test("on/off round trip: CRLF file keeps its line endings", async () => {
+    const seed = [
+      "theme: dark",
+      "model:",
+      '  provider: "auto"',
+      '  default: "user-model"',
+      '  base_url: "https://openrouter.ai/api/v1"',
+      "",
+      "other:",
+      "  key: 1",
+      "",
+    ].join("\r\n");
+    assert.ok(seed.includes("\r\n"), "the seed is written with CRLF");
+    plantPersistentHome({ config: seed });
+    const before = readFileSync(configPath(), "utf8");
+    await hermes.hermesAdapter.enable(enableInput());
+    assert.ok(!readFileSync(configPath(), "utf8").includes("openrouter.ai"), "dropped");
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    const after = readFileSync(configPath(), "utf8");
+    assert.equal(after === before, true, "byte-identical after off, CRLF included");
+    assert.equal(after.includes("\r\n"), true, "the endings survive");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
+  });
+
+  test("already-aiand provider: on drops the user's base_url, off leaves no bogus note", async () => {
+    // A home already routing through aiand still carries a user base_url that
+    // Hermes prefers over the provider's own endpoint whenever the provider
+    // matches, so on must drop it anyway — and since this on dropped the
+    // line, off must not claim the user edited it. It is handed back where it
+    // stood, the provider line on routed is removed, and the user's own
+    // default line is left byte-identical.
+    const seed =
+      'theme: dark\nmodel:\n  provider: aiand\n  default: "zai-org/glm-5.3"\n  base_url: "https://openrouter.ai/api/v1"\n\nother:\n  key: 1\n';
+    plantPersistentHome({ config: seed });
+    await hermes.hermesAdapter.enable(enableInput({ model: "zai-org/glm-5.3" }));
+    const wired = readFileSync(configPath(), "utf8");
+    assert.ok(!wired.includes("openrouter.ai"), "the user's endpoint cannot ride the request");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), {
+      active: true,
+      model: "zai-org/glm-5.3",
+    });
+
+    const result = await hermes.hermesAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.ok(
+      !(result.notes ?? []).some((n) => n.includes("left model.base_url")),
+      "no bogus left-behind note: this on dropped the line, nobody edited it",
+    );
+    // on routed the provider, so off un-routes it (nothing was recorded to
+    // restore the line with), and the user's default stays put.
+    const after = readFileSync(configPath(), "utf8");
+    assert.equal(
+      after,
+      'theme: dark\nmodel:\n  default: "zai-org/glm-5.3"\n  base_url: "https://openrouter.ai/api/v1"\n\nother:\n  key: 1\n',
+      "the dropped line is back in place and the routed provider line is gone",
+    );
+    assert.ok(after.includes("theme: dark") && after.includes("other:\n  key: 1"), "rest intact");
+    assert.deepEqual(await hermes.hermesAdapter.probe(), { active: false, model: null });
   });
 });
 

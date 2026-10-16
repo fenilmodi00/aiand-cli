@@ -64,6 +64,9 @@ type SessionLaunch = {
 type OpenExtras = {
   env?: Record<string, string>;
   args?: string[];
+  // Routing flags this adapter owns on the open path, so the launcher drops
+  // the user's `--flag value` and `--flag=value` forms.
+  stripPassthroughFlags?: string[];
 };
 
 /** Options for the pre-write guards. */
