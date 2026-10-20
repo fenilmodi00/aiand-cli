@@ -68,6 +68,8 @@ const RULES = [
       match.startsWith("@ai-sdk/") ||
       match.startsWith("@opencode-ai/") ||
       match.startsWith("@anthropic-ai/") ||
+      match.startsWith("@mariozechner/") ||
+      match.startsWith("@oh-my-pi/") ||
       match.startsWith("@openai/") ||
       match.startsWith("@earendil-works/") ||
       match.startsWith("@deepseek-ai/") ||

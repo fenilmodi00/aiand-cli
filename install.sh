@@ -138,6 +138,81 @@ print_install_notes() {
   done
 }
 
+# Coding-agent binaries the installer looks for, in display order: the same
+# ids src/agents/registry.ts registers, minus copilot-app (a GUI with no
+# single PATH binary). The hint commands must stay identical to each
+# adapter's `install.command` (scripts/install-behavior.mjs checks); every
+# versioned one is re-checked against its adapter's pin by
+# scripts/check-dist.mjs. The omp hint is the exception: it is the one
+# download a single shell line can run on any platform, so it picks the
+# asset from `uname` and verifies it before chmod.
+agent_install_hint() {
+  case "$1" in
+    opencode) echo "npm install -g opencode-ai@1.18.32" ;;
+    claude) echo "npm install -g @anthropic-ai/claude-code" ;;
+    pi) echo "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1" ;;
+    codex) echo "npm install -g @openai/codex" ;;
+    copilot) echo "npm install -g @github/copilot@1.0.89" ;;
+    dsh) echo "npm install -g --ignore-scripts @deepseek-ai/dsh@0.2.0-rc.2" ;;
+    hermes) echo "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit 666f313d1d3abd8077291ba464cf0a10f1a6157f" ;;
+    omp)
+      case "$(uname -s) $(uname -m)" in
+        Linux\ *aarch64*)      asset=omp-linux-arm64;    sum=602eefddc0fd87043f8f08d8628d72592e5802c003a05f203f1ecbc63a8fdd30 ;;
+        Linux\ *)              asset=omp-linux-x64;      sum=24c830fceb0bd6884bf5bf2c7a2b7407bc23fafe655e924c695ef9be308e46f3 ;;
+        Darwin\ *arm64)        asset=omp-darwin-arm64;   sum=e76e02821242fb36844676a9dfb79fbe5fb069d93ef3bf62625ec339fe9d092b ;;
+        Darwin\ *)             asset=omp-darwin-x64;     sum=18541fd15a7707195a9041b748f2b1d647f39514ad20d9c41df53044244deab5 ;;
+        # Any other host the adapter would also answer with a Linux asset: the
+        # summary must never print a command that skips the digest check.
+        *) case "$(uname -m)" in
+             *aarch64*)        asset=omp-linux-arm64;   sum=602eefddc0fd87043f8f08d8628d72592e5802c003a05f203f1ecbc63a8fdd30 ;;
+             *)                asset=omp-linux-x64;     sum=24c830fceb0bd6884bf5bf2c7a2b7407bc23fafe655e924c695ef9be308e46f3 ;;
+           esac ;;
+      esac
+      # macOS before Sequoia has no sha256sum; shasum ships with perl.
+      case "$(uname -s)" in
+        Darwin) havesum="shasum -a 256" ;;
+        *)      havesum="sha256sum" ;;
+      esac
+      echo "mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/omp https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/${asset} && cd ~/.local/bin && echo \"${sum}  omp\" | ${havesum} -c - && chmod +x omp"
+      ;;
+  esac
+}
+
+# Post-install summary on stdout (like Note: lines): which supported agents
+# are on PATH and the `aiand init` nudge. Nudge only: wiring needs an
+# interactive sign-in, so the installer never runs init itself.
+print_agent_summary() {
+  local id detected="" missing=""
+  for id in opencode claude pi omp codex copilot dsh hermes; do
+    if command -v "${id}" >/dev/null 2>&1; then
+      detected="${detected} ${id}"
+    else
+      missing="${missing} ${id}"
+    fi
+  done
+  detected="${detected# }"
+  missing="${missing# }"
+  if [[ -z "${detected}" ]]; then
+    echo "No coding agents detected on this machine."
+    for id in opencode claude pi omp codex copilot dsh hermes; do
+      echo "  ${id}  Install it with: $(agent_install_hint "${id}")"
+    done
+    echo "Install one, then run 'aiand init'."
+    return 0
+  fi
+  echo "Detected agents:"
+  for id in ${detected}; do
+    echo "  ✓ ${id}"
+  done
+  if [[ -n "${missing}" ]]; then
+    echo "Not installed:"
+    for id in ${missing}; do
+      echo "  ${id}  Install it with: $(agent_install_hint "${id}")"
+    done
+  fi
+  echo "Next: run 'aiand init' to wire them to ai&."
+}
+
 node_meets_minimum() {
   local version major minor
   version="$(node -p "process.versions.node" 2>/dev/null || echo "0.0.0")"
@@ -414,7 +489,12 @@ activate_staged_install() {
 verify_built_cli() {
   local source_dir="$1" node_bin expected actual
   node_bin="$(command -v node)"
-  expected="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version' -- "${source_dir}/package.json" 2>/dev/null || true)"
+  # Shell-native version read (no node spawn): match "version" followed by
+  # a quoted value anywhere, so pretty-printed and minified package.json
+  # both work. The top-level version precedes any dependency block, so the
+  # first match is the staged version. `|| true`: under pipefail, head
+  # closing early must not fail the install; empty still fails closed below.
+  expected="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${source_dir}/package.json" | head -n 1 || true)"
   if [[ -z "${expected}" ]]; then
     echo "error: staged aiand verification failed; the existing installation was left unchanged." >&2
     exit 1
@@ -442,7 +522,9 @@ ensure_build() {
   fi
   # --omit=dev would drop the TypeScript compiler the build needs; the CLI
   # itself ships zero runtime dependencies, so node_modules never runs.
-  if ! (cd "${source_dir}" && npm ci --ignore-scripts --no-fund --no-audit --loglevel="${npm_loglevel}"); then
+  # --prefer-offline reuses the npm cache on re-runs/updates and falls back
+  # to the network on a cold machine.
+  if ! (cd "${source_dir}" && npm ci --ignore-scripts --no-fund --no-audit --prefer-offline --loglevel="${npm_loglevel}"); then
     echo "error: staged aiand verification failed; the existing installation was left unchanged." >&2
     exit 1
   fi
@@ -722,6 +804,7 @@ main() {
   install_cli_launcher "${final_dir}"
 
   print_install_notes
+  print_agent_summary
   log "Done. Run 'aiand --version' to check the install."
 }
 

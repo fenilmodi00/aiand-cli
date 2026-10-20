@@ -42,6 +42,35 @@ export async function installIfMissing(adapter: AgentAdapter): Promise<void> {
   }
 }
 
+/**
+ * The passthrough minus the adapter's own routing flags. Both launch paths
+ * (run-agent and the bare-verb open) drop the user's `--flag value` and
+ * `--flag=value` forms so the injected routing cannot be overridden.
+ * Everything else passes verbatim. A value is only consumed when it is not
+ * itself a flag, so `--model --print` keeps --print and a trailing `--model`
+ * eats nothing.
+ */
+export function dropOwnedFlags(
+  args: string[],
+  ownedFlags: readonly string[] | undefined,
+): string[] {
+  if (ownedFlags === undefined || ownedFlags.length === 0) return [...args];
+  const passthrough: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i]!;
+    if (ownedFlags.includes(token)) {
+      // `--flag value`: the value is the next token, when present and not
+      // itself a flag.
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i += 1;
+      continue;
+    }
+    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
+    passthrough.push(token);
+  }
+  return passthrough;
+}
+
 export async function runAgentBinary(
   adapter: AgentAdapter,
   args: string[],

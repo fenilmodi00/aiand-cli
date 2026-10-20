@@ -11,12 +11,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, delimiter, dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const PWSH_SMOKE_TIMEOUT_MS = 60_000;
@@ -73,6 +75,83 @@ function childEnv(home, extra = {}) {
     AIAND_SOURCE: undefined,
     ...extra,
   };
+}
+
+// Agent ids the installers probe for the post-install summary, in display
+// order: every adapter that resolves to a PATH binary, which is the registry
+// minus copilot-app (a GUI with no single PATH binary). Read from the built
+// registry, the same source scripts/check-dist.mjs derives the gate from, so
+// a newly shipped agent has to reach this copy too rather than silently
+// disagreeing with it.
+const AGENT_IDS = await import(
+  pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href
+).then(
+  ({ AGENTS }) =>
+    AGENTS.filter(
+      (a) => a.id !== "copilot-app" && typeof a.bin === "string" && a.bin.length > 0,
+    ).map((a) => a.id),
+  // The installer job builds dist/ first; without it this copy is only the
+  // fallback and check-dist still gates the real list.
+  () => ["opencode", "claude", "pi", "omp", "codex", "copilot", "hermes"],
+);
+// The omp hint's expected text on this host: the adapter's own command, so
+// the matrix asserts the installer prints the same bytes the adapter would
+// (macOS arm64/x64, Linux arm64/x64), never one platform's asset by hand.
+const OMP_HINT = await import(pathToFileURL(join(ROOT, "dist", "agents", "omp", "install.js")).href)
+  .then(
+    ({ OMP_INSTALL }) => OMP_INSTALL.command,
+    () => "",
+  )
+  .then((command) => (command === "" ? "" : `omp  Install it with: ${command}`));
+
+// The toolchain binaries the installer still needs once every agent directory
+// has been dropped, and which may share a directory with an agent: npm's
+// global bin is the usual home of an `npm -g` agent.
+const TOOLCHAIN_TOOLS = ["node", "npm", "git", "bash"];
+
+// A PATH holding only `fakebin` plus one scratch directory of toolchain
+// symlinks, so the summary matrix is hermetic on a dev machine with agents
+// installed. Symlinking the toolchain into one directory is what makes the
+// scrub safe: any directory holding an agent binary can then be dropped
+// outright, instead of being kept because it also holds node or npm.
+function scrubbedPath(fakebin) {
+  const scratch = join(dirname(fakebin), `scratchbin-${basename(fakebin)}`);
+  mkdirSync(scratch, { recursive: true });
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const linked = new Set();
+  for (const tool of TOOLCHAIN_TOOLS) {
+    for (const dir of dirs) {
+      const candidate = join(dir, tool);
+      if (existsSync(candidate)) {
+        const target = join(scratch, tool);
+        if (!existsSync(target)) {
+          try {
+            symlinkSync(realpathSync(candidate), target);
+            linked.add(tool);
+          } catch {}
+        }
+        break;
+      }
+    }
+  }
+  const out = [fakebin, scratch];
+  for (const dir of dirs) {
+    if (out.includes(dir)) continue;
+    let leak = false;
+    for (const id of AGENT_IDS) {
+      for (const ext of ["", ".cmd", ".exe", ".bat", ".ps1"]) {
+        try {
+          if (existsSync(join(dir, id + ext))) {
+            leak = true;
+            break;
+          }
+        } catch {}
+      }
+      if (leak) break;
+    }
+    if (!leak) out.push(dir);
+  }
+  return out.join(delimiter);
 }
 
 // Copy only install.sh into a temp dir so SCRIPT_DIR is not an @aiand/cli
@@ -778,6 +857,320 @@ if (!HAS_BASH) {
   }
 }
 
+// --- case 13: agent summary across detected-agent shapes (bash runtime) ----
+if (!HAS_BASH) {
+  check("agent summary skipped (no bash)", true, "bash not installed");
+} else {
+  try {
+    const caseDir = mkdtempSync(join(tmpdir(), "aiand-install-behavior-"));
+    try {
+      const srcDir = join(caseDir, "src");
+      gitInitRunnableCli(srcDir, "0.0.0-new");
+      const installer = copiedInstaller(caseDir);
+      const shapes = [
+        {
+          name: "none",
+          bins: [],
+          present: [
+            "No coding agents detected on this machine.",
+            "opencode  Install it with: npm install -g opencode-ai@",
+            OMP_HINT,
+            "codex  Install it with: npm install -g @openai/codex",
+            "copilot  Install it with: npm install -g @github/copilot@",
+            "hermes  Install it with: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit 666f313d",
+            "Install one, then run 'aiand init'.",
+          ],
+          absent: ["Detected agents:"],
+        },
+        {
+          name: "some",
+          bins: ["opencode", "pi"],
+          present: [
+            "Detected agents:",
+            "✓ opencode",
+            "✓ pi",
+            "Not installed:",
+            "claude  Install it with: npm install -g @anthropic-ai/claude-code",
+            "codex  Install it with: npm install -g @openai/codex",
+            "copilot  Install it with: npm install -g @github/copilot@1.0.89",
+            "dsh  Install it with: npm install -g --ignore-scripts @deepseek-ai/dsh@0.2.0-rc.2",
+            OMP_HINT,
+            "hermes  Install it with: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --commit 666f313d",
+            "Next: run 'aiand init' to wire them to ai&.",
+          ],
+          absent: ["No coding agents detected"],
+        },
+        {
+          name: "all",
+          bins: ["opencode", "claude", "pi", "omp", "codex", "copilot", "dsh", "hermes"],
+          present: [
+            "Detected agents:",
+            "✓ omp",
+            "✓ codex",
+            "✓ hermes",
+            "Next: run 'aiand init' to wire them to ai&.",
+          ],
+          absent: ["Not installed:", "No coding agents detected"],
+        },
+      ];
+      for (const shape of shapes) {
+        const home = join(caseDir, `home-${shape.name}`);
+        mkdirSync(home, { recursive: true });
+        const fakebin = join(caseDir, `fakebin-${shape.name}`);
+        mkdirSync(fakebin, { recursive: true });
+        for (const bin of shape.bins) {
+          const stub = join(fakebin, bin);
+          writeFileSync(stub, "#!/bin/sh\nexit 0\n");
+          chmodSync(stub, 0o755);
+        }
+        const run = runBash(
+          [installer],
+          childEnv(home, {
+            AIAND_SOURCE: srcDir,
+            AIAND_SKIP_BUILD: "1",
+            AIAND_NO_MODIFY_PATH: "1",
+            PATH: scrubbedPath(fakebin),
+          }),
+        );
+        const tag = `summary/${shape.name}`;
+        check(`${tag} install exits zero`, (run.status ?? 1) === 0, `status=${run.status}`);
+        const stdout = run.stdout ?? "";
+        for (const fragment of shape.present) {
+          check(
+            `${tag} prints ${JSON.stringify(fragment.slice(0, 40))}`,
+            stdout.includes(fragment),
+            stdout
+              .split("\n")
+              .find(
+                (l) => l.includes("agent") || l.includes("Next") || l.includes("Install one"),
+              ) ?? "(summary missing)",
+          );
+        }
+        for (const fragment of shape.absent) {
+          check(`${tag} omits ${JSON.stringify(fragment)}`, !stdout.includes(fragment), fragment);
+        }
+      }
+    } finally {
+      rmSync(caseDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    check("agent summary harness", false, String(error?.message ?? error).split("\n")[0]);
+  }
+}
+
+// --- case 14: installer speed flags + agent-summary statics (no host needed) ---
+{
+  const sh = readFileSync(join(ROOT, "install.sh"), "utf8");
+  const ps1Path = join(ROOT, "install.ps1");
+  const ps1Static = readFileSync(ps1Path, "utf8");
+  const opencodeTs = readFileSync(join(ROOT, "src", "agents", "opencode", "adapter.ts"), "utf8");
+  const openCodeVersion = (/OPENCODE_VERSION = "([^"]+)"/.exec(opencodeTs) ?? [])[1] ?? "";
+  const piTs = readFileSync(join(ROOT, "src", "agents", "pi", "adapter.ts"), "utf8");
+  const piVersion = (/PI_VERSION = "([^"]+)"/.exec(piTs) ?? [])[1] ?? "";
+  const piHint = `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${piVersion}`;
+  const hermesInstallTs = readFileSync(join(ROOT, "src", "agents", "hermes", "install.ts"), "utf8");
+  const hermesCommit = (/HERMES_COMMIT = "([^"]+)"/.exec(hermesInstallTs) ?? [])[1] ?? "";
+  check(
+    "install.sh npm ci reuses the cache",
+    sh.includes("npm ci --ignore-scripts --no-fund --no-audit --prefer-offline"),
+    "AIAND_SOURCE updates pay full download without it",
+  );
+  check(
+    "install.ps1 npm ci reuses the cache",
+    ps1Static.includes("npm ci --ignore-scripts --no-fund --no-audit --prefer-offline"),
+    "AIAND_SOURCE updates pay full download without it",
+  );
+  const verifySh = sh.slice(sh.indexOf("verify_built_cli()"), sh.indexOf("ensure_build()"));
+  check(
+    "install.sh verify reads the version without a node spawn",
+    !verifySh.includes("node -p") && verifySh.includes("--version") && verifySh.includes("--help"),
+    "the version probe was the third node spawn",
+  );
+  const verifyPs1 = ps1Static.slice(
+    ps1Static.indexOf("function Verify-BuiltCli"),
+    ps1Static.indexOf("function Ensure-Build"),
+  );
+  check(
+    "install.ps1 verify stays at two node spawns",
+    verifyPs1 !== "" &&
+      !verifyPs1.includes("node -p") &&
+      verifyPs1.includes("--version") &&
+      verifyPs1.includes("--help"),
+    "Read-PackageJson already avoids the version spawn",
+  );
+  check(
+    "agent hints stay in step with the adapters' install.command",
+    openCodeVersion !== "" &&
+      sh.includes(`opencode-ai@${openCodeVersion}`) &&
+      ps1Static.includes(`opencode-ai@${openCodeVersion}`) &&
+      sh.includes("npm install -g @anthropic-ai/claude-code") &&
+      ps1Static.includes("npm install -g @anthropic-ai/claude-code"),
+    `src/agents/opencode/adapter.ts pins opencode-ai@${openCodeVersion || "?"}`,
+  );
+  // The omp hint names the release asset, which is where the version shows.
+  // Each installer prints one command per platform it supports, and each must
+  // be byte-identical to what src/agents/omp/install.ts renders for that
+  // platform: a swapped asset, a mismatched digest, a removed mkdir/chmod, or
+  // a case arm pointing at the other architecture all fail here instead of
+  // printing a command the adapter would never print.
+  const ompCommandFor = ([platform, arch]) =>
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });` +
+          `Object.defineProperty(process, "arch", { value: ${JSON.stringify(arch)} });` +
+          `const m = await import(${JSON.stringify(fileURLToPath(pathToFileURL(join(ROOT, "dist", "agents", "omp", "install.js")).href))});` +
+          "console.log(m.OMP_INSTALL.command);",
+      ],
+      { encoding: "utf8" },
+    ).trim();
+  // install.sh resolves its asset from `uname`, so each arm is exercised by
+  // rendering the installer's own hint function with a `uname` that answers
+  // for that platform: the host never decides the arm.
+  // `uname -m` spells ARM64 two ways: Linux reports `aarch64`, macOS reports
+  // `arm64`, and install.sh's case arms are written against each of them.
+  const unameMachine = (platform, arch) =>
+    arch === "arm64" ? (platform === "darwin" ? "arm64" : "aarch64") : "x86_64";
+  const shArmOk = ([platform, arch, asset]) => {
+    const expected = ompCommandFor([platform, arch]);
+    if (!expected.includes(`/${asset}`)) return false;
+    const dir = mkdtempSync(join(tmpdir(), "aiand-omp-arm-"));
+    try {
+      writeFileSync(
+        join(dir, "uname"),
+        `#!/bin/sh\ncase "$1" in\n -s) echo ${JSON.stringify(platform === "darwin" ? "Darwin" : "Linux")} ;;\n -m) echo ${JSON.stringify(unameMachine(platform, arch))} ;;\nesac\n`,
+      );
+      chmodSync(join(dir, "uname"), 0o755);
+      // Only the hint function is sourced (sliced out by name), so the
+      // installer's main() never runs and the host's agents never matter.
+      const start = sh.indexOf("agent_install_hint() {");
+      const end = sh.indexOf("\n}\n", start);
+      if (start === -1 || end === -1) return false;
+      const rendered = spawnSync(
+        "bash",
+        ["-c", `PATH="${dir}:$PATH"\n${sh.slice(start, end + 3)}\nagent_install_hint omp\n`],
+        { encoding: "utf8" },
+      );
+      if (rendered.error || rendered.status !== 0) return false;
+      return rendered.stdout.trim() === expected;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const shArmsOk =
+    shArmOk(["linux", "x64", "omp-linux-x64"]) &&
+    shArmOk(["linux", "arm64", "omp-linux-arm64"]) &&
+    shArmOk(["darwin", "x64", "omp-darwin-x64"]) &&
+    shArmOk(["darwin", "arm64", "omp-darwin-arm64"]);
+  // install.ps1 chooses its asset from PROCESSOR_ARCHITECTURE, which is a
+  // PowerShell automatic variable: it is set inside the rendering shell, and
+  // ARCHITEW6432 cleared, so the host never decides the arm either.
+  const ps1HintFunction = ps1Static.slice(
+    ps1Static.indexOf("function Get-AgentInstallHint"),
+    ps1Static.indexOf("\n}\n", ps1Static.indexOf("function Get-AgentInstallHint")) + 3,
+  );
+  // pwsh where it exists, else Windows PowerShell: the CI installer-windows
+  // job runs `powershell`, and a dev box may only have one of the two.
+  let pwsh = "";
+  for (const host of ["pwsh", "powershell"]) {
+    const probe = spawnSync(host, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion"], {
+      encoding: "utf8",
+    });
+    if (!probe.error && probe.status === 0) {
+      pwsh = host;
+      break;
+    }
+  }
+  const psArmOk = ([arch, asset]) => {
+    if (pwsh === "") return false;
+    const expected = ompCommandFor(["win32", arch]);
+    if (!expected.includes(`/${asset}`)) return false;
+    const dir = mkdtempSync(join(tmpdir(), "aiand-omp-arm-"));
+    try {
+      const script = join(dir, "omp-hint.ps1");
+      writeFileSync(
+        script,
+        `$env:PROCESSOR_ARCHITECTURE = ${JSON.stringify(arch === "arm64" ? "ARM64" : "AMD64")}\n` +
+          `$env:PROCESSOR_ARCHITEW6432 = ''\n` +
+          ps1HintFunction +
+          "\nGet-AgentInstallHint -Id 'omp'\n",
+      );
+      const rendered = spawnSync(
+        pwsh,
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          `. '${script.replace(/'/g, "''")}'`,
+        ],
+        { encoding: "utf8" },
+      );
+      if (rendered.error || rendered.status !== 0) return false;
+      return rendered.stdout.trim() === expected;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const psArmsOk =
+    psArmOk(["x64", "omp-windows-x64.exe"]) && psArmOk(["arm64", "omp-windows-arm64.exe"]);
+  // Both installers must actually verify what they download: sha256sum -c (or
+  // shasum on macOS) on the shell side, Get-FileHash on the PowerShell side.
+  check(
+    "install.sh's omp hint renders each platform's adapter command",
+    shArmsOk,
+    "each case arm must render byte-identical to src/agents/omp/install.ts's command for that platform (asset, digest, verifier, mkdir, chmod)",
+  );
+  check(
+    "install.ps1's omp hint renders each architecture's adapter command",
+    pwsh === "" ? true : psArmsOk,
+    pwsh === ""
+      ? "pwsh not installed"
+      : "rendered through pwsh, the escaped source must equal the adapter's rendering for that arch",
+  );
+  check(
+    "agent summary covers the pinned pi and hermes hints",
+    sh.includes(piHint) &&
+      ps1Static.includes(piHint) &&
+      sh.includes(`--commit ${hermesCommit}`) &&
+      ps1Static.includes(`-Commit ${hermesCommit}`),
+    `the summary names pi-coding-agent@${piVersion || "?"} and hermes ${hermesCommit || "?"}`,
+  );
+  check(
+    "agent summary runs after the notes, before Done",
+    sh.indexOf("print_agent_summary") > sh.indexOf("print_install_notes") &&
+      ps1Static.indexOf("Write-AgentSummary") > ps1Static.indexOf("Write-InstallNotes"),
+    "notes -> summary -> Done",
+  );
+  // AGENT_IDS is the third copy of the probed list (the others being the two
+  // installers' own loops). A stray binary surviving the PATH scrub, or a summary
+  // line for an id the installers never probe, only shows when the three
+  // disagree, so pin them together. The display order is each installer's own
+  // choice (the registry's `AGENTS` array is not a display contract), so the
+  // ids are compared as a set and the order is left local.
+  const shProbed = (/for id in ([^;]+); do/.exec(sh) ?? [])[1]?.trim();
+  const psOrder = (() => {
+    if (!ps1Static.includes("foreach ($id in $order)")) return "";
+    const raw = (/\$order = @\(([^)]*)\)/.exec(ps1Static) ?? [])[1];
+    return raw === undefined
+      ? ""
+      : raw
+          .split(",")
+          .map((id) => id.trim().replaceAll("'", ""))
+          .join(" ");
+  })();
+  const sameIds = (a, b) =>
+    a.length === b.length && [...a].sort().join(" ") === [...b].sort().join(" ");
+  check(
+    "AGENT_IDS matches the ids both installers probe",
+    sameIds(AGENT_IDS, (shProbed ?? "").split(/\s+/)) &&
+      sameIds(AGENT_IDS, (psOrder ?? "").split(/\s+/)),
+    `AGENT_IDS=[${AGENT_IDS.join(" ")}] install.sh=[${shProbed}] install.ps1=[${psOrder}]`,
+  );
+}
+
 // --- case 4: PowerShell launcher write + uninstall identity (skip without a host) ------
 {
   const ps1Path = join(ROOT, "install.ps1");
@@ -801,6 +1194,18 @@ if (!HAS_BASH) {
     );
   } else {
     const ps1 = readFileSync(ps1Path, "utf8");
+    const ps1Bytes = readFileSync(ps1Path);
+    // #32: install.ps1 once shipped with a UTF-8 BOM, which broke `irm | iex`.
+    check(
+      "install.ps1 ships without a BOM",
+      !(
+        ps1Bytes.length >= 3 &&
+        ps1Bytes[0] === 0xef &&
+        ps1Bytes[1] === 0xbb &&
+        ps1Bytes[2] === 0xbf
+      ),
+      "a BOM makes irm | iex fail line 1 ('#' is not recognized) and demotes param()",
+    );
     check(
       "install.ps1 identity uses ConvertFrom-Json",
       ps1.includes("function Read-PackageJson") && ps1.includes("ConvertFrom-Json"),
@@ -965,6 +1370,111 @@ Write-Output 'ok'
       "install.ps1 refuses a foreign launcher before clone (no checkout, byte-identical)",
       (foreignRun.status ?? 1) === 0 && foreignOut.split("\n").pop() === "ok",
       foreignOut.split("\n").filter(Boolean).pop() ?? `status=${foreignRun.status}`,
+    );
+
+    // Agent-summary matrix via pwsh: AIAND_SKIP_BUILD=1 plus a stub dist/
+    // keeps this fast (no npm). Fake bins ship both an extensionless +x
+    // stub (Unix Get-Command) and a .cmd stub (Windows PATHEXT lookup).
+    const summarySmoke = `
+$ErrorActionPreference = 'Stop'
+$tmpRoot = [System.IO.Path]::GetTempPath()
+$sep = [System.IO.Path]::PathSeparator
+$runner = $null
+try { $runner = [string](Get-Process -Id $PID).Path } catch { }
+if ([string]::IsNullOrWhiteSpace($runner)) {
+  $found = Get-Command -Name pwsh -ErrorAction SilentlyContinue
+  if (-not $found) { $found = Get-Command -Name powershell -ErrorAction SilentlyContinue }
+  if ($found) { $runner = [string]$found.Source }
+}
+if ([string]::IsNullOrWhiteSpace($runner)) { throw 'could not resolve pwsh path' }
+$shapes = @(
+  @{ Name = 'none'; Bins = @(); Want = @('No coding agents detected on this machine.', 'Install one, then run'); NotWant = @('Detected agents:') },
+  @{ Name = 'some'; Bins = @('opencode', 'pi'); Want = @('Detected agents:', 'opencode', 'Not installed:', 'claude  Install it with:', 'wire them to ai&.'); NotWant = @('No coding agents detected') },
+  @{ Name = 'all'; Bins = @('opencode', 'claude', 'pi', 'omp', 'codex', 'copilot', 'dsh', 'hermes'); Want = @('Detected agents:', 'wire them to ai&.'); NotWant = @('Not installed:', 'No coding agents detected') }
+)
+foreach ($shape in $shapes) {
+  $iso = Join-Path $tmpRoot ('aiand-ib-sum-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+  New-Item -ItemType Directory -Path $iso -Force | Out-Null
+  $fakebin = Join-Path $iso 'fakebin'
+  New-Item -ItemType Directory -Path $fakebin -Force | Out-Null
+  foreach ($leaf in $shape.Bins) {
+    # Extensionless stub for Unix Get-Command, .cmd stub for Windows
+    # PATHEXT. chmod is not a command under Windows PowerShell (and a
+    # no-match wildcard is a hard error under 'Stop'), so the +x bit rides
+    # .NET instead: sets the executable bit on Unix and is a no-op on
+    # Windows, where the .cmd extension already makes it runnable.
+    [System.IO.File]::WriteAllText((Join-Path $fakebin $leaf), '#!/bin/sh' + [Environment]::NewLine + 'exit 0' + [Environment]::NewLine)
+    [System.IO.File]::WriteAllText((Join-Path $fakebin ($leaf + '.cmd')), '@echo off' + [Environment]::NewLine + 'exit /b 0' + [Environment]::NewLine)
+    if ($IsLinux -or $IsMacOS) {
+      [System.IO.File]::SetUnixFileMode((Join-Path $fakebin $leaf), [System.IO.UnixFileMode]::UserExecute)
+    }
+  }
+  $src = Join-Path $iso 'src'
+  New-Item -ItemType Directory -Path $src -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $src 'package.json'), '{"name":"@aiand/cli","version":"0.0.0-new"}' + [Environment]::NewLine)
+  $dist = Join-Path $src 'dist'
+  New-Item -ItemType Directory -Path $dist -Force | Out-Null
+  $stub = 'const arg = process.argv[2]; if (arg === "--version") console.log("0.0.0-new"); else if (arg === "--help") console.log("stub"); else process.exit(1);' + [Environment]::NewLine
+  [System.IO.File]::WriteAllText((Join-Path $dist 'index.js'), $stub)
+  & git init -q $src
+  & git -C $src add -A
+  & git -C $src -c user.email=test@example.com -c user.name=test -c commit.gpgsign=false commit -qm seed
+  $scriptDir = Join-Path $iso 'scriptdir'
+  New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
+  Copy-Item -LiteralPath '${winPs1.replace(/'/g, "''")}' -Destination (Join-Path $scriptDir 'install.ps1') -Force
+  $env:USERPROFILE = $iso
+  $env:HOME = $iso
+  $env:AIAND_SOURCE = $src
+  $env:AIAND_SKIP_BUILD = '1'
+  $env:AIAND_NO_MODIFY_PATH = '1'
+  $agentIds = @('opencode', 'claude', 'pi', 'omp', 'codex', 'copilot', 'dsh', 'hermes')
+  $agentExts = @('', '.cmd', '.exe', '.bat', '.ps1')
+  # The toolchain binaries the installer still needs once every agent directory
+  # has been dropped, and which may share a directory with an agent: npm's
+  # global bin is the usual home of an npm -g agent, so dropping such a
+  # directory outright would silently remove node from PATH. Mirror the bash
+  # check: symlink the four tools into a scratch dir first, then drop any
+  # directory holding an agent binary.
+  $toolchain = @('node', 'npm', 'git', 'bash')
+  $scratch = Join-Path $iso 'scratchbin'
+  New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+  foreach ($tool in $toolchain) {
+    $found = Get-Command -Name $tool -ErrorAction SilentlyContinue
+    if ($found) { $null = New-Item -ItemType SymbolicLink -Path (Join-Path $scratch $tool) -Target $found.Source -Force -ErrorAction SilentlyContinue }
+  }
+  $kept = @()
+  foreach ($d in ($env:PATH -split [regex]::Escape($sep))) {
+    if ([string]::IsNullOrWhiteSpace($d)) { continue }
+    $leak = $false
+    foreach ($a in $agentIds) {
+      foreach ($e in $agentExts) {
+        if (Test-Path -LiteralPath (Join-Path $d ($a + $e))) { $leak = $true; break }
+      }
+      if ($leak) { break }
+    }
+    if (-not $leak) { $kept += $d }
+  }
+  $env:PATH = $fakebin + $sep + $scratch + $sep + ($kept -join $sep)
+  $copied = Join-Path $scriptDir 'install.ps1'
+  $prevErr = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  $out = & $runner -NoProfile -ExecutionPolicy Bypass -File $copied 2>&1 | Out-String
+  $code = $LASTEXITCODE; $ErrorActionPreference = $prevErr
+  if ($code -ne 0) { throw ($shape.Name + ' install exited ' + $code + ' :: ' + $out) }
+  foreach ($fragment in $shape.Want) { if ($out -notmatch [regex]::Escape($fragment)) { throw ($shape.Name + ' summary missed ' + $fragment) } }
+  foreach ($fragment in $shape.NotWant) { if ($out -match [regex]::Escape($fragment)) { throw ($shape.Name + ' summary wrongly has ' + $fragment) } }
+  Remove-Item -Recurse -Force $iso -ErrorAction SilentlyContinue
+}
+Write-Output 'ok'
+`;
+    const summaryRun = spawnSync(host, ["-NoProfile", "-Command", summarySmoke], {
+      encoding: "utf8",
+      timeout: PWSH_SMOKE_TIMEOUT_MS,
+    });
+    const summaryOut = `${summaryRun.stdout ?? ""}${summaryRun.stderr ?? ""}`.trim();
+    check(
+      "install.ps1 prints the agent summary (none/some detected)",
+      (summaryRun.status ?? 1) === 0 && summaryOut.split("\n").pop() === "ok",
+      summaryOut.split("\n").filter(Boolean).pop() ?? `status=${summaryRun.status}`,
     );
   }
 }
