@@ -23,9 +23,6 @@ breaking changes while the command surface settles.
   surfaced without blocking) and keep costs per currency, never summed.
   Savings are `estimated` from the cached model catalog and simply absent
   when no cache exists.
-
-### Added
-
 - Peak/off-peak split and vendor-list-price equivalent (ticket #81).
   `aiand usage --sections peak` splits each model's gateway-billed cost into
   peak/off-peak shares (percentages of cost that sum to 100, plus per-bucket
