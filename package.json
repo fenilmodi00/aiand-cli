@@ -36,6 +36,13 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11.10.0",
+      "onFail": "warn"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "postbuild": "node -e \"require('fs').chmodSync('dist/index.js', 0o755)\"",

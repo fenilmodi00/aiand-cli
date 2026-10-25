@@ -75,6 +75,11 @@ breaking changes while the command surface settles.
   the Hermes install hint names the PowerShell form of the same pinned
   installer instead of a `curl | bash` line a Windows shell cannot run
   (#17, thanks @fenilmodi00).
+- The ai& CLI landing page now lives in `site/` and is published to
+  GitHub Pages by `.github/workflows/pages.yml`. It shows four steps:
+  create an account in the console, redeem a promo code on the console's
+  billing page, install the CLI with npm, and run `aiand code`, with a switch
+  that swaps in `aiand codex` or `aiand claude`.
 
 
 - `aiand cache` reports the prompt-cache hit rate, the miss rate, what was
@@ -265,6 +270,18 @@ breaking changes while the command surface settles.
 
 - Selecting `key` in the menu no longer fails with "No verb given. Verbs:
   export" — `key` takes a verb, so the menu now runs `aiand key export`.
+
+- `aiand hermes off` hands a set-aside `model.base_url` back exactly where
+  it sat: a line the only field in `model:` no longer leaves the section
+  empty, the restored line returns to its own place instead of drifting to
+  the section's end above the next top-level key, a dropped line's trailing
+  comment comes back once instead of twice, and CRLF files and files
+  without a trailing newline round-trip byte-identically. A stale
+  `model.base_url` is dropped even when `model.provider` already routes
+  through ai&, so a user's own endpoint can no longer ride a second `on`,
+  and the line is only recorded (and noted on `off`) when a drop actually
+  happened. `yaml-probes.ts` moved out of routing.ts without behavior
+  change.
 
 - OpenCode Launcher sessions and Pi pass each model's published reasoning
   levels. Pi's own default is medium, and an unsupported level moves up to
