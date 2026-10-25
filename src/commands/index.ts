@@ -13,6 +13,7 @@ import * as key from "./key.js";
 import * as login from "./login.js";
 import * as logout from "./logout.js";
 import * as logs from "./logs.js";
+import * as mcp from "./mcp.js";
 import * as models from "./models.js";
 import * as orgs from "./orgs.js";
 import * as overview from "./overview.js";
@@ -138,6 +139,12 @@ export const COMMANDS: Command[] = [
     summary: "Export metrics as OTel or Prometheus",
     help: exportCmd.help,
     run: exportCmd.run,
+  },
+  {
+    name: "mcp",
+    summary: "Serve usage data to coding agents over MCP stdio",
+    help: mcp.help,
+    run: mcp.run,
   },
   {
     name: "forecast",

@@ -150,6 +150,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 
 type RowFilters = { agents: string[]; models: string[] };
 
+/** The one store read + filter (exported for the MCP harness_compare tool, #70). */
 export function readHarnessRows(
   window: { sinceMs: number | null; untilMs: number | null },
   filters: RowFilters,
@@ -232,7 +233,12 @@ export function parseWindowFlags(
 // Rendering
 // ---------------------------------------------------------------------------
 
-function payload(
+/**
+ * The `--json` payload shape (provenance + harnesses + excluded), exported so
+ * the MCP `harness_compare` tool (ticket #70) emits the exact same document —
+ * one source of truth for the shape.
+ */
+export function payload(
   stats: ReturnType<typeof buildHarnessStats>,
   harnesses: HarnessStatsRow[],
 ): unknown {

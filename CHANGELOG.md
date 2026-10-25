@@ -8,6 +8,7 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
 - Personal A/B replay + latency A/B (ticket #82): `aiand harness duel`
   replays a recorded session's request SHAPE — turn count and per-turn

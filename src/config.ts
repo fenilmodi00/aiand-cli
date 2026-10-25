@@ -47,6 +47,13 @@ export type Config = {
    * (never-guess). Values are finite non-negative numbers.
    */
   prices?: Record<string, PriceOverride>;
+  /**
+   * MCP server settings (ticket #70), stored under the `mcp` key of
+   * config.json. `realProjectNames` (default false) lets the `aiand mcp`
+   * tools expose real harness/project names to callers; the default
+   * pseudonymizes them (`project-a1b2`) — the CodeBurn privacy posture.
+   */
+  mcp?: McpConfig;
 };
 
 /** One model's user price override (the `prices` section of config.json). */
@@ -54,6 +61,11 @@ export type PriceOverride = {
   input?: number;
   output?: number;
   cacheRead?: number;
+};
+
+/** The `mcp` section of config.json (see Config.mcp). */
+export type McpConfig = {
+  realProjectNames?: boolean;
 };
 
 /** The `budget` section of config.json (see Config.budget). */
@@ -165,15 +177,28 @@ function sanitizePrices(raw: unknown): Record<string, PriceOverride> | undefined
   return Object.keys(prices).length > 0 ? prices : undefined;
 }
 
+/**
+ * The stored `mcp` section (ticket #70), sanitized: only a real boolean
+ * `realProjectNames` survives — a hand-edited garbage value degrades to the
+ * pseudonymizing default rather than leaking names.
+ */
+function sanitizeMcp(raw: unknown): McpConfig | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const real = (raw as Record<string, unknown>).realProjectNames;
+  return real === true || real === false ? { realProjectNames: real } : undefined;
+}
+
 export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(configPath());
   const budget = sanitizeBudget(raw?.budget);
   const prices = sanitizePrices(raw?.prices);
+  const mcp = sanitizeMcp(raw?.mcp);
   return {
     profile: raw?.profile ?? "default",
     profiles: raw?.profiles ?? { default: { ...DEFAULT_PROFILE } },
     ...(budget ? { budget } : {}),
     ...(prices ? { prices } : {}),
+    ...(mcp ? { mcp } : {}),
   };
 }
 
