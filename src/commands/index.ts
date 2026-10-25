@@ -16,6 +16,7 @@ import * as logs from "./logs.js";
 import * as models from "./models.js";
 import * as orgs from "./orgs.js";
 import * as overview from "./overview.js";
+import * as recommend from "./recommend.js";
 import * as report from "./report.js";
 import * as restore from "./restore.js";
 import * as run from "./run.js";
@@ -143,6 +144,12 @@ export const COMMANDS: Command[] = [
     summary: "Burn-rate projection against your budget",
     help: forecast.help,
     run: forecast.run,
+  },
+  {
+    name: "recommend",
+    summary: "Best (harness, model) pair for your workload",
+    help: recommend.help,
+    run: recommend.run,
   },
   {
     name: "update",
