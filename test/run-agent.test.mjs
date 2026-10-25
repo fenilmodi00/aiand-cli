@@ -7,13 +7,13 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { describe, test } from "node:test";
 import {
+  assertFileMode,
   BIN,
   catalogModel,
   harnessEnv,
@@ -1053,7 +1053,7 @@ exit 42`,
       // Overlay .env: 0600, gateway routing, the user's ANTHROPIC_* and
       // stale AIAND_HERMES_* stripped.
       const overlayEnv = readFileSync(join(copy, ".env"), "utf8");
-      assert.equal(statSync(join(copy, ".env")).mode & 0o777, 0o600);
+      assertFileMode(join(copy, ".env"), 0o600);
       assert.match(overlayEnv, /AIAND_HERMES_API_KEY="sk-test-aiand"/);
       assert.match(overlayEnv, /AIAND_HERMES_BASE_URL="https:\/\/api\.aiand\.com\/v1"/);
       assert.ok(overlayEnv.includes("USER_KEY=keep"), "unrelated user lines carried");

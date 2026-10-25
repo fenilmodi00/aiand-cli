@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { CliError } from "../cli/errors.js";
 import { writeFileAtomic } from "../config.js";
@@ -24,7 +24,28 @@ export async function readTextIfExists(file: string): Promise<string> {
   try {
     return await readFile(file, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      // Windows reports ENOENT (not ENOTDIR) when a plain file squats where
+      // a directory on the path should be, so a hostile HERMES_HOME would
+      // read as an empty config and blow up later at the write. Probe the
+      // immediate parent: an existing non-directory is POSIX ENOTDIR, and
+      // the shared refusal (exit 1 + hint) must fire there too. The probe
+      // runs only on ENOENT, and its own ENOENT is the ordinary missing-file
+      // case this function exists for.
+      let parent: Awaited<ReturnType<typeof stat>>;
+      try {
+        parent = await stat(dirname(file));
+      } catch {
+        return ""; // the parent is missing too: the ordinary missing-file case
+      }
+      if (!parent.isDirectory()) {
+        throw fsCliError(
+          file,
+          Object.assign(new Error(`${dirname(file)} blocks the path`), { code: "ENOTDIR" }),
+        );
+      }
+      return "";
+    }
     // A file where a directory should be (ENOTDIR), a directory where a
     // file should be (EISDIR), or an unreadable path (EACCES/EPERM) reads as
     // a clean CliError exit 1 naming the path — never a raw stack exit 70.

@@ -62,13 +62,18 @@ export function isCopilotSchemaError(error: unknown): boolean {
 }
 
 /**
- * True when data.db could not be opened at all (mode 000, a locked-down
+ * True when data.db could not be opened for use (mode 000, a locked-down
  * parent dir, ACLs). node:sqlite reports "unable to open database file";
- * the sqlite3 CLI and Node fs probes surface the errno text instead.
+ * the sqlite3 CLI and Node fs probes surface the errno text instead. On
+ * Windows a mode-000 db still opens (the read-only flag is all chmod can
+ * express) and fails at the first write with SQLITE_READONLY — "attempt to
+ * write a readonly database" is the same unusable-store failure.
  */
 export function isCopilotDbAccessError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /unable to open database file|EACCES|EPERM|permission denied/i.test(message);
+  return /unable to open database file|EACCES|EPERM|permission denied|readonly database/i.test(
+    message,
+  );
 }
 
 /** Execute a batch of statements as one atomic unit; any failure rolls back all. */

@@ -169,8 +169,12 @@ for (const [file, digest] of hermesDigests) {
 const { hermesAdapter } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "adapter.js")).href
 );
+// The hint is platform-adaptive: win32 gets the PowerShell installer with a
+// `-Commit` parameter, POSIX the curl one-liner with `--commit`. Either way
+// the pinned commit must ride the user-facing string.
 assert.ok(
-  hermesAdapter.install.command.includes(`--commit ${HERMES_COMMIT}`),
+  hermesAdapter.install.command.includes(`--commit ${HERMES_COMMIT}`) ||
+    hermesAdapter.install.command.includes(`-Commit ${HERMES_COMMIT}`),
   `the hermes install hint must carry --commit ${HERMES_COMMIT}, got: ${hermesAdapter.install.command}`,
 );
 

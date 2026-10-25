@@ -79,6 +79,31 @@ export async function existingFileMode(filePath: string): Promise<number | undef
 
 const LOCK_STALE_MS = 30_000;
 
+/**
+ * Windows rename-over-existing fails transiently with EPERM/EACCES while a
+ * concurrent process still holds the destination (an antivirus scan, a
+ * reader that opened the file between our open and the rename). POSIX rename
+ * is atomic and never needs this; on win32 a short jittered retry lets the
+ * racing writer through instead of failing a write that one more attempt
+ * would land — the secrets-store first-run race depends on it.
+ */
+async function renameWithWin32Retry(from: string, to: string): Promise<void> {
+  if (process.platform !== "win32") {
+    await rename(from, to);
+    return;
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== "EPERM" && code !== "EACCES") || attempt >= 10) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 20));
+    }
+  }
+}
+
 function holderAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -157,7 +182,7 @@ export async function writeFileAtomic(
     } finally {
       await handle.close();
     }
-    await rename(tempPath, real);
+    await renameWithWin32Retry(tempPath, real);
     // rename is atomic but not durable: flush the file before (handle.sync
     // above) and the directory entry after, so a crash cannot lose the write.
     if (process.platform !== "win32") {

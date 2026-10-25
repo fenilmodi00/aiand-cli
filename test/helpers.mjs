@@ -9,9 +9,18 @@
 // - FakeInput / FakeOutput / waitForListener / waitFor: prompt and polling.
 // - startMockGateway / withMockGateway: test/mock-gateway.mjs as its own
 //   process, file-wide or scoped to one callback.
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before } from "node:test";
@@ -294,6 +303,7 @@ function plantWin32Stub(dir, name, script) {
     const argvFile = line.match(/^printf\s+'%s\\n'\s+"\$@"\s*>\s*"([^"]+)"$/);
     const touch = line.match(/^touch\s+"([^"]+)"$/);
     const copy = line.match(/^cp\s+"([^"]+)"\s+"([^"]+)"$/);
+    const copyRecursive = line.match(/^cp\s+-[a-zA-Z]+\s+"([^"]+)"\s+"([^"]+)"$/);
     const textFile = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"\s*>\s*"([^"]+)"/);
     const stdout = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"$/);
     if (exit) {
@@ -308,6 +318,14 @@ function plantWin32Stub(dir, name, script) {
       );
     } else if (touch) {
       lines.push(`fs.closeSync(fs.openSync(${jsString(touch[1])}, 'w'));`);
+    } else if (copyRecursive) {
+      // `cp -a src dst` where dst does not exist yet: fs.cpSync with
+      // recursive copies the tree and carries file modes where the
+      // filesystem can represent them, matching cp closely enough for the
+      // overlay snapshot the tests read back.
+      lines.push(
+        `fs.cpSync(${jsString(copyRecursive[1])}, ${jsString(copyRecursive[2])}, { recursive: true });`,
+      );
     } else if (copy) {
       lines.push(`fs.copyFileSync(${jsString(copy[1])}, ${jsString(copy[2])});`);
     } else if (textFile) {
@@ -347,6 +365,22 @@ export function plantStub(dir, name, script = "exit 0") {
 export function removeStub(dir, name) {
   for (const suffix of ["", ".cmd", "-stub.cjs"]) {
     rmSync(join(dir, `${name}${suffix}`), { force: true });
+  }
+}
+
+/**
+ * Assert a file's mode exactly on POSIX. Windows cannot represent
+ * owner-only modes: Node maps any chmod carrying a write bit to 0o666 and
+ * everything else to the read-only flag, so the strongest expressible check
+ * there is writable-vs-read-only. The POSIX branches keep the exact 0600 /
+ * 0640 assertions.
+ */
+export function assertFileMode(path, expected, message) {
+  const mode = statSync(path).mode & 0o777;
+  if (process.platform === "win32") {
+    assert.equal((mode & 0o200) !== 0, (expected & 0o200) !== 0, message);
+  } else {
+    assert.equal(mode, expected, message);
   }
 }
 

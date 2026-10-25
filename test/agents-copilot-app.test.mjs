@@ -3,7 +3,16 @@
 // matcher. The schema is undocumented and reverse-engineered upstream, so
 // every assertion here pins the exact columns ai& writes.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { beforeEach, describe } from "node:test";
@@ -11,6 +20,7 @@ import {
   enableInput as baseEnableInput,
   catalogModel,
   plantStub,
+  waitFor,
   withTestEnv,
 } from "./helpers.mjs";
 
@@ -378,18 +388,41 @@ describe("copilot-app adapter", () => {
     createAppDb();
     seedForeignProvider();
     await copilotAppAdapter.enable(enableInput());
-    const stubBin = join(process.env.AIAND_HOME, "stub-bin");
-    plantStub(stubBin, "pgrep", `printf '%s\\n' "/opt/GitHub Copilot/GitHub Copilot"\nexit 0`);
-    plantStub(stubBin, "tasklist", `printf '%s\\n' "github.exe"\nexit 0`);
     const before = readFileSync(dbPath());
+    // POSIX fakes the probe with a pgrep stub; Windows probes the real
+    // tasklist, so the app's image name has to exist for real: node.exe
+    // copied as github.exe and spawned for the guard to find.
+    let app = null;
     const originalPath = process.env.PATH;
     try {
-      process.env.PATH = [stubBin, originalPath].join(delimiter);
+      if (process.platform === "win32") {
+        const stubBin = join(process.env.AIAND_HOME, "stub-bin");
+        mkdirSync(stubBin, { recursive: true });
+        copyFileSync(process.execPath, join(stubBin, "github.exe"));
+        app = spawn(join(stubBin, "github.exe"), ["-e", "setInterval(() => {}, 1 << 30)"], {
+          stdio: "ignore",
+        });
+        // Wait until the real tasklist actually lists the image, or the
+        // guard's probe races the process table.
+        await waitFor(
+          () =>
+            spawnSync("tasklist", ["/FI", "IMAGENAME eq github.exe", "/NH"], {
+              encoding: "utf8",
+            }).stdout?.includes("github.exe") === true,
+          15_000,
+          "github.exe visible to tasklist",
+        );
+      } else {
+        const stubBin = join(process.env.AIAND_HOME, "stub-bin");
+        plantStub(stubBin, "pgrep", `printf '%s\\n' "/opt/GitHub Copilot/GitHub Copilot"\nexit 0`);
+        process.env.PATH = [stubBin, originalPath].join(delimiter);
+      }
       await assert.rejects(copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), (error) =>
         error.message.includes("Quit the GitHub Copilot app first"),
       );
     } finally {
       process.env.PATH = originalPath;
+      app?.kill();
     }
     assert.equal(readFileSync(dbPath()).equals(before), true);
   });
@@ -489,6 +522,12 @@ describe("copilot-app adapter", () => {
 describe("copilot-app db hygiene", () => {
   test("enable/disable on an unreadable db fail as CliError, never a stack", async () => {
     createAppDb();
+    // Wire first: on win32 chmod 0o000 only sets the read-only flag, so the
+    // db stays readable and `off` with nothing of ours to remove would
+    // legitimately no-op without ever writing. With an owned row present,
+    // both verbs must hit the unusable store (open on POSIX, first write on
+    // Windows) and surface the shared CliError.
+    await copilotAppAdapter.enable(enableInput());
     chmodSync(dbPath(), 0o000);
     try {
       await assert.rejects(copilotAppAdapter.enable(enableInput()), (error) =>
