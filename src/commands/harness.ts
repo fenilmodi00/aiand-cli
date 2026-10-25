@@ -18,6 +18,7 @@ Usage
 
 Options
   --scenario <id>     use case to replay (default: multi-turn-refactor)
+  --list-scenarios    print every scenario id with its description and exit
   --harness <id>      only this layout (repeatable; default: all of them)
   --model <id>        model to test against (default: the profile's)
   --sweep-models      run every layout against every model in the catalog
@@ -42,8 +43,17 @@ export async function run(argv: string[]): Promise<void> {
     harness: { type: "string", multiple: true },
     model: { type: "string" },
     "sweep-models": { type: "boolean", default: false },
+    "list-scenarios": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (bool(parsed, "list-scenarios")) {
+    if (bool(parsed, "json")) {
+      return json(BENCH_SCENARIOS.map((s) => ({ id: s.id, description: s.title })));
+    }
+    for (const s of BENCH_SCENARIOS) out(`  ${s.id.padEnd(28)} ${s.title}`);
+    return;
+  }
 
   const scenarioId = str(parsed, "scenario") ?? "multi-turn-refactor";
   const scenario = findBenchScenario(scenarioId);

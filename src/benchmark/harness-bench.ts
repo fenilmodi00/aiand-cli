@@ -41,9 +41,18 @@ export type BenchScenario = {
   turns: string[];
   /** The file the scenario reads, and what is in it. */
   file: { path: string; content: string };
+  /**
+   * Optional short tool results for tool-heavy scenarios: after the initial
+   * file read, turn n carries the first n-1 of them as interleaved read
+   * exchanges. All fixtures are fixed strings, so generation is
+   * deterministic.
+   */
+  toolResults?: string[];
 };
 
 export type BenchResult = {
+  /** The scenario id this row was measured for. */
+  scenario: string;
   harness: string;
   label: string;
   note: string;
@@ -281,6 +290,11 @@ async function runLayout(
       toolCallId: "call_1",
       prompt: options.scenario.turns[0]!,
       followUps,
+      extraToolResults: (options.scenario.toolResults ?? []).slice(0, index).map((text, extra) => ({
+        id: `call_${extra + 2}`,
+        path: `src/step-${extra + 1}.ts`,
+        text,
+      })),
     });
     const encoded = encode(messages, layout.dialect, options.model, options.session.profile.apiUrl);
     const result = await send(options.session, encoded, fetchImpl);
@@ -306,6 +320,7 @@ async function runLayout(
     : 0;
 
   return {
+    scenario: options.scenario.id,
     harness: layout.id,
     label: layout.label,
     note: layout.note,
