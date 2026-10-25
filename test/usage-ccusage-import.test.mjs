@@ -333,7 +333,8 @@ describe("usage --import-ccusage", () => {
     await importInto(dir, DAILY_PAYLOAD);
     await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
       const store = await import("../dist/store/index.js");
-      assert.equal(store.STORE_VERSION, 3);
+      // 4 = latest migration (0004 envelopes, #78); this test exercises 0003.
+      assert.equal(store.STORE_VERSION, 4);
       // Simulate a pre-0003 store: drop the table + ledger, forget the migration.
       const opened = store.openStore(store.storePath());
       opened.db.exec(
