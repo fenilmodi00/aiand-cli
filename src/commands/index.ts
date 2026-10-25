@@ -3,6 +3,7 @@ import { nearestMatch } from "../cli/args.js";
 import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
+import * as doctor from "./doctor.js";
 import * as harness from "./harness.js";
 import * as init from "./init.js";
 import * as key from "./key.js";
@@ -81,6 +82,12 @@ export const COMMANDS: Command[] = [
     run: restore.run,
   },
   { name: "status", summary: "Show auth and agent wiring", help: status.help, run: status.run },
+  {
+    name: "doctor",
+    summary: "Check observability health, source by source",
+    help: doctor.help,
+    run: doctor.run,
+  },
   {
     name: "run-agent",
     summary: "Run a coding agent on ai& for one session",

@@ -9,6 +9,13 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand doctor` — observability health checks, one line per source: gateway
+  reachability (one minimal `/logs` probe), auth validity, agent adapter
+  wiring, the key→agent map, local store health, and log-ingestion lag.
+  Verdicts use the `OK (n)` / `NOTHING FOUND` / `ERRORS` vocabulary (plus
+  `SKIPPED` when a dependency is absent); `--json` emits per-check results
+  with stable ids (`gateway`, `auth`, `adapters`, `agent-keys`, `store`,
+  `lag`). Exit code 1 when any check reports `ERRORS`, 0 otherwise.
 - A side-by-side preview install. This branch's `install.sh` installs as
   `aiand-v2` next to a production `aiand` instead of over it: the checkout
   lives in `~/.aiand/cli-v2`, runtime state (credentials, locks, agent
