@@ -107,6 +107,32 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "delta vs previous window",
     provenance: estimated("current window minus previous window, same gateway fields"),
   },
+  // usage blocks (local-store report, ticket #60)
+  {
+    report: "usage",
+    field: "blocks.requests",
+    provenance: estimated("count of gateway /logs rows in the local store"),
+  },
+  {
+    report: "usage",
+    field: "blocks.input_tokens",
+    provenance: gatewayBilled(`sum of ${GATEWAY_FIELD}: input_tokens (includes cached_tokens)`),
+  },
+  {
+    report: "usage",
+    field: "blocks.output_tokens",
+    provenance: gatewayBilled(`sum of ${GATEWAY_FIELD}: output_tokens`),
+  },
+  {
+    report: "usage",
+    field: "blocks.cached_tokens",
+    provenance: gatewayBilled(`sum of ${GATEWAY_FIELD}: cached_tokens`),
+  },
+  {
+    report: "usage",
+    field: "blocks.cost",
+    provenance: gatewayBilled("sum of the gateway-computed per-request cost; never recomputed"),
+  },
   // cache
   {
     report: "cache",

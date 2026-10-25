@@ -26,6 +26,28 @@ breaking changes while the command surface settles.
   `AIAND_NO_WARN=1`. Mixed-currency stores refuse to be summed with an
   explicit error. `aiand forecast bench` is a reserved stub for the v2
   calibrated forecast.
+- Store-backed usage reporting (`aiand usage`, ticket #60): daily/weekly/monthly/session
+  blocks (`--by day|week|month|session`, default day) with token and
+  gateway-billed cost rollups plus a totals row, from the local request store
+  (auto-synced before read, fail-open on sync failure; `--no-sync` /
+  `AIAND_NO_SYNC=1` reads the store as-is offline). Filters compose:
+  `--since`/`--until` (dates interpreted in the display timezone), `--last
+  7d`-style relative windows, `--timezone <tz>` (bucket boundaries follow IANA
+  timezones, DST-aware), `--agent`/`--harness` (repeatable, masked-key
+  attribution), `--model` globs (repeatable), `--sort <column>` / `--order
+  asc|desc`. `--breakdown/-b` appends per-model sub-tables; `--sections
+  daily,weekly,monthly,sessions,totals,by-model,by-agent` renders multiple
+  sections from ONE store read. `--json` emits a stable `{meta, sections}`
+  payload; `--jq <filter>` applies a minimal dot-path filter to it;
+  `--format csv` prints the primary section with the fixed header
+  `period,requests,input_tokens,output_tokens,cached_tokens,cost,currency`.
+  Report UX conventions: `--compact` (also automatic under a 100-column
+  terminal; drop order documented in help), `--no-cost`, `--no-totals`,
+  `--no-breakdown`, and color auto-drop when stdout is piped. Costs are always
+  the gateway-verbatim per-request `cost` in its own currency — mixed-currency
+  ranges show per-currency sub-rows and a warning, never a cross-currency sum;
+  every derived number carries its #68 provenance label and the report prints
+  #68 coverage/sync footnotes.
 - Attribution and provenance for every number the CLI reports. Requests that
   cannot be attributed to an agent are surfaced as a structured
   `unattributed` bucket (`{count, share, hint}` in `--json`, a count plus the
