@@ -9,6 +9,23 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Calibrated forecast v2 + `aiand forecast bench` (ticket #77): `aiand
+  forecast --model v2` runs the claumon MODEL.tex v2.2 model over the local
+  store — OLS rate over the trailing 30 minutes conjugated with a prior from
+  past completed day-windows (variance corrected for path noise), a
+  rectified-Gaussian rate draw per path, Gamma-process increments over
+  5-minute steps, and a K=500 seeded Monte Carlo (mulberry32; `--seed` or a
+  seed derived from the forecast month, so identical inputs give
+  byte-identical output). Output: median month-end projection + 80%
+  credible interval (uncapped — overshoot is projected demand), projected
+  utilization unclamped above 100%, and ETA-to-budget median + 80% CI that
+  is nil when P(never reaching) >= 50%. `aiand forecast bench [--model
+  v1|v2]` replays past daily windows offline from the store and scores
+  CRPS, pinball loss (q10/q50/q90), 80% coverage, bias, plus the
+  [delta, delta^2] calibration regression with a plain-language verdict;
+  the deliberately miscalibrated non-rectified-Gaussian variant measurably
+  worsens bench coverage. Model docs: `docs/observability/forecast-v2.md`.
+
 - `aiand sessions` (ticket #62): a per-conversation view over the local
   request store. The list shows one row per session — session id, harness
   (masked-key attribution), model mix, turns (one stored request = one turn),

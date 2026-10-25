@@ -108,7 +108,7 @@ describe("forecast CLI · config", () => {
 // -- forecast command ----------------------------------------------------------
 
 describe("forecast CLI · command", () => {
-  test("no store → no-data verdict, table renders, bench stub", async () => {
+  test("no store → no-data verdict, table renders, bench refusal", async () => {
     rmSync(join(box.dir, "store.db"), { force: true });
     let r = await cli(["config", "unset", "budget.monthly"]);
     r = await cli(["forecast"]);
@@ -119,8 +119,10 @@ describe("forecast CLI · command", () => {
     assert.match(r.stdout, /heuristic\(burn-rate v1\)/);
     assert.match(r.stdout, /budgets are advisory/);
 
+    // #77: the bench stub became the real bench — no history → the refusal copy.
     r = await cli(["forecast", "bench"]);
-    assert.equal(r.stdout.trim(), "not implemented (v2 calibrated forecast)");
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /insufficient history for the bench/);
   });
 
   test("--json emits the projection object; --jq extracts a path", async () => {

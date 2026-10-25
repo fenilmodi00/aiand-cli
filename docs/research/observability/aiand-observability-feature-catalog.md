@@ -149,6 +149,7 @@ Sources: https://code.claude.com/docs/en/monitoring-usage · open-telemetry/sema
 
 - **claumon v2.2 (the rigorous one):** inputs = utilization snapshots u(t) + past completed windows (u*, D). Rate: OLS slope over last 30 min, conjugated with prior from past windows (ρ_s = u*/D_s, variance corrected for path noise); refit daily. Path: Gamma process increments (monotone, bounded by u_now); rate ~ rectified Gaussian (plateau fix; 80% coverage 55%→89% on LOSO). Output: point + 80% CI via K=500 seeded MC (5-min steps), uncapped above 1 (overshoot = demand); ETA-to-threshold median+CI or nil if p_∞≥0.5. Calibration: weighted LS of e² on [δ, δ²]. Bench: CRPS/pinball/coverage/bias. Source: `internal/forecast/MODEL.tex`.
 - **CC-Usage-Monitor (the simple one):** tokens/min = totals/block_duration; projected = current + rate·remaining; hourly burn via proportional overlap attribution; P90-of-history auto-limit; reset-aware pace + limit-hit freeze. Sources: `core/calculations.py`, `core/p90_calculator.py`, `src/claude_monitor/data/analysis.py`.
+- **aiand-cli E2 landed (#77):** the v2.2 math above on our budget-utilization series — `src/obs/forecast-v2.ts` + `aiand forecast --model v2` / `aiand forecast bench` (day-windows as prior sources, mulberry32-seeded K=500 MC, ETA nil-when-p∞≥0.5, uncapped utilization, bench with CRPS/pinball/coverage/bias + the [δ, δ²] regression verdict; the non-rectified-Gaussian variant measurably worsens bench coverage). Docs: `docs/observability/forecast-v2.md`.
 
 ### 5. Monitoring cluster — remaining patterns
 
