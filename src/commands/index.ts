@@ -4,6 +4,7 @@ import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
 import * as doctor from "./doctor.js";
+import * as efficiency from "./efficiency.js";
 import * as exportCmd from "./export.js";
 import * as forecast from "./forecast.js";
 import * as harness from "./harness.js";
@@ -83,6 +84,12 @@ export const COMMANDS: Command[] = [
     summary: "Self-contained offline HTML usage report",
     help: report.help,
     run: report.run,
+  },
+  {
+    name: "efficiency",
+    summary: "One-shot/retry, task mix, project/branch spend",
+    help: efficiency.help,
+    run: efficiency.run,
   },
   { name: "orgs", summary: "List your organizations", help: orgs.help, run: orgs.run },
   {

@@ -9,6 +9,11 @@ import {
   sql as ccusageSql,
   version as ccusageVersion,
 } from "./0003-ccusage-import.js";
+import {
+  name as envelopesName,
+  sql as envelopesSql,
+  version as envelopesVersion,
+} from "./0004-envelopes.js";
 
 /**
  * The store's numbered migrations, in application order. Each entry carries
@@ -27,4 +32,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: initVersion, name: initName, sql: initSql },
   { version: sessionsVersion, name: sessionsName, sql: sessionsSql },
   { version: ccusageVersion, name: ccusageName, sql: ccusageSql },
+  { version: envelopesVersion, name: envelopesName, sql: envelopesSql },
 ];

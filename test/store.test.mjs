@@ -151,8 +151,9 @@ describe("store module surface", () => {
     const migrations = await import("../dist/store/migrations/index.js");
     assert.equal(typeof mod.STORE_VERSION, "number");
     assert.equal(mod.STORE_VERSION, migrations.MIGRATIONS.at(-1).version);
-    // 3 = migration 0003 (imported usage), added by the ccusage import adapter (#73).
-    assert.equal(mod.STORE_VERSION, 3);
+    // 3 = migration 0003 (imported usage, #73); 4 = migration 0004
+    // (envelopes table, #78 — renumbered at merge; #78 was cut before #73).
+    assert.equal(mod.STORE_VERSION, 4);
   });
 
   test("storePath() resolves under AIAND_CONFIG_DIR", async () => {
