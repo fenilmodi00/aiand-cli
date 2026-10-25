@@ -2,9 +2,11 @@ import { openSession } from "../api/client.js";
 import { type BenchResult, loadPrices, runHarnessBenchmark } from "../benchmark/harness-bench.js";
 import { findHarnessLayout, HARNESS_LAYOUTS } from "../benchmark/harness-layouts.js";
 import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
+import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { runHarnessMatrix } from "./harness-matrix.js";
 import { runHarnessWorkload } from "./harness-stats.js";
 
 export const help = `${style.bold("aiand harness")} -- compare harnesses on cache behavior
@@ -17,6 +19,7 @@ Usage
   aiand harness --sweep-models
   aiand harness stats [--last 7d] [--harness <name>]   real-workload stats per harness
   aiand harness compare [--last 30d]                   side-by-side on your workload
+  aiand harness matrix [--last 7d] [--synthetic]       (harness × model) matrix
   aiand harness --json
 
 Options
@@ -46,6 +49,9 @@ export async function run(argv: string[]): Promise<void> {
   const subcommand = argv[0];
   if (subcommand === "stats" || subcommand === "compare") {
     return runHarnessWorkload(subcommand, argv.slice(1));
+  }
+  if (subcommand === "matrix") {
+    return runHarnessMatrix(argv.slice(1));
   }
 
   const parsed = parse(argv, {
@@ -104,6 +110,13 @@ export async function run(argv: string[]): Promise<void> {
         return { model, results };
       }),
     );
+    // Persist the sweep so `aiand harness matrix --synthetic` can display it
+    // alongside observed rows (ticket #79). Persistence never fails the run.
+    if (saveSweep(all, scenario.id)) {
+      err(style.dim(`sweep saved for \`aiand harness matrix --synthetic\` (${sweepPath()})`));
+    } else {
+      err(style.yellow("could not save the sweep; `harness matrix --synthetic` will not see it"));
+    }
     if (bool(parsed, "json")) return json({ scenario: scenario.id, sweep: all });
     printSweep(all, scenario.title);
     return;

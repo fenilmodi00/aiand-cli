@@ -9,6 +9,25 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand harness matrix` and `aiand recommend` (ticket #79): the model ×
+  harness matrix and recommendation engine over the local store's observed
+  workload. `matrix` renders per-(harness, model) rows — sessions,
+  cost/session median, tokens/session, TTFT p50/p95 (p90 via `--show p90`),
+  cache hit-ratio, error rate (non-2xx excluding 429), and the shared
+  `cacheVerdict` verdict — with `--sort cost|ttft|hit|errors`, `--order`,
+  `--top`, `--unpriced` (unpriced rows are hidden by default, never guessed),
+  `--format table|json|markdown`, `--jq`, and `--synthetic`, which displays
+  the saved `aiand harness --sweep-models` sweep (now persisted to
+  `bench-sweep.json`) in its own clearly-labeled block that never joins a
+  ranking. `recommend` ranks observed pairs only — cheapest cost/session
+  median first, tie-break hit-ratio desc then ttft p50 asc, no hidden
+  weights — hides pairs under 5 sessions in an "insufficient data" block
+  with their sample counts, and prints the de-facto current pair, the
+  heuristic expected delta, and a one-line `aiand <agent> on --model X`
+  wiring suggestion; it never changes wiring itself. Both commands share one
+  aggregation (`src/obs/pair-stats.ts`), exclude mixed-model sessions from
+  every pair (counted in a footer, never assigned to a model), and carry
+  provenance labels on every JSON row.
 - Deterministic benchmark regression gate (ticket #67). `npm run
   benchmark:recorded` replays the whole harness scenario pack offline
   (deterministic prefix-cache transport, no network, no live gateway) and

@@ -48,16 +48,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     });
   }
 
-  const now = new Date();
-  let sinceMs: number | null = null;
-  let untilMs: number | null = null;
-  if (str(parsed, "last") !== undefined) {
-    sinceMs = parseLast(str(parsed, "last") ?? "7d", now).sinceMs;
-  }
-  if (str(parsed, "since") !== undefined)
-    sinceMs = parseSince(str(parsed, "since") ?? "", timezone);
-  if (str(parsed, "until") !== undefined)
-    untilMs = parseUntil(str(parsed, "until") ?? "", timezone);
+  const { sinceMs, untilMs } = parseWindowFlags(parsed, timezone);
 
   const gapMinutes = resolveGapMinutes(
     str(parsed, "session-gap") === undefined
@@ -154,12 +145,12 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 }
 
 // ---------------------------------------------------------------------------
-// Store access
+// Store access (shared with harness matrix / recommend — one query pass)
 // ---------------------------------------------------------------------------
 
 type RowFilters = { agents: string[]; models: string[] };
 
-function readHarnessRows(
+export function readHarnessRows(
   window: { sinceMs: number | null; untilMs: number | null },
   filters: RowFilters,
 ): HarnessRequestRow[] {
@@ -214,6 +205,27 @@ function readHarnessRows(
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`, "i");
+}
+
+/**
+ * The shared --since/--until/--last window parse for the store-reading
+ * harness subcommands (ticket #79 keeps matrix/recommend on the same rules).
+ */
+export function parseWindowFlags(
+  parsed: ReturnType<typeof parse>,
+  timezone: string,
+): { sinceMs: number | null; untilMs: number | null } {
+  const now = new Date();
+  let sinceMs: number | null = null;
+  let untilMs: number | null = null;
+  if (str(parsed, "last") !== undefined) {
+    sinceMs = parseLast(str(parsed, "last") ?? "7d", now).sinceMs;
+  }
+  if (str(parsed, "since") !== undefined)
+    sinceMs = parseSince(str(parsed, "since") ?? "", timezone);
+  if (str(parsed, "until") !== undefined)
+    untilMs = parseUntil(str(parsed, "until") ?? "", timezone);
+  return { sinceMs, untilMs };
 }
 
 // ---------------------------------------------------------------------------
