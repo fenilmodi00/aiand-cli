@@ -9,6 +9,25 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Personal A/B replay + latency A/B (ticket #82): `aiand harness duel`
+  replays a recorded session's request SHAPE — turn count and per-turn
+  prompt-token growth curve from the local store — across repeatable
+  `--pair harness=<layout>,model=<model>` configurations (or a synthetic
+  `--scenario`), reporting total cost, cost/turn, tokens, cache-hit ratio,
+  TTFT p50/p95, wall time and errors side by side with deltas vs a
+  `--baseline` pair, provenance labels (cost is `gateway-billed` X-Cost
+  billing from the duel run), a shape-source footer ("filler content is
+  synthetic — real prompts never left this machine"), `--seed` +
+  `--turns-cap`, `--format table|json|markdown`, `--save`, a billed-request
+  plan + confirmation prompt (`--yes` to skip), and clean Ctrl-C abort with
+  partial results labeled. `aiand harness latency` runs a live TTFT loop
+  per pair through the normal gateway path (no proxy needed) and compares
+  against historical store `ttft_ms` percentiles for the same (harness,
+  model) over `--since/--until/--last` (default 7d); under 5 historical
+  samples it prints `insufficient data` instead of a thin percentile. Same
+  seed + shape + pairs produce byte-identical cost/token tables offline —
+  the D4 golden-fixture prerequisite (pinned in the test suite).
+
 - Calibrated forecast v2 + `aiand forecast bench` (ticket #77): `aiand
   forecast --model v2` runs the claumon MODEL.tex v2.2 model over the local
   store — OLS rate over the trailing 30 minutes conjugated with a prior from
