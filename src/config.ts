@@ -31,6 +31,22 @@ export type Profile = {
 export type Config = {
   profile: string;
   profiles: Record<string, Profile>;
+  /**
+   * Budgets (ticket #74), stored under the `budget` key of config.json.
+   * `monthly` and every `harness.<name>` entry are currency-agnostic numbers
+   * in the account's billing currency; `currency` records the currency
+   * inferred from the store's cost rows when the budget was set (null when
+   * the store had no currency yet). Absent keys simply mean "unset".
+   */
+  budget?: BudgetConfig;
+};
+
+/** The `budget` section of config.json (see Config.budget). */
+export type BudgetConfig = {
+  monthly?: number;
+  harness?: Record<string, number>;
+  warnPct?: number;
+  currency?: string | null;
 };
 
 /**
@@ -80,11 +96,43 @@ async function writeJson(path: string, value: unknown, mode: number): Promise<vo
   await writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, { mode });
 }
 
+/**
+ * The stored `budget` section, sanitized: only finite positive numbers are
+ * kept (a hand-edited or legacy malformed value degrades to unset rather
+ * than poisoning the forecast math), harness names are non-empty strings,
+ * and warnPct is clamped to 1–100.
+ */
+function sanitizeBudget(raw: unknown): BudgetConfig | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const input = raw as Record<string, unknown>;
+  const budget: BudgetConfig = {};
+  if (typeof input.monthly === "number" && Number.isFinite(input.monthly) && input.monthly > 0) {
+    budget.monthly = input.monthly;
+  }
+  if (typeof input.harness === "object" && input.harness !== null) {
+    const harness: Record<string, number> = {};
+    for (const [name, value] of Object.entries(input.harness)) {
+      if (name && typeof value === "number" && Number.isFinite(value) && value > 0) {
+        harness[name] = value;
+      }
+    }
+    if (Object.keys(harness).length > 0) budget.harness = harness;
+  }
+  if (typeof input.warnPct === "number" && Number.isFinite(input.warnPct)) {
+    budget.warnPct = Math.min(100, Math.max(1, Math.round(input.warnPct)));
+  }
+  if (typeof input.currency === "string" && input.currency) budget.currency = input.currency;
+  else if (input.currency === null) budget.currency = null;
+  return Object.keys(budget).length > 0 ? budget : undefined;
+}
+
 export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(configPath());
+  const budget = sanitizeBudget(raw?.budget);
   return {
     profile: raw?.profile ?? "default",
     profiles: raw?.profiles ?? { default: { ...DEFAULT_PROFILE } },
+    ...(budget ? { budget } : {}),
   };
 }
 

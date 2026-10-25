@@ -13,6 +13,7 @@ import { listModels } from "../api/models.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { storeBudgetWarning } from "../obs/forecast.js";
 import {
   computeCoverage,
   coverageLines,
@@ -44,6 +45,7 @@ Options
   --attribute <a=k>   label a key with an agent (repeatable)
   --limit <n>         requests to analyze (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})
   --no-sync           skip the store sync first (also AIAND_NO_SYNC=1)
+  --no-warn           suppress the budget-threshold warning (also AIAND_NO_WARN=1)
   --json              machine-readable output
 
 Every number comes from the Gateway's own per-request reporting. Requests are
@@ -62,6 +64,7 @@ export async function run(argv: string[]): Promise<void> {
     attribute: { type: "string", multiple: true },
     limit: { type: "string" },
     "no-sync": { type: "boolean", default: false },
+    "no-warn": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
@@ -136,6 +139,11 @@ export async function run(argv: string[]): Promise<void> {
       coverage,
     });
   }
+
+  // The budget-threshold warning (ticket #74): stderr, below the threshold
+  // share of the monthly budget, suppressible via --no-warn / AIAND_NO_WARN=1.
+  const budgetWarning = storeBudgetWarning(bool(parsed, "no-warn"));
+  if (budgetWarning) err(style.yellow(budgetWarning));
 
   if (entries.length === 0) {
     out(style.dim(`No requests in the last ${range}.`));

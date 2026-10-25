@@ -170,6 +170,32 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "missingDays",
     provenance: estimated("per-day row presence in the local store over the requested window"),
   },
+  // forecast (burn-rate v1 + budgets, ticket #74)
+  {
+    report: "forecast",
+    field: "currentSpend",
+    provenance: gatewayBilled("sum of the gateway-computed per-request cost from the local store"),
+  },
+  {
+    report: "forecast",
+    field: "rate24h, rate7d",
+    provenance: heuristic("burn-rate v1"),
+  },
+  {
+    report: "forecast",
+    field: "projectedMonthEnd, exceedDate",
+    provenance: estimated("current month spend + burn-rate v1 × hours remaining"),
+  },
+  {
+    report: "forecast",
+    field: "verdict, pacing",
+    provenance: heuristic("burn-rate v1"),
+  },
+  {
+    report: "forecast",
+    field: "suggestBudget",
+    provenance: heuristic("P90 of monthly totals"),
+  },
 ];
 
 /** The audit list `aiand usage --audit --json` prints: label as string + source. */

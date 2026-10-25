@@ -4,6 +4,7 @@ import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
 import * as doctor from "./doctor.js";
+import * as forecast from "./forecast.js";
 import * as harness from "./harness.js";
 import * as init from "./init.js";
 import * as key from "./key.js";
@@ -101,6 +102,12 @@ export const COMMANDS: Command[] = [
     summary: "Local request store status and sync",
     help: store.help,
     run: store.run,
+  },
+  {
+    name: "forecast",
+    summary: "Burn-rate projection against your budget",
+    help: forecast.help,
+    run: forecast.run,
   },
   {
     name: "update",
