@@ -16,6 +16,7 @@ import {
 import { delimiter, dirname, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
 import {
+  assertFileMode,
   CLOSED_URL,
   captureStdio,
   catalogModel,
@@ -55,6 +56,27 @@ const hermesOverlay = await import("../dist/agents/hermes/overlay.js");
 const { snapshotFiles } = await import("../dist/agents/snapshot.js");
 
 const realHome = () => join(home, ".hermes");
+
+/**
+ * Create a fixture file symlink, or skip the test cleanly where the OS
+ * refuses: Windows needs admin or Developer Mode for file symlinks and
+ * answers EPERM otherwise (the machine-level failure, not a product bug —
+ * with the privilege granted the same test runs and asserts fully).
+ * Returns false when the test has been skipped and must return early.
+ */
+function symlinkOrSkip(t, target, path) {
+  try {
+    symlinkSync(target, path);
+    return true;
+  } catch (error) {
+    if (error.code === "EPERM" || error.code === "EACCES") {
+      t.skip(`fixture file symlink refused by the OS (${error.code}): needs admin/Developer Mode`);
+      return false;
+    }
+    throw error;
+  }
+}
+
 const envPath = () => join(realHome(), ".env");
 const configPath = () => join(realHome(), "config.yaml");
 const providerDir = () => join(realHome(), "plugins", "model-providers", "aiand");
@@ -204,7 +226,7 @@ describe("hermes adapter: membership", () => {
     assert.match(stdout, /aiand hermes on\|off\|status/);
     assert.match(stdout, /wire Hermes Agent to ai&/);
     assert.match(stdout, /remove aiand routing/);
-    assert.match(stdout, /\.hermes\/config\.yaml/);
+    assert.match(stdout, /\.hermes[\\/]config\.yaml/);
   });
 
   test("status without the binary exits 0 and prints the install hint", async () => {
@@ -218,11 +240,19 @@ describe("hermes adapter: membership", () => {
     });
     assert.equal(code, 0, "missing binary is still a successful status report");
     assert.match(stdout, /installed\s+no/);
-    assert.match(stderr, /Install it with: curl -fsSL https:\/\/hermes-agent\.nousresearch\.com/);
+    // The hint is platform-adaptive (mirrors src/agents/hermes/install.ts):
+    // win32 gets the PowerShell installer under iex, POSIX the curl one-liner.
+    const win32 = process.platform === "win32";
+    assert.match(
+      stderr,
+      win32
+        ? /Install it with: iex "& \{ \$\(irm https:\/\/raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/[0-9a-f]{7,40}\/scripts\/install\.ps1\) \} -Commit [0-9a-f]{7,40}/
+        : /Install it with: curl -fsSL https:\/\/hermes-agent\.nousresearch\.com/,
+    );
     assert.match(stderr, /hermes-agent\.nousresearch\.com\/docs/);
     // The hint pins exact bytes: check-dist keeps the commit in step, but the
     // user-facing string must carry it too.
-    assert.match(stderr, /--commit [0-9a-f]{7,40}/);
+    assert.match(stderr, win32 ? /-Commit [0-9a-f]{7,40}/ : /--commit [0-9a-f]{7,40}/);
   });
 
   test("aiand status lists hermes on the wiring surface", async () => {
@@ -364,13 +394,13 @@ describe("hermes adapter: persistent on/off", () => {
 
     // The .env: 0600, user lines kept, dedicated pair appended.
     const envText = readFileSync(envPath(), "utf8");
-    assert.equal(statSync(envPath()).mode & 0o777, 0o600);
+    assertFileMode(envPath(), 0o600);
     assert.ok(envText.startsWith("USER_KEY=keep\n# a comment\n\n"), "user lines kept");
     assert.ok(envText.includes('AIAND_HERMES_API_KEY="sk-test-hermes-enable"'));
     assert.ok(envText.includes('AIAND_HERMES_BASE_URL="https://api.aiand.com/v1"'));
 
     // The plugin: key-free files at the default mode, other providers kept.
-    assert.equal(statSync(initPyPath()).mode & 0o777, 0o644);
+    assertFileMode(initPyPath(), 0o644);
     const initPy = readFileSync(initPyPath(), "utf8");
     assert.ok(initPy.includes("register_provider(aiand)"));
     assert.ok(initPy.includes('fallback_models=("zai-org/glm-5.3",)'));
@@ -894,11 +924,11 @@ describe("hermes adapter: persistent on/off", () => {
     chmodSync(envPath(), 0o640);
     chmodSync(configPath(), 0o640);
     await hermes.hermesAdapter.enable(enableInput());
-    assert.equal(statSync(envPath()).mode & 0o777, 0o600, "the key locks the .env");
-    assert.equal(statSync(configPath()).mode & 0o777, 0o640, "no secret, no lock");
+    assertFileMode(envPath(), 0o600, "the key locks the .env");
+    assertFileMode(configPath(), 0o640, "no secret, no lock");
     await hermes.hermesAdapter.disable();
-    assert.equal(statSync(envPath()).mode & 0o777, 0o640, "pre-on mode handed back");
-    assert.equal(statSync(configPath()).mode & 0o777, 0o640, "pre-on mode handed back");
+    assertFileMode(envPath(), 0o640, "pre-on mode handed back");
+    assertFileMode(configPath(), 0o640, "pre-on mode handed back");
   });
 
   test("off keeps a file on created private when the user added lines", async () => {
@@ -909,7 +939,7 @@ describe("hermes adapter: persistent on/off", () => {
     await hermes.hermesAdapter.enable(enableInput());
     writeFileSync(envPath(), `${readFileSync(envPath(), "utf8")}USER_EXTRA=1\n`);
     await hermes.hermesAdapter.disable();
-    assert.equal(statSync(envPath()).mode & 0o777, 0o600, "never widened");
+    assertFileMode(envPath(), 0o600, "never widened");
     assert.equal(readFileSync(envPath(), "utf8"), "USER_EXTRA=1\n");
   });
 
@@ -960,7 +990,7 @@ describe("hermes adapter: persistent on/off", () => {
     assert.ok(lines.includes(`AIAND_HERMES_API_KEY=${JSON.stringify(tricky)}`));
     assert.ok(lines.includes('AIAND_HERMES_BASE_URL="https://api.aiand.com/v1"'), "sibling kept");
     assert.ok(lines.includes("USER_KEY=keep"), "user lines kept");
-    assert.equal(statSync(envPath()).mode & 0o777, 0o600, "mode stays private");
+    assertFileMode(envPath(), 0o600, "mode stays private");
     assert.deepEqual(await hermes.hermesAdapter.probe(), {
       active: true,
       model: "zai-org/glm-5.3",
@@ -999,10 +1029,15 @@ describe("hermes adapter: persistent on/off", () => {
     await hermes.hermesAdapter.disable();
   });
 
-  test("refreshKey: a same-key no-op re-tightens a loosened key file", async () => {
+  test("refreshKey: a same-key no-op re-tightens a loosened key file", async (t) => {
     // #17: the baked session key stays 0600 for as long as it lives here —
     // even an idempotent rebake repairs the mode instead of passing through.
-    if (process.platform === "win32") return;
+    // Windows cannot represent 0600 (any chmod with a write bit reads 0o666),
+    // so the re-tightening is only observable on POSIX.
+    if (process.platform === "win32") {
+      t.skip("chmod on win32 cannot express 0600: nothing observable to re-tighten");
+      return;
+    }
     plantPersistentHome();
     await hermes.hermesAdapter.enable(enableInput());
     chmodSync(envPath(), 0o640);
@@ -1545,7 +1580,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     // The overlay .env: 0600, user lines carried, ours stripped then written.
     const envPath = join(overlay, ".env");
     const envText = readFileSync(envPath, "utf8");
-    assert.equal(statSync(envPath).mode & 0o777, 0o600);
+    assertFileMode(envPath, 0o600);
     assert.ok(envText.includes("USER_KEY=keep"));
     assert.ok(envText.includes('AIAND_HERMES_API_KEY="sk-test-key-0000000000000000000000"'));
     assert.ok(envText.includes('AIAND_HERMES_BASE_URL="https://api.aiand.com/v1"'));
@@ -1738,7 +1773,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     assert.ok(after.includes('  provider: "auto"'), "provider handed back");
   });
 
-  test("a symlinked real config.yaml is copied, never linked", async () => {
+  test("a symlinked real config.yaml is copied, never linked", async (t) => {
     // The copy is by NAME: Dirent.isFile() is false for a symlink, so an
     // isFile() gate would link it and the overlay edit would write through
     // to the real home.
@@ -1746,7 +1781,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     const target = join(dir, "config.target.yaml");
     writeFileSync(target, 'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n');
     rmSync(join(dir, "config.yaml"));
-    symlinkSync(target, join(dir, "config.yaml"));
+    if (!symlinkOrSkip(t, target, join(dir, "config.yaml"))) return;
     const before = readFileSync(target, "utf8");
     const overlay = await hermesOverlay.buildHermesOverlay(dir, {
       apiKey: "sk-test-key-0000000000000000000000",
@@ -1916,7 +1951,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     }
   });
 
-  test("cleanup restores the store shims and only removes overlay-pointing additions", async () => {
+  test("cleanup restores the store shims and only removes overlay-pointing additions", async (t) => {
     // Hermes rewrites checkout/.hermes/bin/* to whatever HERMES_HOME the
     // session ran under; without the restore, cleanup deletes the path its
     // own `hermes` binary points at. The PATH entry here is a symlink to the
@@ -1928,7 +1963,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     writeFileSync(join(shims, "hermes-acp"), "original-acp\n");
     const pathDir = join(env.dir, "shim-path");
     mkdirSync(pathDir, { recursive: true });
-    symlinkSync(join(shims, "hermes"), join(pathDir, "hermes"));
+    if (!symlinkOrSkip(t, join(shims, "hermes"), join(pathDir, "hermes"))) return;
 
     const previousPath = process.env.PATH;
     process.env.PATH = `${pathDir}${delimiter}${previousPath}`;
@@ -1939,14 +1974,23 @@ describe("hermes adapter: sessionLaunch overlay", () => {
       // point at the overlay (cleanup's to remove) and a legit one (kept).
       writeFileSync(join(shims, "hermes"), `#!/bin/sh\nexec ${overlay}/tools/python3 -I -c 'x'\n`);
       writeFileSync(join(shims, "hermes-acp"), "relocated\n");
-      symlinkSync(join(overlay, ".env"), join(shims, "added-link"));
+      // The link shape needs file-symlink privileges on Windows; where the OS
+      // refuses, the relocated-shim file below still covers the "points at
+      // the overlay" detection.
+      let addedLink = null;
+      try {
+        symlinkSync(join(overlay, ".env"), join(shims, "added-link"));
+        addedLink = join(shims, "added-link");
+      } catch (error) {
+        if (error.code !== "EPERM" && error.code !== "EACCES") throw error;
+      }
       writeFileSync(join(shims, "added-file"), `#!/bin/sh\nexec ${overlay}/tools/python3\n`);
       writeFileSync(join(shims, "user-note.txt"), "the user's own addition\n");
 
       await launch.cleanup();
       assert.equal(readFileSync(join(shims, "hermes"), "utf8"), original, "store shim restored");
       assert.equal(readFileSync(join(shims, "hermes-acp"), "utf8"), "original-acp\n");
-      assert.ok(!existsSync(join(shims, "added-link")), "an overlay-pointing link is removed");
+      if (addedLink) assert.ok(!existsSync(addedLink), "an overlay-pointing link is removed");
       assert.ok(!existsSync(join(shims, "added-file")), "an overlay-pointing file is removed");
       assert.equal(
         readFileSync(join(shims, "user-note.txt"), "utf8"),
