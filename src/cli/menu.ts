@@ -485,9 +485,11 @@ export async function promptMenu(prompt: MenuPrompt): Promise<string | null> {
 
         if (seq === KEY.ENTER_CR || seq === KEY.ENTER_LF) {
           const picked = shown[selected];
+          // No matches under the current query: Enter is a no-op, not a quit.
+          if (!picked) return false;
           closed = true;
           stop();
-          resolve(picked ? picked.value : null);
+          resolve(picked.value);
           return true;
         }
 

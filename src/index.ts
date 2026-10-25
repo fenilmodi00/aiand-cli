@@ -7,6 +7,7 @@ import { ApiError, CliError, EXIT } from "./cli/errors.js";
 import { promptMenu } from "./cli/menu.js";
 import { INIT_ALL_ACTION, mainMenuItems, signInItems, signInMode } from "./cli/menu-items.js";
 import { err, out, style } from "./cli/output.js";
+import type { PromptInput, PromptOutput } from "./cli/select.js";
 import { renderHome } from "./cli/ui/home.js";
 import { playSplash } from "./cli/ui/splash.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
@@ -71,11 +72,21 @@ async function runSignIn(mode: "browser" | "paste"): Promise<void> {
  * The interactive main menu. When nobody is signed in it shows only the two
  * sign-in steps — browser approval or a pasted API key — because nothing else
  * in the menu can work yet. Once signed in it shows the full menu: pick one
- * action, run it, then show the menu again, until the user quits. Only an
- * explicit quit, a cancel, or opening an agent (which takes over the
- * terminal) leaves the loop for good.
+ * action, run it, then show the menu again, until the user quits.
+ *
+ * Esc and Ctrl-C always mean one level out, never two: inside an action they
+ * cancel that action and the menu redraws (the cancel is a normal outcome, so
+ * it is shown as a dim line, not an error). Only at the menu itself do they
+ * leave the loop for good — Esc quits with a visible bye, Ctrl-C exits 130.
+ * Opening an agent also leaves the loop, because the agent takes over the
+ * terminal.
  */
-async function runMainMenu(): Promise<void> {
+export async function runMainMenu(
+  streams: { input?: PromptInput; output?: PromptOutput } = {},
+): Promise<void> {
+  // The session's own output stream: the frame stream the menu drew on, so a
+  // quit line lands where the menu was even under injected streams.
+  const session = streams.output ?? process.stdout;
   for (;;) {
     const signedIn = Boolean(await loadCredential(activeProfileName()).catch(() => null));
 
@@ -83,48 +94,65 @@ async function runMainMenu(): Promise<void> {
       message: signedIn ? "What do you want to run?" : "Sign in to get started",
       brand: { name: "AI&", tagline: HOME_TAGLINE, version: VERSION },
       items: signedIn ? mainMenuItems() : signInItems(),
+      ...streams,
     });
-    if (picked === null) return;
-
-    if (picked === "__quit") return;
-
-    const signIn = signInMode(picked);
-    if (signIn) {
-      await runSignIn(signIn);
-      // Sign-in either succeeded (loop again, now with the full menu) or threw
-      // a CliError the top-level handler prints.
-      continue;
-    }
-
-    // The one-shot setup row: wire every installed agent in one go.
-    if (picked === INIT_ALL_ACTION) {
-      out("");
-      await initCommand.run(["--all"]);
-      await runSystemHousekeeping();
-      out("");
-      continue;
-    }
-
-    const agent = findAgent(picked);
-    if (agent) {
-      out("");
-      await runAgentCommand(agent, [], []);
-      await runSystemHousekeeping();
-      // An agent owns the terminal for its whole run; redrawing the menu on
-      // top of it would clobber its final frame.
+    if (picked === null) {
+      session.write(`${style.dim("Bye.")}\n`);
       return;
     }
-    const command = findCommand(picked);
-    if (command) {
-      out("");
-      // `key` takes a verb, so the menu falls back to the one it prints with.
-      const argv = process.argv.includes("--json") ? ["--json"] : [];
-      await command.run([...(picked === "key" ? ["export"] : argv)]);
-      await runSystemHousekeeping();
-      out("");
-      continue;
+
+    if (picked === "__quit") {
+      session.write(`${style.dim("Bye.")}\n`);
+      return;
     }
-    return;
+
+    try {
+      const signIn = signInMode(picked);
+      if (signIn) {
+        await runSignIn(signIn);
+        // Sign-in either succeeded (loop again, now with the full menu) or was
+        // cancelled, which the catch below turns back into the menu.
+        continue;
+      }
+
+      // The one-shot setup row: wire every installed agent in one go.
+      if (picked === INIT_ALL_ACTION) {
+        out("");
+        await initCommand.run(["--all"]);
+        await runSystemHousekeeping();
+        out("");
+        continue;
+      }
+
+      const agent = findAgent(picked);
+      if (agent) {
+        out("");
+        await runAgentCommand(agent, [], []);
+        await runSystemHousekeeping();
+        // An agent owns the terminal for its whole run; redrawing the menu on
+        // top of it would clobber its final frame.
+        return;
+      }
+      const command = findCommand(picked);
+      if (command) {
+        out("");
+        // `key` takes a verb, so the menu falls back to the one it prints with.
+        const argv = process.argv.includes("--json") ? ["--json"] : [];
+        await command.run([...(picked === "key" ? ["export"] : argv)]);
+        await runSystemHousekeeping();
+        out("");
+        continue;
+      }
+      return;
+    } catch (error) {
+      // Esc, or Ctrl-C, inside an action cancels that action — show it and
+      // come back to the menu. Only the menu's own Esc/Ctrl-C exits.
+      if (error instanceof CliError && error.exitCode === EXIT.INTERRUPTED) {
+        err(style.dim(error.message));
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

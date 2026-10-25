@@ -296,6 +296,15 @@ export async function playSplash(options: SplashOptions = {}): Promise<void> {
   const onData = (): void => skip();
 
   stdout.write?.(`${ALT_ON}${HIDE_CURSOR}`);
+  // Raw mode makes "any key" land per keypress (a cooked TTY delivers data
+  // only per line) and turns Ctrl-C into \x03 data, so the skip handler sees
+  // it and restore() below always runs. The default SIGINT death this avoids
+  // would leave the alternate buffer applied and the terminal blank.
+  try {
+    stdin.setRawMode?.(true);
+  } catch {
+    // A closed stdin throws on some pty drivers; the splash still plays.
+  }
   stdin.on?.("data", onData);
 
   const draw = (frame: string): void => {

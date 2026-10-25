@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { join } from "node:path";
+import { describe, test } from "node:test";
 import { KEY, promptMenu } from "../dist/cli/menu.js";
-import { FakeInput, FakeOutput, withEnv } from "./helpers.mjs";
+import { runMainMenu } from "../dist/index.js";
+import { FakeInput, FakeOutput, waitFor, withEnv, withTestEnv } from "./helpers.mjs";
 
 /** A stub menu: three rows in two groups, with a detail line on each. */
 const menu = () => ({
@@ -279,6 +281,24 @@ test("promptMenu no match states the query plainly", async () => {
   input.send(KEY.ESC);
   input.send(KEY.ESC);
   await promise;
+});
+
+test("promptMenu Enter with no matches is a no-op, not a quit", async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const promise = promptMenu({ ...menu(), input, output });
+  await settle();
+  for (const char of "zzzz") input.send(char);
+  await settle();
+  input.send(KEY.ENTER_CR);
+  await settle();
+  // Still prompting: the frame repainted, nothing resolved.
+  assert.match(lastFrame(output), /No matches/);
+
+  // Two Escs: the query is live, so the first clears it, the second quits.
+  input.send(KEY.ESC);
+  input.send(KEY.ESC);
+  assert.equal(await promise, null);
 });
 
 // --- shortcuts ---------------------------------------------------------------
@@ -1056,4 +1076,44 @@ test("promptMenu the brand wordmark opens the header with no status dots", async
 
   input.send(KEY.ESC);
   await promise;
+});
+
+// --- main menu loop ----------------------------------------------------------
+
+describe("main menu loop", () => {
+  withTestEnv("aiand-menu-loop-", (dir) => {
+    process.env.AIAND_CONFIG_DIR = join(dir, "config");
+    process.env.AIAND_HOME = join(dir, "home");
+  });
+
+  test("an action that returns redraws the menu, and Esc quits with a bye", async () => {
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    await withEnv({ AIAND_API_KEY: "sk-loop-test" }, async () => {
+      const running = runMainMenu({ input, output });
+      // First render: the signed-out menu, two sign-in rows.
+      await waitFor(() => input.listenerCount("data") > 0);
+      // Enter opens the first row (browser sign-in); the env key makes login a
+      // no-op, so control comes back to the menu instead of exiting. The login
+      // notice goes to the real stdout, so wait on the menu re-attach.
+      input.send(KEY.ENTER_CR);
+      await waitFor(() => input.listenerCount("data") > 0);
+      input.send(KEY.ESC);
+      await running;
+    });
+    assert.match(output.text, /Bye\./);
+    // The menu rendered twice: the loop came back after the action.
+    const menus = output.text.split("\x1b[?25l").length - 1;
+    assert.ok(menus >= 2, `expected two menu renders, got ${menus}`);
+  });
+
+  test("Ctrl-C at the menu exits 130 and does not print a bye", async () => {
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const running = runMainMenu({ input, output });
+    await waitFor(() => input.listenerCount("data") > 0);
+    input.send(KEY.CTRL_C);
+    await assert.rejects(running, (error) => error.exitCode === 130);
+    assert.doesNotMatch(output.text, /Bye\./);
+  });
 });

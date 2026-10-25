@@ -278,6 +278,39 @@ describe("ui splash", () => {
     assert.match(stdout.text, /█/);
     assert.ok(stdout.frames <= 11, `expected a short run, got ${stdout.frames}`);
   });
+
+  test("Ctrl-C skips the splash and still restores the terminal", async () => {
+    const stdout = makeStdout();
+    const listeners = [];
+    let rawMode = null;
+    const stdin = {
+      isTTY: true,
+      setRawMode(on) {
+        rawMode = on;
+      },
+      resume() {},
+      pause() {},
+      setEncoding() {},
+      on(event, listener) {
+        listeners.push([event, listener]);
+      },
+      removeListener() {},
+    };
+    const running = withEnv({ NO_COLOR: undefined, FORCE_COLOR: "3" }, () =>
+      playSplash({ version: "9.9.9", stdin, stdout }),
+    );
+    // Raw mode is on, so Ctrl-C arrives as \x03 data instead of a signal —
+    // the skip path must treat it as "any key" and the restore must run.
+    for (const [event, listener] of listeners) {
+      if (event === "data") queueMicrotask(() => listener("\x03"));
+    }
+    await running;
+    assert.match(stdout.text, /\x1b\[\?1049h/);
+    assert.match(stdout.text, /\x1b\[\?1049l/);
+    assert.match(stdout.text, /\x1b\[\?25h/);
+    assert.equal(rawMode, false, "raw mode restored");
+    assert.ok(stdout.frames <= 11, `expected a short run, got ${stdout.frames}`);
+  });
 });
 
 describe("ui links", () => {

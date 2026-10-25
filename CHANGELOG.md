@@ -96,6 +96,17 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
+  Inside an action opened from the main menu — the init agent picker, the
+  sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints
+  the cancel as a dim line, and redraws the main menu; only at the menu
+  itself do they leave (Esc quits with a visible `Bye.`, Ctrl-C exits 130).
+  Enter with a search filter that matches nothing is a no-op instead of
+  quitting. The first-run splash now reads keys in raw mode (any single
+  keypress skips it, including Ctrl-C) and always restores the terminal, so
+  an interrupt during the splash no longer leaves the alternate-screen buffer
+  applied — the stale-frame, blank-screen state that made Esc and Ctrl-C look
+  dead on Windows.
 - Piping into a consumer that exits early (`aiand models | head`) crashed the
   CLI with an unhandled `EPIPE` stack trace when the downstream closed the
   pipe. The CLI now exits quietly with its resolved exit code, matching Unix
