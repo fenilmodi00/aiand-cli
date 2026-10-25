@@ -1,4 +1,5 @@
-import { name, sql, version } from "./0001-init.js";
+import { name as initName, sql as initSql, version as initVersion } from "./0001-init.js";
+import { name, sql, version } from "./0002-sessions.js";
 
 /**
  * The store's numbered migrations, in application order. Each entry carries
@@ -13,4 +14,7 @@ export type Migration = {
   sql: string;
 };
 
-export const MIGRATIONS: readonly Migration[] = [{ version, name, sql }];
+export const MIGRATIONS: readonly Migration[] = [
+  { version: initVersion, name: initName, sql: initSql },
+  { version, name, sql },
+];

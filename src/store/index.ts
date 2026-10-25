@@ -112,7 +112,12 @@ const UNAVAILABLE_MESSAGE =
 
 const BUSY_TIMEOUT_MS = 5_000;
 
-type OpenedStore =
+/**
+ * An opened store handle. Exported for the store's own submodules
+ * (src/store/sessions.ts); the caller owns closing `db`. `ok: false`
+ * degrades with a reason — open never throws.
+ */
+export type OpenedStore =
   | { ok: true; db: DatabaseSync; status: "ok" | "corrupt-recovered"; detail?: string }
   | { ok: false; reason: string };
 
@@ -173,7 +178,8 @@ function openDatabase(Database: typeof DatabaseSync, path: string): DatabaseSync
  * our schema is quarantined (renamed with a timestamp) and recreated empty —
  * observability degrades, the CLI keeps working.
  */
-function openStore(path: string): OpenedStore {
+/** Exported for the store's submodules (sessions.ts); not a public surface. */
+export function openStore(path: string): OpenedStore {
   const Database = loadDatabaseSync();
   if (!Database) return { ok: false, reason: UNAVAILABLE_MESSAGE };
 

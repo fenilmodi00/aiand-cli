@@ -151,7 +151,8 @@ describe("store module surface", () => {
     const migrations = await import("../dist/store/migrations/index.js");
     assert.equal(typeof mod.STORE_VERSION, "number");
     assert.equal(mod.STORE_VERSION, migrations.MIGRATIONS.at(-1).version);
-    assert.equal(mod.STORE_VERSION, 1);
+    // 2 = migration 0002 (sessions table), added by the sessionization engine (#66).
+    assert.equal(mod.STORE_VERSION, 2);
   });
 
   test("storePath() resolves under AIAND_CONFIG_DIR", async () => {
