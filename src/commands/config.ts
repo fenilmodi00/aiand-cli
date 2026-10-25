@@ -11,6 +11,7 @@ import {
   credentialsPath,
   loadConfig,
   loadCredential,
+  type PriceOverride,
   resolveProfile,
   saveConfig,
   updateProfile,
@@ -41,6 +42,8 @@ Settable keys
   budget.monthly     monthly spend budget, in the account's billing currency
   budget.harness.<n> per-harness budget override (unset falls back to monthly)
   budget.warn-pct    budget warning threshold percent (default 80)
+  prices.<model>.in  vendor list-price override for "usage --vs-list":
+  .out, .cacheRead   USD per 1M tokens; input, output, cacheRead
 
 Other commands
   aiand config get budget       print every budget key
@@ -125,6 +128,12 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
   const budgetMatch = /^budget\.(.+)$/.exec(key);
   if (budgetMatch?.[1]) return setBudget(budgetMatch[1], value, key, parsed);
 
+  // User price overrides (ticket #81): prices.<model>.input|.output|.cacheRead.
+  const priceMatch = /^prices\.(.+)\.(input|output|cacheRead)$/.exec(key);
+  if (priceMatch?.[1]) {
+    return setPrice(priceMatch[1], priceMatch[2] as PriceField, value, key, parsed);
+  }
+
   switch (key) {
     case "api-url":
       assertHttpsBaseUrl(value);
@@ -141,7 +150,9 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
       break;
     default:
       throw new CliError(`"${key}" is not a settable key.`, {
-        hint: "Settable keys: api-url, auth-url, model, budget.monthly, budget.harness.<name>, budget.warn-pct.",
+        hint:
+          "Settable keys: api-url, auth-url, model, budget.monthly, budget.harness.<name>, " +
+          "budget.warn-pct, prices.<model>.input|.output|.cacheRead.",
       });
   }
 
@@ -149,6 +160,40 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
     return json({ profile: name, key, value });
   }
   out(style.green(`Set ${key} = ${value} on profile "${name}".`));
+}
+
+/**
+ * `config set prices.<model>.input|.output|.cacheRead` (ticket #81). User
+ * vendor list-price overrides for `usage --vs-list`, in USD per 1M tokens.
+ * Fields are stored per model; missing fields fall back to the snapshot, and
+ * a model with no snapshot entry either shows `unpriced` (never-guess) — an
+ * override labeled `estimated(user-override)` in every output.
+ */
+const PRICE_FIELDS = ["input", "output", "cacheRead"] as const;
+type PriceField = (typeof PRICE_FIELDS)[number];
+
+async function setPrice(
+  model: string,
+  field: PriceField,
+  value: string,
+  key: string,
+  parsed: Parsed,
+): Promise<void> {
+  if (model === "__proto__" || model.length === 0) {
+    throw new CliError(`"${key}" is not a settable price key.`, {
+      hint: "Use prices.<gateway model id>.input|.output|.cacheRead, e.g. prices.zai-org/glm-5.3.input.",
+    });
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new CliError(`${key} must be a non-negative number (got "${value}").`);
+  }
+  const config = loadConfig();
+  const prices: Record<string, PriceOverride> = { ...(config.prices ?? {}) };
+  prices[model] = { ...prices[model], [field]: number };
+  await saveConfig({ ...config, prices });
+  if (bool(parsed, "json")) return json({ key, value: number, model, field });
+  out(style.green(`Set ${key} = ${number} (USD per 1M tokens).`));
 }
 
 /**
