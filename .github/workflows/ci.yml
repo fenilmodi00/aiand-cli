@@ -67,6 +67,11 @@ jobs:
       # provider shape.
       - run: node scripts/copilot-smoke.mjs
       - run: node scripts/sbx-test.mjs --smoke dist/index.js
+      # Deterministic benchmark regression gate (#67): offline replay of the
+      # scenario pack at pinned prices, diffed against the committed goldens
+      # in test/golden/. Any drift in pricing math, reconciler arithmetic, or
+      # aggregation output fails the job with a diff.
+      - run: npm run benchmark:recorded
       - run: npm run check:dist
       - run: npm run check:public
   # Full live matrix against the real gateway: pasted-key login, whoami,

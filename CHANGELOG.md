@@ -9,6 +9,19 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Deterministic benchmark regression gate (ticket #67). `npm run
+  benchmark:recorded` replays the whole harness scenario pack offline
+  (deterministic prefix-cache transport, no network, no live gateway) and
+  costs every scenario x layout from token shapes at a PINNED price table —
+  never the live catalog — reporting CacheLane's four metrics
+  (`baseline_cost_units`, `effective_cost_units`, `cache_hit_ratio`,
+  `savings_ratio`). The replay is diffed against committed goldens in
+  `test/golden/benchmark-recorded.json` both in the test suite and as a CI
+  step, so pricing-math, reconciler, or aggregation drift fails with a
+  readable diff; regenerate goldens locally with `npm run benchmark:recorded
+  -- --update-goldens` (refused under CI). Reports land in the gitignored
+  `runs/benchmark/`; goldens carry metrics and metadata only, never fixture
+  text.
 - OTel metrics export (ticket #72). `aiand export` emits usage metrics from
   the local request store in two families from one store read: `claude_code.*`
   (drop-in compatibility with Claude Code dashboards: `session.count`,
