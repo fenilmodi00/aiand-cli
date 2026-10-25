@@ -26,7 +26,7 @@ import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-repo
  */
 
 /** Store row shape this command consumes (superset of `SessionRequestRow`). */
-type SessionCommandRow = SessionRequestRow & {
+export type SessionCommandRow = SessionRequestRow & {
   model: string;
   status_code: number | null;
   ttft_ms: number | null;
@@ -38,8 +38,8 @@ const UNKNOWN_CURRENCY = "";
 
 type Costs = Record<string, number>;
 
-/** The one session view both output modes build from. */
-type SessionView = {
+/** The one session view both output modes build from (shared with MCP, #70). */
+export type SessionView = {
   id: string;
   harness: string;
   models: { model: string; count: number }[];
@@ -61,7 +61,8 @@ function costAcross(session: SessionView): number {
   return Object.values(session.costs).reduce((sum, value) => sum + value, 0);
 }
 
-function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
+/** The list-row and drill-down view of one session (shared with MCP, #70). */
+export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
   const modelCounts = new Map<string, number>();
   const costs: Costs = {};
   const ttfts: number[] = [];
@@ -104,7 +105,8 @@ function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
 
 type RowFilters = { agents: string[]; models: string[] };
 
-function readSessionRows(
+/** The one store read + filter (exported for the MCP session_stats tool, #70). */
+export function readSessionRows(
   window: { sinceMs: number | null; untilMs: number | null },
   filters: RowFilters,
 ): SessionCommandRow[] {

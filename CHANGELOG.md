@@ -8,6 +8,7 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
 - `aiand sessions` (ticket #62): a per-conversation view over the local
   request store. The list shows one row per session — session id, harness
