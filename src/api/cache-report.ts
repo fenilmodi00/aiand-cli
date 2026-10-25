@@ -1,3 +1,4 @@
+import { estimated, gatewayBilled, type ProvenanceLabel } from "../obs/provenance.js";
 import type { LogEntry } from "./logs.js";
 
 /**
@@ -42,6 +43,29 @@ export type CacheReport = {
   byKey: CacheGroup[];
   /** Rows the local key map could not attribute. */
   unattributedRequests: number;
+  /**
+   * The structured attribution gap (ticket #68): count, its share of all
+   * requests, and the fix-it hint. Keys absent from the map stay "unknown" —
+   * never guessed from key prefixes.
+   */
+  unattributed: { count: number; share: number; hint: string };
+  /**
+   * What every reported number is made of, labeled at construction time
+   * (provenance H3). Required, so a CacheReport cannot exist unlabeled.
+   */
+  provenance: {
+    totals: {
+      requests: ProvenanceLabel;
+      inputTokens: ProvenanceLabel;
+      cachedTokens: ProvenanceLabel;
+      outputTokens: ProvenanceLabel;
+      costUsd: ProvenanceLabel;
+    };
+    hitRatio: ProvenanceLabel;
+    costIfUncached: ProvenanceLabel;
+    savedUsd: ProvenanceLabel;
+    unattributed: ProvenanceLabel;
+  };
 };
 
 /**
@@ -147,6 +171,7 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
       .map(([key, row]) => toGroup(key, row))
       .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
 
+  const unattributedCount = unattributed;
   return {
     range: options.range,
     totals,
@@ -156,7 +181,28 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
     byAgent: sorted(agents),
     byModel: sorted(models),
     byKey: sorted(keys),
-    unattributedRequests: unattributed,
+    unattributedRequests: unattributedCount,
+    unattributed: {
+      count: unattributedCount,
+      share: totals.requests > 0 ? unattributedCount / totals.requests : 0,
+      hint: "run `aiand cache --attribute <agent>=<masked-key>` to map unknown keys",
+    },
+    provenance: {
+      totals: {
+        requests: estimated("count of gateway /logs rows in the window"),
+        // Token sums are sums of verbatim gateway fields — `input_tokens`
+        // INCLUDES `cached_tokens`, and both are stored exactly as reported.
+        inputTokens: gatewayBilled("sum of gateway input_tokens (includes cached_tokens)"),
+        cachedTokens: gatewayBilled("sum of gateway cached_tokens"),
+        outputTokens: gatewayBilled("sum of gateway output_tokens"),
+        // Cost is the gateway-computed sum, never recomputed from prices.
+        costUsd: gatewayBilled("sum of gateway-computed per-request cost"),
+      },
+      hitRatio: estimated("cached_tokens / input_tokens over the window's rows"),
+      costIfUncached: estimated("model-catalog prices applied to the window's token counts"),
+      savedUsd: estimated("costIfUncached minus the gateway-billed cost"),
+      unattributed: estimated("count of /logs rows whose api_key is absent from agent-keys.json"),
+    },
   };
 }
 

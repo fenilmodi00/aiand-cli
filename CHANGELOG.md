@@ -9,6 +9,34 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Attribution and provenance for every number the CLI reports. Requests that
+  cannot be attributed to an agent are surfaced as a structured
+  `unattributed` bucket (`{count, share, hint}` in `--json`, a count plus the
+  fix-it hint on the human report — `aiand cache --attribute
+  <agent>=<masked-key>` maps an unknown key; keys absent from the map stay
+  `unknown`, never guessed). Every derived number in observability `--json`
+  payloads carries a provenance label — `gateway-billed` (verbatim gateway
+  field, e.g. cost and token sums; cost is never recomputed from a price
+  table), `estimated(<source>)` (computed by ai& from gateway data, e.g. hit
+  ratio), or `heuristic(<name>)` (depends on a heuristic, e.g. time-gap
+  sessionization) — via the shared vocabulary in `src/obs/provenance.ts`,
+  which `aiand usage --audit` prints as a full provenance table (human) or a
+  structured list (`--json`), offline.
+- Coverage-gap honesty on reports: the local archive's actual coverage is
+  stated, not implied — last successful sync and sync status (a failed or
+  `--no-sync`-skipped pre-command sync warns near the top of human output and
+  carries `sync: {status, at}` in `--json`; sync failures are recorded in the
+  store and survive until the next success), ingestion lag (now minus newest
+  stored request), the local archive's extent (so the 30-day gateway window
+  vs local archive boundary is explicit), and an enumerated list of UTC days
+  inside the requested range with zero local rows — absent from local
+  aggregates, never averaged over. `aiand cache` syncs the store before
+  reporting (opt out with `--no-sync` / `AIAND_NO_SYNC=1`) and attaches
+  `coverage` to its `--json` payload; the coverage engine lives in
+  `src/store/coverage.ts` for other reports to reuse.
+
+### Changed
+
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario
   families — `multi-turn-refactor-long` (a six-turn refactor over a large
   stable file body), `long-file-read` (one very large read dominating the

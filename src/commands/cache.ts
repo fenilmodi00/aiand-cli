@@ -11,8 +11,15 @@ import { openSession } from "../api/client.js";
 import { getLogsPaged, LOG_RANGES } from "../api/logs.js";
 import { listModels } from "../api/models.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
-import { currencySymbol, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import {
+  computeCoverage,
+  coverageLines,
+  type SyncOutcome,
+  syncWarningLine,
+} from "../store/coverage.js";
+import { noSyncRequested, syncStore } from "../store/index.js";
 
 /**
  * The most rows the Gateway serves per page. 30 days at busy usage is tens
@@ -36,12 +43,15 @@ Options
   --by <group>        group by agent (default), model, or key
   --attribute <a=k>   label a key with an agent (repeatable)
   --limit <n>         requests to analyze (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT})
+  --no-sync           skip the store sync first (also AIAND_NO_SYNC=1)
   --json              machine-readable output
 
 Every number comes from the Gateway's own per-request reporting. Requests are
 attributed to an agent by the API key the CLI baked into that agent's config,
 so an agent wired by hand shows as "unknown" rather than being guessed. Use
---attribute to label such a key yourself.`;
+--attribute to label such a key yourself. Coverage (last sync, ingestion lag,
+days with no local data) is reported alongside the aggregates, never folded
+into them.`;
 
 type GroupBy = "agent" | "model" | "key";
 
@@ -51,6 +61,7 @@ export async function run(argv: string[]): Promise<void> {
     by: { type: "string" },
     attribute: { type: "string", multiple: true },
     limit: { type: "string" },
+    "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
@@ -58,6 +69,17 @@ export async function run(argv: string[]): Promise<void> {
   const range = oneOf(parsed, "range", LOG_RANGES, "24h");
   const by = oneOf(parsed, "by", ["agent", "model", "key"] as const, "agent");
   const limit = Math.min(MAX_LIMIT, Math.max(1, int(parsed, "limit") ?? DEFAULT_LIMIT));
+
+  // Pre-command sync of the local archive. Best-effort: a failure never
+  // fails the report, it is surfaced (req 5 of ticket #68) — never silently
+  // serving stale data as if it were current.
+  let syncOutcome: SyncOutcome;
+  if (bool(parsed, "no-sync") || noSyncRequested()) {
+    syncOutcome = { skipped: true };
+  } else {
+    const result = await syncStore(session);
+    syncOutcome = result.ok ? { ok: true } : { ok: false, error: result.error };
+  }
 
   const { entries, truncated } = await getLogsPaged(session, { range, limit });
 
@@ -93,15 +115,36 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   const report = buildCacheReport({ range, entries, agentByKey, prices });
+  const coverage = computeCoverage(range, { sync: syncOutcome });
 
-  if (bool(parsed, "json")) return json(report);
+  const warning = syncWarningLine(coverage);
+  if (warning) {
+    // Near the top, on stderr, in BOTH modes (the --json payload carries the
+    // same fact in `sync.status`): a stale report must announce itself before
+    // the user reads a single number.
+    err(style.yellow(`Warning: ${warning}`));
+  }
+
+  if (bool(parsed, "json")) {
+    return json({
+      ...report,
+      sync: {
+        status: coverage.sync.status,
+        at: coverage.sync.at,
+        ...(coverage.sync.error ? { error: coverage.sync.error } : {}),
+      },
+      coverage,
+    });
+  }
 
   if (entries.length === 0) {
     out(style.dim(`No requests in the last ${range}.`));
+    printCoverage(coverage);
     return;
   }
 
   printReport(report, by);
+  printCoverage(coverage);
   out();
   out(
     style.dim(
@@ -110,6 +153,11 @@ export async function run(argv: string[]): Promise<void> {
         : `analyzed ${entries.length} requests in the last ${range}.`,
     ),
   );
+}
+
+function printCoverage(coverage: ReturnType<typeof computeCoverage>): void {
+  out();
+  for (const line of coverageLines(coverage)) out(style.dim(line));
 }
 
 function printReport(report: CacheReport, by: GroupBy): void {
@@ -143,13 +191,14 @@ function printReport(report: CacheReport, by: GroupBy): void {
   out();
   printGroups(groups);
 
-  if (report.unattributedRequests > 0) {
+  if (report.unattributed.count > 0) {
     out();
     out(
       style.dim(
-        `${num(report.unattributedRequests)} requests could not be attributed to an agent.`,
+        `${num(report.unattributed.count)} requests (${percent(report.unattributed.share)}) could not be attributed to an agent.`,
       ),
     );
+    out(style.dim(report.unattributed.hint));
     out(style.dim("Wire an agent with `aiand <agent> on` so the CLI can track it."));
   }
 }

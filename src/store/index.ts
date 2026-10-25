@@ -56,6 +56,10 @@ export type StoreInfo = {
   lastSyncAt: string | null;
   /** Max created_at among stored rows. */
   newestCreatedAt: string | null;
+  /** Reason of the most recent sync failure, null when none since the last success. */
+  lastSyncError: string | null;
+  /** ISO time of that most recent sync failure. */
+  lastSyncErrorAt: string | null;
   /** Human note: quarantine path, error reason… */
   detail?: string;
 };
@@ -290,6 +294,8 @@ export function getStoreInfo(): StoreInfo {
     migrationsCurrent: false,
     lastSyncAt: null,
     newestCreatedAt: null,
+    lastSyncError: null,
+    lastSyncErrorAt: null,
   };
 
   if (!existsSync(path)) {
@@ -318,6 +324,8 @@ export function getStoreInfo(): StoreInfo {
     info.storeVersion = versions.length > 0 ? Math.max(...versions) : 0;
     info.lastSyncAt = meta(opened.db, "last_sync_at");
     info.newestCreatedAt = watermarkOf(opened.db)?.createdAt ?? null;
+    info.lastSyncError = meta(opened.db, "last_sync_error");
+    info.lastSyncErrorAt = meta(opened.db, "last_sync_error_at");
   } catch (error) {
     info.detail = [info.detail, errorMessage(error)].filter(Boolean).join(" ");
   } finally {
@@ -417,6 +425,11 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
     }
 
     setMeta(db, "last_sync_at", new Date().toISOString());
+    // A success clears the failure markers: coverage must report the CURRENT
+    // sync state, not a stale failure that has since been resolved.
+    db.prepare(
+      "DELETE FROM sync_meta WHERE key IN ('last_sync_error', 'last_sync_error_at')",
+    ).run();
     const watermark = watermarkOf(db);
     return {
       ok: true,
@@ -425,7 +438,16 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
       watermark: watermark ?? { createdAt: "", id: "" },
     };
   } catch (error) {
-    return { ok: false, error: errorMessage(error), code: classifyError(error) };
+    // Recorded so coverage/reporting can say "sync failed at T because …"
+    // instead of silently serving stale data as if it were current.
+    const message = errorMessage(error);
+    try {
+      setMeta(db, "last_sync_error", message);
+      setMeta(db, "last_sync_error_at", new Date().toISOString());
+    } catch {
+      // a store too broken for meta writes cannot record the failure either
+    }
+    return { ok: false, error: message, code: classifyError(error) };
   } finally {
     try {
       db.close();

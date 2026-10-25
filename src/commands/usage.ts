@@ -8,6 +8,13 @@ import { openSession } from "../api/client.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
 import { delta, json, num, out, sparkline, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import {
+  describeProvenance,
+  formatLabel,
+  PROVENANCE_CATALOG,
+  type ProvenanceEntry,
+  provenanceAudit,
+} from "../obs/provenance.js";
 
 export const help = `${style.bold("aiand usage")} -- request and token usage for your org
 
@@ -15,10 +22,14 @@ Usage
   aiand usage
   aiand usage --range 30days
   aiand usage --metrics
+  aiand usage --audit
 
 Options
   --range <window>    1h, 24h, 7days (default), 30days, 3months
   --metrics           show the full metric breakdown instead of the summary
+  --audit             print the provenance table: every reported number, its
+                      label (gateway-billed / estimated(<source>) /
+                      heuristic(<name>)) and what it is computed from
   --json              machine-readable output
 
 Percentages compare the window against the one immediately before it.`;
@@ -27,8 +38,17 @@ export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     range: { type: "string" },
     metrics: { type: "boolean", default: false },
+    audit: { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (bool(parsed, "audit")) {
+    // Offline by design: the audit describes how numbers are made, it does
+    // not fetch any.
+    const rows = provenanceAudit();
+    if (bool(parsed, "json")) return json(rows);
+    return printAudit([...PROVENANCE_CATALOG]);
+  }
 
   const session = await openSession(resolveProfile(str(parsed, "profile")));
   const range = oneOf(parsed, "range", ANALYTICS_RANGES, "7days");
@@ -73,6 +93,24 @@ export async function run(argv: string[]): Promise<void> {
       ),
     );
   }
+}
+
+function printAudit(rows: ProvenanceEntry[]): void {
+  out(style.bold("Provenance of every reported number"));
+  out();
+  table<ProvenanceEntry>(rows, [
+    { header: "report", value: (r) => r.report },
+    { header: "field", value: (r) => r.field },
+    { header: "label", value: (r) => formatLabel(r.provenance) },
+    { header: "computed from", value: (r) => style.dim(describeProvenance(r.provenance)) },
+  ]);
+  out();
+  out(
+    style.dim(
+      "gateway-billed = verbatim gateway field · estimated(<source>) = computed by ai& · " +
+        "heuristic(<name>) = depends on a heuristic",
+    ),
+  );
 }
 
 function printMetrics(metrics: AnalyticsMetric[], range: string): void {
