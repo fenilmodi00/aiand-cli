@@ -56,7 +56,11 @@ test("signed out: clear verdicts, every check still runs, exit 0", async () => {
   assert.ok(found.auth.detail.includes("aiand login"), "signed-out message names the fix");
   assert.equal(found.adapters.status, "nothing-found");
   assert.equal(found["agent-keys"].status, "nothing-found");
-  assert.equal(found.store.status, "nothing-found", "store module present, no store.db yet (#61 merged)");
+  assert.equal(
+    found.store.status,
+    "nothing-found",
+    "store module present, no store.db yet (#61 merged)",
+  );
   assert.equal(found.lag.status, "skipped");
   for (const check of checks) {
     assert.ok(STATUSES.has(check.status), `status ${check.status} is in the vocabulary`);
