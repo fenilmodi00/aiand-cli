@@ -13,6 +13,8 @@ import * as logout from "./logout.js";
 import * as logs from "./logs.js";
 import * as models from "./models.js";
 import * as orgs from "./orgs.js";
+import * as overview from "./overview.js";
+import * as report from "./report.js";
 import * as restore from "./restore.js";
 import * as run from "./run.js";
 import * as runAgent from "./run-agent.js";
@@ -68,6 +70,18 @@ export const COMMANDS: Command[] = [
     aliases: ["analytics"],
     help: usage.help,
     run: usage.run,
+  },
+  {
+    name: "overview",
+    summary: "Pasteable plain-text period summary",
+    help: overview.help,
+    run: overview.run,
+  },
+  {
+    name: "report",
+    summary: "Self-contained offline HTML usage report",
+    help: report.help,
+    run: report.run,
   },
   { name: "orgs", summary: "List your organizations", help: orgs.help, run: orgs.run },
   {

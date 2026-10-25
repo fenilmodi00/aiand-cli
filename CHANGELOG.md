@@ -9,6 +9,23 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Offline HTML report and plain-text overview (ticket #76). `aiand report`
+  writes one self-contained HTML file (inline CSS and SVG charts, no CDN, no
+  server, no JS required; `--theme light|dark|auto`, `--out`/`--out-dir`,
+  `--open`, `--top`, `--sections timeseries,matrix,sessions,budget`) with
+  per-harness daily cost and cumulative-savings time series, a (harness x
+  model) comparison matrix, the most expensive sessions, and budget pacing;
+  every monetary figure carries a provenance badge and the single store load
+  feeds all sections. `aiand overview` prints a copy-pasteable, <=80-column
+  period summary (totals, by-harness share bars, top models, busiest days,
+  per-day table, budget line) that drops color automatically when piped;
+  both read only the local store (`--no-sync` honored, sync failures
+  surfaced without blocking) and keep costs per currency, never summed.
+  Savings are `estimated` from the cached model catalog and simply absent
+  when no cache exists.
+
+### Added
+
 - Budgets and burn-rate forecasting (advisory only — the CLI warns, it never
   blocks). `aiand config set budget.monthly <X>`, optional
   `budget.harness.<name>` overrides, `budget.warn-pct` (default 80), plus
