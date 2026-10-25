@@ -9,6 +9,18 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- A local, metadata-only request store. Every gateway `/logs` row is mirrored
+  into a SQLite database at `<config dir>/store.db` (`node:sqlite`, no new
+  dependencies), giving long-term request history the gateway itself cannot
+  serve beyond its 30-day window. `aiand store` shows the store's status;
+  `aiand store sync` pulls the newest rows incrementally (watermark-based,
+  idempotent re-sync, WAL + cross-process file lock, page-by-page watermarks
+  so an interrupted sync resumes where it stopped). A corrupt store is
+  quarantined and recreated automatically — the CLI keeps working, with a
+  loud warning. Observability commands parse `--no-sync` (and honor
+  `AIAND_NO_SYNC=1`) to read local data without touching the network. No
+  prompt or completion content is ever stored.
+
 - A side-by-side preview install. This branch's `install.sh` installs as
   `aiand-v2` next to a production `aiand` instead of over it: the checkout
   lives in `~/.aiand/cli-v2`, runtime state (credentials, locks, agent
