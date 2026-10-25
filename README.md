@@ -438,6 +438,36 @@ aiand usage --metrics              # full breakdown
 
 Both cover your whole organization, not just this machine.
 
+### Importing ccusage data
+
+Usage that never touched the ai& gateway (other harnesses, direct API keys)
+can come in through [ccusage](https://ccusage.com): pipe its JSON report
+output into the import adapter, fully offline — importing never syncs or
+touches the network.
+
+```bash
+ccusage daily --json | aiand usage --import-ccusage -
+aiand usage --import-ccusage ~/ccusage-sessions.json   # session/blocks reports work too
+```
+
+The adapter reads the `daily`, `weekly`, `monthly`, `session`, and `blocks`
+JSON shapes (per-model `--breakdown` rows included). Anything else is
+refused loudly, never guessed.
+
+What happens to the numbers:
+
+- Imported rows are **excluded from gateway totals by default** — an
+  anti-double-count rule, since the gateway never saw that usage and no
+  number should be counted twice. Imported usage shows up as its own,
+  clearly labeled source row: `imported(ccusage@<import-date>)`.
+- `aiand usage --include-imported` adds a combined **grand total** beside —
+  never replacing — the gateway-only totals.
+- ccusage costs are price-table-derived estimates (USD equivalents), so they
+  are labeled `estimated(imported ccusage <date>)`, never `gateway-billed`,
+  and they stay in their own currency lane.
+- Re-importing identical input is a no-op (content-hash dedupe); a newer
+  ccusage run over the same report periods replaces them instead of stacking.
+
 ## Cache and harnesses
 
 The gateway caches prompt prefixes, so the request *shape* an agent uses
