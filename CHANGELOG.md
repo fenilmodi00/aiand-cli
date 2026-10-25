@@ -9,6 +9,22 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- `aiand sessions` (ticket #62): a per-conversation view over the local
+  request store. The list shows one row per session — session id, harness
+  (masked-key attribution), model mix, turns (one stored request = one turn),
+  token sums, gateway-billed cost, TTFT p50/p95 (linear interpolation), error
+  count, and start/end — with `--top-cost N` surfacing the most expensive
+  sessions (cost descending, ties by the newer session, default 10 when the
+  flag is passed bare). `aiand sessions <id>` drills into one session with
+  request-level rows (timestamp, model, tokens, cost, latency_ms, ttft_ms,
+  status code) and a reconciling totals footer; an unknown id exits non-zero
+  with the nearest recent sessions. Filters compose with the report
+  conventions (`--since/--until`, `--last`, `--timezone`, `--agent`,
+  `--harness`, `--model` globs, `--session-gap`), plus `--no-cost`,
+  `--compact`, `--format csv` (fixed header, one row per session+currency),
+  `--no-sync`/`AIAND_NO_SYNC`, and `--json` carrying the mandatory #66
+  sessionization confidence annotation. Mixed currencies are shown per
+  currency, never summed. Auto-syncs before reading and fails open.
 - Deterministic benchmark regression gate (ticket #67). `npm run
   benchmark:recorded` replays the whole harness scenario pack offline
   (deterministic prefix-cache transport, no network, no live gateway) and
