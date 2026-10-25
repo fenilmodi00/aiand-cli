@@ -1,10 +1,12 @@
-import { DEFAULT_BASE_URL, trimSlash } from "../../config.js";
+import { commandName, DEFAULT_BASE_URL, trimSlash } from "../../config.js";
 import { asObject } from "../managed-file.js";
 import type { YamlValue } from "./yaml.js";
 import { readYamlMapping, yamlSet } from "./yaml.js";
 
+// Read at module load: the id and marker are written into models.yml once,
+// per process, and must stay consistent across build/read/delete.
 /** The provider id in models.yml; omp already bundles an `aiand` provider. */
-export const OMP_PROVIDER_ID = "aiand";
+export const OMP_PROVIDER_ID = commandName();
 
 /**
  * Ownership marker stamped inside the models.yml provider block. omp has no
@@ -12,7 +14,7 @@ export const OMP_PROVIDER_ID = "aiand";
  * provider schema tolerates unknown keys — the block is the right carrier.
  */
 export const OMP_MARKER_KEY = "managedBy";
-export const OMP_MARKER = "aiand";
+export const OMP_MARKER = commandName();
 
 /** The gateway base URL omp's provider block speaks to. */
 export const ompBaseUrl = (baseUrl?: string): string =>

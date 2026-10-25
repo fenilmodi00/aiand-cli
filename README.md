@@ -38,6 +38,26 @@ curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh
 irm https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | iex
 ```
 
+## Try the cli-v2 preview (side-by-side)
+
+This branch installs as `aiand-v2` next to a production `aiand` — separate
+command, checkout (`~/.aiand/cli-v2`), and state (`~/.config/aiand-v2`) — so
+you can run the preview without touching a production install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/cli-v2/install.sh | bash
+```
+
+`aiand-v2 update` re-fetches the preview branch. Uninstall the preview (it
+keeps the preview's profiles and credentials) with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/cli-v2/install.sh | bash -s -- uninstall
+```
+
+(On Windows, run the preview from Git Bash; `install.ps1` is unchanged on this
+branch.)
+
 The installer will modify your shell, `AIAND_NO_MODIFY_PATH=1` to skip permanent PATH changes while still adding the CLI to the installer's process PATH.
 
 To update the CLI, run `aiand update` (or run the install command again).

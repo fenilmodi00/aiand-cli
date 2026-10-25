@@ -5,6 +5,7 @@ import { CliError } from "../../cli/errors.js";
 import { findWindowsExecutable } from "../../cli/win-spawn.js";
 import {
   agentHome,
+  commandName,
   DEFAULT_BASE_URL,
   isRoutableBaseUrl,
   loadConfig,
@@ -45,12 +46,14 @@ import {
 
 const CODEX_ID = "codex";
 const CODEX_BIN = "codex";
-const PROFILE = "aiand";
-const PROVIDER_ID = "aiand";
+// Read at module load: the values are written into config files once, per
+// process, and must stay consistent across every table and marker in it.
+const PROFILE = commandName();
+const PROVIDER_ID = PROFILE;
 const PROVIDER_TABLE = `model_providers.${PROVIDER_ID}`;
 const AUTH_TABLE = `${PROVIDER_TABLE}.auth`;
 // Also the ownership marker: --strict-config rejects unknown keys, so no marker key can be added.
-const AUTH_COMMAND = "aiand";
+const AUTH_COMMAND = PROFILE;
 const AUTH_ARGS = ["key", "export"];
 const WIRE_API = "responses";
 // ai& serves function tools only; a hosted tool fails the whole request.
@@ -81,8 +84,7 @@ type CodexRecord = {
   userProjects?: string[];
 };
 
-const HEADER =
-  "# Managed by aiand: `aiand codex off` removes it. Use with `codex --profile aiand`.\n";
+const HEADER = `# Managed by ${PROFILE}: \`${PROFILE} codex off\` removes it. Use with \`codex --profile ${PROFILE}\`.\n`;
 
 function currentProfilePath(): string {
   const dir = process.env.CODEX_HOME || join(agentHome(), ".codex");

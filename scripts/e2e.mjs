@@ -231,6 +231,10 @@ async function tmpEnv() {
 
   const env = { ...process.env };
   for (const name of SCRUB) delete env[name];
+  // This branch's install.sh installs side-by-side as aiand-v2 by default; the
+  // uninstall fixtures below stand in for a production install, so pin the
+  // production knobs (install.ps1 is untouched by the preview and ignores it).
+  env.AIAND_V2_SIDEBYSIDE = "0";
   env.AIAND_HOME = home;
   env.AIAND_CONFIG_DIR = cfg;
   env.AIAND_API_KEY = "sk-e2e-test-key-0000000000000000000000";

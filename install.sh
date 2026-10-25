@@ -42,8 +42,41 @@
 #   AIAND_FAST_INSTALL=1|0               deprecated alias for
 #                                        AIAND_PUBLISHED_RELEASE; still works
 #   AIAND_RELEASE_URL=…|/local/path      manifest to read instead of npm
+#   AIAND_BRANCH=…                       branch to clone when AIAND_SOURCE is a
+#                                        git URL (default: the source's own)
+#   AIAND_INSTALL_NAME=aiand             launcher/command name this installer
+#                                        writes and uninstalls
+#   AIAND_V2_SIDEBYSIDE=0                restore the production defaults (see
+#                                        the side-by-side block below)
 #   NO_COLOR                             disable ANSI colors in this script
 set -euo pipefail
+
+# --- cli-v2 side-by-side preview --------------------------------------------
+# This branch installs next to a production `aiand` instead of over it: the
+# command is `aiand-v2`, the checkout lives in ~/.aiand/cli-v2, runtime state
+# (credentials, locks, agent snapshots) goes to ~/.config/aiand-v2, and the
+# source is this fork's cli-v2 branch — never the published npm release,
+# which is production. The launcher bakes these knobs so `aiand-v2 update`
+# re-fetches this branch and `aiand-v2`'s uninstall addresses this install.
+# Delete this block when cli-v2 merges back to main. AIAND_V2_SIDEBYSIDE=0
+# restores the production defaults (the installer test harnesses pin it);
+# a knob already set in the environment always wins.
+if [[ "${AIAND_V2_SIDEBYSIDE:-1}" != "0" ]]; then
+  : "${AIAND_INSTALL_NAME:=aiand-v2}"
+  : "${AIAND_DIR:=${HOME}/.aiand/cli-v2}"
+  : "${AIAND_CONFIG_DIR:=${HOME}/.config/aiand-v2}"
+  : "${AIAND_SOURCE:=https://github.com/fenilmodi00/aiand-cli.git}"
+  : "${AIAND_BRANCH:=cli-v2}"
+  : "${AIAND_PUBLISHED_RELEASE:=0}"
+  export AIAND_INSTALL_NAME AIAND_DIR AIAND_CONFIG_DIR AIAND_SOURCE AIAND_BRANCH AIAND_PUBLISHED_RELEASE
+fi
+# Every launcher path, uninstall target, and message that names the command
+# derives from this one value.
+INSTALL_NAME="${AIAND_INSTALL_NAME:-aiand}"
+if ! [[ "${INSTALL_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  echo "error: AIAND_INSTALL_NAME must be a plain command name (letters, digits, . _ -); got '${INSTALL_NAME}'." >&2
+  exit 1
+fi
 
 DEFAULT_SOURCE="https://github.com/aiandlabs/aiand-cli.git"
 SOURCE="${AIAND_SOURCE:-${DEFAULT_SOURCE}}"
@@ -131,9 +164,11 @@ show_intro() {
   printf '\n' >&2
 }
 
-# Only https://github.com/aiandlabs/aiand-cli(.git) may be a URL source.
+# Only https://github.com/<allowlisted repo>(.git) may be a URL source.
 # Local paths (CI workspace, a fork checkout) stay allowed: they carry no
-# network trust decision.
+# network trust decision. The fenilmodi00 fork is allowlisted only for this
+# branch's side-by-side preview (see the block near the top); main trusts
+# aiandlabs/aiand-cli alone.
 is_allowlisted_source() {
   local url="${1:-}" rest host path
   if [[ "${url}" != *"://"* ]]; then
@@ -158,7 +193,14 @@ is_allowlisted_source() {
   else
     path="/"
   fi
-  [[ "${path}" == "/aiandlabs/aiand-cli.git" || "${path}" == "/aiandlabs/aiand-cli" ]]
+  case "${path}" in
+    "/aiandlabs/aiand-cli" | "/aiandlabs/aiand-cli.git") return 0 ;;
+    "/fenilmodi00/aiand-cli" | "/fenilmodi00/aiand-cli.git")
+      [[ "${AIAND_V2_SIDEBYSIDE:-1}" != "0" ]] && return 0
+      return 1
+      ;;
+  esac
+  return 1
 }
 
 install_note() {
@@ -511,7 +553,13 @@ stage_source() {
 
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   STAGING_DIR="$(mktemp -d "$(dirname "${INSTALL_DIR}")/.cli-staging-XXXXXX")"
-  if ! git clone --quiet --depth 1 "${SOURCE}" "${STAGING_DIR}"; then
+  # AIAND_BRANCH picks a non-default branch from the same allowlisted source
+  # (the side-by-side preview installs its own branch).
+  local clone_args=(--quiet --depth 1)
+  if [[ -n "${AIAND_BRANCH:-}" ]]; then
+    clone_args+=(--branch "${AIAND_BRANCH}")
+  fi
+  if ! git clone "${clone_args[@]}" "${SOURCE}" "${STAGING_DIR}"; then
     echo "error: failed to clone ${SOURCE}; the existing installation was left unchanged." >&2
     exit 1
   fi
@@ -657,16 +705,37 @@ add_bin_dir_to_path() {
   fi
 }
 
+# Identity knobs baked into the launcher, so a side-by-side install keeps
+# updating, uninstalling, and wiring agents as itself instead of drifting
+# onto production aiand's paths (`aiand-v2 update` reruns its checkout's
+# install.sh with these in the environment). Only knobs actually set are
+# baked: the production install sets none and its launcher stays as before.
+bake_launcher_env() {
+  local var value
+  for var in AIAND_SOURCE AIAND_BRANCH AIAND_DIR AIAND_CONFIG_DIR AIAND_INSTALL_NAME AIAND_PUBLISHED_RELEASE; do
+    value="${!var:-}"
+    [[ -n "${value}" ]] || continue
+    value="${value//\"/\\\"}"
+    printf 'export %s="%s"\n' "${var}" "${value}"
+  done
+  # The command name the CLI writes into agent configs (codex profiles,
+  # provider keys, managedBy markers): baked only when it is not the
+  # default, keeping the production launcher byte-identical.
+  if [[ "${INSTALL_NAME}" != "aiand" ]]; then
+    printf 'export AIAND_COMMAND_NAME="%s"\n' "${INSTALL_NAME}"
+  fi
+}
+
 install_cli_launcher() {
   local source_dir="$1"
   local bin_dir="${HOME}/.local/bin"
-  local launcher_path="${bin_dir}/aiand"
+  local launcher_path="${bin_dir}/${INSTALL_NAME}"
   local shadow=""
 
   refuse_foreign_launcher "${launcher_path}"
   # Snapshot before add_bin_dir_to_path prepends bin_dir: another aiand
   # earlier on PATH keeps shadowing the new launcher in this shell.
-  shadow="$(command -v aiand 2>/dev/null || true)"
+  shadow="$(command -v "${INSTALL_NAME}" 2>/dev/null || true)"
 
   mkdir -p "${bin_dir}"
 
@@ -679,13 +748,14 @@ install_cli_launcher() {
   cat >"${launcher_path}" <<EOF
 #!/usr/bin/env bash
 # ${LAUNCHER_HEADER}. Uses the Node binary discovered at install time, falling
-# back to PATH lookup, so aiand works without \`node\` on PATH.
+# back to PATH lookup, so ${INSTALL_NAME} works without \`node\` on PATH.
 NODE_BIN="\${AIAND_NODE_BIN:-${node_bin}}"
 [ -x "\$NODE_BIN" ] || NODE_BIN="\$(command -v node 2>/dev/null)"
 if [ -z "\$NODE_BIN" ] || ! [ -x "\$NODE_BIN" ]; then
-  echo "aiand: Node.js was not found. Install Node ${MIN_NODE_VERSION}+ and re-run the aiand installer." >&2
+  echo "${INSTALL_NAME}: Node.js was not found. Install Node ${MIN_NODE_VERSION}+ and re-run the aiand installer." >&2
   exit 1
 fi
+$(bake_launcher_env)
 # --disable-warning keeps node's ExperimentalWarning off aiand's stderr; the
 # flag exists since Node 21.3 and this installer requires ${MIN_NODE_MAJOR}+.
 exec "\$NODE_BIN" --disable-warning=ExperimentalWarning "${source_dir}/dist/index.js" "\$@"
@@ -695,7 +765,7 @@ EOF
   add_bin_dir_to_path
 
   if [[ -n "${shadow}" && "${shadow}" != "${launcher_path}" ]]; then
-    install_note "Another aiand at ${shadow} shadows the new launcher in this shell (open a new terminal if aiand is not found)."
+    install_note "Another ${INSTALL_NAME} at ${shadow} shadows the new launcher in this shell (open a new terminal if ${INSTALL_NAME} is not found)."
   fi
 }
 uninstall_cli() {
@@ -717,11 +787,11 @@ uninstall_cli() {
 
   local home_real launcher launcher_cmd working_launcher checkout checkout_orig checkout_parent off_ok kept_launcher kept_cmd
   home_real="$(cd "${HOME}" 2>/dev/null && pwd -P || printf '%s' "${HOME}")"
-  launcher="${home_real}/.local/bin/aiand"
-  # install.ps1 writes aiand.cmd next to the Git Bash shim; uninstall must
+  launcher="${home_real}/.local/bin/${INSTALL_NAME}"
+  # install.ps1 writes <name>.cmd next to the Git Bash shim; uninstall must
   # remove both and may need the .cmd file for `init --off` when the shim
   # is missing or not executable.
-  launcher_cmd="${home_real}/.local/bin/aiand.cmd"
+  launcher_cmd="${home_real}/.local/bin/${INSTALL_NAME}.cmd"
   checkout="${AIAND_DIR:-${home_real}/.aiand/cli}"
   # AIAND_DIR is user-controlled: canonicalize before comparing ("$HOME/",
   # "$HOME//" and "//" name the same directories), then refuse HOME itself,
@@ -838,7 +908,7 @@ main() {
     echo "Usage: bash install.sh [uninstall [--force]]" >&2
     exit 1
   fi
-  refuse_foreign_launcher "${HOME}/.local/bin/aiand"
+  refuse_foreign_launcher "${HOME}/.local/bin/${INSTALL_NAME}"
 
   # The alias still drives the install, so say so once rather than silently
   # honouring a name the header documents only as an alias.
@@ -876,9 +946,23 @@ main() {
     ensure_toolchain
     stage 3 'Fetching source'
     [[ -n "${source_build_note}" ]] && dim_note "${source_build_note}"
+    # Inside an @aiand/cli checkout the tree is the source to install — except
+    # when it IS the checkout being installed: an `aiand update` rerun of the
+    # launcher's own install.sh (SCRIPT_DIR == INSTALL_DIR) must fetch remote
+    # changes from the source baked into the launcher, not rebuild the old
+    # tree in place.
     if [[ -n "${SCRIPT_DIR}" ]] && is_aiand_cli_package "${SCRIPT_DIR}/package.json"; then
-      log "Using local source"
-      source_dir="${SCRIPT_DIR}"
+      local script_dir_real install_dir_real
+      script_dir_real="$(cd "${SCRIPT_DIR}" 2>/dev/null && pwd -P || true)"
+      install_dir_real="$(cd "${INSTALL_DIR}" 2>/dev/null && pwd -P || true)"
+      if [[ -n "${script_dir_real}" && "${script_dir_real}" == "${install_dir_real}" ]]; then
+        stage_source
+        source_dir="${STAGING_DIR}"
+        staged=1
+      else
+        log "Using local source"
+        source_dir="${SCRIPT_DIR}"
+      fi
     else
       stage_source
       source_dir="${STAGING_DIR}"
@@ -903,7 +987,7 @@ main() {
   install_cli_launcher "${final_dir}"
 
   print_install_notes
-  log "Done. Run 'aiand --version' to check the install."
+  log "Done. Run '${INSTALL_NAME} --version' to check the install."
 }
 
 main "$@"

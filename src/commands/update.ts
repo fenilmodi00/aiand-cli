@@ -17,9 +17,15 @@ import {
 /** The package the registry and npm installs are asked for. */
 const PACKAGE = "@aiand/cli";
 
+// A launcher install living under AIAND_DIR points at its own install.sh;
+// the default stays the production launcher's checkout.
+const INSTALLER_HINT = process.env.AIAND_DIR
+  ? `bash ${join(process.env.AIAND_DIR, "install.sh")}`
+  : "bash ~/.aiand/cli/install.sh";
+
 /** One-line hints per install kind, so an upgrade never dead-ends. */
 const MANUAL: Record<InstallKind["kind"], string> = {
-  installer: "bash ~/.aiand/cli/install.sh",
+  installer: INSTALLER_HINT,
   npm: `npm install -g ${PACKAGE}`,
   source: `npm install -g ${PACKAGE}`,
 };

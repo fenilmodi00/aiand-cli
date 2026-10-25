@@ -1,8 +1,10 @@
-import { isRoutableBaseUrl } from "../../config.js";
+import { commandName, isRoutableBaseUrl } from "../../config.js";
 import { asObject, jsoncDelete, jsoncSet, parseWrittenObject } from "../managed-file.js";
 
+// Read at module load: the id is written into models.json/auth.json once,
+// per process, and must stay consistent across build/read/delete.
 /** Provider id in Pi's models.json and the key of its auth.json credential. */
-export const PI_PROVIDER_ID = "aiand";
+export const PI_PROVIDER_ID = commandName();
 
 /**
  * What enable() recorded so off can tell its values from the user's. The

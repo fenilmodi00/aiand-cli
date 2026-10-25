@@ -76,6 +76,10 @@ function childEnv(home, extra = {}) {
     // deprecation note the case did not ask for.
     AIAND_FAST_INSTALL: undefined,
     AIAND_PUBLISHED_RELEASE: undefined,
+    // This branch's install.sh installs side-by-side as aiand-v2 by default;
+    // the cases below assert the production paths, so pin the production
+    // behavior. The side-by-side cases opt back in with AIAND_V2_SIDEBYSIDE=1.
+    AIAND_V2_SIDEBYSIDE: "0",
     ...extra,
   };
 }
@@ -810,7 +814,7 @@ if (!HAS_BASH) {
       );
       check(
         "cloned source reports using source from",
-        (cloned.stderr ?? "").includes(`Using source from ${cloneSrc}`),
+        (cloned.stderr ?? "").includes(`Using source from ${toGitBashPath(cloneSrc)}`),
         (cloned.stderr ?? "").split("\n").find((l) => l.startsWith("Using ")) ?? "",
       );
       check(
@@ -884,7 +888,13 @@ if (!HAS_BASH) {
       mkdirSync(join(pkgRoot, "package", "dist"), { recursive: true });
       copyFileSync(join(srcDir, "package.json"), join(pkgRoot, "package", "package.json"));
       copyFileSync(join(srcDir, "dist", "index.js"), join(pkgRoot, "package", "dist", "index.js"));
-      execFileSync("tar", ["-czf", tarball, "-C", pkgRoot, "package"]);
+      execFileSync("tar", [
+        "-czf",
+        toGitBashPath(tarball),
+        "-C",
+        toGitBashPath(pkgRoot),
+        "package",
+      ]);
       const manifestPath = join(caseDir, "manifest.json");
       writeFileSync(
         manifestPath,
@@ -1067,6 +1077,233 @@ if (!HAS_BASH) {
     }
   } catch (error) {
     check("published release path harness", false, String(error?.message ?? error).split("\n")[0]);
+  }
+}
+
+// --- case 14: the side-by-side preview installs as aiand-v2 -----------------
+// The branch's default (AIAND_V2_SIDEBYSIDE unset) must leave every
+// production path — the `aiand` launcher, ~/.aiand/cli — untouched, land its
+// own checkout and config dir, bake its identity into the launcher, and
+// uninstall itself without touching production.
+if (!HAS_BASH) {
+  check("side-by-side preview skipped (no bash)", true, "bash not installed");
+} else {
+  try {
+    const caseDir = mkdtempSync(join(tmpdir(), "aiand-install-behavior-"));
+    try {
+      const home = join(caseDir, "home");
+      mkdirSync(home, { recursive: true });
+      const srcDir = join(caseDir, "src");
+      gitInitRunnableCli(srcDir, "0.9.0-v2");
+      // The preview block defaults AIAND_BRANCH to cli-v2; the fixture's
+      // default branch name varies with the host git config, so rename it.
+      execFileSync("git", ["-C", srcDir, "branch", "-m", "cli-v2"]);
+      const installer = copiedInstaller(caseDir);
+      const env = childEnv(home, {
+        AIAND_V2_SIDEBYSIDE: "1",
+        AIAND_SOURCE: srcDir,
+        AIAND_SKIP_BUILD: "1",
+        AIAND_NO_MODIFY_PATH: "1",
+      });
+      const run = runBash([installer], env);
+      const stderr = run.stderr ?? "";
+      check(
+        "side-by-side install exits zero",
+        (run.status ?? 1) === 0,
+        stderr.split("\n").find((l) => /error/i.test(l)) ?? `status=${run.status}`,
+      );
+      const v2Launcher = join(home, ".local", "bin", "aiand-v2");
+      check(
+        "side-by-side writes the aiand-v2 launcher",
+        existsSync(v2Launcher) && readFileSync(v2Launcher, "utf8").includes(LAUNCHER_HEADER),
+        v2Launcher,
+      );
+      const launcherBody = existsSync(v2Launcher) ? readFileSync(v2Launcher, "utf8") : "";
+      check(
+        "launcher bakes the preview command name",
+        launcherBody.includes('export AIAND_COMMAND_NAME="aiand-v2"'),
+        launcherBody.split("\n").find((l) => l.includes("AIAND_COMMAND_NAME")) ?? "(absent)",
+      );
+      check(
+        "launcher bakes its install dir",
+        launcherBody.includes("export AIAND_DIR="),
+        launcherBody.split("\n").find((l) => l.includes("AIAND_DIR")) ?? "(absent)",
+      );
+      check(
+        "side-by-side leaves the production launcher alone",
+        !existsSync(join(home, ".local", "bin", "aiand")),
+        join(home, ".local", "bin", "aiand"),
+      );
+      check(
+        "side-by-side leaves the production checkout alone",
+        !existsSync(join(home, ".aiand", "cli")),
+        join(home, ".aiand", "cli"),
+      );
+      const v2Checkout = join(home, ".aiand", "cli-v2");
+      check(
+        "preview checkout lives beside production's, installer-owned",
+        existsSync(join(v2Checkout, OWNERSHIP_MARKER)),
+        v2Checkout,
+      );
+      check(
+        "side-by-side clone announces its branch source",
+        stderr.includes(`Using source from ${toGitBashPath(srcDir)}`),
+        stderr.split("\n").find((l) => l.startsWith("Using ")) ?? "",
+      );
+      const version = runBash([v2Launcher, "--version"], childEnv(home));
+      check(
+        "aiand-v2 launcher reports the preview version",
+        version.status === 0 && (version.stdout ?? "").trim() === "0.9.0-v2",
+        (version.stdout ?? "").trim() || `status=${version.status}`,
+      );
+
+      // Uninstall --force (no agent fixtures to tear down) removes exactly
+      // the preview files and keeps the preview config dir named in output.
+      const off = runBash(
+        [installer, "uninstall", "--force"],
+        childEnv(home, { AIAND_V2_SIDEBYSIDE: "1" }),
+      );
+      const offOut = `${off.stdout ?? ""}${off.stderr ?? ""}`;
+      check(
+        "side-by-side uninstall exits zero",
+        (off.status ?? 1) === 0,
+        offOut.split("\n").find((l) => /error/i.test(l)) ?? `status=${off.status}`,
+      );
+      check(
+        "side-by-side uninstall removes the aiand-v2 launcher",
+        !existsSync(v2Launcher),
+        v2Launcher,
+      );
+      check(
+        "side-by-side uninstall removes the preview checkout",
+        !existsSync(v2Checkout),
+        v2Checkout,
+      );
+      check(
+        "side-by-side uninstall keeps the production paths alone",
+        !existsSync(join(home, ".local", "bin", "aiand")) &&
+          !existsSync(join(home, ".aiand", "cli")),
+        "production launcher or checkout appeared",
+      );
+      check(
+        "side-by-side uninstall names the preview config dir",
+        offOut.includes("aiand-v2") && offOut.includes("profiles"),
+        offOut.split("\n").find((l) => l.includes("profiles")) ?? "(no config note)",
+      );
+    } finally {
+      rmSync(caseDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    check("side-by-side preview harness", false, String(error?.message ?? error).split("\n")[0]);
+  }
+}
+
+// --- case 15: the launcher's own install.sh rerun fetches, not rebuilds -----
+// `aiand-v2 update` re-runs the checkout's install.sh with the launcher's
+// baked AIAND_SOURCE; there SCRIPT_DIR == INSTALL_DIR, and the rerun must
+// fetch remote changes (staged clone + swap), not rebuild the old tree in
+// place ("Using local source").
+if (!HAS_BASH) {
+  check("launcher update fetch skipped (no bash)", true, "bash not installed");
+} else if (process.platform === "win32") {
+  // The rerun's staged swap renames the checkout while bash still holds the
+  // running install.sh open — a sharing violation on Windows, for production
+  // `aiand update` just the same. The fetch semantics are POSIX coverage.
+  check(
+    "launcher update fetch skipped (win32 cannot swap the running script's checkout)",
+    true,
+    "posix-only",
+  );
+} else {
+  try {
+    const caseDir = mkdtempSync(join(tmpdir(), "aiand-install-behavior-"));
+    try {
+      const home = join(caseDir, "home");
+      mkdirSync(home, { recursive: true });
+      const srcDir = join(caseDir, "src");
+      gitInitRunnableCli(srcDir, "0.0.0-one");
+      execFileSync("git", ["-C", srcDir, "branch", "-m", "cli-v2"]);
+      // The checkout must carry install.sh so the rerun can find it, exactly
+      // as a real checkout does.
+      copyFileSync(join(ROOT, "install.sh"), join(srcDir, "install.sh"));
+      execFileSync("git", ["-C", srcDir, "add", "install.sh"]);
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "user.name=test",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-qm",
+          "install.sh",
+        ],
+        { cwd: srcDir },
+      );
+      const installer = copiedInstaller(caseDir);
+      const env = childEnv(home, {
+        AIAND_V2_SIDEBYSIDE: "1",
+        AIAND_SOURCE: srcDir,
+        AIAND_SKIP_BUILD: "1",
+        AIAND_NO_MODIFY_PATH: "1",
+      });
+      const first = runBash([installer], env);
+      check(
+        "launcher update: first install exits zero",
+        (first.status ?? 1) === 0,
+        (first.stderr ?? "").split("\n").find((l) => /error/i.test(l)) ?? `status=${first.status}`,
+      );
+
+      writeFileSync(
+        join(srcDir, "package.json"),
+        `${JSON.stringify({ name: "@aiand/cli", version: "0.0.0-two" }, null, 2)}\n`,
+      );
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "user.name=test",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-qam",
+          "two",
+        ],
+        { cwd: srcDir },
+      );
+
+      const checkoutInstaller = join(home, ".aiand", "cli-v2", "install.sh");
+      const second = runBash([checkoutInstaller], env);
+      const stderr = second.stderr ?? "";
+      check(
+        "launcher update: checkout rerun exits zero",
+        (second.status ?? 1) === 0,
+        stderr.split("\n").find((l) => /error/i.test(l)) ?? `status=${second.status}`,
+      );
+      check(
+        "launcher update fetches the baked source instead of rebuilding in place",
+        !stderr.includes("Using local source") &&
+          stderr.includes(`Using source from ${toGitBashPath(srcDir)}`),
+        stderr.split("\n").find((l) => l.startsWith("Using ")) ?? "",
+      );
+      const version = runBash(
+        [join(home, ".local", "bin", "aiand-v2"), "--version"],
+        childEnv(home),
+      );
+      check(
+        "launcher reports the fetched version after update",
+        version.status === 0 && (version.stdout ?? "").trim() === "0.0.0-two",
+        (version.stdout ?? "").trim() || `status=${version.status}`,
+      );
+    } finally {
+      rmSync(caseDir, { recursive: true, force: true });
+    }
+  } catch (error) {
+    check("launcher update fetch harness", false, String(error?.message ?? error).split("\n")[0]);
   }
 }
 

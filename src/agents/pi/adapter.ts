@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
+import { agentHome, commandName, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
@@ -52,7 +52,7 @@ const PI_BIN = "pi";
  * unknown keys through.
  */
 const PI_MARKER_KEY = "managedBy";
-const PI_MARKER = "aiand";
+const PI_MARKER = commandName();
 
 /** Recovery hint for a Pi config file that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand pi on again.";

@@ -8,6 +8,7 @@ import { CliError } from "../../cli/errors.js";
 import { err } from "../../cli/output.js";
 import {
   agentHome,
+  commandName,
   configDir,
   isRoutableBaseUrl,
   trimSlash,
@@ -52,8 +53,8 @@ const OPENCODE_ID = "opencode";
 const OPENCODE_BIN = "opencode";
 /** OpenCode's own built-in Zen provider, hidden in the launcher overlay. */
 const OPENCODE_ZEN_PROVIDER_ID = "opencode";
-/** Provider id in the OpenCode config — the "aiand/" model ref prefix too. */
-const OPENCODE_PROVIDER_ID = "aiand";
+/** Provider id in the OpenCode config — the "<commandName>/" model ref prefix too. */
+const OPENCODE_PROVIDER_ID = commandName();
 /**
  * Ownership marker aiand stamps so off/logout strip surgically. It lives on
  * provider `options` because OpenCode's config schema is `.strict()` at the
@@ -61,7 +62,7 @@ const OPENCODE_PROVIDER_ID = "aiand";
  * (`Unrecognized key: x-aiand`), and options is the one object that allows
  * extra keys.
  */
-const OPENCODE_MARKER_KEY = "x-aiand";
+const OPENCODE_MARKER_KEY = `x-${OPENCODE_PROVIDER_ID}`;
 const OPENCODE_MARKER_PATH = ["provider", OPENCODE_PROVIDER_ID, "options", OPENCODE_MARKER_KEY];
 const OPENCODE_KEY_PATH = ["provider", OPENCODE_PROVIDER_ID, "options", "apiKey"];
 

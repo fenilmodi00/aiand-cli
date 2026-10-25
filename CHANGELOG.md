@@ -9,6 +9,29 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- A side-by-side preview install. This branch's `install.sh` installs as
+  `aiand-v2` next to a production `aiand` instead of over it: the checkout
+  lives in `~/.aiand/cli-v2`, runtime state (credentials, locks, agent
+  snapshots) goes to `~/.config/aiand-v2`, and the source is this fork's
+  `cli-v2` branch — never the published npm release. The launcher bakes the
+  install's identity (source, branch, dirs, command name), so `aiand-v2`
+  update re-fetches the preview branch and its uninstall removes exactly the
+  preview files. Agent wiring (codex profiles, opencode/omp/pi/copilot
+  provider ids and `managedBy` markers) follows `AIAND_COMMAND_NAME`, so both
+  installs can wire the same agents without clobbering each other's entries.
+  `AIAND_V2_SIDEBYSIDE=0` restores the production defaults (the test
+  harnesses pin it); the block is deleted when the branch merges back.
+
+- `AIAND_BRANCH` names the branch to clone when `AIAND_SOURCE` is a git URL.
+
+- `install.sh` re-runs fetch remote changes when the script being run is the
+  checkout being installed (`aiand update`'s rerun of the launcher's own
+  `install.sh` on the source path) instead of rebuilding the old tree in
+  place; running `install.sh` from inside any other checkout still installs
+  that local source.
+
+### Changed
+
 - `aiand update` upgrades this install in place. The update check is always a
   live registry read (`--check` reports and exits 1 when a newer version
   exists, `--json` prints `{current, latest, installKind, upToDate}`), an

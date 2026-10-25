@@ -1,8 +1,10 @@
 import type { Model } from "../../api/models.js";
-import { DEFAULT_BASE_URL, trimSlash } from "../../config.js";
+import { commandName, DEFAULT_BASE_URL, trimSlash } from "../../config.js";
 
+// Read at module load: the name is written into providers.json once, per
+// process, and must stay consistent across build/read/delete.
 /** Provider name in providers.json and the qualifier in every model selection. */
-export const COPILOT_PROVIDER_NAME = "aiand";
+export const COPILOT_PROVIDER_NAME = commandName();
 /** Model selections the CLI accepts for a BYOK provider are `aiand/<id>`. */
 export const COPILOT_SELECTION_PREFIX = `${COPILOT_PROVIDER_NAME}/`;
 

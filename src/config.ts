@@ -9,6 +9,19 @@ export { agentHome, configDir, writeFileAtomic } from "./fsutil.js";
 
 export const DEFAULT_BASE_URL = "https://api.aiand.com";
 
+/**
+ * The command name written into agent config files: profile names, provider
+ * ids, auth commands, and ownership markers. A side-by-side second install
+ * must not collide with the production entries in the same files, so the
+ * launcher can rename it via AIAND_COMMAND_NAME. Only path-free single
+ * tokens are honored — the name becomes file names (codex profile) and
+ * markers other installs must match byte-for-byte.
+ */
+export function commandName(): string {
+  const raw = process.env.AIAND_COMMAND_NAME;
+  return raw !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(raw) ? raw : "aiand";
+}
+
 export type Profile = {
   authUrl?: string;
   apiUrl?: string;
