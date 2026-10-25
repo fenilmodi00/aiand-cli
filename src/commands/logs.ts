@@ -3,6 +3,7 @@ import { getLogs, getLogsPaged, LOG_PAGE_MAX, LOG_RANGES, type LogEntry } from "
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
 import { currencySymbol, err, json, num, out, relativeTime, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { storeBudgetWarning } from "../obs/forecast.js";
 import { SECOND_MS } from "../time.js";
 
 const DEFAULT_LIMIT = 20;
@@ -21,6 +22,7 @@ Options
   --limit <n>         rows to fetch, paging as needed (default ${DEFAULT_LIMIT})
   --follow            poll for new requests until interrupted
   --interval <s>      poll interval for --follow (default ${FOLLOW_INTERVAL_SECONDS})
+  --no-warn           suppress the budget-threshold warning (also AIAND_NO_WARN=1)
   --json              machine-readable output`;
 
 export async function run(argv: string[]): Promise<void> {
@@ -30,6 +32,7 @@ export async function run(argv: string[]): Promise<void> {
     limit: { type: "string" },
     follow: { type: "boolean", default: false },
     interval: { type: "string" },
+    "no-warn": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
@@ -60,6 +63,12 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   printTable(entries);
+
+  // The budget-threshold warning (ticket #74): stderr when monthly spend
+  // crosses budget.warn-pct, suppressible via --no-warn / AIAND_NO_WARN=1.
+  const budgetWarning = storeBudgetWarning(bool(parsed, "no-warn"));
+  if (budgetWarning) err(style.yellow(budgetWarning));
+
   out();
   const noun = `request${entries.length === 1 ? "" : "s"}`;
   out(

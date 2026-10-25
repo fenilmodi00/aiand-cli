@@ -9,6 +9,23 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Budgets and burn-rate forecasting (advisory only — the CLI warns, it never
+  blocks). `aiand config set budget.monthly <X>`, optional
+  `budget.harness.<name>` overrides, `budget.warn-pct` (default 80), plus
+  `aiand config get budget` and `aiand config unset budget.<key>`. New
+  `aiand forecast` command: burn-rate v1 projection (current month spend +
+  spend-per-hour over the trailing 24h, falling back to the trailing 7d)
+  against the budget window with an on-pace / exceeding / indeterminate
+  pacing verdict, projected month-end figure and exceed date, provenance
+  labels on every row, `--harness` / `--since` / `--until` / `--last` /
+  `--range` filters, `--json` / `--jq`, and `--suggest-budget` (P90 of
+  completed months, minimum two). The pacing verdict also appears in
+  `aiand status` and the `aiand usage` footer, and cost-showing commands
+  (`usage`, `cache`, `logs`, `forecast`) print a one-line stderr warning at
+  warn-pct of the monthly budget, suppressible with `--no-warn` or
+  `AIAND_NO_WARN=1`. Mixed-currency stores refuse to be summed with an
+  explicit error. `aiand forecast bench` is a reserved stub for the v2
+  calibrated forecast.
 - Attribution and provenance for every number the CLI reports. Requests that
   cannot be attributed to an agent are surfaced as a structured
   `unattributed` bucket (`{count, share, hint}` in `--json`, a count plus the

@@ -4,6 +4,7 @@ import { authStatus } from "../auth/identity.js";
 import { bool, parse, str } from "../cli/args.js";
 import { EXIT } from "../cli/errors.js";
 import { err, fields, json, out, style, table } from "../cli/output.js";
+import { storePacingSummary } from "../obs/forecast.js";
 import { stateLabel } from "./agent.js";
 
 export const help = `${style.bold("aiand status")} -- sign-in state at a glance
@@ -70,7 +71,19 @@ export async function run(argv: string[]): Promise<void> {
     ["storage", style.dim(auth.storage ?? "unknown")],
   ]);
 
+  printBudgetPacing();
   printAgents(agents);
+}
+
+/**
+ * The budget pacing verdict (ticket #74 req 3), from the local store against
+ * `budget.monthly`, fail-open: no budget or no data prints nothing.
+ */
+function printBudgetPacing(): void {
+  const pacing = storePacingSummary();
+  if (!pacing?.pacing) return;
+  out("");
+  out(style.dim(pacing.pacing));
 }
 
 function printAgents(agents: AgentStatusResult[]): void {

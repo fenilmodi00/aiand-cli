@@ -6,8 +6,9 @@ import {
 } from "../api/analytics.js";
 import { openSession } from "../api/client.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
-import { delta, json, num, out, sparkline, style, table } from "../cli/output.js";
+import { delta, err, json, num, out, sparkline, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
   describeProvenance,
   formatLabel,
@@ -92,6 +93,24 @@ export async function run(argv: string[]): Promise<void> {
         `        ${first.timestamp.replace("T", " ")}  to  ${last.timestamp.replace("T", " ")}`,
       ),
     );
+  }
+
+  printBudgetFooter();
+}
+
+/**
+ * The budget footer (ticket #74 req 3): the 80%-threshold warning when
+ * crossed, then the pacing verdict line. Both come from the LOCAL store and
+ * fail open — no budget or no data prints nothing, and a mixed-currency
+ * store never blocks a usage report.
+ */
+function printBudgetFooter(): void {
+  const warning = storeBudgetWarning();
+  if (warning) err(style.yellow(warning));
+  const pacing = storePacingSummary();
+  if (pacing?.pacing) {
+    out();
+    out(style.dim(pacing.pacing));
   }
 }
 

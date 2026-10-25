@@ -15,6 +15,14 @@ import {
   saveConfig,
   updateProfile,
 } from "../config.js";
+import {
+  loadBudget,
+  unsetBudgetKey as removeBudgetKey,
+  setBudgetHarness,
+  setBudgetMonthly,
+  setBudgetWarnPct,
+} from "../obs/budget.js";
+import { storeCurrency } from "../obs/forecast.js";
 import { routedAgents } from "./agent.js";
 
 export const help = `${style.bold("aiand config")} -- inspect and change stored settings
@@ -27,9 +35,19 @@ Usage
   aiand config use <profile>       make a profile the default
 
 Settable keys
-  api-url   base URL for inference, catalog, logs, and usage
-  auth-url  base URL for sign-in and account
-  model     default model for run, chat, run-agent, and <agent> on
+  api-url            base URL for inference, catalog, logs, and usage
+  auth-url           base URL for sign-in and account
+  model              default model for run, chat, run-agent, and <agent> on
+  budget.monthly     monthly spend budget, in the account's billing currency
+  budget.harness.<n> per-harness budget override (unset falls back to monthly)
+  budget.warn-pct    budget warning threshold percent (default 80)
+
+Other commands
+  aiand config get budget       print every budget key
+  aiand config unset <key>      remove a stored setting (budget keys and model)
+
+Budgets are advisory: cost-showing commands warn at warn-pct of budget, they
+never block. Set budgets from real history with: aiand forecast --suggest-budget.
 
 Environment variables override stored settings: AIAND_API_KEY, AIAND_BASE_URL,
 AIAND_AUTH_URL, AIAND_PROFILE, AIAND_CONFIG_DIR.`;
@@ -47,6 +65,10 @@ export async function run(argv: string[]): Promise<void> {
       return paths(parsed);
     case "set":
       return set(rest, parsed);
+    case "get":
+      return get(rest, parsed);
+    case "unset":
+      return unset(rest, parsed);
     case "profiles":
       return profiles(parsed);
     case "use":
@@ -99,6 +121,10 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
   // via `config set` instead of throwing before the new value lands.
   const name = activeProfileName(str(parsed, "profile"));
 
+  // Budget keys are not profile-scoped: one account, one store, one budget.
+  const budgetMatch = /^budget\.(.+)$/.exec(key);
+  if (budgetMatch?.[1]) return setBudget(budgetMatch[1], value, key, parsed);
+
   switch (key) {
     case "api-url":
       assertHttpsBaseUrl(value);
@@ -115,7 +141,7 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
       break;
     default:
       throw new CliError(`"${key}" is not a settable key.`, {
-        hint: "Settable keys: api-url, auth-url, model.",
+        hint: "Settable keys: api-url, auth-url, model, budget.monthly, budget.harness.<name>, budget.warn-pct.",
       });
   }
 
@@ -123,6 +149,102 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
     return json({ profile: name, key, value });
   }
   out(style.green(`Set ${key} = ${value} on profile "${name}".`));
+}
+
+/**
+ * `config set budget.*` (ticket #74). Budget values are positive numbers in
+ * the account's billing currency; `budget.monthly` records the currency
+ * inferred from the store's cost rows — a mixed-currency store refuses with
+ * a doctor-style verdict instead of guessing.
+ */
+async function setBudget(field: string, value: string, key: string, parsed: Parsed): Promise<void> {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new CliError(`${key} must be a number (got "${value}").`);
+  }
+
+  if (field === "monthly") {
+    const currency = storeCurrency();
+    await setBudgetMonthly(number, currency);
+    if (bool(parsed, "json")) return json({ key, value: number, currency });
+    out(style.green(`Set ${key} = ${number}${currency ? ` (${currency})` : ""}.`));
+    return;
+  }
+
+  const harness = /^harness\.(.+)$/.exec(field);
+  if (harness?.[1]) {
+    await setBudgetHarness(harness[1], number);
+    if (bool(parsed, "json")) return json({ key, value: number });
+    out(style.green(`Set ${key} = ${number}.`));
+    return;
+  }
+
+  if (field === "warn-pct") {
+    await setBudgetWarnPct(number);
+    if (bool(parsed, "json")) return json({ key, value: number });
+    out(style.green(`Set ${key} = ${Math.round(number)}.`));
+    return;
+  }
+
+  throw new CliError(`"${key}" is not a settable budget key.`, {
+    hint: "Budget keys: budget.monthly, budget.harness.<name>, budget.warn-pct.",
+  });
+}
+
+/**
+ * `aiand config get budget` — every budget key, unset ones as "not set".
+ * `config get` with no key prints the same thing (budgets are the only
+ * non-profile settings today).
+ */
+function get(args: string[], parsed: Parsed): void {
+  const [key] = args;
+  if (key !== undefined && key !== "budget") {
+    throw new CliError(`"${key}" is not a gettable key.`, {
+      hint: "Gettable keys: budget.",
+    });
+  }
+
+  const budget = loadBudget();
+  const harnessKeys = Object.keys(budget.harness).sort();
+  const rows = [
+    ["budget.monthly", budget.monthly === null ? null : String(budget.monthly)],
+    ...harnessKeys.map((name) => [`budget.harness.${name}`, String(budget.harness[name])]),
+    ["budget.warn-pct", String(budget.warnPct)],
+    ["budget currency", budget.currency],
+  ] as [string, string | null][];
+
+  if (bool(parsed, "json")) {
+    json({
+      monthly: budget.monthly,
+      harness: budget.harness,
+      warn_pct: budget.warnPct,
+      currency: budget.currency,
+    });
+    return;
+  }
+
+  fields(rows.map(([k, v]) => [k, v ?? style.dim("not set")] as [string, string]));
+}
+
+/**
+ * `aiand config unset budget.monthly` and friends — negatable parity with
+ * `config set`. Only budget keys are unsettable today.
+ */
+async function unset(args: string[], parsed: Parsed): Promise<void> {
+  const [key] = args;
+  if (!key) {
+    throw new CliError("A key is required.", {
+      hint: "For example: aiand config unset budget.monthly",
+    });
+  }
+  if (!key.startsWith("budget.")) {
+    throw new CliError(`"${key}" is not an unsettable key.`, {
+      hint: "Unsettable keys: budget.monthly, budget.warn-pct, budget.harness.<name>.",
+    });
+  }
+  await removeBudgetKey(key);
+  if (bool(parsed, "json")) return json({ key, removed: true });
+  out(style.green(`Unset ${key}.`));
 }
 
 async function profiles(parsed: Parsed): Promise<void> {
