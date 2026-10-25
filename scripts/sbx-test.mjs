@@ -738,7 +738,7 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
       state.cfg = seedFile(
         state,
         HERMES_CONFIG,
-        'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n',
+        'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"\n',
       );
       seedFile(state, HERMES_ENV, 'USER_KEY=keep\nANTHROPIC_API_KEY="user-key"\n');
     },

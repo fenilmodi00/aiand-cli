@@ -957,7 +957,7 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   writeFileSync(join(hermesReal, "plugins", "model-providers", "other", "p.py"), "plugin\n");
   writeFileSync(
     join(hermesReal, "config.yaml"),
-    'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n',
+    'theme: dark\nmodel:\n  provider: "auto"\n  default: "user-model"\n  base_url: "https://openrouter.ai/api/v1"\n',
   );
   writeFileSync(join(hermesReal, ".env"), 'USER_KEY=keep\nANTHROPIC_API_KEY="user-key"\n');
   /** File bytes + dir listings, recursively: the whole real-home snapshot. */
@@ -1226,6 +1226,12 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   check(
     "hermes off restores the real home byte-identical when untouched",
     hermesSnapshot(hermesReal) === HERMES_BEFORE,
+  );
+  check(
+    "hermes off puts the user's model.base_url back where it was",
+    HERMES_CONFIG_BEFORE.equals(readFileSync(hermesConfigPath)) &&
+      readFileSync(hermesConfigPath, "utf8").includes('  base_url: "https://openrouter.ai/api/v1"'),
+    readFileSync(hermesConfigPath, "utf8").slice(0, 120),
   );
   const hermesStatusOff = JSON.parse(hermesCli("hermes status --json"));
   check(

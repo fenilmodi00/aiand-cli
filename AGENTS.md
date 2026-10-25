@@ -36,7 +36,9 @@ Dependencies are reviewed code: devDependencies stay exact-pinned (`.npmrc`
 sets `save-exact`; `check:dist` fails on a range), `npm ci` runs with
 `--ignore-scripts` in CI and the installers, and workflow actions are pinned
 to a commit SHA with the version in a comment. A new dependency with an
-install script needs an explicit reason in the PR.
+install script needs an explicit reason in the PR. A release must be 7 days
+old before we take it: `min-release-age` in `.npmrc` (npm 11.10+, which
+`devEngines` warns about) and Dependabot's `cooldown` say the same.
 
 Changelog: every user-visible change adds an entry under `## [Unreleased]` in
 `CHANGELOG.md` (Added / Changed / Fixed / Removed). Released sections are
