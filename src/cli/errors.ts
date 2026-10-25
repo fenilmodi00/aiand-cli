@@ -10,6 +10,16 @@ export const EXIT = {
   BUG: 70,
   /** Unknown command or missing agent binary. */
   NOT_FOUND: 127,
+  // --- Observability automation contract (G5, ticket #71; `aiand status`
+  // --format/--write-state) — additive; never renumber these. ---
+  /** Budget pacing: at or above the near-limit threshold, or projected to exceed. */
+  NEAR_LIMIT: 10,
+  /** Budget pacing: the budget is fully used. */
+  LIMIT_HIT: 11,
+  /** Budget set but the data behind the verdict is incomplete or untrustworthy. */
+  INDETERMINATE: 20,
+  /** The local store is empty or has never synced — there is nothing to gate on. */
+  NO_DATA: 30,
   /** Interrupted: SIGINT / Ctrl-C (128 + 2). */
   INTERRUPTED: 130,
   /** Terminated: SIGTERM (128 + 15). */

@@ -73,6 +73,21 @@ breaking changes while the command surface settles.
   reporting (opt out with `--no-sync` / `AIAND_NO_SYNC=1`) and attaches
   `coverage` to its `--json` payload; the coverage engine lives in
   `src/store/coverage.ts` for other reports to reuse.
+- Statusline, watch mode, and the machine snapshot contract (`aiand status`,
+  feature catalog E3/G5). `--format line` renders the one-line statusline —
+  `💰 $2.10 session / $8.40 today | 🔥 $1.85/hr 🟢 | 45%→72% of budget |
+  ttft p50 320ms` — from the local store only, never a blocking gateway call
+  (block pricing omitted in v1). `--watch [seconds]` (default 10s, min 2s)
+  refreshes in place with a stale-while-refresh pattern and a dim
+  `stale HH:MM` suffix once data is older than 3× the interval; Ctrl-C exits
+  0. `--write-state <path>` atomically writes the versioned machine snapshot
+  (`schema_version` 1, `generated_at`, `spend`, `burn`, `budget`,
+  `verdict`, `ttft`, `stale`, `provenance`) for tray apps and statusline
+  hooks; `--print` also prints the line, `--sync-first` chains one explicit
+  sync. Automation exit codes on every observability-surface run: `0` ok /
+  `10` near-limit / `11` limit-hit / `20` indeterminate / `30` no-data.
+  Plain `aiand status` keeps its documented auth exit codes and now shows
+  the statusline line under the auth fields.
 
 ### Changed
 
