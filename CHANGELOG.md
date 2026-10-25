@@ -9,6 +9,16 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Benchmark scenario pack expansion for `aiand harness`: three new scenario
+  families — `multi-turn-refactor-long` (a six-turn refactor over a large
+  stable file body), `long-file-read` (one very large read dominating the
+  tokens), and `tool-heavy` (nine turns interleaving eight short tool
+  exchanges after the initial read). All fixtures are fixed strings, so
+  generation is fully deterministic; every new scenario is expressible in
+  both wire dialects and runs against every harness layout. Scenario
+  results in `--json` output now name their scenario, and a new
+  `aiand harness --list-scenarios` flag (with `--json` support) prints
+  every scenario id with its description.
 - Sessionization: stored requests are grouped into sessions per `api_key`
   (masked) by time gap — a gap of the threshold or more between consecutive
   requests starts a new session (default 10 minutes, configurable via the

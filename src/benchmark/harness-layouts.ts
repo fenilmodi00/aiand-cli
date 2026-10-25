@@ -53,6 +53,12 @@ type HarnessTurnInput = {
   prompt: string;
   /** The follow-up turns, one per completed turn after the first. */
   followUps: string[];
+  /**
+   * Additional read results interleaved after the initial file read, for
+   * tool-heavy scenarios. Every layout carries them the same way, so the
+   * scenario — not the layout — decides how many tool exchanges a turn has.
+   */
+  extraToolResults: { id: string; path: string; text: string }[];
 };
 
 export type HarnessLayout = {
@@ -87,6 +93,19 @@ const readToolCall = (id: string, path: string): HarnessToolCall => ({
 });
 
 /**
+ * The additional tool exchanges a tool-heavy scenario interleaves: one
+ * assistant tool call plus its short tool result, in transcript order. The
+ * same helper serves every layout so the scenario's tool traffic is
+ * identical across them — only the leading-block behavior differs.
+ */
+function extraReadMessages(extras: { id: string; path: string; text: string }[]): HarnessMessage[] {
+  return extras.flatMap((extra) => [
+    { role: "assistant" as const, text: null, toolCall: readToolCall(extra.id, extra.path) },
+    { role: "toolResult" as const, toolCallId: extra.id, text: extra.text },
+  ]);
+}
+
+/**
  * The layouts under test.
  *
  * `claude-code` and `omp` are the two real harnesses, each in the dialect
@@ -99,7 +118,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Claude Code",
     dialect: "anthropic",
     note: "Anthropic dialect, stable system + tools, append-only transcript",
-    build: ({ system, toolOutput, toolCallId, prompt, followUps }) => {
+    build: ({ system, toolOutput, toolCallId, prompt, followUps, extraToolResults }) => {
       const messages: HarnessMessage[] = [
         { role: "system", text: system },
         { role: "user", text: prompt },
@@ -109,6 +128,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
         { role: "toolResult", toolCallId, text: toolOutput },
+        ...extraReadMessages(extraToolResults),
       ];
       for (let i = 0; i < followUps.length; i++) {
         messages.push({ role: "assistant", text: `read complete (step ${i + 1})` });
@@ -122,7 +142,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Oh My Pi",
     dialect: "openai",
     note: "OpenAI dialect, stable system + tools, append-only transcript",
-    build: ({ system, toolOutput, toolCallId, prompt, followUps }) => {
+    build: ({ system, toolOutput, toolCallId, prompt, followUps, extraToolResults }) => {
       // OMP's own logs confirm the shape: a non-message prefix (system and
       // instructions), a tool-schema prefix, then a growing message list.
       const messages: HarnessMessage[] = [
@@ -134,6 +154,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
         { role: "toolResult", toolCallId, text: toolOutput },
+        ...extraReadMessages(extraToolResults),
       ];
       for (let i = 0; i < followUps.length; i++) {
         messages.push({ role: "assistant", text: `read complete (step ${i + 1})` });
@@ -147,7 +168,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Rebuilt system block",
     dialect: "anthropic",
     note: "the system block is rebuilt every turn (model + turn counter)",
-    build: ({ turn, system, toolOutput, toolCallId, prompt, followUps }) => {
+    build: ({ turn, system, toolOutput, toolCallId, prompt, followUps, extraToolResults }) => {
       const messages: HarnessMessage[] = [
         // The system block changes with the turn, so the leading prefix the
         // Gateway cached no longer matches.
@@ -159,6 +180,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
         { role: "toolResult", toolCallId, text: toolOutput },
+        ...extraReadMessages(extraToolResults),
       ];
       for (let i = 0; i < followUps.length; i++) {
         messages.push({ role: "assistant", text: `read complete (step ${i + 1})` });
@@ -172,7 +194,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Compacting client",
     dialect: "anthropic",
     note: "history replaced by a fresh summary each turn",
-    build: ({ turn, system, toolOutput, toolCallId, prompt }) => {
+    build: ({ turn, system, toolOutput, toolCallId, prompt, extraToolResults }) => {
       // A compaction rewrites the conversation into a new summary, so the
       // request is never an extension of the previous one.
       return [
@@ -184,6 +206,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
         { role: "toolResult", toolCallId, text: toolOutput },
+        ...extraReadMessages(extraToolResults),
         { role: "assistant", text: `summary of the session so far (turn ${turn})` },
       ];
     },
@@ -193,7 +216,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Moving reorder",
     dialect: "anthropic",
     note: "blocks reordered by volatility — the order shifts as the conversation grows",
-    build: ({ system, toolOutput, toolCallId, prompt, followUps }) => {
+    build: ({ system, toolOutput, toolCallId, prompt, followUps, extraToolResults }) => {
       // Reordering is only harmful when the ORDER ITSELF changes. A client
       // that reorders the same way every turn still extends its previous
       // request and still hits the cache. What breaks it is a reordering
@@ -209,6 +232,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
         { role: "toolResult", toolCallId, text: toolOutput },
+        ...extraReadMessages(extraToolResults),
       ];
       for (let i = 0; i < followUps.length; i++) {
         history.push({ role: "assistant", text: `read complete (step ${i + 1})` });
@@ -224,7 +248,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
     label: "Consistent reorder",
     dialect: "anthropic",
     note: "reordered the same way every turn — the order never shifts",
-    build: ({ system, toolOutput, toolCallId, prompt, followUps }) => {
+    build: ({ system, toolOutput, toolCallId, prompt, followUps, extraToolResults }) => {
       // The control for the layout above: a stable reorder still extends the
       // previous request, so it still hits the cache. Reordering per se is
       // not the problem; a MOVING reorder is.
@@ -237,6 +261,7 @@ export const HARNESS_LAYOUTS: HarnessLayout[] = [
           text: null,
           toolCall: readToolCall(toolCallId, "src/workspace.ts"),
         },
+        ...extraReadMessages(extraToolResults),
       ];
       for (let i = 0; i < followUps.length; i++) {
         history.push({ role: "user", text: followUps[i]! });
