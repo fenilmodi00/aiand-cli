@@ -10,6 +10,22 @@ breaking changes while the command surface settles.
 ### Added
 - `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
+- `aiand dashboard`, `aiand heatmap`, and `aiand wrapped` (ticket #75),
+  all hand-drawn with zero runtime dependencies. The dashboard is an
+  interactive TUI with CodeBurn's keyboard model: keys 1–6 and arrows switch
+  period (Today/7d/30d/Month/6mo/Lifetime), `p` cycles the harness scope,
+  `c` toggles the harness-compare view (the #64 winners), `j`/`k` scroll,
+  `r` refreshes, and in-place auto-refresh (60s floor) preserves scroll; the
+  five most expensive sessions stay pinned in every view; layout is
+  responsive (1 column under 60, 2 from 60, 3 from 100); piped stdout (or
+  `--no-tui`) prints the plain-text overview and never hangs. `aiand
+  heatmap` renders the 24h×7d cost (or request-count) grid in the display
+  timezone with truecolor→256→16→plain glyph degradation; mixed currencies
+  never sum (dominant-currency rows only, footer says so). `aiand wrapped`
+  prints the share-friendly period story (requests, sessions, tokens,
+  biggest session, favorite pairing, busiest day, cache-savings estimate)
+  as text or `--format markdown`, with `--no-cost` and `--json`; every
+  figure carries its provenance footer.
 - Personal A/B replay + latency A/B (ticket #82): `aiand harness duel`
   replays a recorded session's request SHAPE — turn count and per-turn
   prompt-token growth curve from the local store — across repeatable
