@@ -62,6 +62,21 @@ breaking changes while the command surface settles.
   and human output gets a one-line note. `--session <id>` scoping and
   `--since`/`--until` window filters are provided for the stats/session
   commands.
+- `aiand usage --verify` — a reconciliation accuracy gate comparing the
+  local store's totals (request count, token totals, cost totals) against
+  the gateway's own numbers: `/logs` for windows up to 30 days and
+  `/analytics/summary` for the 3-month window (which reports no cost, so its
+  cost row is reported UNVERIFIABLE, never dropped). Windows the gateway
+  cannot see (past 3 months, or arbitrary slices wider than 30 days) are
+  reported UNVERIFIABLE with a reason. Per-window deltas are printed in both
+  human and `--json` output ({source, window, metric, local, remote, delta,
+  status}); every number is a gateway-verbatim sum (tokens follow the
+  gateway convention where input includes cached; nothing is recomputed from
+  price tables). The command syncs the store first (fail-open, `--no-sync`
+  respected; a failed sync is surfaced, never folded away) and exits 1 when
+  any metric mismatches, 0 when everything reconciles. A mismatch is
+  reported with its exact delta — no rounding tolerance beyond a
+  floating-point epsilon on parsed cost strings.
 - A local, metadata-only request store. Every gateway `/logs` row is mirrored
   into a SQLite database at `<config dir>/store.db` (`node:sqlite`, no new
   dependencies), giving long-term request history the gateway itself cannot
