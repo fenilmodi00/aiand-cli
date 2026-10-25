@@ -22,6 +22,22 @@ breaking changes while the command surface settles.
   -- --update-goldens` (refused under CI). Reports land in the gitignored
   `runs/benchmark/`; goldens carry metrics and metadata only, never fixture
   text.
+- `aiand harness stats` and `aiand harness compare` (ticket #64): real-workload
+  per-harness stats and side-by-side comparison from the local store —
+  requests, sessions, token sums (gateway-billed), cost per session p50/p90
+  (linear interpolation, documented), TTFT p50/p95 over requests, cache hit
+  ratio, error rate, and the shared `cacheVerdict` thresholds as the verdict
+  column. `compare` requires at least two harnesses in range (exit 1 with
+  guidance otherwise) and marks the per-metric winner (`▸`, works without
+  color). Cohorts discipline: mixed-model sessions are excluded from every
+  aggregate AND counted explicitly (`excluded: N mixed-model sessions`);
+  `--samples` prints the exact sessions behind each median/P90;
+  `--include-mixed` shows the excluded table; a cohort predicate seam is
+  reserved for task-type narrowing. Filters compose with `aiand usage`
+  conventions (`--since/--until/--last/--agent/--model/--timezone/--no-cost`),
+  auto-sync is fail-open with `--no-sync` honored, and `--json` carries
+  per-harness objects plus provenance (range, timezone, store watermark,
+  excludedMixed, sessionization annotation, field labels).
 - OTel metrics export (ticket #72). `aiand export` emits usage metrics from
   the local request store in two families from one store read: `claude_code.*`
   (drop-in compatibility with Claude Code dashboards: `session.count`,

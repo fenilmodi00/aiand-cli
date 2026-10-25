@@ -5,6 +5,7 @@ import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { runHarnessWorkload } from "./harness-stats.js";
 
 export const help = `${style.bold("aiand harness")} -- compare harnesses on cache behavior
 
@@ -14,6 +15,8 @@ Usage
   aiand harness --harness claude-code
   aiand harness --model zai-org/glm-5.3
   aiand harness --sweep-models
+  aiand harness stats [--last 7d] [--harness <name>]   real-workload stats per harness
+  aiand harness compare [--last 30d]                   side-by-side on your workload
   aiand harness --json
 
 Options
@@ -38,6 +41,13 @@ Scenarios
 ${BENCH_SCENARIOS.map((s) => `  ${s.id.padEnd(28)} ${s.title}`).join("\n")}`;
 
 export async function run(argv: string[]): Promise<void> {
+  // Real-workload subcommands (ticket #64): the synthetic benchmark below is
+  // unchanged; stats/compare read the local store instead of running requests.
+  const subcommand = argv[0];
+  if (subcommand === "stats" || subcommand === "compare") {
+    return runHarnessWorkload(subcommand, argv.slice(1));
+  }
+
   const parsed = parse(argv, {
     scenario: { type: "string" },
     harness: { type: "string", multiple: true },
