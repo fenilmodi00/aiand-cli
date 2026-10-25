@@ -9,6 +9,21 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Sessionization: stored requests are grouped into sessions per `api_key`
+  (masked) by time gap — a gap of the threshold or more between consecutive
+  requests starts a new session (default 10 minutes, configurable via the
+  `sessionGapMinutes` key in config.json and a `--session-gap <minutes>`
+  flag on the commands that surface sessions). Sessions carry deterministic
+  ids, the key→agent mapping (`unknown` when unmapped — never guessed),
+  start/end, turn counts, and token/cost totals that follow the gateway
+  convention (input includes cached); a materialized `sessions` table in the
+  local store is rebuilt idempotently from the verbatim request rows. Because
+  the gateway provides no server-side session ids, boundaries are explicitly
+  heuristic: machine payloads include a `sessionization` confidence
+  annotation ({method: "time-gap", gapMinutes, confidence: "heuristic"})
+  and human output gets a one-line note. `--session <id>` scoping and
+  `--since`/`--until` window filters are provided for the stats/session
+  commands.
 - A local, metadata-only request store. Every gateway `/logs` row is mirrored
   into a SQLite database at `<config dir>/store.db` (`node:sqlite`, no new
   dependencies), giving long-term request history the gateway itself cannot
