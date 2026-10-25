@@ -19,6 +19,7 @@ import * as report from "./report.js";
 import * as restore from "./restore.js";
 import * as run from "./run.js";
 import * as runAgent from "./run-agent.js";
+import * as sessions from "./sessions.js";
 import * as status from "./status.js";
 import * as store from "./store.js";
 import * as update from "./update.js";
@@ -71,6 +72,12 @@ export const COMMANDS: Command[] = [
     aliases: ["analytics"],
     help: usage.help,
     run: usage.run,
+  },
+  {
+    name: "sessions",
+    summary: "Requests grouped into conversations (sessions)",
+    help: sessions.help,
+    run: sessions.run,
   },
   {
     name: "overview",
