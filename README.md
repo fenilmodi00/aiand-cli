@@ -526,9 +526,22 @@ Flags win over environment variables, which win over the stored profile.
 | `1` | Request or usage error (the message says which) |
 | `2` | Not signed in, or the session could not be refreshed |
 | `3` | Sign-in denied, or the code expired |
+| `10` | `aiand status` (observability surface): budget near-limit — at/above the near-limit threshold, or projected to exceed the budget this month |
+| `11` | `aiand status` (observability surface): limit-hit — the budget is fully used |
+| `20` | `aiand status` (observability surface): indeterminate — a budget is set but the data behind the verdict is incomplete or untrustworthy |
+| `30` | `aiand status` (observability surface): no-data — the local store is empty or has never synced |
 | `70` | A bug in aiand; the stack trace is printed, please report it |
 | `127` | Unknown command, or the agent is not installed |
 | `130` | Interrupted (Ctrl-C) |
+
+The `10`–`30` codes are the statusline automation contract (feature catalog
+G5). They are set on any `aiand status` run that requests the observability
+surface — `--format line`, `--format json`, `--watch`, or `--write-state` —
+including the same run as the snapshot write. Plain `aiand status` (the auth
+view) keeps `0`/`1` below. Consumers of the JSON snapshot
+(`aiand status --write-state <path>`) should also refuse a
+`schema_version` they do not understand: version 1 is current, additive
+fields keep `1`, breaking changes bump it.
 
 `aiand status` exits `0` when signed in, even if ai& cannot be reached to check
 the key (`reachable: false` in `--json`), and `1` only when signed out. Scripts
