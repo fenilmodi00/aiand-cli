@@ -1,0 +1,415 @@
+import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
+
+/**
+ * Ticket #64 — `aiand harness stats` / `harness compare` on the real workload.
+ * Pure aggregation tests import the built module; CLI tests seed a real store
+ * under an isolated AIAND_CONFIG_DIR and drive dist/index.js with --no-sync.
+ */
+
+// One file-level env (withTestEnv registers FILE hooks); each test gets its
+// own config subdir so stores/key maps never bleed between tests.
+const env = withTestEnv("harness-stats", () => {});
+
+function cfgDir(name) {
+  const dir = join(env.dir, name);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+const HOUR = 60 * 60 * 1000;
+const baseTime = Date.parse("2026-10-20T10:00:00.000Z");
+
+function iso(offsetMs) {
+  return new Date(baseTime + offsetMs).toISOString();
+}
+
+function row(overrides) {
+  return {
+    model: "zai-org/glm-5.3",
+    api_key: "sk-test-claude...aaaa",
+    created_at: iso(0),
+    input_tokens: 1000,
+    output_tokens: 100,
+    cached_tokens: 500,
+    cost_value: 0.01,
+    currency: "usd",
+    status_code: 200,
+    ttft_ms: 300,
+    ...overrides,
+  };
+}
+
+async function loadEngine() {
+  return import("../dist/obs/harness-stats.js");
+}
+
+function seedRequests(db, rows) {
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO requests (id, model, api_key, status_code, ttft_ms, latency_ms, " +
+      "input_tokens, output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const r of rows) {
+    insert.run(
+      r.id,
+      r.model,
+      r.api_key,
+      r.status_code,
+      r.ttft_ms,
+      null,
+      r.input_tokens,
+      r.output_tokens,
+      r.cached_tokens,
+      String(r.cost_value),
+      r.cost_value,
+      r.currency,
+      r.created_at,
+      r.created_at,
+    );
+  }
+}
+
+test("percentile uses linear interpolation between closest ranks", async () => {
+  const { percentile } = await loadEngine();
+  assert.equal(percentile([1, 2, 3, 4], 0.5), 2.5);
+  assert.equal(percentile([10, 20], 0), 10);
+  assert.equal(percentile([10, 20], 1), 20);
+  assert.equal(percentile([], 0.5), null);
+  assert.equal(percentile([7], 0.9), 7);
+});
+
+test("verdict thresholds are cacheVerdict's, via the shared function", async () => {
+  const { buildHarnessStats } = await loadEngine();
+  const { cacheVerdict } = await import("../dist/api/cache-report.js");
+
+  // The shared verdict law itself (ticket: <5 warn, <0.2 bad, <0.5 warn, else good).
+  const group = (requests, cached, input) => ({
+    key: "x",
+    requests,
+    inputTokens: input,
+    cachedTokens: cached,
+    outputTokens: 0,
+    costUsd: 0,
+    misses: 0,
+  });
+  assert.equal(cacheVerdict(group(4, 900, 1000)), "warn");
+  assert.equal(cacheVerdict(group(6, 100, 1000)), "bad");
+  assert.equal(cacheVerdict(group(6, 400, 1000)), "warn");
+  assert.equal(cacheVerdict(group(6, 600, 1000)), "good");
+
+  // …and harness stats route through it: <5 requests → warn.
+  const few = buildHarnessStats(
+    Array.from({ length: 4 }, (_, i) =>
+      row({ id: `a${i}`, created_at: iso(i * 60_000), cached_tokens: 900 }),
+    ),
+  );
+  assert.equal(few.harnesses.length, 1);
+  assert.equal(few.harnesses[0].verdict, "warn");
+
+  const many = buildHarnessStats(
+    Array.from({ length: 6 }, (_, i) =>
+      row({ id: `b${i}`, created_at: iso(i * 60_000), cached_tokens: 900 }),
+    ),
+  );
+  assert.equal(many.harnesses[0].verdict, "good");
+});
+
+test("mixed-model sessions are excluded AND counted, never assigned", async () => {
+  const cfg = cfgDir("mixed");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    const claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+    const opencodeMask = maskKey("sk-test-opencode-super-secret-0001");
+
+    const { buildHarnessStats } = await loadEngine();
+    const rows = [
+      // claude session 1: single model, 3 requests
+      row({ id: "c1", api_key: claudeMask, created_at: iso(0) }),
+      row({ id: "c2", api_key: claudeMask, created_at: iso(60_000) }),
+      row({ id: "c3", api_key: claudeMask, created_at: iso(120_000) }),
+      // claude session 2 (after a long gap): TWO models → mixed, excluded
+      row({ id: "m1", api_key: claudeMask, created_at: iso(20 * HOUR), model: "zai-org/glm-5.3" }),
+      row({
+        id: "m2",
+        api_key: claudeMask,
+        created_at: iso(20 * HOUR + 60_000),
+        model: "openai/gpt-5.2",
+      }),
+      // opencode session: single model, 2 requests
+      row({
+        id: "o1",
+        api_key: opencodeMask,
+        created_at: iso(0),
+        input_tokens: 2000,
+        cached_tokens: 1800,
+      }),
+      row({
+        id: "o2",
+        api_key: opencodeMask,
+        created_at: iso(60_000),
+        input_tokens: 2000,
+        cached_tokens: 1800,
+      }),
+    ];
+    const stats = buildHarnessStats(rows);
+
+    assert.equal(stats.provenance.excludedMixed, 1);
+    assert.equal(stats.excluded.length, 1);
+    assert.equal(stats.excluded[0].models.length, 2);
+
+    const claude = stats.harnesses.find((h) => h.harness === "claude");
+    const opencode = stats.harnesses.find((h) => h.harness === "opencode");
+    assert.ok(claude && opencode, "both attributed harnesses present");
+    // Neither harness's totals include the mixed session's rows.
+    assert.equal(claude.requests, 3);
+    assert.equal(claude.sessions, 1);
+    assert.equal(opencode.requests, 2);
+    assert.equal(opencode.sessions, 1);
+  });
+});
+
+test("samples reconcile: the listed sessions are exactly the aggregates' input", async () => {
+  const { buildHarnessStats } = await loadEngine();
+  const rows = [
+    row({ id: "s1", created_at: iso(0), cost_value: 0.1, cached_tokens: 900 }),
+    row({ id: "s1b", created_at: iso(60_000), cost_value: 0.2, cached_tokens: 900 }),
+    row({ id: "s2", created_at: iso(3 * HOUR), cost_value: 0.3, cached_tokens: 900 }),
+    row({ id: "s2b", created_at: iso(3 * HOUR + 60_000), cost_value: 0.9, cached_tokens: 900 }),
+  ];
+  const stats = buildHarnessStats(rows);
+  const harness = stats.harnesses[0];
+  assert.equal(harness.samples.length, 2);
+  const sampleCostSum = harness.samples.reduce((sum, s) => sum + (s.cost ?? 0), 0);
+  assert.ok(Math.abs(sampleCostSum - (harness.cost ?? 0)) < 1e-9);
+  // Sessions cost 0.3 and 1.2 → p50 = 0.75, p90 = 0.3 + 0.9·0.9 = 1.11.
+  assert.ok(Math.abs((harness.costPerSession.p50 ?? 0) - 0.75) < 1e-9);
+  assert.ok(Math.abs((harness.costPerSession.p90 ?? 0) - 1.11) < 1e-9);
+});
+
+test("cohort seam narrows rows without touching the aggregation", async () => {
+  const { buildHarnessStats } = await loadEngine();
+  const rows = [
+    row({ id: "x1", model: "zai-org/glm-5.3", created_at: iso(0) }),
+    // Far enough apart to be its own session, so the two models never mix.
+    row({ id: "x2", model: "openai/gpt-5.2", created_at: iso(20 * HOUR) }),
+  ];
+  const all = buildHarnessStats(rows);
+  assert.equal(all.harnesses.length, 1);
+  assert.equal(all.harnesses[0].requests, 2);
+  const narrowed = buildHarnessStats(rows, { cohort: (r) => r.model === "zai-org/glm-5.3" });
+  assert.equal(narrowed.harnesses[0].requests, 1);
+});
+
+test("compare winners pick the right harness per metric", async () => {
+  const { compareWinners } = await loadEngine();
+  const rows = [
+    {
+      harness: "a",
+      requests: 10,
+      sessions: 2,
+      tokens: { in: 1, out: 1, cached: 1 },
+      cost: 1,
+      currency: "usd",
+      costPerSession: { p50: 0.5, p90: 1 },
+      ttft: { p50: 400, p95: 900 },
+      cacheHitRatio: 0.8,
+      errorRate: 0.1,
+      verdict: "good",
+      samples: [],
+    },
+    {
+      harness: "b",
+      requests: 10,
+      sessions: 2,
+      tokens: { in: 1, out: 1, cached: 1 },
+      cost: 2,
+      currency: "usd",
+      costPerSession: { p50: 0.2, p90: 1 },
+      ttft: { p50: 200, p95: 500 },
+      cacheHitRatio: 0.4,
+      errorRate: 0.05,
+      verdict: "warn",
+      samples: [],
+    },
+  ];
+  const winners = compareWinners(rows);
+  assert.equal(winners.costPerSessionP50, "b");
+  assert.equal(winners.errorRate, "b");
+  assert.equal(winners.cacheHitRatio, "a");
+  assert.equal(winners.ttftP50, "b");
+  // All-null metric → no winner.
+  const nulls = compareWinners([
+    { ...rows[0], ttft: { p50: null, p95: null } },
+    { ...rows[1], ttft: { p50: null, p95: null } },
+  ]);
+  assert.equal(nulls.ttftP50, null);
+});
+
+test("cli: stats --json schema, attribution, and mixed exclusion on a seeded store", async () => {
+  const cfg = cfgDir("cli");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+  let claudeMask;
+  let opencodeMask;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+    opencodeMask = maskKey("sk-test-opencode-super-secret-0001");
+  });
+
+  const rows = [
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({ id: `c${i}`, api_key: claudeMask, created_at: iso(i * 60_000), cached_tokens: 900 }),
+    ),
+    // mixed-model session on the claude key
+    row({ id: "mx1", api_key: claudeMask, created_at: iso(20 * HOUR), model: "zai-org/glm-5.3" }),
+    row({
+      id: "mx2",
+      api_key: claudeMask,
+      created_at: iso(20 * HOUR + 60_000),
+      model: "openai/gpt-5.2",
+    }),
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({
+        id: `o${i}`,
+        api_key: opencodeMask,
+        created_at: iso(i * 60_000),
+        input_tokens: 2000,
+        cached_tokens: 100,
+        status_code: i === 4 ? 500 : 200,
+      }),
+    ),
+  ];
+
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok, "store opens under the test config dir");
+    seedRequests(opened.db, rows);
+    opened.db.close();
+  });
+
+  const { code, stdout } = await runCli(["harness", "stats", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(code, 0, `stats exits 0\n${stdout}`);
+  const payload = JSON.parse(stdout);
+  assert.ok(payload.provenance, "provenance block present");
+  assert.deepEqual(Object.keys(payload.provenance).sort(), [
+    "excludedMixed",
+    "labels",
+    "range",
+    "sessionization",
+    "storeWatermark",
+    "timezone",
+  ]);
+  assert.equal(payload.provenance.excludedMixed, 1);
+  assert.equal(payload.provenance.sessionization.confidence, "heuristic");
+  const claude = payload.harnesses.find((h) => h.harness === "claude");
+  const opencode = payload.harnesses.find((h) => h.harness === "opencode");
+  assert.ok(claude && opencode, "both harnesses attributed via the key map");
+  assert.equal(claude.requests, 6);
+  assert.equal(claude.samples.length, 1);
+  assert.equal(opencode.requests, 6);
+  assert.ok(Math.abs(opencode.errorRate - 1 / 6) < 1e-9);
+  for (const field of [
+    "requests",
+    "sessions",
+    "tokens",
+    "cost",
+    "currency",
+    "costPerSession",
+    "ttft",
+    "cacheHitRatio",
+    "errorRate",
+    "verdict",
+  ]) {
+    assert.ok(field in claude, `field ${field} present per requirement 6`);
+  }
+});
+
+test("cli: compare marks winners and errors below two harnesses", async () => {
+  const cfg = cfgDir("compare");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+  let maskA;
+  let maskB;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    maskA = maskKey("sk-test-claude-super-secret-key-000");
+    maskB = maskKey("sk-test-opencode-super-secret-0001");
+  });
+
+  const rows = [
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({
+        id: `a${i}`,
+        api_key: maskA,
+        created_at: iso(i * 60_000),
+        cached_tokens: 900,
+        ttft_ms: 400,
+      }),
+    ),
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({
+        id: `b${i}`,
+        api_key: maskB,
+        created_at: iso(i * 60_000),
+        cached_tokens: 100,
+        input_tokens: 2000,
+        ttft_ms: 200,
+        cost_value: 0.001,
+      }),
+    ),
+  ];
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, rows);
+    opened.db.close();
+  });
+
+  const compare = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(compare.code, 0);
+  assert.ok(compare.stdout.includes("▸"), "winner marker present");
+  assert.ok(compare.stdout.includes("harness compare"), "header present");
+
+  const single = await runCli(["harness", "compare", "--no-sync", "--agent", "claude"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.notEqual(single.code, 0, "single-harness compare exits non-zero");
+  assert.match(single.stderr, /at least 2 harnesses/);
+
+  const samples = await runCli(
+    ["harness", "stats", "--no-sync", "--samples", "--agent", "claude"],
+    {
+      env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+    },
+  );
+  assert.equal(samples.code, 0);
+  assert.ok(samples.stdout.includes("samples"), "samples section header");
+  assert.ok(/[0-9a-f]{16}/.test(samples.stdout), "a session id is listed");
+});
+
+test("cli: the synthetic benchmark path still dispatches", async () => {
+  const cfg = cfgDir("list");
+  const list = await runCli(["harness", "--list-scenarios"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(list.code, 0);
+  assert.ok(list.stdout.includes("multi-turn-refactor"));
+  const statsHelp = await runCli(["harness", "stats", "--help"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(statsHelp.code, 0);
+  assert.ok(statsHelp.stdout.includes("harness stats"));
+});

@@ -141,21 +141,26 @@ function costOf(row: SessionRequestRow): number | null {
 }
 
 /**
- * Group request rows into sessions. Pure and deterministic: the same rows and
- * the same gap always yield identical sessions (input order is irrelevant —
- * rows are sorted internally by `created_at`, tiebreak `id`). Output is
- * ordered by (`started_at`, `session_id`).
+ * One derived session WITH its member rows (ticket #64: harness stats needs
+ * per-session model mix and per-request ttft/status, which the aggregate
+ * `SessionRow` does not carry). Generic so callers keep their wider row
+ * shapes (model, status_code, ttft_ms, …) on the members.
  */
-export function sessionize(
-  rows: readonly SessionRequestRow[],
-  gapMinutes: number = DEFAULT_SESSION_GAP_MINUTES,
-): SessionRow[] {
+export type SessionDetail<T extends SessionRequestRow = SessionRequestRow> = SessionRow & {
+  rows: T[];
+};
+
+/** The shared boundary walk: same rule as `sessionize`, members retained. */
+function walkSessions<T extends SessionRequestRow>(
+  rows: readonly T[],
+  gapMinutes: number,
+): SessionDetail<T>[] {
   const gapMs = gapMinutes * 60_000;
   const sorted = [...rows].sort(
     (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
   );
 
-  type Group = { apiKey: string | null; requests: SessionRequestRow[] };
+  type Group = { apiKey: string | null; requests: T[] };
   const groups = new Map<string, Group>();
   for (const row of sorted) {
     const key = row.api_key ?? "";
@@ -164,9 +169,9 @@ export function sessionize(
     else groups.set(key, { apiKey: row.api_key, requests: [row] });
   }
 
-  const sessions: SessionRow[] = [];
+  const sessions: SessionDetail<T>[] = [];
   for (const group of groups.values()) {
-    let current: SessionRequestRow[] = [];
+    let current: T[] = [];
     const flush = (): void => {
       if (current.length === 0) return;
       const first = current[0];
@@ -187,10 +192,11 @@ export function sessionize(
           : null,
         currency: current.find((r) => r.currency !== null)?.currency ?? null,
         confidence: current.length === 1 ? "single-request" : "gap",
+        rows: current,
       });
       current = [];
     };
-    let previous: SessionRequestRow | null = null;
+    let previous: T | null = null;
     for (const row of group.requests) {
       if (previous && Date.parse(row.created_at) - Date.parse(previous.created_at) >= gapMs) {
         flush();
@@ -204,6 +210,27 @@ export function sessionize(
   return sessions.sort(
     (a, b) => a.started_at.localeCompare(b.started_at) || a.session_id.localeCompare(b.session_id),
   );
+}
+
+/** Detailed sessionization: aggregates plus the member rows per session. */
+export function sessionizeRows<T extends SessionRequestRow>(
+  rows: readonly T[],
+  gapMinutes: number = DEFAULT_SESSION_GAP_MINUTES,
+): SessionDetail<T>[] {
+  return walkSessions(rows, gapMinutes);
+}
+
+/**
+ * Group request rows into sessions. Pure and deterministic: the same rows and
+ * the same gap always yield identical sessions (input order is irrelevant —
+ * rows are sorted internally by `created_at`, tiebreak `id`). Output is
+ * ordered by (`started_at`, `session_id`).
+ */
+export function sessionize(
+  rows: readonly SessionRequestRow[],
+  gapMinutes: number = DEFAULT_SESSION_GAP_MINUTES,
+): SessionRow[] {
+  return walkSessions(rows, gapMinutes).map(({ rows: _memberRows, ...session }) => session);
 }
 
 // ---------------------------------------------------------------------------
