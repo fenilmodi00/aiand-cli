@@ -534,6 +534,12 @@ Flags win over environment variables, which win over the stored profile.
 the key (`reachable: false` in `--json`), and `1` only when signed out. Scripts
 that gate on it keep working during an outage.
 
+`aiand usage --verify` — the reconciliation accuracy gate — exits `0` when the
+local store's totals reconcile exactly with the gateway's, and `1` when any
+metric mismatches (the exact delta is reported, never smoothed). Windows the
+gateway cannot verify (past 3 months) are reported `UNVERIFIABLE` and do not
+change the exit code.
+
 ## Roadmap
 
 - **Files:** uploads for vision, video, audio, and document inputs

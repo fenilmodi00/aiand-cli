@@ -160,6 +160,9 @@ const server = createServer((req, res) => {
 
   if (rest === "/logs") {
     if (scenario === "logs-404") return reply(res, 404, { error: "not_found" });
+    // #63: the accuracy gate verifies against /logs, so the 401 stub must
+    // cover it too (a gateway auth failure must never verify as green).
+    if (scenario === "401") return reply401(res);
     return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
   }
 
