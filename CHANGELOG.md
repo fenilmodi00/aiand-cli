@@ -26,6 +26,29 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Peak/off-peak split and vendor-list-price equivalent (ticket #81).
+  `aiand usage --sections peak` splits each model's gateway-billed cost into
+  peak/off-peak shares (percentages of cost that sum to 100, plus per-bucket
+  cost and request counts) using a versioned per-family window table — GLM
+  peak is Mon-Fri 14:00-18:00 SGT — applied as a pure GROUP BY over stored
+  `created_at` rows, evaluated as wall-clock time in each window's own
+  timezone; unclassified model families and non-first-party (routed)
+  traffic are reported explicitly, never guessed.
+  `aiand usage --show-windows` prints the window table with its per-entry
+  sources (`--json` for the raw data). `aiand usage --vs-list` recomputes
+  stored tokens at vendor list prices and sets the equivalent beside the
+  gateway-billed cost, with savings = equivalent − billed shown only where
+  both sides are priced (partial rows say so). Exact-only matching through
+  a snapshot alias map (never-guess: unknown models are `unpriced`, never
+  $0.00), tier ranges validated non-overlapping, and per-field user
+  overrides via `aiand config set prices.<model>.input|.output|.cacheRead`
+  labeled `estimated(user-override)`. The bundled snapshot ships
+  schema-complete but price-empty — an entry lands only through a reviewed
+  change citing a vendor pricing page — and `--prices-file <path>` accepts
+  an updated snapshot (format 1) without a code change; the snapshot name
+  and date are always printed. `--json` includes per-row `{ billed,
+  equivalent, savings, priced, status, reason, source, snapshot_date }`;
+  `--jq` filters the payload.
 - Budgets and burn-rate forecasting (advisory only — the CLI warns, it never
   blocks). `aiand config set budget.monthly <X>`, optional
   `budget.harness.<name>` overrides, `budget.warn-pct` (default 80), plus

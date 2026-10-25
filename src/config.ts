@@ -39,6 +39,21 @@ export type Config = {
    * the store had no currency yet). Absent keys simply mean "unset".
    */
   budget?: BudgetConfig;
+  /**
+   * User price overrides (ticket #81): `prices.<gateway model id>` records
+   * per-1M-token vendor list prices (`input`, `output`, `cacheRead`) that the
+   * `usage --vs-list` comparison prefers over the snapshot. Absent fields
+   * fall back to the snapshot; models with neither are reported `unpriced`
+   * (never-guess). Values are finite non-negative numbers.
+   */
+  prices?: Record<string, PriceOverride>;
+};
+
+/** One model's user price override (the `prices` section of config.json). */
+export type PriceOverride = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
 };
 
 /** The `budget` section of config.json (see Config.budget). */
@@ -126,13 +141,39 @@ function sanitizeBudget(raw: unknown): BudgetConfig | undefined {
   return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
+/**
+ * The stored `prices` section (ticket #81), sanitized: only well-formed model
+ * keys with finite non-negative input/output/cacheRead numbers survive — a
+ * hand-edited or malformed value degrades to absent rather than poisoning
+ * the --vs-list math.
+ */
+function sanitizePrices(raw: unknown): Record<string, PriceOverride> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const prices: Record<string, PriceOverride> = {};
+  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!model || model === "__proto__" || typeof value !== "object" || value === null) continue;
+    const entry = value as Record<string, unknown>;
+    const override: PriceOverride = {};
+    for (const field of ["input", "output", "cacheRead"] as const) {
+      const number = entry[field];
+      if (typeof number === "number" && Number.isFinite(number) && number >= 0) {
+        override[field] = number;
+      }
+    }
+    if (Object.keys(override).length > 0) prices[model] = override;
+  }
+  return Object.keys(prices).length > 0 ? prices : undefined;
+}
+
 export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(configPath());
   const budget = sanitizeBudget(raw?.budget);
+  const prices = sanitizePrices(raw?.prices);
   return {
     profile: raw?.profile ?? "default",
     profiles: raw?.profiles ?? { default: { ...DEFAULT_PROFILE } },
     ...(budget ? { budget } : {}),
+    ...(prices ? { prices } : {}),
   };
 }
 

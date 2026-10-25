@@ -2,6 +2,7 @@ import { agentForMaskedKey } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, num, out, style, table } from "../cli/output.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { type PeakSplit, splitPeakOffPeak } from "../pricing/peak-windows.js";
 import {
   type CoverageReport,
   computeCoverage,
@@ -42,6 +43,7 @@ export const SECTION_REGISTRY = [
   "totals",
   "by-model",
   "by-agent",
+  "peak",
 ] as const;
 export type SectionName = (typeof SECTION_REGISTRY)[number];
 
@@ -66,7 +68,7 @@ export const SORT_COLUMNS = ["period", "requests", "input", "output", "cached", 
 type SortColumn = (typeof SORT_COLUMNS)[number];
 
 /** A verbatim store row: exactly the columns the report aggregates over. */
-type RequestRow = {
+export type RequestRow = {
   id: string;
   model: string;
   api_key: string | null;
@@ -271,6 +273,18 @@ type ReportFilters = {
   agents: string[];
   models: string[];
 };
+
+/**
+ * The one store read + filter every section (and the `--vs-list` comparison)
+ * shares; exported for the sibling reports downstream tickets build on the
+ * same engine. One read, no re-query.
+ */
+export function loadRequestRows(
+  filters: ReportFilters,
+  window: { sinceMs: number | null; untilMs: number | null },
+): RequestRow[] {
+  return filterRows(readRequests(window), filters);
+}
 
 function filterRows(rows: readonly RequestRow[], filters: ReportFilters): RequestRow[] {
   const agentWanted = filters.agents.length > 0 ? new Set(filters.agents) : null;
@@ -565,6 +579,18 @@ export function buildReport(options: BuildReportOptions): Report {
   if (wants.has("totals")) sections.totals = totals;
   if (wants.has("by-model")) sections["by-model"] = groupRows(byModelAll);
   if (wants.has("by-agent")) sections["by-agent"] = groupRows(byAgentAll);
+  if (wants.has("peak")) {
+    // B9 (ticket #81): shares of gateway-billed cost by the vendor window
+    // table; unclassified families land in their model row, never guessed.
+    const peakRows = rows.map((row) => ({
+      model: row.model,
+      created_at: row.created_at,
+      cost_value: row.cost_value,
+      currency: row.currency,
+    }));
+    const peak: PeakSplit = splitPeakOffPeak(peakRows);
+    sections.peak = peak;
+  }
 
   const coverage = computeCoverage("30days", { now: options.now, sync: options.sync ?? undefined });
 
@@ -636,6 +662,9 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
     ),
   };
   if (sessionUnit) labels.sessions = formatLabel(heuristic("time-gap sessionization"));
+  labels.peak = formatLabel(
+    estimated("peak-window table applied to stored created_at timestamps and gateway costs"),
+  );
   return labels;
 }
 
@@ -830,6 +859,14 @@ export function renderReport(report: Report, view: RenderOptions): void {
     renderGroupTable(report.sections["by-agent"] as GroupRow[] | undefined, view, "agent");
   }
 
+  if (view.sections.includes("peak")) {
+    out();
+    out(style.bold("Peak / off-peak"));
+    out(style.dim(meta.provenance.peak ?? ""));
+    out();
+    renderPeak(report.sections.peak as PeakSplit | undefined);
+  }
+
   if (meta.sessionization) {
     out();
     out(style.dim(sessionizationNote(meta.sessionization.gapMinutes)));
@@ -986,4 +1023,70 @@ function renderTotalsFields(totals: TotalsRow | undefined, view: RenderOptions):
     }
   }
   for (const [key, value] of pairs) out(`${style.dim(key.padEnd(16))}  ${value}`);
+}
+
+// ---------------------------------------------------------------------------
+// Peak / off-peak section (feature catalog B9, ticket #81)
+// ---------------------------------------------------------------------------
+
+type PeakBucket = { requests: number; costs: Costs };
+
+/**
+ * One bucket cell: share% plus cost for the single-currency case; "-" when
+ * the bucket is empty or mixed-currency (the per-currency JSON carries the
+ * detail; a mixed cell is never a sum).
+ */
+function peakCell(bucket: PeakBucket, share: number | undefined): string {
+  const entries = Object.entries(bucket.costs);
+  if (entries.length === 0) return "-";
+  if (entries.length > 1) return "-";
+  const cost = formatCost(entries[0]![1], entries[0]![0]);
+  return share === undefined ? cost : `${share.toFixed(1)}% (${cost})`;
+}
+
+function renderPeak(split: PeakSplit | undefined): void {
+  if (!split || split.models.length === 0) {
+    out(style.dim("No matching requests."));
+    return;
+  }
+  const rows = split.models.map((model) => {
+    const share = Object.values(model.shares)[0];
+    const mixed = currencyKeysOf([model.peak, model.offPeak, model.unclassified]).length > 1;
+    return {
+      model: model.model,
+      family: model.family ?? "unclassified",
+      peak: model.family === null || mixed ? "n/a" : peakCell(model.peak, share?.peak),
+      "off-peak": model.family === null || mixed ? "n/a" : peakCell(model.offPeak, share?.offPeak),
+      unclassified: model.family === null ? peakCell(model.unclassified, undefined) : "-",
+      requests: model.peak.requests + model.offPeak.requests + model.unclassified.requests,
+    };
+  });
+  table(rows, [
+    { header: "model", value: (r) => r.model },
+    { header: "family", value: (r) => r.family },
+    { header: "peak", value: (r) => r.peak, align: "right" },
+    { header: "off-peak", value: (r) => r["off-peak"], align: "right" },
+    { header: "unclassified", value: (r) => r.unclassified, align: "right" },
+    { header: "requests", value: (r) => num(r.requests), align: "right" },
+  ]);
+
+  if (split.routed.requests > 0) {
+    const routedCost = peakCell(split.routed, undefined);
+    out(
+      style.dim(
+        `routed (non-first-party) traffic: ${num(split.routed.requests)} requests` +
+          `${routedCost === "-" ? "" : `, ${routedCost}`} — window split not applicable`,
+      ),
+    );
+  }
+  const sources = [...new Set(split.models.map((m) => m.source).filter((s) => s !== null))];
+  if (sources.length > 0) out(style.dim(`window sources: ${sources.join(" · ")}`));
+  const unclassified = split.models.filter((m) => m.family === null).map((m) => m.model);
+  if (unclassified.length > 0) {
+    out(
+      style.dim(
+        `no window-table entry for ${unclassified.join(", ")} — reported unclassified, never guessed.`,
+      ),
+    );
+  }
 }
