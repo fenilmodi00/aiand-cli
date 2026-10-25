@@ -16,6 +16,7 @@ import * as restore from "./restore.js";
 import * as run from "./run.js";
 import * as runAgent from "./run-agent.js";
 import * as status from "./status.js";
+import * as store from "./store.js";
 import * as update from "./update.js";
 import * as usage from "./usage.js";
 import * as whoami from "./whoami.js";
@@ -95,6 +96,12 @@ export const COMMANDS: Command[] = [
     run: runAgent.run,
   },
   { name: "key", summary: "Print the active session key", help: key.help, run: key.run },
+  {
+    name: "store",
+    summary: "Local request store status and sync",
+    help: store.help,
+    run: store.run,
+  },
   {
     name: "update",
     summary: "Update ai& to the latest version",
