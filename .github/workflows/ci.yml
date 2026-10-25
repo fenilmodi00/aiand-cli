@@ -78,7 +78,7 @@ jobs:
   live:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,6 +91,18 @@ jobs:
       - run: npm run build
       # sbx-test plants its own stub agent binaries; the real opencode run is
       # test/e2e-live.test.mjs in the build job.
+      # A pinned real Hermes for launcher-hermes-live (the routed round-trip);
+      # src/agents/hermes/install.ts pins the commit and check-dist keeps them
+      # in step. The installer itself is fetched at that commit from
+      # raw.githubusercontent.com and checked against the digest recorded in
+      # HERMES_INSTALL_SHA256 before it runs.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/hermes"
+          curl -fsSLo "$RUNNER_TEMP/hermes/install.sh" https://raw.githubusercontent.com/NousResearch/hermes-agent/666f313d1d3abd8077291ba464cf0a10f1a6157f/scripts/install.sh
+          echo "0fbf2969c12b9ef9c90b81519814865faa9ee4e22056e2a9a4d0b1d5e59966e8  $RUNNER_TEMP/hermes/install.sh" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/hermes/install.sh"
+          bash "$RUNNER_TEMP/hermes/install.sh" --commit 666f313d1d3abd8077291ba464cf0a10f1a6157f --non-interactive --skip-browser --skip-computer-use
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: node scripts/sbx-test.mjs dist/index.js
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}

@@ -10,7 +10,7 @@ import { FAKE_API_KEY, withEnv, withTestEnv } from "./helpers.mjs";
 // mock-gateway.mjs. No network beyond 127.0.0.1; no real home.
 
 const { streamChatCompletion, createChatCompletion } = await import("../dist/api/inference.js");
-const { requestJson, publicJson } = await import("../dist/api/client.js");
+const { requestJson, publicJson, publicRequest } = await import("../dist/api/client.js");
 const { startDeviceAuthorization, pollForToken, rotateTokens } = await import(
   "../dist/api/device.js"
 );
@@ -381,6 +381,33 @@ describe("probe reachability", () => {
       );
     } finally {
       await server.close();
+    }
+  });
+
+  test("an unreachable gateway never echoes credentials from the request URL", async () => {
+    // Undici interpolates the request URL into its refusal reasons, so a
+    // credential-embedded URL would print userinfo in the hint.
+    const fake = "sk-test-secret";
+    const previousFetch = globalThis.fetch;
+    // Undici's refusal reason quotes the full request URL, userinfo included.
+    globalThis.fetch = async () => {
+      throw new Error(
+        "fetch failed: includes credentials: https://user:sk-test-secret@host.example",
+      );
+    };
+    try {
+      const failure = await capture(
+        publicRequest("https://user:s3cret@host.example/v1/models", {
+          headers: { Authorization: `Bearer ${fake}` },
+        }),
+      );
+      assert.ok(failure instanceof ApiError);
+      assert.equal(failure.status, 0);
+      assert.match(failure.message, /Could not reach https:\/\/host\.example/);
+      assert.ok(!failure.message.includes(fake), "the secret is never echoed");
+      assert.match(failure.message, /\[redacted\]/);
+    } finally {
+      globalThis.fetch = previousFetch;
     }
   });
 });

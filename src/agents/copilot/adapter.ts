@@ -515,6 +515,21 @@ export const copilotAdapter: AgentAdapter = {
   probe,
   enable,
   disable,
+  async bakedKey(): Promise<string | null> {
+    // The key Copilot sends is the apiKey in our providers.json row. A row
+    // the CLI does not own is the user's, and its key is not ours to claim.
+    let providers: Record<string, unknown>;
+    try {
+      providers = await readJsoncObject(copilotProvidersPath(), INVALID_CONFIG_HINT);
+    } catch {
+      return null;
+    }
+    const added = await getAddedState<CopilotRecord>(COPILOT_ID);
+    const row = aiandRow(providers);
+    if (!isOurRow(row, added)) return null;
+    const key = row?.apiKey;
+    return typeof key === "string" && key.length > 0 ? key : null;
+  },
   // Inherited env names that would repoint a launcher session off
   // ai&: the 1.0.89 payload's single-provider BYOK
   // surface `COPILOT_PROVIDER_*` — grepped from

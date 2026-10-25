@@ -28,6 +28,7 @@ import {
   OMP_MARKER_KEY,
   OMP_PROVIDER_ID,
   ompBaseUrl,
+  readOmpProviderBlock,
 } from "./provider.js";
 import { readYamlMapping, yamlDelete, yamlSet } from "./yaml.js";
 
@@ -543,6 +544,16 @@ export const ompAdapter: AgentAdapter = {
   probe,
   enable,
   disable,
+  async bakedKey(): Promise<string | null> {
+    // The key omp sends is the one in our models.yml provider block. A block
+    // without our marker is the user's, and its key is not ours to claim.
+    const raw = await readTextIfExists(ompModelsPath());
+    if (!raw) return null;
+    const ownership = readOmpProviderBlock(raw);
+    if (ownership.kind !== "ours") return null;
+    const key = ownership.block.apiKey;
+    return typeof key === "string" && key.length > 0 ? key : null;
+  },
   refreshKey: (input) => ompRefreshKey(input),
   sessionLaunch: (input) => ompSessionLaunch(input),
 };

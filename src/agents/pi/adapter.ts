@@ -523,6 +523,19 @@ export const piAdapter: AgentAdapter = {
     return files;
   },
   probe,
+  async bakedKey(): Promise<string | null> {
+    // The key Pi sends is the one in our auth.json credential. A credential
+    // without our marker is the user's, and its key is not ours to claim.
+    let auth: Record<string, unknown>;
+    try {
+      auth = await readJsoncObject(piAuthPath(), INVALID_CONFIG_HINT);
+    } catch {
+      return null;
+    }
+    if (!hasOwnershipMarker(auth)) return null;
+    const key = aiandCredential(auth)?.key;
+    return typeof key === "string" && key.length > 0 ? key : null;
+  },
   enable,
   disable,
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {

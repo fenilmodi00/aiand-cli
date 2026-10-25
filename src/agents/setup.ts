@@ -1,6 +1,7 @@
-import { openSession, requestJson } from "../api/client.js";
+import { forgetAgentKeys, recordAgentKey } from "../api/agent-keys.js";
+import { publicRequest } from "../api/client.js";
 import { requireSessionKey } from "../auth/session.js";
-import { ApiError, CliError } from "../cli/errors.js";
+import { ApiError, CliError, SYNTHETIC_STATUS } from "../cli/errors.js";
 import { resolveProfile } from "../config.js";
 import { getCatalog, resolveDefault, validateCatalogModel, visionLabel } from "./catalog.js";
 import { installIfMissing, notInstalledError, runAgentBinary } from "./launch.js";
@@ -46,6 +47,44 @@ export type AgentStatusResult = {
 };
 
 /**
+ * The rejected-key advice `on` refuses with before any write, mirroring the
+ * 401 hints request() gives at request time: under an env key the fix is the
+ * variable, under a stored key it is a fresh login.
+ */
+function rejectedKeyError(): CliError {
+  if (process.env.AIAND_API_KEY) {
+    return new CliError("Your AIAND_API_KEY was rejected.", {
+      hint: "Check the key, or unset it to use your stored login instead.",
+    });
+  }
+  return new CliError("Your key was rejected.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+/**
+ * One authenticated probe of `/v1/models` before any write: a key the
+ * gateway rejects (401) refuses with the rejected-key advice instead of
+ * being baked into agent configs. Unreachable/other failures pass through —
+ * the catalog fetch below owns those errors, and a seeded cache keeps
+ * offline runs working.
+ */
+async function validateSessionKey(key: string, apiUrl: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await publicRequest(`${apiUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === SYNTHETIC_STATUS.UNREACHABLE) return;
+    throw error;
+  }
+  // Drain either way so the socket is freed; only the status matters here.
+  await response.arrayBuffer().catch(() => {});
+  if (response.status === 401) throw rejectedKeyError();
+}
+
+/**
  * Turn an agent on: detect the binary, resolve a session key, resolve the
  * model from the live catalog, snapshot when inactive, then let the
  * adapter write its config. An already-active probe skips the snapshot so
@@ -66,17 +105,6 @@ export async function agentOn(
   // Install hint, never a login ceremony for a binary that isn't there.
   if (!adapter.detect().installed) throw notInstalledError(adapter);
   const session = await requireSessionKey(opts.profile);
-  // The catalog endpoint is public, so a garbage env key would otherwise
-  // pass the fetch below and get baked into the agent's files (the first
-  // auth'd call would then 401 at session time). One authenticated request
-  // up front: a rejected key refuses on before any write. Only a 401
-  // refuses — an unreachable gateway must not block a cache-served on.
-  const apiSession = await openSession(resolveProfile(opts.profile));
-  try {
-    await requestJson(apiSession, { path: "/v1/models" });
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 401) throw error;
-  }
 
   const probe = await adapter.probe();
 
@@ -87,6 +115,9 @@ export async function agentOn(
   }
 
   const profile = resolveProfile(opts.profile);
+  // The key is validated before anything is written: a rejected key refuses
+  // here, never baked in an agent config.
+  await validateSessionKey(session.key, profile.apiUrl);
   const catalog = await getCatalog(profile.apiUrl);
 
   let model: string;
@@ -134,6 +165,13 @@ export async function agentOn(
     if (entry && visionLabel(entry) === "text-only") {
       warnings.push(`${written.model} is text-only and can't take images.`);
     }
+
+    // Remember which key this agent now uses, so `aiand cache` can attribute
+    // the Gateway's per-request rows to it. The Gateway reports `api_key` but
+    // no client field, and this map is the only handle on that.
+    await recordAgentKey(adapter.id, session.key).catch(() => {
+      // Observability must never break wiring.
+    });
 
     return {
       agent: adapter.id,
@@ -257,7 +295,9 @@ export async function agentSession(
 
 /**
  * Turn an agent off: subtract marked aiand keys. The snapshot is not replayed
- * here — it backs `aiand restore --force`. Exit 0 either way.
+ * here — it backs `aiand restore --force`. `stripped` false with a note
+ * reports work off did but declines to claim ("left providers.aiand because
+ * you edited it"); false and silent means nothing was there. Exit 0 either way.
  */
 export async function agentOff(
   adapter: AgentAdapter,
@@ -270,6 +310,9 @@ export async function agentOff(
 
   const result = (await adapter.disable()) ?? { stripped: false };
   const notes = result.notes?.filter(Boolean) ?? [];
+  // The agent no longer uses our key: drop the attribution so `aiand cache`
+  // does not keep reporting it as an active agent.
+  await forgetAgentKeys(adapter.id);
   if (!result.stripped && notes.length === 0) {
     return {
       agent: adapter.id,

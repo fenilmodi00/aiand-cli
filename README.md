@@ -117,6 +117,8 @@ when it is set.
 | `aiand models` | The model catalog, with prices in your billing currency |
 | `aiand logs` | Recent requests, with `--follow` |
 | `aiand usage` | Requests and tokens, compared with the previous period |
+| `aiand cache` | Cache hit rate, per agent and per model, and what the cache saved |
+| `aiand harness` | Compare agent request shapes on cache behavior |
 | `aiand orgs` | Organizations you belong to |
 | `aiand config` | Profiles and defaults |
 | `aiand key export` | Print the active key, for piping into another tool |
@@ -148,17 +150,18 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Claude Code](https://code.claude.com/docs),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
-and the [GitHub Copilot app](https://github.com/features/ai/github-app).
+[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
+the [GitHub Copilot app](https://github.com/features/ai/github-app)
+and [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research).
 
-`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp` and
-`aiand copilot` open the agent on ai&, and `aiand code` opens the default
+`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
+`aiand copilot` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
 one, OpenCode. If you are signed out, aiand signs you in. If the agent is
 missing and its install command is an npm install, aiand offers to install
 it with the install command shown by `aiand <agent> --help`; other install
 hints are printed with no offer. If the agent is not wired
 yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp` and `copilot` use ai& afterwards too.
+`codex --profile aiand`, `pi`, `omp`, `copilot` and `hermes` use ai& afterwards too.
 
 Everything after the agent name goes to the agent as typed, such as
 `aiand claude -p "explain this repo"`. Put aiand's own flags before the
@@ -174,6 +177,10 @@ aiand opencode status    # check what OpenCode is actually configured to use
 aiand opencode off       # remove exactly what aiand added
 aiand run-agent opencode # or: use ai& for this one session, change nothing
 ```
+
+`aiand run-agent opencode` writes each model's published reasoning levels into
+the session. GLM-5.3 gets low, high, and max. `aiand opencode on` already
+copies those levels from the gateway.
 
 `on` adds an `aiand` provider to `~/.config/opencode/opencode.json`, with the
 models from the live catalog, so plain `opencode` uses ai& afterwards. Your
@@ -258,6 +265,10 @@ sets `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`. Your
 other providers and credentials are untouched. A `defaultModel` ai& cannot
 serve is set aside until `off`; one it can serve is kept. Pass
 `--model <id>` to switch, or `--model native` to leave Pi's own default.
+Pi offers each model's published reasoning levels. A level the model does
+not publish stays hidden. Pi's own default is medium. When medium is not in
+the model's list, Pi moves up to the next level it does publish. On GLM-5.3
+that level is high.
 Pi's config root moves wholesale with `PI_CODING_AGENT_DIR`.
 
 ```bash
@@ -312,6 +323,44 @@ is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
 for permanent wiring. Bare `aiand copilot-app` wires the app and tells you
 how to open it yourself — aiand cannot launch a GUI app, and anything after
 `copilot-app` errors.
+
+```bash
+aiand hermes on          # route Hermes through ai&
+aiand hermes status
+aiand hermes off
+aiand run-agent hermes   # launch Hermes on ai& for one session, nothing written
+```
+
+`on` ships a dedicated `aiand` model provider as a `model-provider` plugin
+under `~/.hermes/plugins/model-providers/aiand`, adds a `providers.aiand`
+block to `~/.hermes/config.yaml`, and bakes your key into `~/.hermes/.env`
+(mode 0600) under a dedicated name, so the key lives in Hermes's own process
+after the `.env` load but never reaches the tools Hermes runs: the generated
+provider declares the var, which mirrors into Hermes's provider env
+blocklist, so terminal and tool children are spawned without it. The
+generated provider carries each model's published reasoning levels (GLM 5.3
+offers low, high, and max); a stock install leaves the level unset, so no
+`reasoning_effort` is sent and the gateway's per-model default applies, while
+a level you pick is clamped onto the published set. The top-level model
+pins from the live catalog: pass
+`--model <id>` to switch, or `--model native` to leave the model section
+exactly as it is (Hermes needs a default to send, so ai& never deletes one).
+Your other providers, plugins, sessions, and own edits are left alone.
+
+`off` removes only what aiand wrote. If a config ever ends up in a state you
+do not want, `aiand restore hermes --force` puts back the exact files from
+before aiand first touched it.
+
+`run-agent` routes one session through a throwaway `HERMES_HOME` overlay
+without a prior `on`: your sessions, skills, memories, logs, and own plugins
+are symlinked back so they stay native and resumable, while credentials exist
+only inside the overlay and the real `~/.hermes` — including its
+`config.yaml` — is never written. The overlay ships the same dedicated
+`aiand` model provider, and its `config.yaml` pins the model from the live
+catalog: `--model <id>` to choose (a session launch always names a model, so
+`--model native` is the usual catalog error). `--provider`, `--model`, and `-m` in the arguments after `--` are
+stripped so nothing can override the injected routing, and the overlay is
+removed after the session ends — success, failure, or Ctrl-C.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.
@@ -388,6 +437,53 @@ aiand usage --metrics              # full breakdown
 ```
 
 Both cover your whole organization, not just this machine.
+
+## Cache and harnesses
+
+The gateway caches prompt prefixes, so the request *shape* an agent uses
+decides what it pays. `aiand cache` shows what you actually spent and what
+the cache saved; `aiand harness` compares the shapes.
+
+```bash
+aiand cache                        # hit rate and savings, by agent
+aiand cache --by model             # the same, per model
+aiand cache --attribute omp=sk-abcd...1234   # label a key the CLI cannot place
+```
+
+Requests are attributed to an agent by the API key the CLI baked into that
+agent's config. An agent wired by hand has no such key, so it shows as
+`unknown` rather than being guessed — `--attribute` labels one yourself.
+
+```bash
+aiand harness                      # compare request shapes
+aiand harness --scenario multi-turn-refactor
+aiand harness --harness claude-code --harness omp   # compare two, in parallel
+aiand harness --sweep-models       # every shape against every model
+```
+
+A harness here is a request shape, not a prompt. Each harness also speaks its
+own wire dialect, and the benchmark sends what that harness really sends:
+
+| Shape | Dialect | What it does | Cache |
+| --- | --- | --- | --- |
+| `claude-code` | Anthropic | stable system + tools, append-only transcript | hits |
+| `omp` | OpenAI | stable system + tools, append-only transcript | hits |
+| `reordered-stable` | Anthropic | reordered the same way every turn | hits |
+| `rebuilt-system` | Anthropic | system block rebuilt every turn | misses |
+| `compacting` | Anthropic | history replaced by a fresh summary | misses |
+| `reordered` | Anthropic | blocks reordered as the conversation grows | misses |
+
+Reordering per se is not the problem — a reorder that never changes still
+hits. A reorder that *moves* breaks the prefix, and so does rebuilding the
+system block or compacting the history. The benchmark measures this against
+the gateway rather than asserting it.
+
+> The two dialects report the prompt differently, and the difference is
+> invisible in the totals: the OpenAI dialect's `prompt_tokens` includes the
+> cached portion, the Anthropic dialect's `input_tokens` excludes it. The
+> gateway's `/logs` normalizes both to the same convention, so the two
+> harnesses come out with identical hit rates — the cache does not care which
+> dialect sent the request.
 
 ## Configuration
 

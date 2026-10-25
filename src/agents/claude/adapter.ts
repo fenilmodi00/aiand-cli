@@ -445,6 +445,23 @@ export const claudeAdapter: AgentAdapter = {
   // has one would silently bill the user's subscription instead of ai&. Both
   // launchers (run-agent, agentSession) delete these before the spawn.
   shadowEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  async bakedKey(): Promise<string | null> {
+    // The key Claude Code sends is the token in our env block. A config
+    // without our marker is the user's, and its token is not ours to claim.
+    const path = await wiredSettingsPath();
+    const raw = await readTextIfExists(path);
+    if (!raw) return null;
+    let settings: Record<string, unknown>;
+    try {
+      settings = parseSettings(path, raw);
+    } catch {
+      return null;
+    }
+    const env = asObject(settings.env);
+    if (env?.[MARKER_KEY] !== ENV_ON) return null;
+    const token = env[TOKEN_KEY];
+    return typeof token === "string" && token.length > 0 ? token : null;
+  },
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {
     const path = await wiredSettingsPath();
     const raw = await readTextIfExists(path);

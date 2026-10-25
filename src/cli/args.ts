@@ -1,5 +1,5 @@
 import { type ParseArgsConfig, parseArgs } from "node:util";
-import { assertHttpsBaseUrl } from "../config.js";
+import { assertHttpsBaseUrl, assertNoV1Suffix } from "../config.js";
 import { CliError } from "./errors.js";
 
 type OptionsConfig = NonNullable<ParseArgsConfig["options"]>;
@@ -48,6 +48,9 @@ export function parse(argv: string[], options: OptionsConfig = {}): Parsed {
   const baseUrl = parsed.values["base-url"];
   if (typeof baseUrl === "string") {
     assertHttpsBaseUrl(baseUrl);
+    // Adapters append /v1 themselves: refuse a suffixed flag before it
+    // doubles to /v1/v1 and misdiagnoses as an expired key.
+    assertNoV1Suffix(baseUrl);
     process.env.AIAND_BASE_URL = baseUrl;
   }
 
@@ -94,6 +97,19 @@ export const str = (parsed: Parsed, name: string): string | undefined => {
   const value = parsed.values[name];
   return typeof value === "string" ? value : undefined;
 };
+
+/**
+ * Every value of a repeatable flag, in the order they were given. A flag
+ * declared `multiple: true` collects an array; one that was not, and a
+ * single occurrence, both read as a one-element list.
+ */
+export function list(parsed: Parsed, name: string): string[] {
+  const value = parsed.values[name];
+  if (value === undefined) return [];
+  if (Array.isArray(value))
+    return value.filter((entry): entry is string => typeof entry === "string");
+  return typeof value === "string" ? [value] : [];
+}
 
 export const bool = (parsed: Parsed, name: string): boolean => parsed.values[name] === true;
 

@@ -476,6 +476,19 @@ export const copilotAppAdapter: AgentAdapter = {
   enableGuard: refuseRunningApp,
   offGuard: refuseRunningApp,
   disable,
+  async bakedKey(): Promise<string | null> {
+    // The key the app sends is the bearer in our provider row. A row the
+    // CLI does not own is the user's, and its key is not ours to claim.
+    try {
+      const provider = await findAppProvider(
+        (await getAddedState<CopilotAppRecord>(COPILOT_APP_ID))?.providerId,
+      );
+      const key = provider?.apiKey;
+      return typeof key === "string" && key.length > 0 ? key : null;
+    } catch {
+      return null;
+    }
+  },
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {
     let provider: AppProviderRow | null;
     try {

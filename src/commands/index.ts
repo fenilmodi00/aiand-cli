@@ -1,7 +1,9 @@
 import { AGENTS } from "../agents/registry.js";
 import { nearestMatch } from "../cli/args.js";
+import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
+import * as harness from "./harness.js";
 import * as init from "./init.js";
 import * as key from "./key.js";
 import * as login from "./login.js";
@@ -45,6 +47,18 @@ export const COMMANDS: Command[] = [
     run: models.run,
   },
   { name: "logs", summary: "Recent inference requests", help: logs.help, run: logs.run },
+  {
+    name: "cache",
+    summary: "Cache hit rate and what it saved",
+    help: cache.help,
+    run: cache.run,
+  },
+  {
+    name: "harness",
+    summary: "Compare harnesses on cache behavior",
+    help: harness.help,
+    run: harness.run,
+  },
   {
     name: "usage",
     summary: "Request and token usage",

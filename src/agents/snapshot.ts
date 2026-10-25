@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { CliError } from "../cli/errors.js";
 import { configDir, writeFileAtomic } from "../config.js";
 import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, pathIsInside } from "../fsutil.js";
+import { fsCliError } from "./managed-file.js";
 
 const MANIFEST_FILE = "latest.json";
 
@@ -89,7 +90,11 @@ export async function snapshotFiles(agentId: string, files: string[]): Promise<s
     try {
       await stat(file);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        // A config path that exists but is unusable (ENOTDIR, EISDIR,
+        // EACCES/EPERM) refuses cleanly exit 1, never a raw stack exit 70.
+        throw fsCliError(file, error) ?? error;
+      }
       existed = false;
     }
     if (existed) {

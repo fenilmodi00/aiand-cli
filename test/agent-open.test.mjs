@@ -24,7 +24,8 @@ exit 42`;
 let binDir;
 const box = withTestEnv("aiand-open-", (dir) => {
   binDir = join(dir, "bin");
-  for (const agent of ["opencode", "claude", "codex"]) plantStub(binDir, agent, CAPTURE_STUB);
+  for (const agent of ["opencode", "claude", "codex", "hermes"])
+    plantStub(binDir, agent, CAPTURE_STUB);
 });
 
 function freshState() {
@@ -207,6 +208,21 @@ describe("aiand <agent> opens the agent", () => {
     assert.match(stderr, /Not logged in/i);
     assert.equal(existsSync(`${state.capture}.args`), false);
   });
+  test("hermes open drops env that would outrank the wired config", async () => {
+    const state = freshState();
+    const { code, stderr } = await cli(["hermes"], state, {
+      HERMES_HOME: join(state.home, ".hermes"),
+      ANTHROPIC_API_KEY: "sk-anthropic",
+      OPENAI_API_KEY: "sk-openai",
+    });
+    assert.equal(code, 42);
+    assert.match(stderr, /Hermes Agent is now using ai&\./);
+    const env = capturedEnv(state);
+    assert.doesNotMatch(env, /^ANTHROPIC_API_KEY=/m);
+    assert.doesNotMatch(env, /^OPENAI_API_KEY=/m);
+    assert.doesNotMatch(env, /^AIAND_API_KEY=/m);
+  });
+
   test("open scrubs AIAND_API_KEY from the spawned agent env", async () => {
     const state = freshState();
     const { code } = await cli(["opencode"], state, { AIAND_API_KEY: FAKE_API_KEY });

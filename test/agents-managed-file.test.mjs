@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
 import {
@@ -24,7 +24,53 @@ describe("managed-file read side", () => {
     writeFileSync(present, "hello\n");
     assert.equal(await readTextIfExists(present), "hello\n");
   });
+
+  test("an unusable path refuses as a CliError, never a raw stack", async () => {
+    // A file where a directory belongs (ENOTDIR), a directory where a file
+    // belongs (EISDIR), and an unreadable file (EACCES): all three must read
+    // as exit-1 CliErrors naming the path, not a raw errno exit 70.
+    const squatter = join(box.dir, "squatter");
+    writeFileSync(squatter, "not a dir\n");
+    const isDir = join(box.dir, "dir-as-file");
+    mkdirRecursive(isDir);
+    const locked = join(box.dir, "locked.txt");
+    writeFileSync(locked, "secret\n", { mode: 0o000 });
+    try {
+      await assert.rejects(
+        () => readTextIfExists(join(squatter, "config.json")),
+        (error) => {
+          assert.ok(error instanceof CliError);
+          assert.match(error.message, /is not a directory/);
+          return true;
+        },
+      );
+      await assert.rejects(
+        () => readTextIfExists(isDir),
+        (error) => {
+          assert.ok(error instanceof CliError);
+          assert.match(error.message, /it is a directory/);
+          return true;
+        },
+      );
+      if (process.platform !== "win32" && process.getuid?.() !== 0) {
+        await assert.rejects(
+          () => readTextIfExists(locked),
+          (error) => {
+            assert.ok(error instanceof CliError);
+            assert.match(error.message, /permission denied/);
+            return true;
+          },
+        );
+      }
+    } finally {
+      chmodSync(locked, 0o600);
+    }
+  });
 });
+
+function mkdirRecursive(dir) {
+  mkdirSync(dir, { recursive: true });
+}
 
 describe("readJsoncObject", () => {
   test("missing and blank files read as {}", async () => {

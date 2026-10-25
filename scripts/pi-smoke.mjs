@@ -29,9 +29,9 @@ const SMOKE_MODEL = {
   provider: "zai-org",
   context_window: 200000,
   capabilities: ["text", "vision", "tool_calling"],
-  // A reasoning model: pi would send reasoning_effort "medium" for it,
-  // which the real gateway 400s on — the compat flag our provider writes
-  // suppresses it. The double is lenient, but the shape must stay honest.
+  // Pi's default thinking level is medium. This model does not publish
+  // medium, so Pi moves up to high. The double is lenient, but the shape
+  // must stay honest: the request must not send medium.
   reasoning_efforts: ["low", "high", "max"],
   reasoning_effort_default: "max",
   description: null,
@@ -46,10 +46,9 @@ const SMOKE_MODEL = {
 // chat-completions echo.
 //
 // Why bespoke instead of test/mock-gateway.mjs + withMockGateway: the smoke
-// must prove compat suppression, so the catalog serves a reasoning model
-// (reasoning_efforts + default max) the shared double has no equivalent of
-// — without it pi would never send reasoning_effort and `effort=absent`
-// would prove nothing. And pi streams chat completions: this double serves
+// must prove the clamped level, so the catalog serves a reasoning model
+// (reasoning_efforts low, high, max) the shared double has no equivalent of.
+// And pi streams chat completions: this double serves
 // the SSE chunk + [DONE] dialect pi's openai-completions path expects,
 // while the shared double replies with a single JSON body.
 const DOUBLE = `import { createServer } from "node:http";
@@ -170,9 +169,9 @@ try {
       ["--print", "--provider", "aiand", "--model", "zai-org/glm-5.3", "Say hi"],
       { env: { ...env, NO_COLOR: "1" }, encoding: "utf8", timeout: 180_000 },
     );
-    if (printed.includes("echo:zai-org/glm-5.3:effort=absent"))
-      process.stdout.write("PASS pi --print routes through the gateway with no reasoning_effort\n");
-    else fail(`pi --print round-trip did not prove compat suppression:\n${printed}`);
+    if (printed.includes("echo:zai-org/glm-5.3:effort=high"))
+      process.stdout.write("PASS pi --print sends high, the next published level above medium\n");
+    else fail(`pi --print round-trip did not send the clamped level:\n${printed}`);
   } catch (error) {
     fail(`pi --print round-trip failed: ${error.stderr ?? error.message}`);
   }

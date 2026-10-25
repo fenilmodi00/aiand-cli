@@ -78,6 +78,13 @@ export type AgentAdapter = {
   detect(): DetectResult; // which/where probe
   managedFiles(): string[]; // absolute paths this adapter touches
   probe(): Promise<ProbeResult>; // read real config, no flags trusted
+  bakedKey?(): Promise<string | null>;
+  // ^ The API key this agent's config currently carries, or null when the
+  //   agent is not wired to ai& or keeps no key of its own (Codex asks
+  //   `aiand key export`). The Gateway's /logs rows identify a request by
+  //   its key and report no client field, so this is how a request is
+  //   attributed to the agent that sent it. Adapters that bake a key
+  //   implement it by reading their own config — the same file they write.
   enable(input: EnableInput): Promise<EnableResult>;
   enableGuard?(opts: GuardOptions): Promise<void>;
   // ^ Runs inside agentOn, before the snapshot + enable(). Adapters whose

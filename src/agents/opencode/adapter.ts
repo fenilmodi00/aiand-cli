@@ -19,6 +19,7 @@ import { CATALOG_TTL_MS, resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
 import {
   jsoncDelete,
+  jsoncGet,
   jsoncSet,
   notValidJsonError,
   parseJsonc,
@@ -189,6 +190,8 @@ export function buildOpencodeConfig({
 /**
  * Model has no output-token field, so limit.output mirrors context_window (the
  * cap the gateway enforces). Catalog prices are per 1M tokens, OpenCode's unit.
+ * `reasoning_options` is the key `/v1/api.json` already publishes. Session
+ * launches do not fetch that map, so the same key carries the catalog levels.
  */
 function modelEntryFromCatalog(model: Model): OpencodeModelEntry {
   const caps = model.capabilities;
@@ -197,10 +200,12 @@ function modelEntryFromCatalog(model: Model): OpencodeModelEntry {
   if (caps.includes("video")) input.push("video");
   if (caps.includes("document")) input.push("pdf");
   const price = (value: string | null): number => Number.parseFloat(value ?? "0");
+  const levels = model.reasoning_efforts ?? [];
   return {
     name: model.name,
     attachment: caps.includes("vision") || caps.includes("attachment"),
-    reasoning: model.reasoning_efforts != null && model.reasoning_efforts.length > 0,
+    reasoning: levels.length > 0,
+    ...(levels.length > 0 ? { reasoning_options: [{ type: "effort", values: [...levels] }] } : {}),
     temperature: true,
     tool_call: caps.includes("tools") || caps.includes("tool_calling"),
     limit: { context: model.context_window, output: model.context_window },
@@ -471,6 +476,16 @@ export const opencodeAdapter: AgentAdapter = {
   },
   probe,
   enable,
+  async bakedKey(): Promise<string | null> {
+    // The key OpenCode sends is the one in our provider block. A block
+    // without our marker is the user's, and its key is not ours to claim.
+    const raw = await readTextIfExists(opencodeConfigPath());
+    if (!raw) return null;
+    const marker = jsoncGet(raw, OPENCODE_MARKER_PATH);
+    if (marker !== true) return null;
+    const key = jsoncGet(raw, OPENCODE_KEY_PATH);
+    return typeof key === "string" && key.length > 0 ? key : null;
+  },
   async disable(): Promise<DisableResult> {
     const path = opencodeConfigPath();
     const raw = await readTextIfExists(path);

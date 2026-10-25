@@ -81,10 +81,10 @@ const RULES = [
   },
   {
     name: "issue tracker reference",
-    pattern: /\b[A-Z]{2,6}-\d{1,6}\b/g,
-
-    allow: (match) =>
-      /^(?:RFC|UTF|SHA|ISO|ANSI|OSC|AES|RSA|HTTP|IPv|EC|P|CVE|SLSA|ES)-?\d/i.test(match),
+    // The tracker's team keys, not every `ABC-123`: model ids (GLM-5.3),
+    // standards (RFC-9110) and CVEs share that shape. Add a key here when
+    // the tracker gains a team.
+    pattern: /\b(?:AIA|MOR)-\d+\b/gi,
     hint: "Internal ticket identifiers must not be published.",
   },
   {
@@ -228,6 +228,23 @@ if (findings.length > 0) {
       matches.some((m) => !hostRule.allow(m[0])),
       `must flag ${line}`,
     );
+  }
+  const ticketRule = RULES.find((rule) => rule.name === "issue tracker reference");
+  const flags = (line) => {
+    ticketRule.pattern.lastIndex = 0;
+    return [...line.matchAll(ticketRule.pattern)].some((m) => !ticketRule.allow?.(m[0]));
+  };
+  for (const line of ["fixed in AIA-1382", "see MOR-12", "branch aia-1382-fix"]) {
+    assert.ok(flags(line), `must flag ${line}`);
+  }
+  for (const line of [
+    "GLM-5.3 offers low, high, and max",
+    "GLM-5.3-Flash",
+    "KIMI-3 and QWEN-3.6",
+    "GEMMA-4",
+    "RFC-9110, SHA-256, UTF-8, ISO-8601, CVE-2024-3094",
+  ]) {
+    assert.ok(!flags(line), `must not flag ${line}`);
   }
   // walk() must resolve entries under a directory whose name contains a
   // space (ROOT must not stay percent-encoded).
