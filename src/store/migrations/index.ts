@@ -1,5 +1,14 @@
 import { name as initName, sql as initSql, version as initVersion } from "./0001-init.js";
-import { name, sql, version } from "./0002-sessions.js";
+import {
+  name as sessionsName,
+  sql as sessionsSql,
+  version as sessionsVersion,
+} from "./0002-sessions.js";
+import {
+  name as ccusageName,
+  sql as ccusageSql,
+  version as ccusageVersion,
+} from "./0003-ccusage-import.js";
 
 /**
  * The store's numbered migrations, in application order. Each entry carries
@@ -16,5 +25,6 @@ export type Migration = {
 
 export const MIGRATIONS: readonly Migration[] = [
   { version: initVersion, name: initName, sql: initSql },
-  { version, name, sql },
+  { version: sessionsVersion, name: sessionsName, sql: sessionsSql },
+  { version: ccusageVersion, name: ccusageName, sql: ccusageSql },
 ];

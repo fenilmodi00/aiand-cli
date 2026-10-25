@@ -11,6 +11,7 @@ import { bool, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { delta, err, json, num, out, sparkline, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { importCcusage, parseCcusagePayload, readImportPayload } from "../obs/ccusage-import.js";
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
   describeProvenance,
@@ -64,6 +65,7 @@ Usage
   aiand usage --verify               reconciliation gate vs the gateway
   aiand usage --show-windows         print the peak/off-peak window table
   aiand usage --vs-list              vendor list-price equivalent + ai& savings
+  aiand usage --import-ccusage <f|-> import ccusage --json output (offline)
 
 Report options (local store, auto-synced before read; --no-sync / AIAND_NO_SYNC=1
 reads the store as-is and never touches the network)
@@ -88,6 +90,27 @@ reads the store as-is and never touches the network)
   --compact          narrow tables (period, requests, tokens, cost); also
                      automatic under a 100-column terminal. Compact drops,
                      in order: cached tokens, then the input/output split
+  --include-imported fold IMPORTED ccusage rows (see --import-ccusage) into
+                     a combined grand-total section. Default-excluded: every
+                     gateway total stays gateway-only so mixed sources never
+                     double-count; the grand total's cost mixes provenance
+                     (gateway-billed + ccusage-estimated) and is labeled so
+
+ccusage import (--import-ccusage; ticket #73, offline — no sync, no network)
+  --import-ccusage <file|->   import the JSON output of
+                              ccusage daily|weekly|monthly|session|blocks
+                              --json (a file path, or "-" for stdin), e.g.
+                              ccusage daily --json | aiand usage --import-ccusage -
+                              Rows land as EXTERNAL source
+                              imported(ccusage@<import-date>), shown as their
+                              own source row and EXCLUDED from gateway totals
+                              by default. Re-importing identical input is a
+                              no-op (content-hash dedupe); a newer payload
+                              over the same report periods replaces them.
+                              Costs are ccusage's price-table-derived USD
+                              equivalents — estimated, never gateway-billed.
+                              Unknown schemas are refused, never guessed.
+  --json                      (with --import-ccusage) print the import summary
   --json             machine-readable payload { meta, sections }
   --jq <filter>      minimal dot-path filter on the --json document
                      (.sections.totals, .sections.daily[0], .sections.daily[])
@@ -145,7 +168,14 @@ List-price comparison (--vs-list; feature catalog B8)
 /** Report-only flags that select the local-store report path. */
 const REPORT_STRING_FLAGS = ["by", "sections", "last", "timezone", "sort", "order", "jq", "format"];
 const REPORT_LIST_FLAGS = ["agent", "model", "harness"];
-const REPORT_BOOL_FLAGS = ["breakdown", "no-breakdown", "no-totals", "no-cost", "compact"];
+const REPORT_BOOL_FLAGS = [
+  "breakdown",
+  "no-breakdown",
+  "no-totals",
+  "no-cost",
+  "compact",
+  "include-imported",
+];
 
 function wantsReport(parsed: Parsed): boolean {
   return (
@@ -183,10 +213,27 @@ export async function run(argv: string[]): Promise<void> {
     "vs-list": { type: "boolean", default: false },
     "show-windows": { type: "boolean", default: false },
     "prices-file": { type: "string" },
+    "import-ccusage": { type: "string" },
+    "include-imported": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
   if (bool(parsed, "show-windows")) return printWindows(parsed);
+
+  const importTarget = str(parsed, "import-ccusage");
+  if (importTarget !== undefined) {
+    if (bool(parsed, "include-imported")) {
+      throw new CliError(
+        "--include-imported is a report flag: import first, then run the report with it.",
+      );
+    }
+    if (bool(parsed, "metrics") || str(parsed, "range") !== undefined || bool(parsed, "vs-list")) {
+      throw new CliError(
+        "--import-ccusage only imports data; run the report separately afterwards.",
+      );
+    }
+    return runCcusageImport(parsed, importTarget);
+  }
 
   if (bool(parsed, "audit")) {
     // Offline by design: the audit describes how numbers are made, it does
@@ -424,6 +471,41 @@ function formatStatus(row: VerifyRow): string {
 }
 
 // ---------------------------------------------------------------------------
+// --import-ccusage: the ccusage JSON import adapter (feature catalog G4, #73)
+// ---------------------------------------------------------------------------
+
+/**
+ * One-shot, fully offline import: no session is opened and no sync runs —
+ * importing must never trigger gateway side effects (ticket #73 req 7).
+ * The adapter validates loudly; identical payloads dedupe on their content
+ * hash (0 rows). Output states the default-exclude so the anti-double-count
+ * contract is visible at import time.
+ */
+async function runCcusageImport(parsed: Parsed, target: string): Promise<void> {
+  const raw = readImportPayload(target);
+  const summary = importCcusage(parseCcusagePayload(raw));
+  if (bool(parsed, "json")) return json(summary);
+
+  out(style.bold("ccusage import"));
+  out();
+  table(
+    [summary],
+    [
+      { header: "source", value: (r) => r.sourceLabel },
+      { header: "report", value: (r) => r.reportKind },
+      {
+        header: "rows written",
+        value: (r) => (r.deduped ? "0 (already imported)" : num(r.inserted)),
+        align: "right",
+      },
+    ],
+  );
+  out();
+  out(style.dim("Imported rows are EXCLUDED from gateway totals by default (anti-double-count)."));
+  out(style.dim("Run aiand usage --include-imported for a combined grand total."));
+}
+
+// ---------------------------------------------------------------------------
 // The local-store report (feature catalog B1/B6/B7/G1, ticket #60)
 // ---------------------------------------------------------------------------
 
@@ -527,6 +609,7 @@ async function runReport(parsed: Parsed): Promise<void> {
     order: oneOf(parsed, "order", ["asc", "desc"], "asc"),
     sync,
     breakdown: bool(parsed, "breakdown") && !bool(parsed, "no-breakdown"),
+    includeImported: bool(parsed, "include-imported"),
   });
 
   // The sync state is surfaced on stderr in every output mode — a failed or

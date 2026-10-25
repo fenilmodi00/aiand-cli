@@ -1,6 +1,7 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, num, out, style, table } from "../cli/output.js";
+import { type ImportedReportRow, loadImportedRows } from "../obs/ccusage-import.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
 import { type PeakSplit, splitPeakOffPeak } from "../pricing/peak-windows.js";
 import {
@@ -28,6 +29,13 @@ import {
  * the gateway convention. Sessions come from the #66 sessionizer — the pure
  * `sessionize()` grouping — never a local reimplementation.
  *
+ * Imported usage (ticket #73, feature catalog G4) is NEVER folded into these
+ * gateway aggregates: imported ccusage rows live in their own store table and
+ * surface as the separate `imported` section (default-exclude, the CodeBurn
+ * gateway-totals pattern). Only an explicit `--include-imported` produces the
+ * combined `grand-total` section, beside — never replacing — the gateway-only
+ * totals.
+ *
  * The wire payload (`--json`) is exactly `{ meta, sections }`; the `coverage`
  * and `breakdowns` fields on `Report` are render-side only.
  */
@@ -44,6 +52,8 @@ export const SECTION_REGISTRY = [
   "by-model",
   "by-agent",
   "peak",
+  "imported",
+  "grand-total",
 ] as const;
 export type SectionName = (typeof SECTION_REGISTRY)[number];
 
@@ -114,6 +124,24 @@ type GroupRow = {
 
 type TotalsRow = Omit<GroupRow, "key">;
 
+/**
+ * The `--include-imported` combined view (ticket #73): gateway-only totals
+ * stay untouched beside it — the combined row folds the imported lane in
+ * explicitly, and its cost mixes provenance (gateway-billed +
+ * ccusage-estimated), which the meta labels call out.
+ */
+type GrandTotalRow = {
+  /** Identical to `sections.totals`. */
+  gateway: TotalsRow;
+  /** The imported lane's own rollup, null when nothing imported in window. */
+  imported: TotalsRow | null;
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  costs: Costs;
+};
+
 type CurrencyHandling = "single" | "mixed" | "none";
 
 type ReportMeta = {
@@ -127,6 +155,8 @@ type ReportMeta = {
   sessionization: SessionizationMeta | null;
   /** Provenance label per reported field (ticket #68 discipline). */
   provenance: Record<string, string>;
+  /** True when `--include-imported` asked for the combined grand-total. */
+  importedIncluded: boolean;
   coverage: {
     sync: { status: string; at: string | null; error?: string };
     lagSeconds: number | null;
@@ -286,7 +316,7 @@ export function loadRequestRows(
   return filterRows(readRequests(window), filters);
 }
 
-function filterRows(rows: readonly RequestRow[], filters: ReportFilters): RequestRow[] {
+function filterRows<T extends RequestRow>(rows: readonly T[], filters: ReportFilters): T[] {
   const agentWanted = filters.agents.length > 0 ? new Set(filters.agents) : null;
   const modelMatchers = filters.models.map(globToRegExp);
   return rows.filter((row) => {
@@ -477,10 +507,20 @@ export type BuildReportOptions = {
   sync: SyncOutcome | null;
   /** Request --breakdown per-model sub-tables (populates `breakdowns`). */
   breakdown?: boolean;
+  /**
+   * Fold imported ccusage rows into a combined `grand-total` section
+   * (ticket #73). Gateway totals remain gateway-only either way.
+   */
+  includeImported?: boolean;
   /** Overrides Date.now() — tests pin time. */
   now?: Date;
   /** Injected store loader (tests); defaults to the real single read. */
   load?: RequestLoader;
+  /** Injected imported-rows loader (tests); defaults to the real read. */
+  loadImported?: (window: {
+    sinceMs: number | null;
+    untilMs: number | null;
+  }) => ImportedReportRow[];
 };
 
 export function buildReport(options: BuildReportOptions): Report {
@@ -489,6 +529,30 @@ export function buildReport(options: BuildReportOptions): Report {
     load({ sinceMs: options.sinceMs, untilMs: options.untilMs }),
     options.filters,
   );
+
+  // Imported ccusage rows (ticket #73) are a second, SEPARATE lane. They
+  // never enter `rows`, so no gateway aggregate (blocks, totals, by-model,
+  // by-agent, peak, sessions) can ever double-count them.
+  const loadImported = options.loadImported ?? loadImportedRows;
+  const importedRows = loadImported({
+    sinceMs: options.sinceMs,
+    untilMs: options.untilMs,
+  }).map((row) => ({
+    // RequestRow-shaped for the shared accumulator/filter; api_key stays
+    // null (imported rows are never agent-attributed) and the source label
+    // rides along for the per-source rollup.
+    id: "",
+    model: row.model,
+    api_key: null,
+    created_at: row.created_at,
+    input_tokens: row.input_tokens,
+    output_tokens: row.output_tokens,
+    cached_tokens: row.cached_tokens,
+    cost_value: row.cost_value,
+    currency: row.currency,
+    sourceLabel: row.sourceLabel,
+  }));
+  const filteredImported = filterRows(importedRows, options.filters);
 
   const blockSection = UNIT_SECTION[options.unit];
   const wants = new Set<SectionName>(options.sections);
@@ -592,6 +656,39 @@ export function buildReport(options: BuildReportOptions): Report {
     sections.peak = peak;
   }
 
+  // Imported ccusage lane (ticket #73): own source rows, default-excluded
+  // from every gateway total above. Auto-present only when rows exist.
+  const importedBySource = new Map<string, Accumulator>();
+  for (const row of filteredImported) {
+    accumulate(
+      importedBySource.get(row.sourceLabel) ?? upsert(importedBySource, row.sourceLabel),
+      row,
+    );
+  }
+  if (importedBySource.size > 0) sections.imported = groupRows(importedBySource);
+
+  if (options.includeImported) {
+    // The combined view is additive and explicit: gateway totals remain
+    // gateway-only; the grand total folds the imported lane in, and its
+    // per-currency sums keep each currency separate (never summed across).
+    const impAcc = emptyAccumulator();
+    for (const row of filteredImported) accumulate(impAcc, row);
+    const importedTotals = filteredImported.length > 0 ? finalize(impAcc) : null;
+    const costs: Costs = { ...totals.costs };
+    for (const [currency, sum] of Object.entries(importedTotals?.costs ?? {})) {
+      costs[currency] = (costs[currency] ?? 0) + sum;
+    }
+    sections["grand-total"] = {
+      gateway: totals,
+      imported: importedTotals,
+      requests: totals.requests + (importedTotals?.requests ?? 0),
+      input_tokens: totals.input_tokens + (importedTotals?.input_tokens ?? 0),
+      output_tokens: totals.output_tokens + (importedTotals?.output_tokens ?? 0),
+      cached_tokens: totals.cached_tokens + (importedTotals?.cached_tokens ?? 0),
+      costs,
+    };
+  }
+
   const coverage = computeCoverage("30days", { now: options.now, sync: options.sync ?? undefined });
 
   return {
@@ -605,6 +702,7 @@ export function buildReport(options: BuildReportOptions): Report {
       currency: currencyHandling === "single" ? (currencyKeysOf([totals])[0] ?? null) : null,
       sessionization,
       provenance: provenanceMeta(options.unit === "session"),
+      importedIncluded: options.includeImported ?? false,
       coverage: {
         sync: coverage.sync,
         lagSeconds: coverage.lagSeconds,
@@ -664,6 +762,17 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
   if (sessionUnit) labels.sessions = formatLabel(heuristic("time-gap sessionization"));
   labels.peak = formatLabel(
     estimated("peak-window table applied to stored created_at timestamps and gateway costs"),
+  );
+  // Imported ccusage lane (ticket #73): ccusage numbers are its own report
+  // values, cost is price-table-derived — never gateway-billed.
+  labels.imported = formatLabel(
+    estimated("imported ccusage report values; ccusage derives them from local harness logs"),
+  );
+  labels["imported.cost"] = formatLabel(
+    estimated("imported ccusage <import-date>; ccusage price-table-derived, never gateway-billed"),
+  );
+  labels["grand-total.cost"] = formatLabel(
+    estimated("sum of gateway-billed cost and ccusage-estimated imported cost; mixed provenance"),
   );
   return labels;
 }
@@ -865,6 +974,43 @@ export function renderReport(report: Report, view: RenderOptions): void {
     out(style.dim(meta.provenance.peak ?? ""));
     out();
     renderPeak(report.sections.peak as PeakSplit | undefined);
+  }
+
+  const importedRows = report.sections.imported as GroupRow[] | undefined;
+  if (importedRows) {
+    out();
+    out(style.bold("Imported (ccusage) — excluded from gateway totals"));
+    out(style.dim(meta.provenance.imported ?? ""));
+    out();
+    renderGroupTable(importedRows, view, "source");
+    out(style.dim(meta.provenance["imported.cost"] ?? ""));
+    if (!report.sections["grand-total"]) {
+      out(style.dim("Run with --include-imported for a combined grand total."));
+    }
+  }
+
+  const grandTotal = report.sections["grand-total"] as GrandTotalRow | undefined;
+  if (grandTotal) {
+    out();
+    out(style.bold("Grand total (gateway + imported)"));
+    out(style.dim(meta.provenance["grand-total.cost"] ?? ""));
+    out();
+    const rows: (GroupRow | null)[] = [
+      { key: "gateway", ...grandTotal.gateway },
+      grandTotal.imported ? { key: "imported", ...grandTotal.imported } : null,
+      {
+        key: "combined",
+        requests: grandTotal.requests,
+        input_tokens: grandTotal.input_tokens,
+        output_tokens: grandTotal.output_tokens,
+        cached_tokens: grandTotal.cached_tokens,
+        costs: grandTotal.costs,
+      },
+    ];
+    table(
+      rows.filter((row) => row !== null),
+      groupColumns(view, "source"),
+    );
   }
 
   if (meta.sessionization) {

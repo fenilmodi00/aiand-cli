@@ -24,6 +24,24 @@ breaking changes while the command surface settles.
   series (claude-code#56317). Session ids are heuristic (time-gap derived);
   `cacheCreation`/cache-write tokens are 0 until the gateway splits cache
   writes. No prompt or completion content is ever exported.
+- ccusage JSON import adapter (ticket #73). `aiand usage --import-ccusage
+  <file|->` ingests `ccusage daily|weekly|monthly|session|blocks --json`
+  output (file path or stdin, e.g.
+  `ccusage daily --json | aiand usage --import-ccusage -`) fully offline —
+  no sync, no network. Rows land as EXTERNAL source
+  `imported(ccusage@<import-date>)` in their own store tables (migration
+  0003, `ccusage_imports` ledger + `imported_usage`), never mixed into the
+  gateway-mirrored `requests`; re-importing identical input is a no-op
+  (content-hash dedupe) and a newer payload replaces the same report
+  periods instead of stacking. In `usage` output imported rows are their
+  own clearly-labeled source row, EXCLUDED from gateway totals by default
+  (anti-double-count); `--include-imported` adds a combined grand total
+  beside — never replacing — the gateway-only totals. ccusage costs are
+  price-table-derived USD equivalents, labeled
+  `estimated(imported ccusage <date>)`, never gateway-billed, and kept in
+  their own currency lane; tokens are normalized to the gateway convention
+  (input includes cached) on the way in; unknown schemas are refused
+  loudly, never guessed.
 - Offline HTML report and plain-text overview (ticket #76). `aiand report`
   writes one self-contained HTML file (inline CSS and SVG charts, no CDN, no
   server, no JS required; `--theme light|dark|auto`, `--out`/`--out-dir`,
