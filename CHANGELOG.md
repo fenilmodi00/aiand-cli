@@ -9,6 +9,23 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- Adapter envelope (ticket #78). A versioned, compact per-request metadata
+  schema (`aiand-envelope/v1`: ordered tool names, hashed edit targets
+  `<basename>#<hash16>`, hashed `project_root_id`, `git_branch`; ≤ 2 KiB,
+  documented in `docs/observability/adapter-envelope.md`) that adapters can
+  capture through `createEnvelopeRecorder` — opt-in and default off
+  (`AIAND_ENVELOPE_CAPTURE=1` or `"envelopeCapture": true` in config.json);
+  metadata only, no prompts/completions/file contents/full paths, ever.
+  Envelopes are stored locally (store migration 0003, `envelopes` table)
+  linked to request rows by masked key and timestamp, and travel as the
+  `x-aiand-envelope` header the gateway ask (#80) expects. New
+  `aiand efficiency` report from locally captured envelopes only: one-shot /
+  retry rate per harness and model (retry = same file re-edited after a shell
+  command in between), the 13-category deterministic task classification
+  (zero LLM calls), and per-project / per-branch spend attribution with a
+  named-branch / pre-recording / no-branch coverage split. Every section
+  prints its coverage ("N of M requests have envelope data") and a
+  "local-capture only" note until the gateway forwards envelopes.
 - OTel metrics export (ticket #72). `aiand export` emits usage metrics from
   the local request store in two families from one store read: `claude_code.*`
   (drop-in compatibility with Claude Code dashboards: `session.count`,

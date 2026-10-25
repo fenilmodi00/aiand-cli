@@ -257,6 +257,29 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "suggestBudget",
     provenance: heuristic("P90 of monthly totals"),
   },
+  // efficiency (adapter-envelope metrics, ticket #78)
+  {
+    report: "efficiency",
+    field: "oneShotRetry.*",
+    provenance: heuristic("one-shot/retry envelope rule"),
+  },
+  {
+    report: "efficiency",
+    field: "taskMix",
+    provenance: heuristic("13-category deterministic classifier"),
+  },
+  {
+    report: "efficiency",
+    field: "attribution.byBranch/byProject",
+    provenance: estimated(
+      "gateway-billed request costs joined to locally captured envelopes (masked api_key + turn window)",
+    ),
+  },
+  {
+    report: "efficiency",
+    field: "coverage",
+    provenance: estimated("captured envelope rows / stored request rows in the window"),
+  },
 ];
 
 /** The audit list `aiand usage --audit --json` prints: label as string + source. */
