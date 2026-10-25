@@ -56,7 +56,7 @@ test("signed out: clear verdicts, every check still runs, exit 0", async () => {
   assert.ok(found.auth.detail.includes("aiand login"), "signed-out message names the fix");
   assert.equal(found.adapters.status, "nothing-found");
   assert.equal(found["agent-keys"].status, "nothing-found");
-  assert.equal(found.store.status, "skipped", "no store module before #61 merges");
+  assert.equal(found.store.status, "nothing-found", "store module present, no store.db yet (#61 merged)");
   assert.equal(found.lag.status, "skipped");
   for (const check of checks) {
     assert.ok(STATUSES.has(check.status), `status ${check.status} is in the vocabulary`);
@@ -118,7 +118,7 @@ test("gateway 401: auth verdict names the rejection; other checks still run", as
   // Independence: a rejected gateway must not silence the local checks.
   assert.equal(found.adapters.status, "nothing-found");
   assert.equal(found["agent-keys"].status, "nothing-found");
-  assert.equal(found.store.status, "skipped");
+  assert.equal(found.store.status, "nothing-found");
   assert.equal(found.lag.status, "skipped");
   assert.equal(process.exitCode, 1);
   process.exitCode = previousExit;
@@ -158,7 +158,7 @@ test("network failure: distinct verdict; local checks still run; exit 1", async 
   assert.equal(found["agent-keys"].status, "ok", "agent-keys still runs");
   assert.equal(found["agent-keys"].count, 1);
   assert.equal(found.adapters.status, "nothing-found");
-  assert.equal(found.store.status, "skipped");
+  assert.equal(found.store.status, "nothing-found");
   assert.equal(found.lag.status, "skipped");
   assert.equal(process.exitCode, 1);
   process.exitCode = previousExit;
