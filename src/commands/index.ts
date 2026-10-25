@@ -3,11 +3,13 @@ import { nearestMatch } from "../cli/args.js";
 import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
+import * as dashboard from "./dashboard.js";
 import * as doctor from "./doctor.js";
 import * as efficiency from "./efficiency.js";
 import * as exportCmd from "./export.js";
 import * as forecast from "./forecast.js";
 import * as harness from "./harness.js";
+import * as heatmap from "./heatmap.js";
 import * as init from "./init.js";
 import * as key from "./key.js";
 import * as login from "./login.js";
@@ -27,6 +29,7 @@ import * as store from "./store.js";
 import * as update from "./update.js";
 import * as usage from "./usage.js";
 import * as whoami from "./whoami.js";
+import * as wrapped from "./wrapped.js";
 
 export type Command = {
   name: string;
@@ -37,6 +40,25 @@ export type Command = {
 };
 
 export const COMMANDS: Command[] = [
+  {
+    name: "dashboard",
+    summary: "interactive spend/burn TUI (plain-text overview when piped)",
+    help: dashboard.help,
+    run: dashboard.run,
+  },
+  {
+    name: "heatmap",
+    summary: "24h x 7d activity heatmap of the local store",
+    help: heatmap.help,
+    run: heatmap.run,
+  },
+  {
+    name: "wrapped",
+    summary: "share-friendly period summary",
+    help: wrapped.help,
+    run: wrapped.run,
+  },
+
   { name: "login", summary: "Sign in with a browser approval", help: login.help, run: login.run },
   { name: "logout", summary: "End this machine's session", help: logout.help, run: logout.run },
   { name: "whoami", summary: "Show the signed-in identity", help: whoami.help, run: whoami.run },
