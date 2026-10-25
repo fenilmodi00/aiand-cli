@@ -4,6 +4,7 @@ import * as cache from "./cache.js";
 import * as chat from "./chat.js";
 import * as config from "./config.js";
 import * as doctor from "./doctor.js";
+import * as exportCmd from "./export.js";
 import * as forecast from "./forecast.js";
 import * as harness from "./harness.js";
 import * as init from "./init.js";
@@ -116,6 +117,12 @@ export const COMMANDS: Command[] = [
     summary: "Local request store status and sync",
     help: store.help,
     run: store.run,
+  },
+  {
+    name: "export",
+    summary: "Export metrics as OTel or Prometheus",
+    help: exportCmd.help,
+    run: exportCmd.run,
   },
   {
     name: "forecast",

@@ -9,6 +9,21 @@ breaking changes while the command surface settles.
 
 ### Added
 
+- OTel metrics export (ticket #72). `aiand export` emits usage metrics from
+  the local request store in two families from one store read: `claude_code.*`
+  (drop-in compatibility with Claude Code dashboards: `session.count`,
+  `cost.usage`, `token.usage` with the input-excludes-cache conversion) and
+  `gen_ai.*` per the OpenTelemetry GenAI semantic conventions (usage counters,
+  token histograms with explicit buckets, request duration and
+  time-to-first-token; `error.type` on failures with usage recorded on failed
+  operations too). OTLP/HTTP JSON (protobuf-JSON shape) or Prometheus text
+  exposition; delta temporality by default, `--temporality cumulative`
+  opt-in; output to stdout, `--file`, or a push to `--endpoint` with
+  repeatable `--header`. Every cost/token series carries the masked key and
+  agent name so concurrent agent exports never collide into one counter
+  series (claude-code#56317). Session ids are heuristic (time-gap derived);
+  `cacheCreation`/cache-write tokens are 0 until the gateway splits cache
+  writes. No prompt or completion content is ever exported.
 - Offline HTML report and plain-text overview (ticket #76). `aiand report`
   writes one self-contained HTML file (inline CSS and SVG charts, no CDN, no
   server, no JS required; `--theme light|dark|auto`, `--out`/`--out-dir`,
