@@ -204,7 +204,10 @@ function emptyBucket(): PeakBucketTotals {
 }
 
 function addCost(bucket: PeakBucketTotals, currency: string, value: number): void {
-  bucket.costs[currency] = (bucket.costs[currency] ?? 0) + value;
+  // #89: same casefold as the usage-report accumulator so a stored "USD"
+  // can't split the gateway's "usd" peak/off-peak lane.
+  const key = currency.toLowerCase();
+  bucket.costs[key] = (bucket.costs[key] ?? 0) + value;
 }
 
 function addRow(bucket: PeakBucketTotals, row: PeakRow): void {

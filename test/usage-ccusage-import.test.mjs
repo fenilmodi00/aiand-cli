@@ -398,7 +398,8 @@ describe("imported rows in the usage report (anti-double-count)", () => {
     assert.equal(imported[0].requests, 2);
     assert.equal(imported[0].input_tokens, 1000 + 200 + 500);
     assert.equal(imported[0].cached_tokens, 200);
-    assert.deepEqual(imported[0].costs, { USD: 0.123 + 0.0456 });
+    // #89: imported "USD" casefolds into the gateway's "usd" lane.
+    assert.deepEqual(imported[0].costs, { usd: 0.123 + 0.0456 });
     // No grand total unless asked for.
     assert.equal(payload.sections["grand-total"], undefined);
     // Provenance labels the imported lane as estimated, never gateway-billed.
@@ -421,9 +422,56 @@ describe("imported rows in the usage report (anti-double-count)", () => {
     assert.equal(grand.requests, 3);
     assert.deepEqual(grand.gateway, payload.sections.totals);
     assert.equal(grand.imported.requests, 2);
-    // Per-currency honesty: the gateway's "usd" lane and ccusage's "USD"
-    // equivalents are separate keys, never summed across.
-    assert.deepEqual(grand.costs, { usd: 0.0042, USD: 0.123 + 0.0456 });
+    // #89: mixed-case same currency merges into one summed key — gateway
+    // "usd" + imported "USD" land in a single "usd" lane.
+    assert.deepEqual(grand.costs, { usd: 0.0042 + 0.123 + 0.0456 });
+  });
+
+  test("#89 mixed-case same currency merges into one summed lane (csv + text single lane)", async () => {
+    const dir = freshDir("casefold");
+    await seedStore(dir, [
+      { ...GATEWAY_ROWS[0], id: "g1", cost: "0.0042", cost_value: 0.0042, currency: "usd" },
+      { ...GATEWAY_ROWS[0], id: "g2", cost: "0.0010", cost_value: 0.001, currency: "USD" },
+    ]);
+    const json = await runCli(["usage", "--by", "day", "--json"], { env: reportEnv(dir) });
+    assert.equal(json.code, 0, json.stderr);
+    const payload = JSON.parse(json.stdout);
+    // Both rows fall into one "usd" lane, summed.
+    assert.deepEqual(payload.sections.totals.costs, { usd: 0.0042 + 0.001 });
+    assert.equal(payload.meta.currencyHandling, "single");
+    assert.equal(payload.meta.currency, "usd");
+
+    // CSV: one lane per real currency — a single currency row for the period.
+    const csv = await runCli(["usage", "--by", "day", "--format", "csv"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(csv.code, 0, csv.stderr);
+    const dataLines = csv.stdout
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== "" && !l.startsWith("period,"));
+    assert.equal(dataLines.length, 1, JSON.stringify(dataLines));
+    assert.match(dataLines[0], /2026-10-20,2,\d+,\d+,\d+,0\.005200,usd/);
+
+    // Text: single-currency cost cell renders one formatted value, no
+    // mixed-currency warning and no duplicate lane.
+    const text = await runCli(["usage", "--by", "day"], { env: reportEnv(dir) });
+    assert.equal(text.code, 0, text.stderr);
+    assert.doesNotMatch(text.stdout, /mixed currencies/i);
+  });
+
+  test("#89 genuinely different currencies stay separate lanes", async () => {
+    const dir = freshDir("separate");
+    await seedStore(dir, [{ ...GATEWAY_ROWS[0], id: "g1", currency: "EUR", cost: "2", cost_value: 2 }]);
+    await importInto(dir, DAILY_PAYLOAD); // imported rows are USD
+    const run = await runCli(["usage", "--by", "day", "--json", "--include-imported"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const grand = JSON.parse(run.stdout).sections["grand-total"];
+    // eur (gateway) and usd (imported) remain distinct, never summed across.
+    assert.deepEqual(grand.costs, { eur: 2, usd: 0.123 + 0.0456 });
+    assert.deepEqual(grand.gateway.costs, { eur: 2 });
+    assert.deepEqual(grand.imported.costs, { usd: 0.123 + 0.0456 });
   });
 
   test("table render: imported section labeled, exclusion note, opt-in hint", async () => {
