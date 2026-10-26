@@ -198,19 +198,20 @@ test("vacuumCopilotSql on a non-database file fails loud", async () => {
 // aiand status: store present/absent, --json, sync variants
 // ---------------------------------------------------------------------------
 
-test("status: signed-out with a reachable gateway is the documented exit 1", async () => {
+test("status: an unreachable gateway is the outage branch, exit 0", async () => {
   const cfg = cfgDir("status-empty");
-  const text = await runCli(["status"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
-  // Signed-out + reachable gateway: exits 1 by design, so scripts can gate
-  // on "needs login" (status.ts:135).
-  assert.equal(text.code, 1, text.stderr);
-  assert.ok(/Not signed in/.test(text.stdout), `sign-in note: ${text.stdout}`);
-  assert.ok(/AGENT\s+STATE/.test(text.stdout), `agent table: ${text.stdout}`);
-
-  const json = await runCli(["status", "--json"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
-  assert.equal(json.code, 1, json.stderr);
-  const parsed = JSON.parse(json.stdout);
-  assert.equal(parsed.auth.signed_in, false);
+  // The gateway probe is environment-dependent (CI's net-guard makes it
+  // unreachable; a dev box may reach api.aiand.com). Pin it: a closed port
+  // is deterministically unreachable, and the outage branch (status.ts:141)
+  // exits 0 with the agent table — the honest offline assertion. (The
+  // reachable-signed-out exit-1 branch needs a live reachable gateway and
+  // is not drivable offline: the CLI blocks on a stubbed 401 probe.)
+  const down = await runCli(["status", "--base-url", CLOSED_URL], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: FAKE_API_KEY }),
+  });
+  assert.equal(down.code, 0, down.stderr);
+  assert.ok(/Gateway unreachable/.test(down.stdout), `unreachable note: ${down.stdout}`);
+  assert.ok(/AGENT\s+STATE/.test(down.stdout), `agent table: ${down.stdout}`);
 });
 
 test("status: --help documents itself", async () => {
@@ -224,23 +225,33 @@ test("status: --help documents itself", async () => {
 // aiand doctor: store-less, seeded, corrupt-store, --json
 // ---------------------------------------------------------------------------
 
-test("doctor: empty config reports NOTHING FOUND / SKIPPED and exits 0", async () => {
+test("doctor: rows render with the gateway pinned unreachable (errors exit 1)", async () => {
   const cfg = cfgDir("doctor-empty");
-  const out = await runCli(["doctor"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
-  assert.equal(out.code, 0, `${out.stdout}${out.stderr}`);
+  // doctor always probes the gateway; pin it closed so the outcome does not
+  // depend on the runner's network (CI saw ERRORS, a dev box saw SKIPPED).
+  const out = await runCli(["doctor", "--base-url", CLOSED_URL], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: FAKE_API_KEY }),
+  });
+  assert.notEqual(out.code, 0, `gateway ERRORS is scriptable: ${out.stdout}${out.stderr}`);
   assert.ok(/store\s+NOTHING FOUND/.test(out.stdout), `store row: ${out.stdout}`);
-  assert.ok(/gateway\s+SKIPPED/.test(out.stdout), `gateway row: ${out.stdout}`);
+  assert.ok(/gateway\s+ERRORS/.test(out.stdout), `gateway row: ${out.stdout}`);
 });
 
-test("doctor: seeded store is OK; --json parses and exit stays 0", async () => {
+test("doctor: seeded store is OK beside a closed gateway; --json parses", async () => {
   const cfg = cfgDir("doctor-seeded");
   await seedStore(cfg, [{ id: "d1", cost: 0.01 }]);
-  const out = await runCli(["doctor"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
-  assert.equal(out.code, 0, `${out.stdout}${out.stderr}`);
+  const base = {
+    env: cliEnv({
+      AIAND_CONFIG_DIR: cfg,
+      AIAND_API_KEY: FAKE_API_KEY,
+      AIAND_BASE_URL: CLOSED_URL,
+    }),
+  };
+  const out = await runCli(["doctor"], base);
+  assert.notEqual(out.code, 0, `gateway errors still exit non-zero`);
   assert.ok(/store\s+OK \(1 rows/.test(out.stdout), `store row: ${out.stdout}`);
 
-  const json = await runCli(["doctor", "--json"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
-  assert.equal(json.code, 0, json.stderr);
+  const json = await runCli(["doctor", "--json"], base);
   const parsed = JSON.parse(json.stdout);
   assert.ok(Array.isArray(parsed) || (parsed && typeof parsed === "object"));
 });
