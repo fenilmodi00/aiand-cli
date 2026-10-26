@@ -45,7 +45,7 @@ Usage
 Options
   --since <iso>       window start (interpreted in --timezone)
   --until <iso>       window end
-  --last <window>     30m, 12h, 1d, 7d (default), 30d, 4w
+  --last <window>     30m, 12h, 1d, 7d, 30d, 4w (default: all stored history)
   --harness <name>    one harness only
   --model <glob>      repeatable model filter (* wildcards)
   --top <n>           keep only the first n rows after sorting
@@ -246,7 +246,6 @@ function syntheticRow(
     cachedTokens: result.cachedTokens,
     outputTokens: 0,
     costUsd: result.costUsd,
-    misses: result.requests - result.cachedTokens,
   };
   return {
     scenario: result.scenario,

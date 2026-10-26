@@ -149,7 +149,6 @@ export function buildPairStats(
       cachedTokens,
       outputTokens,
       costUsd: costTotal ?? 0,
-      misses: requests - cachedTokens,
     };
     return {
       harness: harness ?? "unknown",

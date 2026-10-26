@@ -597,7 +597,6 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
         cachedTokens: group.mix.cachedTokens,
         outputTokens: group.mix.outputTokens,
         costUsd: 0,
-        misses: 0,
         key: model,
       } as unknown as CacheGroup);
       return {

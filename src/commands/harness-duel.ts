@@ -532,7 +532,7 @@ Options
   --turns <n>         turns per pair (default 10)
   --since <iso>       historical window start (interpreted in --timezone)
   --until <iso>       historical window end
-  --last <window>     historical window (default 7d)
+  --last <window>     historical window (default: all stored history)
   --timezone <tz>     IANA timezone for --since/--until
   --no-sync           read the local store without syncing (AIAND_NO_SYNC=1)
 
