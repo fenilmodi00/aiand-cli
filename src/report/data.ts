@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { type CacheGroup, cacheVerdict } from "../api/cache-report.js";
 import { CliError } from "../cli/errors.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "../commands/usage-report.js";
+import { assertWindowOrder, isValidTimezone, parseLast, parseSince, parseUntil } from "../commands/usage-report.js";
 import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast } from "../obs/forecast.js";
@@ -229,6 +229,7 @@ export function resolveWindow(
   const sinceMs = spec.since === undefined ? null : parseSince(spec.since, timezone);
   const untilMs = spec.until === undefined ? null : parseUntil(spec.until, timezone);
   const lastMs = spec.last === undefined ? null : parseLast(spec.last, now).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
   const rangeMs = spec.range === undefined ? null : now.getTime() - rangeDurationMs(spec.range);
   const candidates = [sinceMs, lastMs, rangeMs].filter((v): v is number => v !== null);
   return {

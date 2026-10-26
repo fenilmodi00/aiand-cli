@@ -92,6 +92,12 @@ export async function run(argv: string[]): Promise<void> {
       });
     }
   }
+  // #87: an inverted --since/--until pair exports an empty window; reject it.
+  if (since !== undefined && until !== undefined && Date.parse(since) > Date.parse(until)) {
+    throw new CliError(`--since ${since} is after --until ${until}.`, {
+      hint: "Pass an earlier --since or a later --until.",
+    });
+  }
   const endpoint = str(parsed, "endpoint");
   const file = str(parsed, "file");
   if (endpoint !== undefined && file !== undefined) {

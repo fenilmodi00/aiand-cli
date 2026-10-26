@@ -1,7 +1,9 @@
+import { statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { CliError } from "./cli/errors.js";
 
 /**
  * Config paths, containment checks, and the atomic writer, shared by config,
@@ -17,9 +19,30 @@ export const PRIVATE_DIR_MODE = 0o700;
 export const DEFAULT_FILE_MODE = 0o644;
 
 export function configDir(): string {
-  if (process.env.AIAND_CONFIG_DIR) return process.env.AIAND_CONFIG_DIR;
+  if (process.env.AIAND_CONFIG_DIR) return assertConfigDir(process.env.AIAND_CONFIG_DIR);
   const xdg = process.env.XDG_CONFIG_HOME;
   return xdg ? join(xdg, "aiand") : join(homedir(), ".config", "aiand");
+}
+
+/**
+ * #87: AIAND_CONFIG_DIR pointing at a regular file (or other non-directory)
+ * used to surface as a raw ENOTDIR/EEXIST stack deep inside a read or write.
+ * Guard the boundary once: every config, credential, and secret path routes
+ * through configDir(), so one stat check covers reads and writes.
+ */
+function assertConfigDir(dir: string): string {
+  let st;
+  try {
+    st = statSync(dir);
+  } catch {
+    return dir; // ENOENT etc. — reads fall through to their own handling, writes create it.
+  }
+  if (!st.isDirectory()) {
+    throw new CliError(`Config dir is not a directory: ${dir}`, {
+      hint: "Point AIAND_CONFIG_DIR at a directory, or unset it to use the default location.",
+    });
+  }
+  return dir;
 }
 
 /**

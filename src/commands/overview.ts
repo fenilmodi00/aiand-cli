@@ -1,7 +1,7 @@
 import { openSession } from "../api/client.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { err, json, out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName, resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import {
   assertTimezone,
@@ -68,13 +68,16 @@ export async function run(argv: string[]): Promise<void> {
   const showCost = !bool(parsed, "no-cost");
 
   // -- one sync, then ONE store read for every section --------------------------
+  // #87: validate --profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
   let sync: SyncOutcome | null;
   if (skipSync) {
     sync = { skipped: true };
   } else {
     try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
+      const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
       sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {

@@ -15,7 +15,7 @@ import {
 } from "../obs/harness-stats.js";
 import { getStoreInfo, noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
+import { assertWindowOrder, isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
 
 /**
  * `aiand harness stats` / `aiand harness compare` (ticket #64): the benchmark
@@ -226,6 +226,7 @@ export function parseWindowFlags(
     sinceMs = parseSince(str(parsed, "since") ?? "", timezone);
   if (str(parsed, "until") !== undefined)
     untilMs = parseUntil(str(parsed, "until") ?? "", timezone);
+  assertWindowOrder(sinceMs, untilMs);
   return { sinceMs, untilMs };
 }
 

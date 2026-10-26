@@ -10,7 +10,7 @@ import { openSession } from "../api/client.js";
 import { bool, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { delta, err, json, num, out, sparkline, style, table } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName, resolveProfile } from "../config.js";
 import { importCcusage, parseCcusagePayload, readImportPayload } from "../obs/ccusage-import.js";
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
@@ -30,6 +30,7 @@ import { computeCoverage, syncWarningLine } from "../store/coverage.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
 import { reconcileUsage, VERIFY_RANGES, type VerifyRow } from "../store/reconcile.js";
 import {
+  assertWindowOrder,
   applyJqPath,
   type BlockSection,
   buildReport,
@@ -575,15 +576,20 @@ async function runReport(parsed: Parsed): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   // -- one sync, then ONE store read for every section --------------------------
+  // #87: every path consuming a profile name validates it — even when the
+  // sync is skipped or fails open, an unsafe --profile never renders a report.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
   let sync: SyncOutcome | null = null;
   if (skipSync) {
     sync = { skipped: true };
   } else {
     try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
+      const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
       sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
@@ -707,6 +713,7 @@ async function runVsList(parsed: Parsed): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   const pricesFile = str(parsed, "prices-file");
   const snapshot = pricesFile
@@ -715,13 +722,16 @@ async function runVsList(parsed: Parsed): Promise<void> {
   const overrides = loadPriceOverrides();
 
   // One sync, one store read — the same engine every section shares.
+  // #87: validate the profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
   let sync: SyncOutcome | null;
   if (skipSync) {
     sync = { skipped: true };
   } else {
     try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
+      const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
       sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {

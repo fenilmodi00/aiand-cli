@@ -364,8 +364,42 @@ function tzWall(tz: string, ms: number): string {
 
 /** UTC instant of a wall-clock time in a timezone (two-pass offset resolution). */
 function wallToUtc(tz: string, wall: string): number {
+  // #87: Date.parse silently rolls nonexistent dates over (2025-02-29 -> 03-01)
+  // and Node rejects impossible components (month 13, hour 25) with NaN — a raw
+  // Error/exit-70 there. Parse the components, parse the instant, and require a
+  // round-trip so only real calendar wall times survive.
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(wall);
+  if (m === null) {
+    throw new CliError(`Invalid --since value: ${wall}.`, {
+      hint: "Use a date (2026-10-01) or an ISO timestamp, e.g. 2026-10-01T00:00:00Z.",
+    });
+  }
+  const [, y, mo, d, h, mi, s] = m;
   const asUtc = Date.parse(`${wall}Z`);
-  if (Number.isNaN(asUtc)) throw new Error(`invalid wall time: ${wall}`);
+  if (Number.isNaN(asUtc)) {
+    throw new CliError(`Invalid --since value: ${wall}.`, {
+      hint: "The date or time does not exist (e.g. month 13 or hour 25).",
+    });
+  }
+  // Nonexistent calendar dates (2025-02-29) parse fine but roll over; require
+  // the wall components to round-trip through UTC (calendar existence is
+  // timezone-independent; the two-pass below applies the display offset).
+  const [wy, wmo, wd, wh, wmi, ws] = [
+    new Date(asUtc).getUTCFullYear(),
+    new Date(asUtc).getUTCMonth() + 1,
+    new Date(asUtc).getUTCDate(),
+    new Date(asUtc).getUTCHours(),
+    new Date(asUtc).getUTCMinutes(),
+    new Date(asUtc).getUTCSeconds(),
+  ];
+  if (
+    wy !== Number(y) || wmo !== Number(mo) || wd !== Number(d) ||
+    wh !== Number(h) || wmi !== Number(mi) || ws !== Number(s)
+  ) {
+    throw new CliError(`Invalid --since value: ${wall}.`, {
+      hint: "That calendar date or time does not exist (e.g. 2025-02-29 rolls into March).",
+    });
+  }
   let instant = asUtc;
   for (let i = 0; i < 2; i++) {
     const offset = Date.parse(`${tzWall(tz, instant)}Z`) - instant;
@@ -379,7 +413,13 @@ function wallToUtc(tz: string, wall: string): number {
  * timezone sets the boundary, requirement 6) or any ISO datetime.
  */
 export function parseSince(value: string, tz: string): number {
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return wallToUtc(tz, `${value}T00:00:00`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    assertRealDate(value, "--since");
+    return wallToUtc(tz, `${value}T00:00:00`);
+  }
+  // #87: ISO datetimes roll nonexistent dates over too (2025-02-29T10:00:00Z
+  // silently becomes March 1); validate the date part before trusting Date.parse.
+  if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value)) assertRealDate(value.slice(0, 10), "--since");
   const ms = Date.parse(value);
   if (Number.isNaN(ms)) {
     throw new CliError(`Invalid --since value: ${value}.`, {
@@ -392,8 +432,11 @@ export function parseSince(value: string, tz: string): number {
 /** An `--until` value: a bare date means end-of-day in the display timezone. */
 export function parseUntil(value: string, tz: string): number {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    assertRealDate(value, "--until");
     return wallToUtc(tz, `${datePlusDays(value, 1)}T00:00:00`) - 1;
   }
+  // #87: validate the date part of ISO datetimes (silent rollover).
+  if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value)) assertRealDate(value.slice(0, 10), "--until");
   const ms = Date.parse(value);
   if (Number.isNaN(ms)) {
     throw new CliError(`Invalid --until value: ${value}.`, {
@@ -401,6 +444,43 @@ export function parseUntil(value: string, tz: string): number {
     });
   }
   return ms;
+}
+
+/**
+ * A bare `YYYY-MM-DD` must be a real calendar date: Date.parse rolls
+ * nonexistent dates over silently (2025-02-29 -> 2025-03-01), and a
+ * month-13/day-32 input produces NaN or another rollover depending on the
+ * engine (#87). Parse the components back and demand they survive.
+ */
+function assertRealDate(value: string, flag: "--since" | "--until"): void {
+  const [y, m, d] = value.split("-").map(Number);
+  const ms = Date.parse(`${value}T00:00:00Z`);
+  const real =
+    !Number.isNaN(ms) &&
+    new Date(ms).getUTCFullYear() === y &&
+    new Date(ms).getUTCMonth() + 1 === m &&
+    new Date(ms).getUTCDate() === d;
+  if (!real) {
+    throw new CliError(`Invalid ${flag} value: ${value}.`, {
+      hint: "That calendar date does not exist (e.g. month 13 or 2025-02-29).",
+    });
+  }
+}
+
+/**
+ * A `--since`/`--until` pair must be ordered; an inverted window would
+ * otherwise silently render an empty report (#87).
+ */
+export function assertWindowOrder(
+  sinceMs: number | null,
+  untilMs: number | null,
+): void {
+  if (sinceMs !== null && untilMs !== null && sinceMs > untilMs) {
+    throw new CliError(
+      `--since ${new Date(sinceMs).toISOString()} is after --until ${new Date(untilMs).toISOString()}.`,
+      { hint: "Pass an earlier --since or a later --until." },
+    );
+  }
 }
 
 /** Monday of the ISO week containing `date` (a `YYYY-MM-DD` string). */

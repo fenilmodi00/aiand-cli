@@ -624,3 +624,89 @@ describe("report auto-sync", () => {
     assert.equal(payload.sections.totals.requests, 4);
   });
 });
+
+// -- trust-boundary hardening (#87) --------------------------------------------
+
+describe("CLI error hardening (#87)", () => {
+  test("--since with a nonexistent calendar date fails with a CliError, no rollover", async () => {
+    // 2025-02-29 does not exist; Date.parse silently rolls it to March 1.
+    const run = await runCli(
+      ["usage", "--since", "2025-02-29", "--until", "2025-03-05", "--json", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /Invalid --since value: 2025-02-29/);
+    assert.ok(!run.stderr.includes("at "), "no stack trace leaks to the user");
+  });
+
+  test("--until with an impossible component (month 13, hour 25) fails with a CliError", async () => {
+    for (const [flag, value] of [
+      ["--until", "2025-13-01"],
+      ["--until", "2025-10-01T25:00:00Z"],
+    ]) {
+      const run = await runCli(
+        ["usage", "--since", "2025-09-01", flag, value, "--json", "--no-sync"],
+        { env: reportEnv(DIRTY_DIR) },
+      );
+      assert.equal(run.code, 1, `${flag} ${value}`);
+      assert.match(
+        run.stderr,
+        new RegExp(`Invalid ${flag} value: ${value.replace(/[-T:]/g, "\\$&")}`),
+      );
+    }
+  });
+
+  test("AIAND_CONFIG_DIR pointing at a regular file fails cleanly on reads and writes", async () => {
+    const notADir = join(box.dir, "config-file-trap");
+    writeFileSync(notADir, "not a directory");
+    for (const args of [["config", "show"], ["config", "set", "profile", "x"]]) {
+      const run = await runCli(args, { env: reportEnv(notADir) });
+      assert.equal(run.code, 1, `${args.join(" ")}: ${run.stderr}`);
+      assert.match(run.stderr, /config dir is not a directory/i);
+      assert.ok(!run.stderr.includes("ENOTDIR") && !run.stderr.includes("EEXIST"), run.stderr);
+    }
+  });
+
+  test("--profile with an unsafe name is rejected even with --no-sync", async () => {
+    const run = await runCli(
+      ["usage", "--by", "day", "--json", "--no-sync", "--profile", "__proto__"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /Profile name "__proto__" is not allowed/);
+    assert.equal(run.stdout, "", "no report is rendered");
+  });
+
+  test("--profile with an unsafe name is rejected when sync fails open", async () => {
+    // Signed-in key against a dead gateway: the sync fails open, the profile
+    // name must still be validated before any report renders.
+    const run = await runCli(["usage", "--by", "day", "--json", "--profile", "bad/name"], {
+      env: cliEnv({
+        AIAND_CONFIG_DIR: DIRTY_DIR,
+        AIAND_API_KEY: "sk-test",
+        AIAND_BASE_URL: CLOSED_URL,
+        NO_COLOR: "1",
+        CI: "1",
+      }),
+    });
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /Profile name "bad\/name" is not allowed/);
+    assert.equal(run.stdout, "", "no report is rendered");
+  });
+
+  test("inverted --since/--until windows are rejected", async () => {
+    const run = await runCli(
+      ["usage", "--since", "2026-10-20", "--until", "2026-10-19", "--json", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /--since .* is after --until/);
+
+    const sessionsRun = await runCli(
+      ["sessions", "--since", "2026-10-20", "--until", "2026-10-19", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(sessionsRun.code, 1);
+    assert.match(sessionsRun.stderr, /is after --until/);
+  });
+});

@@ -458,6 +458,16 @@ function untilOrNow(parsed: ReturnType<typeof parse>): Date {
       hint: "Use an ISO timestamp, e.g. 2026-10-25T00:00:00Z.",
     });
   }
+  // #87: an inverted --since/--until pair narrows to nothing; reject it up front.
+  const since = str(parsed, "since");
+  if (since !== undefined) {
+    const sinceMs = Date.parse(since);
+    if (!Number.isNaN(sinceMs) && sinceMs > ms) {
+      throw new CliError(`--since ${since} is after --until ${until}.`, {
+        hint: "Pass an earlier --since or a later --until.",
+      });
+    }
+  }
   return new Date(ms);
 }
 
