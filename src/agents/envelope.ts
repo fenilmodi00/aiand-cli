@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 
 /**
  * The adapter envelope (feature catalog C3/C5/B4, ticket #78).
@@ -68,12 +68,14 @@ export function hashPath(path: string): string {
 /**
  * An edit target as the envelope stores it: `<basename>#<hash16>` of the
  * resolved full path. A bare token with no path separators keeps its exact
- * form (still hashed when it looks like a path on the current platform).
+ * form. Both `/` and `\\` count as separators on every platform, so a
+ * win32-shaped path captured on POSIX still hashes (and never leaks its
+ * backslashes) — the privacy invariant is platform-independent.
  */
 export function editTargetToken(observed: string): string {
-  const looksLikePath = observed.includes("/") || observed.includes("\\");
-  if (!looksLikePath) return observed;
-  return `${basename(observed)}#${hashPath(observed)}`;
+  if (!observed.includes("/") && !observed.includes("\\")) return observed;
+  const base = observed.slice(Math.max(observed.lastIndexOf("/"), observed.lastIndexOf("\\")) + 1);
+  return `${base}#${hashPath(observed)}`;
 }
 
 /** The pseudonymous project-root id: hash of the resolved root, first 16 hex. */

@@ -472,9 +472,11 @@ test("cli: auto-sync failure fails open with a warning, still lists sessions", a
   const cfg = cfgDir("fail-open");
   await seedStore(cfg, baseRows());
   // No AIAND_NO_SYNC and no credentials: openSession fails, the command warns
-  // on stderr and serves the local store anyway.
+  // on stderr and serves the local store anyway. AIAND_API_KEY: undefined
+  // scrubs CI's ambient job-level key — without it openSession takes the env
+  // key and a real sync attempt turns "skipped" into "failed".
   const { code, stdout, stderr } = await runCli(["sessions"], {
-    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: undefined }),
   });
   assert.equal(code, 0, `fail-open keeps the command alive\n${stdout}${stderr}`);
   assert.match(stderr, /store sync skipped/);
