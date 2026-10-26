@@ -407,7 +407,8 @@ function accMix(mix: Mix, row: ReportRow): void {
   mix.outputTokens += row.output_tokens ?? 0;
   mix.cachedTokens += row.cached_tokens ?? 0;
   if (row.cost_value !== null) {
-    const currency = row.currency ?? UNKNOWN_CURRENCY;
+    // #89: casefold so mixed-case stored currencies stay in one lane.
+    const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
     mix.costs[currency] = (mix.costs[currency] ?? 0) + row.cost_value;
   }
 }

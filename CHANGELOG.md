@@ -582,6 +582,13 @@ breaking changes while the command surface settles.
   windows (`--since` after `--until`) are rejected on every window-filtered
   command instead of quietly reporting nothing.
 
+- `usage --include-imported` no longer splits one currency into two lanes in
+  the grand total (`usd` + `USD`): gateway rows carry lowercase currency
+  codes while the ccusage import stored `USD`. Currency keys are now
+  casefolded where rows accumulate into cost maps (gateway rows, imported
+  rows, session rows), so mixed-case spellings of the same currency merge
+  into one summed lane across `--format json`, `csv`, and text renders;
+  genuinely different currencies (`usd` + `eur`) stay separate. (#89)
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
   Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints

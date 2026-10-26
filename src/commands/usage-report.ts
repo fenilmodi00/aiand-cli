@@ -250,7 +250,9 @@ function accumulate(acc: Accumulator, row: RequestRow): void {
   acc.output_tokens += row.output_tokens ?? 0;
   acc.cached_tokens += row.cached_tokens ?? 0;
   if (row.cost_value !== null) {
-    const currency = row.currency ?? UNKNOWN_CURRENCY;
+    // #89: casefold so gateway "usd" and ccusage-imported "USD" land in one
+    // lane; genuinely different currencies still get their own keys.
+    const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
     acc.costs.set(currency, (acc.costs.get(currency) ?? 0) + row.cost_value);
   }
 }
@@ -651,7 +653,12 @@ export function buildReport(options: BuildReportOptions): Report {
       input_tokens: session.input_tokens,
       output_tokens: session.output_tokens,
       cached_tokens: session.cached_tokens,
-      costs: session.cost === null ? {} : { [session.currency ?? UNKNOWN_CURRENCY]: session.cost },
+      // #89: same casefold as accumulate so mixed-case stored currencies
+      // can't split one currency into two session lanes.
+      costs:
+        session.cost === null
+          ? {}
+          : { [(session.currency ?? UNKNOWN_CURRENCY).toLowerCase()]: session.cost },
       started_at: session.started_at,
       agent: session.agent,
       turns: session.turns,

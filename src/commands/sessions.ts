@@ -77,7 +77,8 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
   for (const row of detail.rows) {
     modelCounts.set(row.model, (modelCounts.get(row.model) ?? 0) + 1);
     if (typeof row.cost_value === "number" && Number.isFinite(row.cost_value)) {
-      const currency = row.currency ?? UNKNOWN_CURRENCY;
+      // #89: casefold so mixed-case stored currencies stay in one lane.
+      const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
       costs[currency] = (costs[currency] ?? 0) + row.cost_value;
     }
     if (row.ttft_ms !== null) ttfts.push(row.ttft_ms);
