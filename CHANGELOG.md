@@ -668,6 +668,12 @@ breaking changes while the command surface settles.
   adapters that own no config files, and unusable config paths (a file where
   a directory belongs, a directory where a file belongs, unreadable files)
   refuse exit 1 with a hint instead of a raw stack. (#34, thanks @fenilmodi00)
+- `aiand harness stats` now counts errors the way `harness matrix` and
+  `compare` already do — non-2xx statuses excluding 429 (a rate limit is the
+  gateway's pressure, not the pair's quality); null statuses count as
+  unknown, not errors. Both surfaces share one error-count helper, so the
+  same rows yield the same errorRate everywhere; the stats label says
+  `non-2xx excluding 429 / requests`. (#88)
 
 ## [0.6.0] - 2026-10-06
 

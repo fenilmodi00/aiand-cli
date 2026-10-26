@@ -174,6 +174,24 @@ test("mixed-model sessions are excluded AND counted, never assigned", async () =
   });
 });
 
+test("errorRate counts non-2xx excluding 429; null status is not an error (#88)", async () => {
+  const { buildHarnessStats } = await loadEngine();
+  const rows = [
+    row({ id: "r1", created_at: iso(0), status_code: 429 }),
+    row({ id: "r2", created_at: iso(60_000), status_code: 500 }),
+    // 3xx is non-2xx, so it is an error per the pair-stats rule (#88).
+    row({ id: "r3", created_at: iso(120_000), status_code: 302 }),
+    row({ id: "r4", created_at: iso(180_000), status_code: null }),
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({ id: `ok${i}`, created_at: iso(240_000 + i * 60_000) }),
+    ),
+  ];
+  const harness = buildHarnessStats(rows).harnesses[0];
+  assert.equal(harness.requests, 10);
+  // 429 excluded (gateway pressure), 302 + 500 counted, null unknown: 2/10.
+  assert.ok(Math.abs(harness.errorRate - 0.2) < 1e-9); // #88
+});
+
 test("samples reconcile: the listed sessions are exactly the aggregates' input", async () => {
   const { buildHarnessStats } = await loadEngine();
   const rows = [
@@ -412,4 +430,49 @@ test("cli: the synthetic benchmark path still dispatches", async () => {
   });
   assert.equal(statsHelp.code, 0);
   assert.ok(statsHelp.stdout.includes("harness stats"));
+});
+
+// #88: crafted data (1×429, 1×500, 113×200) must yield the IDENTICAL
+// errorRate from `harness stats` and `harness matrix` — one shared
+// error-count definition (non-2xx minus 429) on every harness surface.
+test("cli: stats and matrix report the same errorRate for the same rows (#88)", async () => {
+  const cfg = cfgDir("error-parity");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+  });
+  const mask = await import("../dist/api/agent-keys.js").then((m) =>
+    m.maskKey("sk-test-claude-super-secret-key-000"),
+  );
+
+  const rows = [
+    row({ id: "p429", api_key: mask, created_at: iso(0), status_code: 429 }),
+    row({ id: "p500", api_key: mask, created_at: iso(60_000), status_code: 500 }),
+    ...Array.from({ length: 113 }, (_, i) =>
+      row({ id: `pok${i}`, api_key: mask, created_at: iso(120_000 + i * 60_000) }),
+    ),
+  ];
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, rows);
+    opened.db.close();
+  });
+
+  const stats = await runCli(["harness", "stats", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(stats.code, 0, `stats exits 0\n${stats.stdout}`);
+  const matrix = await runCli(["harness", "matrix", "--no-sync", "--json", "--unpriced"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(matrix.code, 0, `matrix exits 0\n${matrix.stdout}`);
+
+  const statsRate = JSON.parse(stats.stdout).harnesses[0].errorRate;
+  const pair = JSON.parse(matrix.stdout).pairs.find((p) => p.harness === "claude");
+  assert.ok(pair, "matrix pair present");
+  // 1 error (500) / 115 requests — 429 excluded by the shared definition.
+  assert.ok(Math.abs(statsRate - 1 / 115) < 1e-9, `stats errorRate 1/115, got ${statsRate}`); // #88
+  assert.equal(pair.errorRate, statsRate, "matrix errorRate identical to stats"); // #88
 });
