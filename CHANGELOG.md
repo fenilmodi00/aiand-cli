@@ -571,6 +571,16 @@ breaking changes while the command surface settles.
   against ISO `T` strings in SQL text comparisons, and `' ' < 'T'` dropped
   every same-day row. All date-window filters now compare through one
   normalized `datetime()` expression shared from the store (#86).
+- CLI error hardening (#87): impossible `--since`/`--until` values (month 13,
+  hour 25) and nonexistent calendar dates (2025-02-29, which used to roll over
+  to March 1) now fail with a `CliError` naming the flag and value instead of a
+  raw stack trace or a silently shifted window. `AIAND_CONFIG_DIR` pointing at
+  a regular file fails with `config dir is not a directory` instead of a raw
+  `ENOTDIR`/`EEXIST` stack on reads and writes alike. `--profile` values are
+  validated on every report path — including `--no-sync` and sync-failure
+  fallbacks, which used to render a report for an unsafe name. Inverted
+  windows (`--since` after `--until`) are rejected on every window-filtered
+  command instead of quietly reporting nothing.
 
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
   Inside an action opened from the main menu — the init agent picker, the

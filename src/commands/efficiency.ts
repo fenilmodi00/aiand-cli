@@ -24,7 +24,7 @@ import {
   storePath,
   syncStore,
 } from "../store/index.js";
-import { parseLast, parseSince, parseUntil } from "./usage-report.js";
+import { assertWindowOrder, parseLast, parseSince, parseUntil } from "./usage-report.js";
 
 /**
  * `aiand efficiency` (feature catalog C3/C5/B4, ticket #78): the
@@ -62,7 +62,10 @@ function resolveWindow(parsed: ReturnType<typeof parse>, now: Date): Window {
   const since = str(parsed, "since");
   const until = str(parsed, "until");
   if (since !== undefined && until !== undefined) {
-    return { sinceMs: parseSince(since, "UTC"), untilMs: parseUntil(until, "UTC") };
+    const sinceMs = parseSince(since, "UTC");
+    const untilMs = parseUntil(until, "UTC");
+    assertWindowOrder(sinceMs, untilMs);
+    return { sinceMs, untilMs };
   }
   if (since !== undefined || until !== undefined) {
     throw new CliError("--since and --until must be passed together.", {

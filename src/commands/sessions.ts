@@ -21,7 +21,7 @@ import {
   sessionizationNote,
   sessionizeRows,
 } from "../store/sessions.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
+import { assertWindowOrder, isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
 
 /**
  * `aiand sessions` (feature catalog B2/B3/B5, ticket #62): the per-conversation
@@ -267,6 +267,7 @@ export async function run(argv: string[]): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   const topCostRaw = str(parsed, "top-cost");
   let topCost: number | null = null;

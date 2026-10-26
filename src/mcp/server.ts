@@ -6,6 +6,7 @@ import { buildForecastPayload } from "../commands/forecast.js";
 import { payload as harnessComparePayload, readHarnessRows } from "../commands/harness-stats.js";
 import { readSessionRows, type SessionCommandRow, toView } from "../commands/sessions.js";
 import {
+  assertWindowOrder,
   type BlockSection,
   buildReport,
   isValidTimezone,
@@ -350,6 +351,7 @@ function windowOf(args: Record<string, unknown>): {
   const sinceMs = since === undefined ? null : parseSince(since, timezone);
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
   return {
     sinceMs:
       sinceMs !== null && lastSinceMs !== null
