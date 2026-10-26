@@ -5,7 +5,14 @@ import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 import {
   resolveGapMinutes,
   type SessionDetail,
@@ -117,11 +124,11 @@ export function readSessionRows(
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";

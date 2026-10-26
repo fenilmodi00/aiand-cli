@@ -1,4 +1,4 @@
-import { openStore, storePath } from "./index.js";
+import { createdSince, openStore, storePath } from "./index.js";
 
 /**
  * Coverage-gap honesty (feature catalog H4, ticket #68).
@@ -157,7 +157,7 @@ export function computeCoverage(
         (
           db
             .prepare(
-              "SELECT DISTINCT substr(created_at, 1, 10) AS d FROM requests WHERE created_at >= ?",
+              `SELECT DISTINCT substr(created_at, 1, 10) AS d FROM requests WHERE ${createdSince()}`,
             )
             .all(since) as Record<string, unknown>[]
         ).map((row) => String(row.d)),

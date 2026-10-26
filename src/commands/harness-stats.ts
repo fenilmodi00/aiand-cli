@@ -13,7 +13,15 @@ import {
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
-import { getStoreInfo, noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  getStoreInfo,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
 import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
 
@@ -164,11 +172,11 @@ export function readHarnessRows(
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";

@@ -1,7 +1,7 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { VERSION } from "../api/client.js";
 import { LOG_RANGES } from "../api/logs.js";
-import { openStore, storePath } from "../store/index.js";
+import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
 import { listSessions, type SessionRow } from "../store/sessions.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
 
@@ -638,7 +638,7 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
         .prepare(
           "SELECT id, model, api_key, status_code, ttft_ms, latency_ms, input_tokens, " +
             "output_tokens, cached_tokens, cost, cost_value, created_at FROM requests " +
-            "WHERE created_at >= ? AND created_at <= ? ORDER BY created_at, id",
+            `WHERE ${createdSince()} AND ${createdUntilIncl()} ORDER BY created_at, id`,
         )
         .all(
           new Date(sinceMs).toISOString(),

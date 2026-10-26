@@ -22,7 +22,14 @@ import {
 } from "../report/data.js";
 import { renderOverviewText } from "../report/overview.js";
 import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 
 /**
  * `aiand dashboard` (feature catalog F2, ticket #75): the interactive
@@ -109,11 +116,11 @@ function readCompareRows(window: { sinceMs: number | null; untilMs: number | nul
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";

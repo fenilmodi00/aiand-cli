@@ -2,7 +2,15 @@ import { getSummary } from "../api/analytics.js";
 import type { Session } from "../api/client.js";
 import { getLogsPaged, LOG_RANGES, type LogEntry } from "../api/logs.js";
 import { CliError } from "../cli/errors.js";
-import { getStoreInfo, openStore, type StoreInfo, storePath, syncStore } from "./index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  getStoreInfo,
+  openStore,
+  type StoreInfo,
+  storePath,
+  syncStore,
+} from "./index.js";
 
 /**
  * Reconciliation — the accuracy gate (feature catalog A5, ticket #63).
@@ -235,7 +243,7 @@ function localTotals(since: string, until: string): Totals {
         "SELECT COUNT(*) AS requests, " +
           "COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) AS tokens, " +
           "COALESCE(SUM(cost_value), 0) AS cost FROM requests " +
-          "WHERE created_at >= ? AND created_at <= ?",
+          `WHERE ${createdSince()} AND ${createdUntilIncl()}`,
       )
       .get(since, until) as Record<string, unknown>;
     return {

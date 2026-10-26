@@ -563,6 +563,14 @@ breaking changes while the command surface settles.
   `ok: false` with `last_sync_error` recorded), and every observability
   command surfaces a partial (ok-with-error) sync as a visible yellow
   warning instead of silently serving incomplete history.
+- Same-day `--since`/`--until` windows matched zero rows on every
+  observability surface (`usage`, `sessions`, `heatmap`, `dashboard`,
+  `export`, `forecast`, `statusline`, `efficiency`, `report`, coverage
+  scan). Window filters compared the gateway's wire-format `created_at`
+  (`2026-10-26 05:02:11.844519+00`, space separator, stored verbatim)
+  against ISO `T` strings in SQL text comparisons, and `' ' < 'T'` dropped
+  every same-day row. All date-window filters now compare through one
+  normalized `datetime()` expression shared from the store (#86).
 
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
   Inside an action opened from the main menu — the init agent picker, the
