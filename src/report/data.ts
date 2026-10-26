@@ -9,7 +9,7 @@ import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
-import { openStore, storePath } from "../store/index.js";
+import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
 import {
   type SessionizationMeta,
   type SessionRequestRow,
@@ -174,11 +174,11 @@ function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): 
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";

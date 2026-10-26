@@ -16,7 +16,14 @@ import {
 } from "../model-efficiency.js";
 import { CLASSIFICATION_NOTE, classifyEnvelopes, TASK_CATEGORIES } from "../obs/classifier.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilExcl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 import { parseLast, parseSince, parseUntil } from "./usage-report.js";
 
 /**
@@ -176,11 +183,11 @@ function windowRequests(
   const conditions: string[] = [];
   const params: string[] = [];
   if (sinceIso !== undefined) {
-    conditions.push("created_at >= ?");
+    conditions.push(createdSince());
     params.push(sinceIso);
   }
   if (untilIso !== undefined) {
-    conditions.push("created_at < ?");
+    conditions.push(createdUntilExcl());
     params.push(untilIso);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

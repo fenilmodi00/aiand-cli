@@ -1,5 +1,5 @@
 import { style } from "../cli/output.js";
-import { openStore, storePath } from "../store/index.js";
+import { createdSince, openStore, storePath } from "../store/index.js";
 import { listSessions } from "../store/sessions.js";
 import { HOUR_MS } from "../time.js";
 import { loadBudget } from "./budget.js";
@@ -137,7 +137,7 @@ function readTtftValues(nowMs: number, windowMs: number): number[] {
     const since = new Date(nowMs - windowMs).toISOString();
     const rows = opened.db
       .prepare(
-        "SELECT ttft_ms FROM requests WHERE ttft_ms IS NOT NULL AND created_at >= ? " +
+        `SELECT ttft_ms FROM requests WHERE ttft_ms IS NOT NULL AND ${createdSince()} ` +
           "ORDER BY created_at DESC",
       )
       .all(since) as unknown as { ttft_ms: number | null }[];
