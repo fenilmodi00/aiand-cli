@@ -466,8 +466,9 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
     return true;
   };
 
+  const keyParser = createKeyParser();
   const onData = (chunk: string): void => {
-    for (const seq of createKeyParser().push(chunk)) {
+    for (const seq of keyParser.push(chunk)) {
       if (handleKey(seq)) return;
     }
     draw();

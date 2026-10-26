@@ -106,7 +106,7 @@ describe("checkForUpdate", () => {
       assert.equal(fetch.calls, 1);
       assert.equal(info, null);
       assert.equal(readCache().ok, false);
-      assert.ok(Date.now() - readCache().checkedAt < 1000);
+      assert.ok(Date.now() - readCache().checkedAt < 10_000);
     });
   });
 

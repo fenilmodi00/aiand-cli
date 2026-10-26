@@ -126,12 +126,15 @@ jobs:
       # clone: AIAND_SOURCE points at actions/checkout's copy) and assert
       # the launcher reports this PR's package.json version. AIAND_SOURCE
       # exercises the source path (cloned or copied, then built); it skips
-      # the published-release path entirely.
+      # the published-release path entirely. AIAND_V2_SIDEBYSIDE=0 pins the
+      # production defaults (command `aiand`), same pin as scripts/e2e.mjs
+      # and scripts/install-behavior.mjs — otherwise this branch's default
+      # installs the launcher as `aiand-v2` and the probe below misses it.
       - run: |
           set -euo pipefail
           export ISOLATED_HOME="$RUNNER_TEMP/aiand-install-home"
           mkdir -p "$ISOLATED_HOME"
-          HOME="$ISOLATED_HOME" AIAND_SOURCE="$GITHUB_WORKSPACE" AIAND_NO_MODIFY_PATH=1 bash "$GITHUB_WORKSPACE/install.sh"
+          AIAND_V2_SIDEBYSIDE=0 HOME="$ISOLATED_HOME" AIAND_SOURCE="$GITHUB_WORKSPACE" AIAND_NO_MODIFY_PATH=1 bash "$GITHUB_WORKSPACE/install.sh"
           expected="$(node -p "require('./package.json').version")"
           actual="$(HOME="$ISOLATED_HOME" "$ISOLATED_HOME/.local/bin/aiand" --version)"
           test "$actual" = "$expected" || { echo "aiand --version '$actual' != package.json '$expected'"; exit 1; }
