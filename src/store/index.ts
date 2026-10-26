@@ -123,7 +123,13 @@ export type SyncResult =
       /** Set when the sync stopped early (stuck cursor): ok, but history may be incomplete. */
       error?: string; // #85
     }
-  | { ok: false; inserted?: number; pages?: number; error: string; code?: "network" | "auth" | "store" };
+  | {
+      ok: false;
+      inserted?: number;
+      pages?: number;
+      error: string;
+      code?: "network" | "auth" | "store";
+    };
 
 /**
  * The `--no-sync` opt-out shared by every observability command: a parsed
@@ -496,7 +502,7 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
       // Stuck-cursor guard: a round that inserts nothing and moves nowhere
       // means the pager is re-serving the same page — stop instead of
       // spinning, and say so rather than reporting a silent success.
-      if (roundInserted === 0 && (cursor === previousCursor && cursorId === previousCursorId)) {
+      if (roundInserted === 0 && cursor === previousCursor && cursorId === previousCursorId) {
         const message =
           "Sync stopped: the gateway kept re-serving the same page despite the cursor advancing " +
           "(stuck cursor) — history may be incomplete.";

@@ -408,7 +408,10 @@ describe("sync engine", () => {
       if (result.ok) return;
       assert.match(result.error, /stuck|re-serving|incomplete/i);
       assert.ok(served.length < 10, `expected prompt termination, got ${served.length} rounds`);
-      const meta = await readRows(dir, "SELECT key, value FROM sync_meta WHERE key = 'last_sync_error'");
+      const meta = await readRows(
+        dir,
+        "SELECT key, value FROM sync_meta WHERE key = 'last_sync_error'",
+      );
       assert.equal(meta.length, 1);
       assert.match(meta[0].value, /stuck|re-serving|incomplete/i);
       // The 100 rows of the served page are still stored, but nothing more.

@@ -30,8 +30,8 @@ import { computeCoverage, syncWarningLine } from "../store/coverage.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
 import { reconcileUsage, VERIFY_RANGES, type VerifyRow } from "../store/reconcile.js";
 import {
-  assertWindowOrder,
   applyJqPath,
+  assertWindowOrder,
   type BlockSection,
   buildReport,
   isValidTimezone,

@@ -240,7 +240,11 @@ async function syncFirst(parsed: ReturnType<typeof parse>): Promise<void> {
       err(style.yellow(`Warning: sync failed (${result.error}).`));
       err(style.dim("Serving local data; it may be stale."));
     } else if (result.error) {
-      err(style.yellow(`Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`)); // #85
+      err(
+        style.yellow(
+          `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
+        ),
+      ); // #85
     }
   } catch (error) {
     err(

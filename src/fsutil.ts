@@ -1,5 +1,5 @@
-import { statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { type Stats, statSync } from "node:fs";
 import { chmod, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -31,7 +31,7 @@ export function configDir(): string {
  * through configDir(), so one stat check covers reads and writes.
  */
 function assertConfigDir(dir: string): string {
-  let st;
+  let st: Stats;
   try {
     st = statSync(dir);
   } catch {

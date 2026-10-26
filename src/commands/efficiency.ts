@@ -111,7 +111,11 @@ export async function run(argv: string[]): Promise<void> {
     if (!result.ok)
       err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
     else if (result.error)
-      err(style.yellow(`Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`));
+      err(
+        style.yellow(
+          `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
+        ),
+      );
   }
 
   const opened = openStore(storePath());

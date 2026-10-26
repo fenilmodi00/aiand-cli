@@ -395,8 +395,12 @@ function wallToUtc(tz: string, wall: string): number {
     new Date(asUtc).getUTCSeconds(),
   ];
   if (
-    wy !== Number(y) || wmo !== Number(mo) || wd !== Number(d) ||
-    wh !== Number(h) || wmi !== Number(mi) || ws !== Number(s)
+    wy !== Number(y) ||
+    wmo !== Number(mo) ||
+    wd !== Number(d) ||
+    wh !== Number(h) ||
+    wmi !== Number(mi) ||
+    ws !== Number(s)
   ) {
     throw new CliError(`Invalid --since value: ${wall}.`, {
       hint: "That calendar date or time does not exist (e.g. 2025-02-29 rolls into March).",
@@ -473,10 +477,7 @@ function assertRealDate(value: string, flag: "--since" | "--until"): void {
  * A `--since`/`--until` pair must be ordered; an inverted window would
  * otherwise silently render an empty report (#87).
  */
-export function assertWindowOrder(
-  sinceMs: number | null,
-  untilMs: number | null,
-): void {
+export function assertWindowOrder(sinceMs: number | null, untilMs: number | null): void {
   if (sinceMs !== null && untilMs !== null && sinceMs > untilMs) {
     throw new CliError(
       `--since ${new Date(sinceMs).toISOString()} is after --until ${new Date(untilMs).toISOString()}.`,

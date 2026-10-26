@@ -23,7 +23,13 @@ import {
   syncStore,
 } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { assertWindowOrder, isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
+import {
+  assertWindowOrder,
+  isValidTimezone,
+  parseLast,
+  parseSince,
+  parseUntil,
+} from "./usage-report.js";
 
 /**
  * `aiand harness stats` / `aiand harness compare` (ticket #64): the benchmark
@@ -73,7 +79,11 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
       if (!result.ok)
         err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
       else if (result.error)
-        err(style.yellow(`Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`)); // #85
+        err(
+          style.yellow(
+            `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
+          ),
+        ); // #85
     } catch (error) {
       err(
         style.yellow(

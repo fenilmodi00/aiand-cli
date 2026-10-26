@@ -461,7 +461,9 @@ describe("imported rows in the usage report (anti-double-count)", () => {
 
   test("#89 genuinely different currencies stay separate lanes", async () => {
     const dir = freshDir("separate");
-    await seedStore(dir, [{ ...GATEWAY_ROWS[0], id: "g1", currency: "EUR", cost: "2", cost_value: 2 }]);
+    await seedStore(dir, [
+      { ...GATEWAY_ROWS[0], id: "g1", currency: "EUR", cost: "2", cost_value: 2 },
+    ]);
     await importInto(dir, DAILY_PAYLOAD); // imported rows are USD
     const run = await runCli(["usage", "--by", "day", "--json", "--include-imported"], {
       env: reportEnv(dir),
