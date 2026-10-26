@@ -163,7 +163,6 @@ export function buildHarnessStats(
         cachedTokens,
         outputTokens,
         costUsd: cost ?? 0,
-        misses: requests - cachedTokens,
       };
       return {
         harness,

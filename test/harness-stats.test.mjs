@@ -94,7 +94,6 @@ test("verdict thresholds are cacheVerdict's, via the shared function", async () 
     cachedTokens: cached,
     outputTokens: 0,
     costUsd: 0,
-    misses: 0,
   });
   assert.equal(cacheVerdict(group(4, 900, 1000)), "warn");
   assert.equal(cacheVerdict(group(6, 100, 1000)), "bad");
@@ -398,6 +397,14 @@ test("cli: compare marks winners and errors below two harnesses", async () => {
   assert.equal(samples.code, 0);
   assert.ok(samples.stdout.includes("samples"), "samples section header");
   assert.ok(/[0-9a-f]{16}/.test(samples.stdout), "a session id is listed");
+
+  // #90: compare mode renders the sample list too — help no longer lies.
+  const compareSamples = await runCli(["harness", "compare", "--no-sync", "--samples"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(compareSamples.code, 0);
+  assert.ok(compareSamples.stdout.includes("samples"), "samples section header in compare");
+  assert.ok(/[0-9a-f]{16}/.test(compareSamples.stdout), "a session id is listed in compare");
 });
 
 test("cli: the synthetic benchmark path still dispatches", async () => {

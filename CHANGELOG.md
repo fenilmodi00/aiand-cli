@@ -555,6 +555,13 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Harness help tells the truth (#90): `harness compare --samples` now renders
+  the contributing session list (previously documented but stats-only);
+  `--last` help on `harness stats`/`compare`, `matrix`, and `duel`/`latency`
+  states the real default (all stored history, not 7d); and the dead
+  unit-mixing verdict-group `misses` metric (`requests - cachedTokens`) is
+  gone from the harness stats, pair stats, and matrix row builders.
+
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
   Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints

@@ -131,8 +131,8 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     renderCompare(harnesses, noCost);
   } else {
     renderStats(harnesses, noCost);
-    if (bool(parsed, "samples")) renderSamples(harnesses);
   }
+  if (bool(parsed, "samples")) renderSamples(harnesses);
 
   if (stats.provenance.excludedMixed > 0) {
     out(
@@ -411,7 +411,7 @@ Usage
 Options
   --since <iso>       window start (interpreted in --timezone)
   --until <iso>       window end
-  --last <window>     30m, 12h, 1d, 7d (default), 30d, 4w
+  --last <window>     30m, 12h, 1d, 7d, 30d, 4w (default: all stored history)
   --harness <name>    one harness only (stats)
   --agent <name>      repeatable; masked-key attribution filter
   --model <glob>      repeatable model filter (* wildcards)
