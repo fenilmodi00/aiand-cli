@@ -196,6 +196,8 @@ async function autoSync(parsed: ReturnType<typeof parse>): Promise<void> {
     const result = await syncStore(session);
     if (!result.ok)
       err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
+    else if (result.error)
+      err(style.yellow(`Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`)); // #85
   } catch (error) {
     err(
       style.yellow(`store sync skipped: ${error instanceof Error ? error.message : String(error)}`),

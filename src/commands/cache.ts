@@ -81,7 +81,7 @@ export async function run(argv: string[]): Promise<void> {
     syncOutcome = { skipped: true };
   } else {
     const result = await syncStore(session);
-    syncOutcome = result.ok ? { ok: true } : { ok: false, error: result.error };
+    syncOutcome = result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
   }
 
   const { entries, truncated } = await getLogsPaged(session, { range, limit });

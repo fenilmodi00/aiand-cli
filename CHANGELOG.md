@@ -555,6 +555,15 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Store sync cursor: the outer sync loop advanced by `created_at` alone,
+  so any timestamp owning more rows than one page re-served the identical
+  page forever — a live sync captured 103 of 832 rows and never finished
+  (#85). The loop now threads the `(created_at, id)` pair from each page's
+  last row, a stuck-cursor guard stops instead of spinning (reporting
+  `ok: false` with `last_sync_error` recorded), and every observability
+  command surfaces a partial (ok-with-error) sync as a visible yellow
+  warning instead of silently serving incomplete history.
+
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
   Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints

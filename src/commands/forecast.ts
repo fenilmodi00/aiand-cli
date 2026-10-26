@@ -127,7 +127,7 @@ export async function run(argv: string[]): Promise<void> {
     try {
       const session = await openSession(resolveProfile(str(parsed, "profile")));
       const result = await syncStore(session);
-      syncOutcome = result.ok ? { ok: true } : { ok: false, error: result.error };
+      syncOutcome = result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
     } catch (error) {
       syncOutcome = {
         ok: false,
