@@ -56,7 +56,14 @@ export function withTestEnv(prefix, setup) {
     setup(dir);
   });
   after(() => {
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) {
+      // ponytail: on win32, AV/indexer briefly holds a fresh store.db open
+      // (EPERM) past every retry window. A leaked temp dir is harmless; a
+      // teardown crash fails green tests. The OS temp cleaner gets it.
+      if (error?.code !== "EPERM") throw error;
+    }
     process.env = originalEnv;
   });
   return {

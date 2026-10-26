@@ -134,7 +134,7 @@ function costCell(costs: Costs): string {
 }
 
 /** Compact token count: 1.2M, 320.5K, 999. */
-export function compactTokens(value: number): string {
+function compactTokens(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
   return String(value);

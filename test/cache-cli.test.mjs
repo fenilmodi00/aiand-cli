@@ -23,7 +23,7 @@ function logEntry(overrides = {}) {
   return {
     id: "log-1",
     model: "zai-org/glm-5.3",
-    api_key: "sk-aaaa...1111",
+    api_key: "sk-test...1111",
     status_code: 200,
     ttft_ms: 10,
     latency_ms: 100,
@@ -133,9 +133,9 @@ describe("aiand cache", () => {
 
   test("groups by the agent the key map names", async () => {
     // A key long enough for the mask to look like the gateway's.
-    await recordAgentKey("claude", "sk-aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666");
+    await recordAgentKey("claude", "sk-test-aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666");
     logHandler = () => ({
-      data: [logEntry({ api_key: "sk-aaaa...6666" })],
+      data: [logEntry({ api_key: "sk-test...6666" })],
       has_more: false,
       next_after: null,
       next_after_id: null,
@@ -162,7 +162,7 @@ describe("aiand cache", () => {
       "24h",
       "--json",
       "--attribute",
-      "omp=sk-aaaa...1111",
+      "omp=sk-test...1111",
     ]);
     assert.equal(code, 0);
     const report = JSON.parse(stdout);
@@ -174,7 +174,7 @@ describe("aiand cache", () => {
 
   test("an unknown key is reported as unknown, never guessed", async () => {
     logHandler = () => ({
-      data: [logEntry({ api_key: "sk-zzzz...9999" })],
+      data: [logEntry({ api_key: "sk-test...9999" })],
       has_more: false,
       next_after: null,
       next_after_id: null,

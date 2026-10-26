@@ -41,7 +41,7 @@ import { noSyncRequested, openStore, storePath, syncStore } from "../store/index
 // Periods (CodeBurn's Today / 7d / 30d / Month / 6mo / Lifetime)
 // ---------------------------------------------------------------------------
 
-export const DASH_PERIODS = [
+const DASH_PERIODS = [
   { id: "today", label: "Today" },
   { id: "7d", label: "7d" },
   { id: "30d", label: "30d" },
@@ -81,7 +81,7 @@ export function windowForPeriod(
  * Responsive breakpoints (documented in the help): under 60 columns one
  * panel per row, 60–99 two side by side, 100+ three.
  */
-export const COLUMN_BREAKPOINTS = { one: 60, two: 100 } as const;
+const COLUMN_BREAKPOINTS = { one: 60, two: 100 } as const;
 
 export function columnsFor(width: number): 1 | 2 | 3 {
   if (width < COLUMN_BREAKPOINTS.one) return 1;
@@ -90,8 +90,8 @@ export function columnsFor(width: number): 1 | 2 | 3 {
 }
 
 /** The auto-refresh default and floor (ticket: in-place refresh at ≥60s). */
-export const REFRESH_DEFAULT_MS = 60_000;
-export const REFRESH_MIN_MS = 60_000;
+const REFRESH_DEFAULT_MS = 60_000;
+const REFRESH_MIN_MS = 60_000;
 
 // ---------------------------------------------------------------------------
 // Store read for the compare view (#64 rows: model, status, ttft)
@@ -99,10 +99,7 @@ export const REFRESH_MIN_MS = 60_000;
 
 type CompareRow = HarnessRequestRow;
 
-type CompareLoader = (window: {
-  sinceMs: number | null;
-  untilMs: number | null;
-}) => CompareRow[];
+type CompareLoader = (window: { sinceMs: number | null; untilMs: number | null }) => CompareRow[];
 
 function readCompareRows(window: { sinceMs: number | null; untilMs: number | null }): CompareRow[] {
   const opened = openStore(storePath());

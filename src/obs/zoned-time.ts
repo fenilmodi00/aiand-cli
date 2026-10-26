@@ -69,7 +69,7 @@ export function zonedParts(ms: number, timeZone: string): ZonedParts {
 }
 
 /** UTC ms of the timezone wall-clock instant matching `parts`. */
-export function zonedToUtc(parts: ZonedParts, timeZone: string): number {
+function zonedToUtc(parts: ZonedParts, timeZone: string): number {
   const asUtc = Date.UTC(
     parts.year,
     parts.month - 1,
@@ -99,16 +99,6 @@ export function zonedDayStartUtc(ms: number, timeZone: string): number {
 export function zonedMonthStartUtc(ms: number, timeZone: string): number {
   const parts = zonedParts(ms, timeZone);
   return zonedToUtc({ ...parts, day: 1, hour: 0, minute: 0, second: 0 }, timeZone);
-}
-
-/** `YYYY-MM-DD` of an instant in a timezone. */
-export function zonedDateKey(ms: number, timeZone: string): string {
-  const { year, month, day } = zonedParts(ms, timeZone);
-  return (
-    `${String(year).padStart(4, "0")}-` +
-    `${String(month).padStart(2, "0")}-` +
-    `${String(day).padStart(2, "0")}`
-  );
 }
 
 export { WEEKDAYS };
