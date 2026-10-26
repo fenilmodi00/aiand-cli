@@ -4,7 +4,7 @@ import { openSession } from "../api/client.js";
 import { ATTRIBUTION_NOTE, attributeBranchSpend } from "../branch-spend.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   efficiencyByHarness,
@@ -97,7 +97,11 @@ export async function run(argv: string[]): Promise<void> {
 
   if (!bool(parsed, "no-sync") && !noSyncRequested()) {
     const session = await openSession(resolveProfile());
-    await syncStore(session);
+    const result = await syncStore(session); // #85
+    if (!result.ok)
+      err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
+    else if (result.error)
+      err(style.yellow(`Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`));
   }
 
   const opened = openStore(storePath());

@@ -50,6 +50,15 @@ export async function run(argv: string[]): Promise<void> {
   const info = getStoreInfo();
 
   if (result.ok) {
+    // #85: a stuck cursor can still end ok with a partial ingest — never
+    // fold that away silently, in either output mode.
+    if (result.error) {
+      err(
+        style.yellow(
+          `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
+        ),
+      );
+    }
     if (bool(parsed, "json")) return json({ result, store: info });
     const noun = `request${result.inserted === 1 ? "" : "s"}`;
     out(

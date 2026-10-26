@@ -68,6 +68,8 @@ export type PagedLogs = {
   entries: LogEntry[];
   /** True when more rows exist than fit in `entries` (limit hit or page over-delivered). */
   truncated: boolean;
+  /** Cursor pair of the last entry served — threads (created_at,id) through the outer sync loop. */
+  lastCursor: { createdAt: string; id: string } | null;
 };
 
 export async function getLogsPaged(
@@ -96,8 +98,10 @@ export async function getLogsPaged(
     afterId = page.next_after_id;
   }
 
+  const last = collected.length > 0 ? collected[collected.length - 1] : undefined;
   return {
     entries: collected.slice(0, query.limit),
     truncated: truncated || collected.length > query.limit,
+    lastCursor: last ? { createdAt: last.created_at, id: last.id } : null,
   };
 }

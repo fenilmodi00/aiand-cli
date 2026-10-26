@@ -300,7 +300,8 @@ async function syncBeforeRead(context: ServerContext): Promise<SyncOutcome> {
     const session = await openSession(resolveProfile());
     const result = await syncStore(session);
     if (!result.ok) err(`aiand mcp: store sync failed: ${result.error}`);
-    return result.ok ? { ok: true } : { ok: false, error: result.error };
+    else if (result.error) err(`aiand mcp: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`); // #85
+    return result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error ?? "sync failed");
     err(`aiand mcp: store sync skipped: ${message}`);

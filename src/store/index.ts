@@ -65,8 +65,15 @@ export type StoreInfo = {
 };
 
 export type SyncResult =
-  | { ok: true; inserted: number; pages: number; watermark: { createdAt: string; id: string } }
-  | { ok: false; error: string; code?: "network" | "auth" | "store" };
+  | {
+      ok: true;
+      inserted: number;
+      pages: number;
+      watermark: { createdAt: string; id: string };
+      /** Set when the sync stopped early (stuck cursor): ok, but history may be incomplete. */
+      error?: string; // #85
+    }
+  | { ok: false; inserted?: number; pages?: number; error: string; code?: "network" | "auth" | "store" };
 
 /**
  * The `--no-sync` opt-out shared by every observability command: a parsed
@@ -398,14 +405,19 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
     let inserted = 0;
     let pages = 0;
     let cursor = after;
+    let cursorId: string | undefined;
+    let previousCursor: string | undefined;
+    let previousCursorId: string | undefined;
     for (;;) {
-      const { entries, truncated } = await getLogsPaged(session, {
+      const { entries, truncated, lastCursor } = await getLogsPaged(session, {
         range: range as Parameters<typeof getLogsPaged>[1]["range"],
         limit: SYNC_PAGE_SIZE,
         after: cursor,
+        afterId: cursorId,
       });
       pages += 1;
-      inserted += insertEntries(db, entries);
+      const roundInserted = insertEntries(db, entries);
+      inserted += roundInserted;
 
       if (entries.length > 0) {
         // Watermark = max stored created_at (tiebreak max id), read back
@@ -419,14 +431,40 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
       }
 
       if (!truncated || entries.length === 0) break;
-      const last = entries[entries.length - 1];
-      if (!last) break;
-      cursor = last.created_at;
+      // Advance by the (created_at, id) pair of the last served row: when a
+      // timestamp owns more rows than a page, created_at alone re-serves the
+      // identical page forever.
+      if (lastCursor) {
+        cursor = lastCursor.createdAt;
+        cursorId = lastCursor.id;
+      } else {
+        const last = entries[entries.length - 1];
+        if (!last) break;
+        cursor = last.created_at;
+        cursorId = last.id;
+      }
+      // Stuck-cursor guard: a round that inserts nothing and moves nowhere
+      // means the pager is re-serving the same page — stop instead of
+      // spinning, and say so rather than reporting a silent success.
+      if (roundInserted === 0 && (cursor === previousCursor && cursorId === previousCursorId)) {
+        const message =
+          "Sync stopped: the gateway kept re-serving the same page despite the cursor advancing " +
+          "(stuck cursor) — history may be incomplete.";
+        try {
+          setMeta(db, "last_sync_error", message);
+          setMeta(db, "last_sync_error_at", new Date().toISOString());
+        } catch {
+          // a store too broken for meta writes cannot record the failure either
+        }
+        return { ok: false, inserted, pages, error: message, code: "store" };
+      }
+      previousCursor = cursor;
+      previousCursorId = cursorId;
     }
 
+    // A clean success clears the failure markers: coverage must report the
+    // CURRENT sync state, not a stale failure that has since been resolved.
     setMeta(db, "last_sync_at", new Date().toISOString());
-    // A success clears the failure markers: coverage must report the CURRENT
-    // sync state, not a stale failure that has since been resolved.
     db.prepare(
       "DELETE FROM sync_meta WHERE key IN ('last_sync_error', 'last_sync_error_at')",
     ).run();
