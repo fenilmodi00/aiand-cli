@@ -8,6 +8,13 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand usage` surfaces the error rate (ticket #98): the report's totals
+  carry `errors` and `errorRate` (non-2xx statuses excluding 429, over
+  requests — the same single #88 definition `harness stats` uses, so text,
+  `--json`, and harness stats agree on identical data). The plain report
+  prints an `error rate` line with the counts; `usage --audit` lists the
+  `estimated(non-2xx excluding 429 / requests)` provenance. An empty window
+  yields `errorRate: null` (and no plain line) — never a fabricated 0.0.
 - `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
 - `aiand dashboard`, `aiand heatmap`, and `aiand wrapped` (ticket #75),

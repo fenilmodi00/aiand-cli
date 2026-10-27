@@ -98,11 +98,11 @@ export function percentile(values: readonly number[], fraction: number): number 
 
 /**
  * The one error-count helper for every harness surface (stats, compare,
- * matrix, recommend — #88): non-2xx excluding 429; a null status is unknown,
- * not an error. A rate limit is the gateway's pressure, not the pair's
- * quality.
+ * matrix, recommend — #88) and the usage report (#98): non-2xx excluding
+ * 429; a null status is unknown, not an error. A rate limit is the gateway's
+ * pressure, not the pair's quality.
  */
-export function errorCount(rows: readonly HarnessRequestRow[]): number {
+export function errorCount(rows: readonly { status_code: number | null }[]): number {
   return rows.filter((row) => {
     const status = row.status_code;
     if (status === null) return false;
