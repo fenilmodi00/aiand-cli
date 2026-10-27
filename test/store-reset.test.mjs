@@ -6,9 +6,10 @@ import test, { after, before, describe } from "node:test";
 import { cliEnv, runCli, withTestEnv } from "./helpers.mjs";
 
 // #95 (OBS-BF-10): `aiand store reset` — cheap self-heal without deleting
-// store.db. Reset clears request/session/envelope rows, keeps schema +
-// migrations + the ccusage import dedupe ledger, and the next `store sync`
-// full re-pulls (the watermark is derived from the newest request row).
+// store.db. Reset clears request/session rows, keeps schema + migrations + the
+// ccusage import dedupe ledger + locally captured envelopes (opt-in, not
+// re-pullable), and the next `store sync` full re-pulls (the watermark is
+// derived from the newest request row).
 
 const box = withTestEnv("aiand-store-reset-", (dir) => {
   process.env.AIAND_CONFIG_DIR = dir;
@@ -145,10 +146,29 @@ describe("store reset", () => {
     // reached through `aiand status`; materialize so reset has rows to clear.
     const st = await runCli(["status", "--format", "line"], { env: syncEnv });
     assert.equal(st.code, 0, st.stderr);
-    const db = await openDb(dir);
+    let db = await openDb(dir);
     const beforeSessions = db.prepare("SELECT COUNT(*) AS n FROM sessions").get().n;
     db.close();
     assert.ok(beforeSessions > 0, "sync should materialize sessions");
+
+    // #95: a locally captured envelope must survive the reset (opt-in, not
+    // re-pullable). Seed one directly.
+    db = await openDb(dir);
+    db.prepare(
+      "INSERT INTO envelopes (id, schema_version, agent, model, api_key, session_id, " +
+        "request_id, created_at, tools, edit_targets, project_root_id, git_branch, captured_at) " +
+        "VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, NULL, NULL, ?)",
+    ).run(
+      "env-1",
+      "aiand-envelope/v1",
+      "test-agent",
+      "test-model",
+      "2026-10-20T00:00:00.000Z",
+      "[]",
+      "[]",
+      "2026-10-20T00:00:00.000Z",
+    );
+    db.close();
 
     const reset = await runCli(["store", "reset", "--force", "--json"], { env: resetEnv(dir) });
     assert.equal(reset.code, 0, reset.stderr);
@@ -156,14 +176,16 @@ describe("store reset", () => {
     assert.equal(result.reset, true);
     assert.equal(result.requests, rows.length);
     assert.equal(result.sessions, beforeSessions);
+    assert.equal(result.envelopesKept, 1);
     assert.equal(result.importedUsageKept, 1);
     assert.equal(typeof result.storeVersion, "number");
     assert.ok(result.storeVersion >= 4);
 
-    // Ledger survives; data rows are gone.
+    // Ledger survives; data rows are gone; envelopes survive (#95).
     const after = await openDb(dir);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM requests").get().n, 0);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 0);
+    assert.equal(after.prepare("SELECT COUNT(*) AS n FROM envelopes").get().n, 1);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM imported_usage").get().n, 1);
     const version = after.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
     after.close();

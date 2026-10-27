@@ -8,7 +8,7 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
-- `aiand store reset` (ticket #95, OBS-BF-10) — clears the request/session/envelope rows so the next `store sync` is a full re-pull, keeping the schema, migrations, and the ccusage import dedupe ledger intact; confirms unless `--force`, `--json` reports what was cleared. Self-heal for a stale store without hand-deleting `store.db`.
+- `aiand store reset` (ticket #95, OBS-BF-10) — clears the request/session rows so the next `store sync` is a full re-pull, keeping the schema, migrations, the ccusage import dedupe ledger, and locally captured envelopes (opt-in, not re-pullable) intact; confirms unless `--force`, `--json` reports what was cleared. Self-heal for a stale store without hand-deleting `store.db`.
 - `aiand usage` surfaces the error rate (ticket #98): the report's totals
   carry `errors` and `errorRate` (non-2xx statuses excluding 429, over
   requests — the same single #88 definition `harness stats` uses, so text,

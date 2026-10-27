@@ -85,14 +85,15 @@ export async function run(argv: string[]): Promise<void> {
 
 /**
  * #95 (OBS-BF-10) — Destructive self-heal: clears request/session data rows,
- * keeps schema + migrations + the ccusage import dedupe ledger. Confirms on a
+ * keeps schema + migrations + the ccusage import dedupe ledger + locally
+ * captured envelopes. Confirms on a
  * TTY unless --force; a decline exits 0 with the store untouched.
  */
 async function runReset(force: boolean, jsonOut: boolean): Promise<void> {
   if (!force) {
     const ok = await confirm(
       "Reset the local request store? All synced request/session history is deleted " +
-        "and the next `aiand store sync` re-pulls everything.",
+        "(locally captured envelopes are kept) and the next `aiand store sync` re-pulls everything.",
       { default: false },
     );
     if (!ok) {
@@ -105,14 +106,14 @@ async function runReset(force: boolean, jsonOut: boolean): Promise<void> {
   if ("error" in result) {
     throw new CliError(`Store reset failed: ${result.error}`);
   }
-  const { requests, sessions, envelopes, storeVersion, importedUsageKept } = result;
+  const { requests, sessions, envelopesKept, storeVersion, importedUsageKept } = result;
   if (jsonOut) return json({ reset: true, ...result });
   out(
     style.green(
-      `Store reset: cleared ${requests} request${requests === 1 ? "" : "s"}, ` +
-        `${sessions} session${sessions === 1 ? "" : "s"}, and ` +
-        `${envelopes} envelope${envelopes === 1 ? "" : "s"} ` +
-        `(schema v${storeVersion}; ${importedUsageKept} imported-usage rows kept).`,
+      `Store reset: cleared ${requests} request${requests === 1 ? "" : "s"} and ` +
+        `${sessions} session${sessions === 1 ? "" : "s"} ` +
+        `(schema v${storeVersion}; ${importedUsageKept} imported-usage rows and ` +
+        `${envelopesKept} locally captured envelope${envelopesKept === 1 ? "" : "s"} kept).`,
     ),
   );
   out(

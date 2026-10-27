@@ -7,6 +7,7 @@ import { getLogsPaged, LOG_PAGE_MAX, type LogEntry } from "../api/logs.js";
 import { ApiError } from "../cli/errors.js";
 import { configDir, PRIVATE_DIR_MODE, withFileLock } from "../fsutil.js";
 import { MIGRATIONS } from "./migrations/index.js";
+import { parseWireTimestamp } from "./reconcile.js";
 
 /**
  * The local request store: a metadata-only SQLite mirror of the gateway's
@@ -40,18 +41,21 @@ export function storePath(): string {
 export type ResetResult = {
   requests: number;
   sessions: number;
-  envelopes: number;
+  /** Locally captured envelopes survive a reset (opt-in, not re-pullable). */
+  envelopesKept: number;
   /** Row kept on purpose: the ccusage import dedupe ledger survives a reset. */
   importedUsageKept: number;
   storeVersion: number;
 };
 
 /**
- * #95 (OBS-BF-10) — Self-heal: delete the request/session/envelope data rows
- * and the sync bookkeeping that describes them, keep the schema, migrations,
- * and the ccusage import dedupe ledger (ccusage_imports + imported_usage).
- * The sync watermark is derived from the newest request row, so an empty
- * `requests` table makes the next `store sync` a full re-pull. Never throws
+ * #95 (OBS-BF-10) — Self-heal: delete the request/session data rows and the
+ * sync bookkeeping that describes them, keep the schema, migrations, and the
+ * ccusage import dedupe ledger (ccusage_imports + imported_usage). Locally
+ * captured envelopes survive: they are opt-in local captures the gateway does
+ * not serve (#95 scope is request/session rows only). The sync watermark is
+ * derived from the newest request row, so an empty `requests` table makes the
+ * next `store sync` a full re-pull. Never throws
  * for expected states (no store file yet → nothing to clear).
  */
 export function resetStore(): ResetResult | { ok: false; error: string } {
@@ -69,14 +73,14 @@ export function resetStore(): ResetResult | { ok: false; error: string } {
     const result: ResetResult = {
       requests: count("requests"),
       sessions: count("sessions"),
-      envelopes: count("envelopes"),
+      envelopesKept: count("envelopes"),
       importedUsageKept,
       storeVersion: STORE_VERSION,
     };
     db.exec("BEGIN");
     try {
       db.exec(
-        "DELETE FROM requests; DELETE FROM sessions; DELETE FROM envelopes; " +
+        "DELETE FROM requests; DELETE FROM sessions; " +
           // Sync bookkeeping describes the deleted rows (last sync time,
           // watermark-era fingerprint); clear it so nothing claims state the
           // store no longer has.
@@ -533,8 +537,8 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
     // The incremental stop floor: watermark minus the overlap window. Only
     // set when the store already holds data; a fresh sync drains the range.
     const existing = watermarkOf(db);
-    const floor = existing
-      ? new Date(Date.parse(existing.createdAt) - OVERLAP_MS).toISOString()
+    const floorMs = existing
+      ? parseWireTimestamp(existing.createdAt) - OVERLAP_MS
       : undefined;
     let previousAfter: string | undefined;
     let previousAfterId: string | undefined;
@@ -566,8 +570,13 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
       // Incremental early stop (#94): the newest-first page just crossed the
       // overlap floor, so everything older is already stored. Quiescent
       // accounts stop after ONE page instead of walking the 30-day range.
+      // Compare instants, never raw text: the gateway serves wire-format
+      // `created_at` (space separator, `+00`), and `' ' < 'T'` would stop the
+      // drain on any same-day row even when it is newer than the floor —
+      // the exact staleness #94 fixes. Contract: timestamps compared as
+      // parsed instants, never as text (`' ' < 'T'` misorders wire vs ISO).
       const oldest = entries.at(-1);
-      if (floor && oldest && oldest.created_at <= floor) {
+      if (floorMs !== undefined && oldest && parseWireTimestamp(oldest.created_at) <= floorMs) {
         break;
       }
 
