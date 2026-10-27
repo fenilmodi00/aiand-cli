@@ -59,7 +59,9 @@ const { KEY } = await import("../dist/cli/menu.js");
 const { VERSION } = await import("../dist/api/client.js");
 const config = await import("../dist/config.js");
 const registry = await import("../dist/agents/registry.js");
-const { INIT_ALL_ACTION, signInMode } = await import("../dist/cli/menu-items.js");
+const { INIT_ALL_ACTION, invalidateAgentDetection, signInMode } = await import(
+  "../dist/cli/menu-items.js"
+);
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -196,6 +198,9 @@ test("INIT_ALL_ACTION pick runs init --all and loops back to the menu", async ()
 
 test("agent pick routes to runAgentCommand and leaves the loop", async () => {
   const saved = registry.AGENTS.splice(0, registry.AGENTS.length);
+  // The detection memo predates this test's registry swap; drop it so the
+  // picked row is visible again.
+  invalidateAgentDetection();
   try {
     await signIn();
     // The open path ends by spawning the agent's bin, so the fixture's bin is

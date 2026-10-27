@@ -5,7 +5,7 @@ import type { AgentAdapter, Verb } from "../agents/types.js";
 import { requireSessionKey } from "../auth/session.js";
 import { bool, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { err, fields, json, out, style } from "../cli/output.js";
+import { err, fields, json, out, spinner, style } from "../cli/output.js";
 import { agentHome, resolveProfile } from "../config.js";
 
 const VERBS: Verb[] = ["on", "off", "status"];
@@ -130,39 +130,56 @@ async function runOpen(
     err(style.dim(SESSION_NOTE));
     return;
   }
+  // Feedback for the wiring phase (probe, key validation, catalog fetch,
+  // config writes), which can take a while on a cold start. The spinner starts
+  // after installIfMissing because a missing agent triggers an interactive
+  // confirm on the same stderr line the spinner animates. It must be gone
+  // before anything else owns the terminal: the agent binary spawns with
+  // stdio "inherit", and the config-only branch prints guidance. stop() is
+  // idempotent, so clearing twice around those yields is harmless.
   await installIfMissing(adapter);
-  if (retarget || !(await adapter.probe()).active) {
-    const result = await agentOn(adapter, { profile });
-    err(style.green(`${adapter.label} is now using ai&.`));
-    for (const warning of result.warnings) err(style.dim(warning));
-  } else {
-    await requireSessionKey();
-  }
-  if (adapter.configOnly) {
-    if (passthrough.length > 0) {
-      throw new CliError(
-        `The ${adapter.label} is a desktop app; aiand wires it but cannot launch it.`,
-        {
-          hint: "aiand copilot runs the GitHub Copilot CLI.",
-        },
-      );
+  const spin = spinner(`Opening ${adapter.label}...`);
+  try {
+    if (retarget || !(await adapter.probe()).active) {
+      const result = await agentOn(adapter, { profile });
+      spin.stop();
+      err(style.green(`${adapter.label} is now using ai&.`));
+      for (const warning of result.warnings) err(style.dim(warning));
+    } else {
+      // requireSessionKey can confirm "Not signed in. Run aiand login now?"
+      // on stderr; give it the line.
+      spin.stop();
+      await requireSessionKey();
     }
-    out("Open the GitHub Copilot app and pick the ai& model in its model menu.");
-    return;
+    spin.stop();
+    if (adapter.configOnly) {
+      if (passthrough.length > 0) {
+        throw new CliError(
+          `The ${adapter.label} is a desktop app; aiand wires it but cannot launch it.`,
+          {
+            hint: "aiand copilot runs the GitHub Copilot CLI.",
+          },
+        );
+      }
+      out("Open the GitHub Copilot app and pick the ai& model in its model menu.");
+      return;
+    }
+    const extras =
+      (await adapter.openExtras?.({
+        args: passthrough,
+        profileModel: resolveProfile(profile).model,
+      })) ?? {};
+    // Same precedent as run-agent.ts: the adapter injection carries the key, so the spawn env starts scrubbed.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.AIAND_API_KEY;
+    // Same drop as run-agent: names the adapter lists would outrank the
+    // config `on` just wrote (Hermes reads ANTHROPIC_* / OPENAI_* over its files).
+    for (const key of adapter.shadowEnv ?? []) delete env[key];
+    Object.assign(env, extras.env);
+    await runAgentBinary(adapter, [...(extras.args ?? []), ...passthrough], env);
+  } finally {
+    spin.stop();
   }
-  const extras =
-    (await adapter.openExtras?.({
-      args: passthrough,
-      profileModel: resolveProfile(profile).model,
-    })) ?? {};
-  // Same precedent as run-agent.ts: the adapter injection carries the key, so the spawn env starts scrubbed.
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env.AIAND_API_KEY;
-  // Same drop as run-agent: names the adapter lists would outrank the
-  // config `on` just wrote (Hermes reads ANTHROPIC_* / OPENAI_* over its files).
-  for (const key of adapter.shadowEnv ?? []) delete env[key];
-  Object.assign(env, extras.env);
-  await runAgentBinary(adapter, [...(extras.args ?? []), ...passthrough], env);
 }
 
 async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): Promise<void> {

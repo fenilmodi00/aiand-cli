@@ -34,6 +34,18 @@ breaking changes while the command surface settles.
   MCP forecast payload are unchanged. Model docs: `docs/observability/forecast-v2.md`
   is removed with it.
 
+### Changed
+- The interactive menu starts fast and shows feedback instead of a blank
+  screen. Agent detection no longer spawns `where`/`which` per adapter —
+  one memoized PATH scan (re-probed after wiring or launching an agent)
+  took the menu build from ~5.3s to ~0.3s cold and ~0ms warm on Windows.
+  Command modules load lazily on first run instead of all 31 at startup
+  (the eager import cost ~440ms cold before the menu appeared). Every
+  heavy menu action — sign-in, wiring agents, opening an agent, running
+  a command — animates a spinner on stderr while it works, except the
+  terminal-owning commands (`dashboard`, `chat`, `mcp`, `run-agent`), and
+  the spinner always clears before the agent binary inherits the terminal.
+
 ### Added
 - The bundled list-price snapshot (`bundled@2026-10-28`) now prices the
   gateway's first-party models — zai-org/glm-5.3, zai-org/glm-5.3-flash,

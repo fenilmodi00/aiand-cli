@@ -5,13 +5,19 @@ import { findAgent } from "./agents/registry.js";
 import { VERSION } from "./api/client.js";
 import { ApiError, CliError, EXIT } from "./cli/errors.js";
 import { promptMenu } from "./cli/menu.js";
-import { INIT_ALL_ACTION, mainMenuItems, signInItems, signInMode } from "./cli/menu-items.js";
-import { err, heading, out, style } from "./cli/output.js";
+import {
+  INIT_ALL_ACTION,
+  invalidateAgentDetection,
+  mainMenuItems,
+  signInItems,
+  signInMode,
+} from "./cli/menu-items.js";
+import { err, heading, out, spinner, style } from "./cli/output.js";
 import type { PromptInput, PromptOutput } from "./cli/select.js";
 import { renderHome } from "./cli/ui/home.js";
 import { playSplash } from "./cli/ui/splash.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
-import { COMMANDS, findCommand, suggest } from "./commands/index.js";
+import { COMMANDS, findCommand, loadCommand, suggest } from "./commands/index.js";
 import * as initCommand from "./commands/init.js";
 import * as loginCommand from "./commands/login.js";
 import { activeProfileName, loadCredential } from "./config.js";
@@ -21,6 +27,14 @@ import { hasPlayedWelcome, markWelcomePlayed } from "./housekeeping/welcome.js";
 
 /** The home screen tagline, shared by the menu and the static screen. */
 const HOME_TAGLINE = "Agents and inference.";
+
+/** Menu commands that own the terminal (TUI/REPL/server); no spinner around them. */
+const SPINNER_EXEMPT: Record<string, true> = {
+  dashboard: true,
+  chat: true,
+  mcp: true,
+  "run-agent": true,
+};
 
 /** Agents in display order, for the home screen's agent section. */
 function agentRows(): Array<[string, string]> {
@@ -109,7 +123,12 @@ export async function runMainMenu(
     try {
       const signIn = signInMode(picked);
       if (signIn) {
-        await runSignIn(signIn);
+        const spin = spinner("Signing in...");
+        try {
+          await runSignIn(signIn);
+        } finally {
+          spin.stop();
+        }
         // Sign-in either succeeded (loop again, now with the full menu) or was
         // cancelled, which the catch below turns back into the menu.
         continue;
@@ -118,7 +137,13 @@ export async function runMainMenu(
       // The one-shot setup row: wire every installed agent in one go.
       if (picked === INIT_ALL_ACTION) {
         heading(findCommand("init")?.summary ?? "Set up agents");
-        await initCommand.run(["--all"]);
+        const spin = spinner("Wiring agents...");
+        try {
+          await initCommand.run(["--all"]);
+        } finally {
+          spin.stop();
+        }
+        invalidateAgentDetection();
         await runSystemHousekeeping();
         out("");
         continue;
@@ -127,7 +152,11 @@ export async function runMainMenu(
       const agent = findAgent(picked);
       if (agent) {
         heading(`Open ${agent.label}`);
-        await runAgentCommand(agent, [], []);
+        try {
+          await runAgentCommand(agent, [], []);
+        } finally {
+          invalidateAgentDetection();
+        }
         await runSystemHousekeeping();
         // An agent owns the terminal for its whole run; redrawing the menu on
         // top of it would clobber its final frame.
@@ -138,7 +167,18 @@ export async function runMainMenu(
         heading(command.summary);
         // `key` takes a verb, so the menu falls back to the one it prints with.
         const argv = process.argv.includes("--json") ? ["--json"] : [];
-        await command.run([...(picked === "key" ? ["export"] : argv)]);
+        // Terminal-owning commands animate nothing: a spinner on stderr would
+        // run for the command's whole lifetime (or forever, for `mcp`).
+        if (!SPINNER_EXEMPT[picked]) {
+          const spin = spinner(`${command.summary}...`);
+          try {
+            await command.run([...(picked === "key" ? ["export"] : argv)]);
+          } finally {
+            spin.stop();
+          }
+        } else {
+          await command.run([...(picked === "key" ? ["export"] : argv)]);
+        }
         await runSystemHousekeeping();
         out("");
         continue;
@@ -276,7 +316,7 @@ async function main(): Promise<number> {
     }
     const commandTopic = findCommand(topicName);
     if (commandTopic) {
-      showHelp(commandTopic.help);
+      showHelp((await loadCommand(topicName))?.help ?? "");
       return 0;
     }
     const agentTopic = findAgent(topicName);

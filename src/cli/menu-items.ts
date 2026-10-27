@@ -1,4 +1,5 @@
 import { AGENTS } from "../agents/registry.js";
+import type { DetectResult } from "../agents/types.js";
 import type { MenuItem } from "../cli/menu.js";
 import { COMMANDS } from "../commands/index.js";
 
@@ -50,14 +51,27 @@ export function signInItems(signedIn = false): MenuItem[] {
   ];
 }
 
+/** Memoized one-pass detection; detect() is cheap now but still disk I/O per draw. */
+let detectedCache: { adapter: (typeof AGENTS)[number]; result: DetectResult }[] | undefined;
+
+/** Forget the memoized detection so the next menu draw re-probes PATH. */
+export function invalidateAgentDetection(): void {
+  detectedCache = undefined;
+}
+
 /**
  * The signed-in menu rows. Installed agents get their own section; supported
  * agents the machine is missing get a "More agents" section, because entering
  * one offers its install and then wires it.
  */
 export function mainMenuItems(): MenuItem[] {
-  const installed = AGENTS.filter((adapter) => adapter.detect().installed);
-  const missing = AGENTS.filter((adapter) => !adapter.detect().installed);
+  detectedCache ??= AGENTS.map((adapter) => ({ adapter, result: adapter.detect() }));
+  const installed = detectedCache
+    .filter(({ result }) => result.installed)
+    .map(({ adapter }) => adapter);
+  const missing = detectedCache
+    .filter(({ result }) => !result.installed)
+    .map(({ adapter }) => adapter);
   const rows: MenuItem[] = [];
 
   // One row that wires every installed agent, so a new machine is set up
