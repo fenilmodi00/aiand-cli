@@ -182,7 +182,9 @@ describe("peak windows (B9)", () => {
 const { computeVsList, resolveRequestPrice, readSnapshotFile } = await import(
   "../dist/pricing/list-prices.js"
 );
-const { parseSnapshot, resolveAlias } = await import("../dist/pricing/price-snapshot.js");
+const { parseSnapshot, resolveAlias, BUNDLED_SNAPSHOT } = await import(
+  "../dist/pricing/price-snapshot.js"
+);
 
 describe("vs-list pricing (B8)", () => {
   const SNAPSHOT = {
@@ -358,6 +360,34 @@ describe("vs-list pricing (B8)", () => {
     assert.throws(() => parseSnapshot({ format: 2, date: "2026-10-25" }, "bad"), /format/);
   });
 
+  // OBS-LT-3 (#108): the bundled snapshot is priced for the first-party
+  // models. Golden round-trip: glm-5.3 through BUNDLED_SNAPSHOT itself.
+  test("bundled snapshot prices glm-5.3 end to end with a cited source", () => {
+    assert.equal(BUNDLED_SNAPSHOT.format, 1);
+    assert.equal(BUNDLED_SNAPSHOT.name, "bundled");
+    assert.equal(BUNDLED_SNAPSHOT.date, "2026-10-28");
+    const result = computeVsList(
+      [
+        vsRow({
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cached_tokens: 400_000,
+          cost_value: 3,
+        }),
+      ],
+      BUNDLED_SNAPSHOT,
+    );
+    const rowResult = result.rows[0];
+    assert.equal(rowResult.status, "priced");
+    // 0.6M uncached at $1.4 + 0.4M cached at $0.26 + 1M output at $4.4
+    assert.ok(Math.abs(rowResult.equivalent - (0.84 + 0.104 + 4.4)) < 1e-9);
+    assert.equal(result.totals.savings, rowResult.equivalent - 3);
+    // Every bundled entry cites a vendor pricing page.
+    for (const [id, entry] of Object.entries(BUNDLED_SNAPSHOT.models)) {
+      assert.match(entry.source, /^https?:\/\//, `${id} source must be a URL`);
+    }
+  });
+
   test("readSnapshotFile reports unreadable and invalid JSON files as CliErrors", () => {
     assert.throws(
       () =>
@@ -467,15 +497,17 @@ describe("usage --show-windows / --sections peak / --vs-list", () => {
     });
   });
 
-  test("--vs-list never guesses: without prices everything is unpriced", async () => {
+  test("--vs-list never guesses: models the bundled snapshot lacks stay unpriced", async () => {
     const dir = freshDir("vs-list-unpriced");
-    await seedStore(dir, [row("2026-10-05T07:00:00Z")]);
+    await seedStore(dir, [
+      row("2026-10-05T07:00:00Z", { model: "some-vendor/mystery-x" }),
+    ]);
     await withStoreEnv(dir, async () => {
       const shown = await runCli(["usage", "--vs-list"]);
       assert.equal(shown.code, 0);
       assert.match(shown.stdout, /unpriced/);
       assert.doesNotMatch(shown.stdout, /\$0\.000000/);
-      assert.match(shown.stdout, /no list price for glm-5\.3/);
+      assert.match(shown.stdout, /no list price for some-vendor\/mystery-x/);
       const asJson = await runCli(["usage", "--vs-list", "--json"]);
       const payload = JSON.parse(asJson.stdout);
       assert.equal(payload.rows[0].status, "unpriced");
@@ -483,6 +515,34 @@ describe("usage --show-windows / --sections peak / --vs-list", () => {
       assert.equal(payload.rows[0].equivalent, null);
       assert.equal(payload.meta.snapshot_name, "bundled");
       assert.match(payload.meta.provenance.equivalent, /estimated\(vendor-list-price bundled@/);
+    });
+  });
+
+  test("--vs-list prices bundled first-party models without --prices-file (#108)", async () => {
+    const dir = freshDir("vs-list-bundled");
+    await seedStore(dir, [
+      row("2026-10-05T07:00:00Z", {
+        model: "deepseek-ai/deepseek-v4.1-flash",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cached_tokens: 0,
+        cost: "1.000000",
+        cost_value: 1,
+      }),
+    ]);
+    await withStoreEnv(dir, async () => {
+      const shown = await runCli(["usage", "--vs-list"]);
+      assert.equal(shown.code, 0);
+      // 1M input at $0.30 + 1M output at $1.20 = $1.50 equivalent vs $1 billed.
+      assert.match(shown.stdout, /1\.500000/);
+      assert.match(shown.stdout, /bundled@2026-10-28/);
+      const asJson = await runCli(["usage", "--vs-list", "--json"]);
+      const payload = JSON.parse(asJson.stdout);
+      assert.equal(payload.meta.snapshot_name, "bundled");
+      assert.equal(payload.meta.snapshot_date, "2026-10-28");
+      assert.equal(payload.rows[0].status, "priced");
+      assert.ok(Math.abs(payload.rows[0].equivalent - 1.5) < 1e-9);
+      assert.match(payload.rows[0].source, /bundled@2026-10-28/);
     });
   });
 
