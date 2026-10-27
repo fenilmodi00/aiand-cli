@@ -135,6 +135,14 @@ breaking changes while the command surface settles.
   menu frames each run with its command heading so tiled command output
   reads as one continuous surface.
 
+### Removed
+
+- `aiand harness duel` and `aiand harness latency` (ticket #119): both ran
+  live billed gateway requests for personal A/B comparisons. The store-backed
+  `harness stats` / `compare` / `matrix` answer the same harness×model
+  question from real traffic, and the synthetic `harness` benchmark remains
+  the offline performance path.
+
 ## [0.7.0] - 2026-10-26
 
 ### Added
