@@ -37,7 +37,7 @@ const env = withTestEnv("aiand-launcher-", (dir) => {
   delete process.env.AIAND_AUTH_URL;
 });
 
-const PASTED_KEY = "sk-launcher-pasted-key-000";
+const PASTED_KEY = "sk-test-launcher-pasted-key-000";
 
 /** Loopback stub serving /api/user for paste-key validation. */
 function startStub() {
