@@ -104,6 +104,26 @@ export async function recordAgentKey(agent: string, key: string): Promise<AgentK
   return record;
 }
 
+/**
+ * First-class harness label for the CLI's own traffic: the key `aiand run` /
+ * `aiand chat` authenticates with, recorded at store-sync time so a fresh
+ * install (empty agent map) stops attributing all of its traffic to
+ * "unknown". Never-guess rule untouched: only the key this CLI itself
+ * presented gets this label; anything else stays unknown.
+ */
+export const SELF_AGENT = "aiand-cli";
+
+/**
+ * Remember the CLI's own active session key as {@link SELF_AGENT}. Additive
+ * and idempotent (same semantics as recordNativeAgentKeys). At read time
+ * (`agentsForMaskedKey`) a self entry loses to any agent wired with the same
+ * key, so `aiand init`'s labels still win.
+ */
+export async function recordSelfAgentKey(key: string): Promise<void> {
+  if (!key) return;
+  await recordNativeAgentKeys(SELF_AGENT, [key]);
+}
+
 /** Every remembered key→agent mapping. */
 export function listAgentKeys(): AgentKeyRecord[] {
   return readFile(agentKeysPath()).keys;
@@ -150,9 +170,14 @@ export async function collectBakedKeys(
  * order stable for deterministic output.
  */
 export function agentsForMaskedKey(masked: string): string[] {
-  return readFile(agentKeysPath())
+  const agents = readFile(agentKeysPath())
     .keys.filter((entry) => entry.masked === masked)
     .map((entry) => entry.agent);
+  // The CLI's own self-entry is the fallback, not a claim: when an agent is
+  // wired with the same key, the agent's label wins. Without this, `aiand
+  // init` on a key the CLI also uses would re-label every past CLI request.
+  const nonSelf = agents.filter((agent) => agent !== SELF_AGENT);
+  return nonSelf.length > 0 ? nonSelf : agents;
 }
 
 /**

@@ -57,6 +57,7 @@ type CheckResult = {
 type StoreModule = {
   STORE_VERSION: number;
   getStoreInfo: () => StoreInfo;
+  sweepNativeAgentKeys?: (session?: Session) => Promise<void>;
 };
 
 type StoreInfo = {
@@ -84,6 +85,20 @@ export async function run(argv: string[]): Promise<void> {
   const profile = resolveProfile(str(parsed, "profile"));
   const probe = await probeGateway(profile);
   const storeModule = await loadStore();
+
+  // Local attribution repair (OBS-LT-1 #106): the same no-gateway sweep every
+  // sync runs — it self-records this CLI's own key and re-reads agent native
+  // keys, so the agent-keys verdict below reflects the mapping a plain
+  // `aiand run` left behind even when the gateway is unreachable.
+  if (storeModule && typeof storeModule.sweepNativeAgentKeys === "function") {
+    let session: Session | undefined;
+    try {
+      session = await openSession(profile);
+    } catch {
+      // Signed out: the sweep still runs, just without a self key to record.
+    }
+    await storeModule.sweepNativeAgentKeys(session);
+  }
 
   const checks: CheckResult[] = [
     gatewayCheck(probe),
