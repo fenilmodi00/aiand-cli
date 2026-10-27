@@ -1,6 +1,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "./cli/errors.js";
+import { err } from "./cli/output.js";
 import { configDir, PRIVATE_FILE_MODE, writeFileAtomic } from "./fsutil.js";
 import type { Tier } from "./secrets.js";
 import * as secrets from "./secrets.js";
@@ -99,6 +100,13 @@ export type Credential = {
 export type LoadedCredential = Credential & { access_token: string; refresh_token?: string };
 
 const DEFAULT_PROFILE: Profile = {};
+
+/**
+ * #100: the fallback warning fires once per requested profile name per
+ * process — some flows (e.g. login passing profile.name back through
+ * resolveProfile) resolve an already-resolved name repeatedly.
+ */
+const warnedProfileFallbacks = new Set<string>();
 
 export const configPath = (): string => join(configDir(), "config.json");
 export const credentialsPath = (): string => join(configDir(), "credentials.json");
@@ -256,7 +264,21 @@ export type ResolvedProfile = Profile & { name: string; authUrl: string; apiUrl:
 
 export function resolveProfile(override?: string): ResolvedProfile {
   const name = activeProfileName(override);
-  const stored = loadConfig().profiles[name] ?? { ...DEFAULT_PROFILE };
+  const config = loadConfig();
+  // #100: a mistyped or missing --profile must not silently serve the default
+  // profile's data. The fallback stays (automation depends on it), but it
+  // warns on stderr so --json stdout remains parseable. The warning fires
+  // only when a profile was explicitly requested, not for the default flow.
+  if (override !== undefined && override !== "" && !Object.hasOwn(config.profiles, name)) {
+    if (!warnedProfileFallbacks.has(override)) {
+      warnedProfileFallbacks.add(override);
+      err(
+        `Warning: profile "${override}" is not defined in ${configPath()}; ` +
+          "falling back to the built-in defaults (empty profile: env vars and global settings only).",
+      );
+    }
+  }
+  const stored = config.profiles[name] ?? { ...DEFAULT_PROFILE };
   const base = process.env.AIAND_BASE_URL;
 
   // Env and the default are always strings, so a non-string here necessarily

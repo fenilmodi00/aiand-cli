@@ -145,3 +145,61 @@ describe("config set/use --json", () => {
     }
   });
 });
+
+// #100: an unknown --profile falls back to the default but warns on stderr —
+// silence would serve the default profile's data with no signal — and stdout
+// stays pure/parseable JSON when --json is set.
+describe("unknown --profile warning (#100)", () => {
+  test("unknown profile warns on stderr naming requested and actual profiles", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-unknown-profile-"));
+    try {
+      const r = await runCli(["config", "--profile", "does-not-exist"], {
+        env: childEnv(dir),
+      });
+      assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /profile "does-not-exist" is not defined/);
+      assert.match(r.stderr, /falling back to the built-in defaults/);
+      assert.match(r.stdout, /does-not-exist/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--json stdout stays parseable with the warning present", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-unknown-profile-json-"));
+    try {
+      const r = await runCli(["config", "--json", "--profile", "ghost"], {
+        env: childEnv(dir),
+      });
+      assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
+      assert.match(r.stderr, /profile "ghost" is not defined/);
+      const parsed = JSON.parse(r.stdout);
+      // The resolved profile keeps the requested name; the warning on stderr
+      // names the built-in defaults actually supplying the settings.
+      assert.equal(parsed.name, "ghost");
+      assert.throws(() => JSON.parse(r.stderr), "the warning is stderr-only");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a defined profile and the default flow stay warning-free", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "aiand-known-profile-"));
+    try {
+      const env = childEnv(dir);
+      mkdirSync(join(dir, "cfg"), { recursive: true });
+      writeFileSync(
+        join(dir, "cfg", "config.json"),
+        `${JSON.stringify({ profile: "default", profiles: { default: {}, real: {} } })}\n`,
+      );
+      const known = await runCli(["config", "--profile", "real"], { env });
+      assert.equal(known.code, 0, known.stderr);
+      assert.equal(known.stderr, "", "no warning for a defined profile");
+      const plain = await runCli(["config"], { env });
+      assert.equal(plain.code, 0, plain.stderr);
+      assert.equal(plain.stderr, "", "no warning when no --profile is given");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

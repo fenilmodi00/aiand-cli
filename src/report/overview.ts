@@ -1,4 +1,5 @@
 import { currencySymbol, num, style } from "../cli/output.js";
+import { formatMoneyFixed } from "../pricing/currency.js";
 import {
   type Costs,
   OVERVIEW_DAY_ROWS,
@@ -36,7 +37,7 @@ function padLeft(text: string, width: number): string {
 function money(value: number, currency: string): string {
   const symbol = currencySymbol(currency === "" ? null : currency);
   const code = currency === "" || currency === "usd" ? "" : `${currency} `;
-  return `${code}${symbol}${value.toFixed(4)}`;
+  return `${code}${symbol}${formatMoneyFixed(value, 4)}`;
 }
 
 function costCell(costs: Costs): string {

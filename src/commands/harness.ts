@@ -9,6 +9,7 @@ import { resolveProfile } from "../config.js";
 import { runHarnessDuel, runHarnessLatency } from "./harness-duel.js";
 import { runHarnessMatrix } from "./harness-matrix.js";
 import { runHarnessWorkload } from "./harness-stats.js";
+import * as recommend from "./recommend.js";
 
 export const help = `${style.bold("aiand harness")} -- compare harnesses on cache behavior
 
@@ -18,9 +19,10 @@ Usage
   aiand harness --harness claude-code
   aiand harness --model zai-org/glm-5.3
   aiand harness --sweep-models
-  aiand harness stats [--last 7d] [--harness <name>]   real-workload stats per harness
-  aiand harness compare [--last 30d]                   side-by-side on your workload
-  aiand harness matrix [--last 7d] [--synthetic]       (harness × model) matrix
+  aiand harness stats [--last <window>] [--harness <name>]   real-workload stats per harness
+  aiand harness compare [--last <window>]                    side-by-side on your workload
+  aiand harness recommend [--last <window>]                  cheapest (harness, model) pair (#79)
+  aiand harness matrix [--last <window>] [--synthetic]       (harness × model) matrix
   aiand harness duel --session <id> --pair ...         personal A/B shape replay (issue #82)
   aiand harness latency --pair ... [--turns 10]        live TTFT vs your history (issue #82)
   aiand harness --json
@@ -52,6 +54,10 @@ export async function run(argv: string[]): Promise<void> {
   const subcommand = argv[0];
   if (subcommand === "stats" || subcommand === "compare") {
     return runHarnessWorkload(subcommand, argv.slice(1));
+  }
+  if (subcommand === "recommend") {
+    // Alias: `harness recommend` is `aiand recommend` (same flags, same rules).
+    return recommend.run(argv.slice(1));
   }
   if (subcommand === "matrix") {
     return runHarnessMatrix(argv.slice(1));

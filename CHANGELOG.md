@@ -8,6 +8,14 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand store reset` (ticket #95, OBS-BF-10) — clears the request/session rows so the next `store sync` is a full re-pull, keeping the schema, migrations, the ccusage import dedupe ledger, and locally captured envelopes (opt-in, not re-pullable) intact; confirms unless `--force`, `--json` reports what was cleared. Self-heal for a stale store without hand-deleting `store.db`.
+- `aiand usage` surfaces the error rate (ticket #98): the report's totals
+  carry `errors` and `errorRate` (non-2xx statuses excluding 429, over
+  requests — the same single #88 definition `harness stats` uses, so text,
+  `--json`, and harness stats agree on identical data). The plain report
+  prints an `error rate` line with the counts; `usage --audit` lists the
+  `estimated(non-2xx excluding 429 / requests)` provenance. An empty window
+  yields `errorRate: null` (and no plain line) — never a fabricated 0.0.
 - `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
 - `aiand dashboard`, `aiand heatmap`, and `aiand wrapped` (ticket #75),
@@ -293,7 +301,33 @@ breaking changes while the command surface settles.
   Plain `aiand status` keeps its documented auth exit codes and now shows
   the statusline line under the auth fields.
 
+### Fixed
+
+- Budget pacing in `aiand report` / `aiand overview` no longer projects a
+  month from a narrow window (ticket #97): when the requested window starts
+  after the current month began (e.g. `--last 1d`), the budget section now
+  loads month-span rows for its month-to-date math while `meta.range` and
+  every other section keep the requested window.
+- `aiand usage --verify --since/--until` now honors the requested window on
+  the remote side (OBS-BF-11, #96): gateway log rows carry `created_at` in
+  the wire format (`2026-10-26 05:02:11.844519+00`), which bare string
+  comparison ordered before every ISO bound, so windowed verifies compared
+  the local store against remote 0/0/0. Remote rows are now filtered by
+  instant, matching the store's #86 normalized window comparisons; the
+  exit-code contract (0 match, 1 mismatch with per-metric deltas) is
+  unchanged.
+
 ### Changed
+
+- Consistent empty-window contract (ticket #100): `harness compare` and
+  `recommend` now both follow the honest-empty pattern — a window with no
+  requests exits 0 with an explicit empty/insufficient result instead of
+  `compare` erroring while `recommend` exited 0, so automation can key on
+  exit codes; "no data" is an answer, not a failure. A `--profile <unknown>`
+  override no longer silently serves the default profile: the fallback stays
+  but a warning naming the requested profile and the built-in-default
+  fallback prints once per requested name on stderr (stdout `--json` stays
+  parseable and unchanged).
 
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario
   families — `multi-turn-refactor-long` (a six-turn refactor over a large
@@ -555,6 +589,37 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Incremental store sync (OBS-BF-9, #94): the gateway's `/logs` is newest-first
+  and `after` is an exclusive floor, so an incremental sync that started at
+  `watermark − 5min` could never page forward to rows newer than the watermark —
+  every sync after the first inserted 0 rows and the store went silently stale
+  (`usage --verify` MISMATCH). The sync now pages from the top on every run and
+  stops as soon as a page's oldest row reaches the overlap floor
+  (watermark − 5min): new traffic is picked up in full, the watermark advances,
+  PK dedupe (`INSERT OR IGNORE`) and the stuck-cursor guard are unchanged, and a
+  quiescent no-op sync stops after one page instead of walking the full 30-day
+  range. A gateway 400 "after and after_id must be sent together" surfaces as a
+  clean failed sync (warning + `last_sync_error`, exit 0) — never a raw stack.
+- `aiand report` and `aiand overview` honor the exact requested window
+  (#97). A `--last 1d` window that started inside the current calendar
+  month was silently widened to month-start (including explicit `--since`
+  dates), so the report covered the whole month while `usage` honored the
+  same flags exactly — and the rendered range label and `--json` range
+  metadata lied about it. The three surfaces now agree: the range label
+  and metadata equal the requested window.
+- Observability JSON surfaces honored `--json` incompletely (ticket #99):
+  `heatmap --json` now emits machine-readable per-cell data (day, hour, and
+  spend or count per cell, plus metric/currency/peak metadata) instead of
+  silently printing the text render; `forecast bench --json` and
+  `forecast --suggest-budget --json` emit `{ "status": "insufficient-history", ... }`
+  on the degraded path instead of prose (happy paths unchanged); `report
+  --json` includes a `totals` block (requests, tokens, per-currency costs,
+  savings) matching the HTML's numbers for the same window. Money
+  formatting never renders a fabricated `$-0.0000` / `-0.0` for an
+  epsilon-negative accumulation (overview, wrapped, report, heatmap
+  legends) — negatives that round to zero render as plain zero at the
+  formatting boundary.
+
 - Store sync cursor: the outer sync loop advanced by `created_at` alone,
   so any timestamp owning more rows than one page re-served the identical
   page forever — a live sync captured 103 of 832 rows and never finished
@@ -596,6 +661,17 @@ breaking changes while the command surface settles.
   states the real default (all stored history, not 7d); and the dead
   unit-mixing verdict-group `misses` metric (`requests - cachedTokens`) is
   gone from the harness stats, pair stats, and matrix row builders.
+- Help and docs state the truth (#101): `forecast --model v2` now honors the
+  same insufficient-span rule as v1 — fewer than 2 hours of data in the
+  trailing 24h window (with no 7d fallback) reports indeterminate instead of
+  projecting a month from 59 minutes of one afternoon (Changed); the
+  forecast help and `docs/observability/forecast-v2.md` say that byte-
+  identical default-seed runs require pinning `--until`/`--since`, since the
+  trailing 30-minute OLS window follows the current time; the `harness
+  stats`/`compare`/`matrix` synopses no longer show a `--last 7d` default
+  the options text says does not exist; and the `harness recommend` alias
+  route now accepts the documented flags (`--last`, `--range`, `--sort`,
+  `--top`, `--harness`, `--json`) instead of rejecting them as unknown.
 - Battle-probe regression tests (#92): the burst-pagination fixture now also
   asserts id-uniqueness of the 250 ingested rows, a CLI-level test pins the
   stuck-cursor `store sync --json` exit path (`result.ok: false` with

@@ -9,6 +9,22 @@ import { configDir, PRIVATE_DIR_MODE, withFileLock } from "../fsutil.js";
 import { MIGRATIONS } from "./migrations/index.js";
 
 /**
+ * Parse a gateway `created_at` into epoch ms. The gateway serves its verbatim
+ * wire format (`2026-10-26 05:02:11.844519+00` — space separator, `+00`
+ * offset), which V8's Date.parse rejects and which bare text comparison
+ * misorders against ISO (`' ' < 'T'`). Inlined here rather than imported from
+ * ./reconcile.js to keep the store free of a store/index <-> reconcile
+ * import cycle (reconcile imports this module's public surface).
+ */
+function parseWireTimestamp(created_at: string): number {
+  const ms = Date.parse(created_at.replace(" ", "T").replace(/\+00$/, "Z"));
+  if (Number.isNaN(ms)) {
+    throw new Error(`Gateway log row has an unparseable created_at: ${created_at}`);
+  }
+  return ms;
+}
+
+/**
  * The local request store: a metadata-only SQLite mirror of the gateway's
  * /logs rows at `<config dir>/store.db`, plus the incremental sync engine
  * that keeps it current (feature catalog A1/A2).
@@ -36,6 +52,72 @@ export function storePath(): string {
   return join(configDir(), "store.db");
 }
 
+/** #95 — What `store reset` cleared, for human and --json reporting. */
+export type ResetResult = {
+  requests: number;
+  sessions: number;
+  /** Locally captured envelopes survive a reset (opt-in, not re-pullable). */
+  envelopesKept: number;
+  /** Row kept on purpose: the ccusage import dedupe ledger survives a reset. */
+  importedUsageKept: number;
+  storeVersion: number;
+};
+
+/**
+ * #95 (OBS-BF-10) — Self-heal: delete the request/session data rows and the
+ * sync bookkeeping that describes them, keep the schema, migrations, and the
+ * ccusage import dedupe ledger (ccusage_imports + imported_usage). Locally
+ * captured envelopes survive: they are opt-in local captures the gateway does
+ * not serve (#95 scope is request/session rows only). The sync watermark is
+ * derived from the newest request row, so an empty `requests` table makes the
+ * next `store sync` a full re-pull. Never throws
+ * for expected states (no store file yet → nothing to clear).
+ */
+export function resetStore(): ResetResult | { ok: false; error: string } {
+  const path = storePath();
+  if (!existsSync(path)) {
+    return { ok: false, error: "No local request store yet — nothing to reset." };
+  }
+  const opened = openStore(path);
+  if (!opened.ok) return { ok: false, error: opened.reason };
+  const db = opened.db;
+  try {
+    const count = (table: string): number =>
+      Number((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>).n);
+    const importedUsageKept = count("imported_usage");
+    const result: ResetResult = {
+      requests: count("requests"),
+      sessions: count("sessions"),
+      envelopesKept: count("envelopes"),
+      importedUsageKept,
+      storeVersion: STORE_VERSION,
+    };
+    db.exec("BEGIN");
+    try {
+      db.exec(
+        "DELETE FROM requests; DELETE FROM sessions; " +
+          // Sync bookkeeping describes the deleted rows (last sync time,
+          // watermark-era fingerprint); clear it so nothing claims state the
+          // store no longer has.
+          "DELETE FROM sync_meta",
+      );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
 /**
  * #86 — Normalized timestamp comparison for SQL window filters.
  *
@@ -61,7 +143,7 @@ export function storePath(): string {
  * timeline; stored rows stay verbatim.
  */
 const normalizedExpr = (col = "created_at"): string => {
-  const g = `replace(trim(${col}),'+00','Z')`;
+  const g = `replace(replace(trim(${col}),' ','T'),'+00','Z')`;
   return (
     `printf('%s%02d:%02d:%sZ', substr(${g},1,11), ` +
     `CAST(substr(${g},12,2) AS INT), CAST(substr(${g},15,2) AS INT), ` +
@@ -336,7 +418,12 @@ function setMeta(db: DatabaseSync, key: string, value: string): void {
 
 function watermarkOf(db: DatabaseSync): { createdAt: string; id: string } | null {
   const row = db
-    .prepare("SELECT created_at, id FROM requests ORDER BY created_at DESC, id DESC LIMIT 1")
+    // Newest by INSTANT, not text: stored rows are verbatim and mix wire
+    // format (`2026-10-01 15:20:…+00`) with ISO — a text ORDER BY puts
+    // `' '` before `'T'` and picks a same-day ISO row over a newer wire row.
+    .prepare(
+      `SELECT created_at, id FROM requests ` + `ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
+    )
     .get() as Record<string, unknown> | undefined;
   const createdAt = row?.created_at;
   const id = row?.id;
@@ -422,10 +509,19 @@ const OVERLAP_MS = 5 * 60 * 1000;
 /**
  * Incremental watermark pull of /logs into the store. Never throws: a
  * network/auth failure returns { ok: false } so the calling command warns
- * and serves local data. Pages forward from the watermark (max stored
- * created_at, tiebreak max id) minus a small overlap window, updating the
- * watermark after every successful page — an interrupted sync resumes where
- * it stopped, and re-syncing a fully synced store inserts 0 rows.
+ * and serves local data.
+ *
+ * #94 (OBS-BF-9): the gateway's /logs is newest-first and `after` is an
+ * exclusive floor — it can never page "forward" toward rows newer than the
+ * watermark, so the old `after = watermark − overlap` start cursor made
+ * every incremental sync structurally blind to new traffic. Instead, every
+ * sync pages from the top (no cursor params on the first request) and an
+ * incremental sync stops as soon as a page's oldest row reaches the overlap
+ * floor (watermark − 5min); INSERT OR IGNORE dedupes the overlap. A fresh
+ * store (no watermark) drains the full range through the gateway's own
+ * next_after/next_after_id cursors. Known ceiling: a first sync interrupted
+ * mid-drain leaves older, never-fetched pages below the watermark floor to
+ * stay unfetched until the store is reset — the floor treats them as owned.
  */
 export async function syncStore(
   session: Session,
@@ -449,27 +545,32 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
 
   try {
     const range = opts.range ?? SYNC_RANGE;
-    const start = watermarkOf(db);
-    // A few minutes of overlap re-serves edge rows; INSERT OR IGNORE makes
-    // that free, and it covers gateway-side clock/cursor jitter.
-    const after = start
-      ? new Date(Date.parse(start.createdAt) - OVERLAP_MS).toISOString()
-      : undefined;
 
     let inserted = 0;
     let pages = 0;
-    let cursor = after;
-    let cursorId: string | undefined;
-    let previousCursor: string | undefined;
-    let previousCursorId: string | undefined;
+    // #94: page from the TOP of /logs. The gateway serves newest-first, so
+    // the cursor here is the pair of the last row SERVED (each page's oldest
+    // row), not a filter we impose — /logs' `after` is an exclusive floor we
+    // cannot use to reach newer-than-watermark rows.
+    let after: string | undefined;
+    let afterId: string | undefined;
+    // The incremental stop floor: watermark minus the overlap window. Only
+    // set when the store already holds data; a fresh sync drains the range.
+    const existing = watermarkOf(db);
+    const floorMs = existing ? parseWireTimestamp(existing.createdAt) - OVERLAP_MS : undefined;
+    let previousAfter: string | undefined;
+    let previousAfterId: string | undefined;
     for (;;) {
       const { entries, truncated, lastCursor } = await getLogsPaged(session, {
         range: range as Parameters<typeof getLogsPaged>[1]["range"],
         limit: SYNC_PAGE_SIZE,
-        after: cursor,
-        afterId: cursorId,
+        after,
+        afterId,
       });
       pages += 1;
+      // Overlap rows already at or below the floor are re-served every sync;
+      // INSERT OR IGNORE makes refetching them free, and they must not count
+      // as progress for the stuck-cursor guard.
       const roundInserted = insertEntries(db, entries);
       inserted += roundInserted;
 
@@ -484,23 +585,36 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
         }
       }
 
+      // Incremental early stop (#94): the newest-first page just crossed the
+      // overlap floor, so everything older is already stored. Quiescent
+      // accounts stop after ONE page instead of walking the 30-day range.
+      // Compare instants, never raw text: the gateway serves wire-format
+      // `created_at` (space separator, `+00`), and `' ' < 'T'` would stop the
+      // drain on any same-day row even when it is newer than the floor —
+      // the exact staleness #94 fixes. Contract: timestamps compared as
+      // parsed instants, never as text (`' ' < 'T'` misorders wire vs ISO).
+      const oldest = entries.at(-1);
+      if (floorMs !== undefined && oldest && parseWireTimestamp(oldest.created_at) <= floorMs) {
+        break;
+      }
+
       if (!truncated || entries.length === 0) break;
       // Advance by the (created_at, id) pair of the last served row: when a
       // timestamp owns more rows than a page, created_at alone re-serves the
       // identical page forever.
       if (lastCursor) {
-        cursor = lastCursor.createdAt;
-        cursorId = lastCursor.id;
+        after = lastCursor.createdAt;
+        afterId = lastCursor.id;
       } else {
         const last = entries[entries.length - 1];
         if (!last) break;
-        cursor = last.created_at;
-        cursorId = last.id;
+        after = last.created_at;
+        afterId = last.id;
       }
       // Stuck-cursor guard: a round that inserts nothing and moves nowhere
       // means the pager is re-serving the same page — stop instead of
       // spinning, and say so rather than reporting a silent success.
-      if (roundInserted === 0 && cursor === previousCursor && cursorId === previousCursorId) {
+      if (roundInserted === 0 && after === previousAfter && afterId === previousAfterId) {
         const message =
           "Sync stopped: the gateway kept re-serving the same page despite the cursor advancing " +
           "(stuck cursor) — history may be incomplete.";
@@ -512,8 +626,8 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
         }
         return { ok: false, inserted, pages, error: message, code: "store" };
       }
-      previousCursor = cursor;
-      previousCursorId = cursorId;
+      previousAfter = after;
+      previousAfterId = afterId;
     }
 
     // A clean success clears the failure markers: coverage must report the

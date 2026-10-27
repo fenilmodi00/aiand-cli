@@ -1,8 +1,16 @@
 import { openSession } from "../api/client.js";
 import { bool, parse } from "../cli/args.js";
+import { CliError } from "../cli/errors.js";
 import { err, json, out, relativeTime, style } from "../cli/output.js";
+import { confirm } from "../cli/prompt.js";
 import { resolveProfile } from "../config.js";
-import { getStoreInfo, noSyncRequested, type StoreInfo, syncStore } from "../store/index.js";
+import {
+  getStoreInfo,
+  noSyncRequested,
+  resetStore,
+  type StoreInfo,
+  syncStore,
+} from "../store/index.js";
 
 /**
  * Minimal store surface for this ticket: status inspection and the manual
@@ -17,10 +25,13 @@ export const help = `${style.bold("aiand store")} -- local request store
 Usage
   aiand store            show the store's status
   aiand store sync       pull new gateway rows into the store
+  aiand store reset      clear request/session rows; the next sync re-pulls
+                         everything (self-heal; keeps schema + import ledger)
 
 Options
   --no-sync              skip the network sync and show local state only
                          (also AIAND_NO_SYNC=1)
+  --force                skip the reset confirmation (scripts)
   --json                 machine-readable output
 
 The store keeps long-term, metadata-only request history (the gateway serves
@@ -30,11 +41,15 @@ failure never fails a command — it warns and serves local data.`;
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     "no-sync": { type: "boolean", default: false },
+    force: { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
 
   const wantsSync = parsed.positionals[0] === "sync";
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
+
+  if (parsed.positionals[0] === "reset")
+    return runReset(bool(parsed, "force"), bool(parsed, "json"));
 
   if (!wantsSync || skipSync) {
     const info = getStoreInfo();
@@ -66,6 +81,46 @@ export async function run(argv: string[]): Promise<void> {
     if (bool(parsed, "json")) return json({ result, store: info });
   }
   printInfo(info);
+}
+
+/**
+ * #95 (OBS-BF-10) — Destructive self-heal: clears request/session data rows,
+ * keeps schema + migrations + the ccusage import dedupe ledger + locally
+ * captured envelopes. Confirms on a
+ * TTY unless --force; a decline exits 0 with the store untouched.
+ */
+async function runReset(force: boolean, jsonOut: boolean): Promise<void> {
+  if (!force) {
+    const ok = await confirm(
+      "Reset the local request store? All synced request/session history is deleted " +
+        "(locally captured envelopes are kept) and the next `aiand store sync` re-pulls everything.",
+      { default: false },
+    );
+    if (!ok) {
+      if (jsonOut) return json({ reset: false });
+      out(style.dim("Cancelled — the store is unchanged."));
+      return;
+    }
+  }
+  const result = resetStore();
+  if ("error" in result) {
+    throw new CliError(`Store reset failed: ${result.error}`);
+  }
+  const { requests, sessions, envelopesKept, storeVersion, importedUsageKept } = result;
+  if (jsonOut) return json({ reset: true, ...result });
+  out(
+    style.green(
+      `Store reset: cleared ${requests} request${requests === 1 ? "" : "s"} and ` +
+        `${sessions} session${sessions === 1 ? "" : "s"} ` +
+        `(schema v${storeVersion}; ${importedUsageKept} imported-usage rows and ` +
+        `${envelopesKept} locally captured envelope${envelopesKept === 1 ? "" : "s"} kept).`,
+    ),
+  );
+  out(
+    style.dim(
+      "The next `aiand store sync` will be a full re-pull (the gateway serves the last 30 days).",
+    ),
+  );
 }
 
 function printInfo(info: StoreInfo): void {

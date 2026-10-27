@@ -2,14 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import test, { describe } from "node:test";
+import test from "node:test";
 
 const {
-  CLOSED_URL,
   FAKE_API_KEY,
   FakeInput,
   FakeOutput,
-  captureStdio,
   fixtureFile,
   makeFixture,
   seedCatalogCache,
@@ -37,7 +35,7 @@ const env = withTestEnv("aiand-launcher-", (dir) => {
   delete process.env.AIAND_AUTH_URL;
 });
 
-const PASTED_KEY = "sk-launcher-pasted-key-000";
+const PASTED_KEY = "sk-test-launcher-pasted-key-000";
 
 /** Loopback stub serving /api/user for paste-key validation. */
 function startStub() {

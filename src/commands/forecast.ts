@@ -74,8 +74,11 @@ minutes conjugated with a prior from past completed day-windows, a rectified
 Gaussian rate draw per path, Gamma-process increments over 5-minute steps,
 ${MC_DRAWS} seeded Monte Carlo paths -> median + 80% credible interval, uncapped
 above the budget (overshoot is projected demand). ETA to budget is nil when
-P(never reaching) >= 0.5. Fewer than 2 hours of data in the trailing window is
-reported as indeterminate — a rate is never fabricated. Current spend is
+P(never reaching) >= 0.5. Like v1, v2 reports indeterminate when the trailing
+window has fewer than 2 hours of data — a rate is never fabricated. Default-
+seed runs reproduce byte-identical output only for a pinned window: pin
+--until (and --since) when you need reproducible numbers, since the trailing
+30-minute OLS window follows the current time otherwise. Current spend is
 gateway-billed (summed verbatim from the local store); every projection is
 labeled. Budgets are advisory: nothing is enforced or blocked.
 
@@ -371,6 +374,10 @@ async function benchCommand(parsed: ReturnType<typeof parse>): Promise<void> {
   });
 
   if (!result.ok) {
+    // #99: automation keys on --json, so the refusal is JSON in that mode.
+    if (bool(parsed, "json")) {
+      return json({ status: "insufficient-history", windows: result.windows });
+    }
     out(`insufficient history for the bench (${result.windows} scoreable windows)`);
     return;
   }
@@ -514,6 +521,11 @@ function suggest(parsed: ReturnType<typeof parse>, now: Date): void {
   const totals = readMonthTotals(now);
   const suggestion = suggestBudget(totals);
   if (!suggestion.ok) {
+    // #99: machine-readable refusal when --json asked for JSON.
+    if (bool(parsed, "json")) {
+      json({ status: "insufficient-history", windows: suggestion.windows });
+      return;
+    }
     out(`insufficient history for P90 suggestion (${suggestion.windows} windows)`);
     return;
   }

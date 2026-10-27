@@ -1,4 +1,5 @@
 import { currencySymbol, num, style } from "../cli/output.js";
+import { formatMoneyFixed } from "../pricing/currency.js";
 import type { Costs, ReportData } from "../report/data.js";
 
 /**
@@ -119,7 +120,7 @@ function dominantCost(costs: Costs): number | null {
 function money(value: number, currency: string | null): string {
   const symbol = currencySymbol(currency);
   const code = currency === null || currency === "usd" ? "" : `${currency} `;
-  return `${code}${symbol}${value.toFixed(2)}`;
+  return `${code}${symbol}${formatMoneyFixed(value, 2)}`;
 }
 
 function costCell(costs: Costs): string {

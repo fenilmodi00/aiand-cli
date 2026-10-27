@@ -133,6 +133,17 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "blocks.cost",
     provenance: gatewayBilled("sum of the gateway-computed per-request cost; never recomputed"),
   },
+  // usage error rate (ticket #98, the shared #88 definition)
+  {
+    report: "usage",
+    field: "totals.errors",
+    provenance: estimated("non-2xx statuses excluding 429 over the window's rows"),
+  },
+  {
+    report: "usage",
+    field: "totals.errorRate",
+    provenance: estimated("non-2xx excluding 429 / requests"),
+  },
   // cache
   {
     report: "cache",

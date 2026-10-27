@@ -152,6 +152,39 @@ test("heatmap: metrics/window/filters compose; bad metric is a user error", asyn
   assert.notEqual(bad.code, 0);
 });
 
+// #99: --json emits machine-readable per-cell data instead of the text render.
+test("heatmap --json emits per-cell JSON (#99)", async () => {
+  const cfg = cfgDir("heatmap-json");
+  await seedStore(cfg, [
+    { id: "j1", cost: 0.25, created_at: "2026-10-20T10:30:00.000Z" },
+    { id: "j2", cost: 0.5, created_at: "2026-10-20T10:45:00.000Z" },
+  ]);
+  const out = await runCli(["heatmap", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(out.code, 0, `${out.stdout}${out.stderr}`);
+  const payload = JSON.parse(out.stdout);
+  assert.equal(payload.metric, "cost");
+  assert.equal(payload.currency, "usd");
+  assert.equal(payload.rowCount, 2);
+  const tuesday1030 = payload.cells.find((c) => c.day === "Tue" && c.hour === 10);
+  assert.ok(tuesday1030);
+  assert.equal(tuesday1030.spend, 0.75);
+  assert.ok(payload.cells.every((c) => typeof c.day === "string" && typeof c.hour === "number"));
+  assert.equal(payload.cells.length, 7 * 24);
+  assert.ok(payload.peak && payload.peak.value === 0.75);
+
+  const reqs = await runCli(["heatmap", "--no-sync", "--metric", "requests", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  const reqPayload = JSON.parse(reqs.stdout);
+  assert.equal(reqPayload.cells.find((c) => c.day === "Tue" && c.hour === 10).count, 2);
+
+  // The help text lists --json like every other flag.
+  const h = await runCli(["heatmap", "--help"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+  assert.match(h.stdout, /--json/);
+});
+
 test("wrapped: formats/windows/no-cost/json; dead gateway fails open", async () => {
   const cfg = cfgDir("wrapped-branches");
   await seedStore(cfg, rows());
