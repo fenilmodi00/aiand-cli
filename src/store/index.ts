@@ -515,14 +515,21 @@ const OVERLAP_MS = 5 * 60 * 1000;
  * end to end — never throws; one unreadable agent store never blocks the
  * others.
  */
-export async function sweepNativeAgentKeys(): Promise<void> {
+export async function sweepNativeAgentKeys(session?: Session): Promise<void> {
   try {
     // Dynamic: agents/registry statically imports store consumers
     // (envelope-capture) and agent-keys imports config — a static import
     // here would close a store→agents→store cycle (same pattern as
     // src/api/client.ts's rebake import).
     const { AGENTS } = await import("../agents/registry.js");
-    const { recordNativeAgentKeys } = await import("../api/agent-keys.js");
+    const { recordNativeAgentKeys, recordSelfAgentKey } = await import(
+      "../api/agent-keys.js"
+    );
+    // OBS-LT-1 (#106): the CLI's own traffic must attribute even with an
+    // empty agent map — the key this session authenticates with is known
+    // locally, so self-record it alongside the adapter sweep. Agents wired
+    // with the same key keep winning (see agentsForMaskedKey).
+    if (session) await recordSelfAgentKey(session.token);
     for (const adapter of AGENTS) {
       if (!adapter.nativeAiandKeys) continue;
       try {
@@ -558,8 +565,9 @@ export async function syncStore(
   opts: { range?: string } = {},
 ): Promise<SyncResult> {
   // Local attribution repair first: it needs no gateway, so a sync that
-  // fails at the network layer still leaves the key map fresh.
-  await sweepNativeAgentKeys();
+  // fails at the network layer still leaves the key map fresh. The session
+  // lets the sweep self-record the CLI's own key (OBS-LT-1 #106).
+  await sweepNativeAgentKeys(session);
   try {
     // Cross-process serialization on top of WAL + busy_timeout: the
     // watermark must advance one writer at a time.

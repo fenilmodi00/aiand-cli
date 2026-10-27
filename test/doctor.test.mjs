@@ -121,7 +121,10 @@ test("gateway 401: auth verdict names the rejection; other checks still run", as
   assert.ok(found.auth.detail.includes("aiand login"));
   // Independence: a rejected gateway must not silence the local checks.
   assert.equal(found.adapters.status, "nothing-found");
-  assert.equal(found["agent-keys"].status, "nothing-found");
+  // OBS-LT-1: doctor's local sweep self-records the CLI's own key even when
+  // the gateway rejects it, so agent-keys is no longer empty.
+  assert.equal(found["agent-keys"].status, "ok");
+  assert.equal(found["agent-keys"].perAgent["aiand-cli"], 1);
   assert.equal(found.store.status, "nothing-found");
   assert.equal(found.lag.status, "skipped");
   assert.equal(process.exitCode, 1);
@@ -160,7 +163,9 @@ test("network failure: distinct verdict; local checks still run; exit 1", async 
   assert.ok(found.gateway.detail.includes("network"), `network reason: ${found.gateway.detail}`);
   assert.equal(found.auth.status, "skipped", "auth is unknown when the gateway is unreachable");
   assert.equal(found["agent-keys"].status, "ok", "agent-keys still runs");
-  assert.equal(found["agent-keys"].count, 1);
+  // The planted claude mapping plus the CLI's own self-recorded key
+  // (OBS-LT-1: doctor runs the same local sweep a sync does).
+  assert.equal(found["agent-keys"].count, 2);
   assert.equal(found.adapters.status, "nothing-found");
   assert.equal(found.store.status, "nothing-found");
   assert.equal(found.lag.status, "skipped");

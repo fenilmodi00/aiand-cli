@@ -9,6 +9,16 @@ breaking changes while the command surface settles.
 
 
 ### Fixed
+- `aiand run`/`aiand chat` traffic on a machine with no agents wired showed
+  as `unknown` everywhere: `agent-keys.json` was empty, so nothing identified
+  the CLI's own key. The store sync now self-records the key the CLI
+  authenticates with as a first-class `aiand-cli` entry (same local sweep
+  seam as the adapter native-key sweep — runs even when the gateway is
+  unreachable), so `aiand sessions`, dashboard "By harness", `wrapped`,
+  `overview`, harness stats, and `aiand doctor`'s agent-keys check reflect
+  CLI-own traffic. Agents wired with the same key keep their label (the self
+  entry is a fallback, not a claim); a foreign key the CLI never presented
+  still stays `unknown`.
 - Live-gateway sandbox testing of every command on this branch surfaced three
   defects, now fixed and regression-tested. `config get
   mcp.realProjectNames` was rejected as "not a gettable key" even though
