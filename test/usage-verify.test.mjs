@@ -135,11 +135,11 @@ function verifyEnv(dir) {
 }
 
 /** Plant the local store through the real sync engine against the double. */
-async function plantStore(dir, rows) {
+async function plantStore(dir, rows, from = baseUrl) {
   serveLogs = forwardPager(rows);
   await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
     const store = await import("../dist/store/index.js");
-    const result = await store.syncStore(fakeSession(baseUrl));
+    const result = await store.syncStore(fakeSession(from));
     assert.equal(result.ok, true, `store plant failed: ${JSON.stringify(result)}`);
   });
 }
@@ -519,5 +519,128 @@ describe("usage --verify (CI gate)", () => {
     for (const metric of ["tokens", "cost"]) {
       assert.equal(parsed.find((r) => r.metric === metric).status, "mismatch");
     }
+  });
+
+  // #96 (OBS-BF-11): the remote side of an explicit-window verify must honor
+  // the window. The gateway serves created_at in its wire format (space
+  // separator, `+00`), which bare string comparison ordered before every ISO
+  // `T` bound — windowed verifies returned remote 0/0/0 while rows sat inside
+  // the window. These drive the built CLI against the mock gateway's
+  // `logs-window` scenarios so the remote filter is exercised over HTTP, not
+  // stubbed away. win-0001/win-0002 sit 5/15 minutes back; win-0003 is 2h old.
+  const windowFixture = {
+    requests: 2,
+    tokens: 1_000 + 300 + 2_000 + 500,
+    cost: 0.0042 + 0.01,
+  };
+  test("#96: windowed match — remote honors --since/--until (wire-format rows), exit 0", async () => {
+    await withMockGateway(async ({ url }) => {
+      const dir = freshDir("repro-window-match");
+      await plantStore(dir, [], `${url}/stub/logs-window`);
+      const since = new Date(Date.now() - 20 * 60_000).toISOString();
+      const run = await runCli(
+        ["usage", "--verify", "--json", "--since", since, "--until", new Date().toISOString()],
+        {
+          env: cliEnv({
+            AIAND_CONFIG_DIR: dir,
+            AIAND_API_KEY: "sk-test",
+            AIAND_BASE_URL: `${url}/stub/logs-window`,
+          }),
+        },
+      );
+      assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+      const parsed = JSON.parse(run.stdout);
+      for (const row of parsed) {
+        assert.equal(row.status, "ok", `${row.metric}: ${JSON.stringify(row)}`);
+        assert.equal(row.local, windowFixture[row.metric]);
+        assert.equal(row.remote, windowFixture[row.metric], "remote must see in-window rows");
+        assert.equal(row.delta, 0);
+      }
+    });
+  });
+
+  test("#96: windowed mismatch — real in-window divergence exits 1 with deltas", async () => {
+    await withMockGateway(async ({ url }) => {
+      const dir = freshDir("repro-window-drift");
+      // Local store holds the clean rows; the verify fetch sees the drifted
+      // gateway (win-0001 carries 100 extra output tokens) — a real
+      // in-window divergence, not a plant/fetch mirroring.
+      await plantStore(dir, [], `${url}/stub/logs-window`);
+      const since = new Date(Date.now() - 20 * 60_000).toISOString();
+      const run = await runCli(
+        ["usage", "--verify", "--json", "--since", since, "--until", new Date().toISOString()],
+        {
+          env: cliEnv({
+            AIAND_CONFIG_DIR: dir,
+            AIAND_API_KEY: "sk-test",
+            AIAND_BASE_URL: `${url}/stub/logs-window-drift`,
+          }),
+        },
+      );
+      assert.equal(run.code, 1, `expected mismatch exit 1, got ${run.code}: ${run.stdout}`);
+      const parsed = JSON.parse(run.stdout);
+      const tokensRow = parsed.find((r) => r.metric === "tokens");
+      assert.equal(tokensRow.status, "mismatch");
+      assert.equal(tokensRow.delta, -100, "the exact in-window delta is reported");
+      assert.equal(tokensRow.remote, windowFixture.tokens + 100);
+      // Per-metric: requests and cost still reconcile.
+      assert.equal(parsed.find((r) => r.metric === "requests").status, "ok");
+      assert.equal(parsed.find((r) => r.metric === "cost").status, "ok");
+    });
+  });
+
+  test("#96: empty window — 0/0/0 on both sides reconciles clean, exit 0", async () => {
+    await withMockGateway(async ({ url }) => {
+      const dir = freshDir("repro-window-empty");
+      await plantStore(dir, [], `${url}/stub/logs-window`);
+      const run = await runCli(
+        [
+          "usage",
+          "--verify",
+          "--json",
+          "--since",
+          new Date(Date.now() - 60_000).toISOString(),
+          "--until",
+          new Date().toISOString(),
+        ],
+        {
+          env: cliEnv({
+            AIAND_CONFIG_DIR: dir,
+            AIAND_API_KEY: "sk-test",
+            AIAND_BASE_URL: `${url}/stub/logs-window`,
+          }),
+        },
+      );
+      assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+      const parsed = JSON.parse(run.stdout);
+      for (const row of parsed) {
+        assert.equal(row.status, "ok", `${row.metric}`);
+        assert.equal(row.local, 0, `${row.metric} local must be 0`);
+        assert.equal(row.remote, 0, `${row.metric} remote must be 0`);
+        assert.equal(row.delta, 0);
+      }
+    });
+  });
+
+  test("#96: default (no window) verify against the same mock reconciles all rows, exit 0", async () => {
+    await withMockGateway(async ({ url }) => {
+      const dir = freshDir("repro-window-default");
+      await plantStore(dir, [], `${url}/stub/logs-window`);
+      const run = await runCli(["usage", "--verify", "--json"], {
+        env: cliEnv({
+          AIAND_CONFIG_DIR: dir,
+          AIAND_API_KEY: "sk-test",
+          AIAND_BASE_URL: `${url}/stub/logs-window`,
+        }),
+      });
+      assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+      const parsed = JSON.parse(run.stdout);
+      for (const row of parsed) {
+        assert.equal(row.status, "ok", `${row.metric}: ${JSON.stringify(row)}`);
+      }
+      const requests = parsed.find((r) => r.metric === "requests");
+      assert.equal(requests.local, 3, "the default window covers all three mock rows");
+      assert.equal(requests.remote, 3);
+    });
   });
 });

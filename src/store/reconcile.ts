@@ -260,8 +260,21 @@ function localTotals(since: string, until: string): Totals {
   }
 }
 
-function inWindow(entry: LogEntry, since: string, until: string): boolean {
-  return entry.created_at >= since && entry.created_at <= until;
+/**
+ * Window membership for the REMOTE side, by instant rather than text: the
+ * gateway serves `created_at` in its verbatim wire format
+ * (`2026-10-26 05:02:11.844519+00` — space separator, `+00` offset), which
+ * bare string comparison orders before every ISO `T` bound (`' ' < 'T'`) and
+ * V8's Date.parse rejects outright, so explicit windows returned 0/0/0 while
+ * rows sat inside them (OBS-BF-11, #96). The local side filters on the same
+ * timeline through the store's normalized SQL expressions (#86).
+ */
+function inWindow(entry: LogEntry, sinceMs: number, untilMs: number): boolean {
+  const ms = Date.parse(entry.created_at.replace(" ", "T").replace(/\+00$/, "Z"));
+  if (Number.isNaN(ms)) {
+    throw new Error(`Gateway log row has an unparseable created_at: ${entry.created_at}`);
+  }
+  return ms >= sinceMs && ms <= untilMs;
 }
 
 /**
@@ -307,7 +320,11 @@ export async function reconcileUsage(
       range: window.logsRange,
       limit: Number.POSITIVE_INFINITY,
     });
-    remote = sumLogEntries(entries.filter((entry) => inWindow(entry, window.since, window.until)));
+    // Instant bounds, matching inWindow's comparison; identical semantics to
+    // the ISO strings the window was resolved from (inclusive on both ends).
+    const sinceMs = Date.parse(window.since);
+    const untilMs = Date.parse(window.until);
+    remote = sumLogEntries(entries.filter((entry) => inWindow(entry, sinceMs, untilMs)));
   } else if (window.source === "analytics" && window.analyticsRange) {
     const summary = await getSummary(session, window.analyticsRange);
     // The summary's input_tokens already includes cached, same convention.
