@@ -123,6 +123,14 @@ describe("forecast CLI · command", () => {
     r = await cli(["forecast", "bench"]);
     assert.equal(r.code, 0);
     assert.match(r.stdout, /insufficient history for the bench/);
+
+    // #99: with --json the same refusals are machine-readable.
+    r = await cli(["forecast", "bench", "--json"]);
+    assert.equal(r.code, 0);
+    assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });
+    r = await cli(["forecast", "--suggest-budget", "--json"]);
+    assert.equal(r.code, 0);
+    assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });
   });
 
   test("--json emits the projection object; --jq extracts a path", async () => {

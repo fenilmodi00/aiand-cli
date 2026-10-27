@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { openBrowser } from "../cli/browser.js";
-import { err, out, style } from "../cli/output.js";
+import { err, json, out, style } from "../cli/output.js";
 import { assertSafeProfileName } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
@@ -138,12 +138,24 @@ export async function run(argv: string[]): Promise<void> {
   await writeFileAtomic(absolute, html);
 
   if (bool(parsed, "json")) {
-    const { json } = await import("../cli/output.js");
+    // #99: the totals block mirrors the HTML's numbers for the same window,
+    // so report figures are verifiable without scraping the HTML. --no-cost
+    // masks monetary fields exactly like the HTML does.
+    const base = {
+      requests: data.totals.requests,
+      inputTokens: data.totals.inputTokens,
+      outputTokens: data.totals.outputTokens,
+      cachedTokens: data.totals.cachedTokens,
+    };
+    const totals = bool(parsed, "no-cost")
+      ? base
+      : { ...base, costs: data.totals.costs, savings: data.totals.savings };
     json({
       report: absolute,
       bytes: Buffer.byteLength(html),
       sections,
       meta: data.meta,
+      totals,
     });
     return;
   }

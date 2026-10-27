@@ -592,6 +592,18 @@ breaking changes while the command surface settles.
   same flags exactly — and the rendered range label and `--json` range
   metadata lied about it. The three surfaces now agree: the range label
   and metadata equal the requested window.
+- Observability JSON surfaces honored `--json` incompletely (ticket #99):
+  `heatmap --json` now emits machine-readable per-cell data (day, hour, and
+  spend or count per cell, plus metric/currency/peak metadata) instead of
+  silently printing the text render; `forecast bench --json` and
+  `forecast --suggest-budget --json` emit `{ "status": "insufficient-history", ... }`
+  on the degraded path instead of prose (happy paths unchanged); `report
+  --json` includes a `totals` block (requests, tokens, per-currency costs,
+  savings) matching the HTML's numbers for the same window. Money
+  formatting never renders a fabricated `$-0.0000` / `-0.0` for an
+  epsilon-negative accumulation (overview, wrapped, report, heatmap
+  legends) — negatives that round to zero render as plain zero at the
+  formatting boundary.
 
 - Store sync cursor: the outer sync loop advanced by `created_at` alone,
   so any timestamp owning more rows than one page re-served the identical

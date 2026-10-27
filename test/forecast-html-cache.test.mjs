@@ -145,7 +145,8 @@ test("forecast bench: --json shape and the bench flags reach the CLI layer", asy
   // Empty store: every bench run refuses with the insufficient-history copy.
   let r = await cli(["forecast", "bench", "--json", "--until", "2026-03-20T12:00:00Z"], cfg);
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /insufficient history for the bench/);
+  // #99: with --json the refusal is a machine-readable status payload.
+  assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });
 
   // Non-integer / non-positive values fail loudly (the int() + guard path).
   for (const args of [

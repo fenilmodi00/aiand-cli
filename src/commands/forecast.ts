@@ -371,6 +371,10 @@ async function benchCommand(parsed: ReturnType<typeof parse>): Promise<void> {
   });
 
   if (!result.ok) {
+    // #99: automation keys on --json, so the refusal is JSON in that mode.
+    if (bool(parsed, "json")) {
+      return json({ status: "insufficient-history", windows: result.windows });
+    }
     out(`insufficient history for the bench (${result.windows} scoreable windows)`);
     return;
   }
@@ -514,6 +518,11 @@ function suggest(parsed: ReturnType<typeof parse>, now: Date): void {
   const totals = readMonthTotals(now);
   const suggestion = suggestBudget(totals);
   if (!suggestion.ok) {
+    // #99: machine-readable refusal when --json asked for JSON.
+    if (bool(parsed, "json")) {
+      json({ status: "insufficient-history", windows: suggestion.windows });
+      return;
+    }
     out(`insufficient history for P90 suggestion (${suggestion.windows} windows)`);
     return;
   }
