@@ -310,6 +310,7 @@ async function seededMatrixStore(name) {
 }
 
 test("cli: harness matrix renders columns, hides unpriced by default, shows with --unpriced", async () => {
+  // #109: the matrix footer carries the excluded mixed-model spend line.
   const cfg = await seededMatrixStore("matrix-basic");
 
   const { code, stdout } = await runCli(["harness", "matrix", "--no-sync"], {
@@ -379,6 +380,7 @@ test("cli: harness matrix --sort/--top/--format markdown/--show p90", async () =
 });
 
 test("cli: matrix --json carries per-row provenance labels and --jq works", async () => {
+  // #109: excludedMixedSpend rides the JSON payload.
   const cfg = await seededMatrixStore("matrix-json");
 
   const { code, stdout } = await runCli(

@@ -82,6 +82,7 @@ describe("aiand key export", () => {
     assert.match(stderr, /Verbs: export/);
   });
 
+  // #110: the missing-verb hint names a copy-pasteable example.
   test("missing verb errors, naming the verb and a copy-pasteable example", async () => {
     const { code, stderr } = await cli(["key"]);
     assert.equal(code, 1);

@@ -183,6 +183,7 @@ describe("getCatalog cache", () => {
     );
   });
 
+  // #111: saveCatalogCache writes the file readers price offline savings from.
   test("saveCatalogCache writes the file readers price offline savings from", async () => {
     rmSync(join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"), { force: true });
     await catalog.saveCatalogCache("https://api.aiand.com", fixtureModels);

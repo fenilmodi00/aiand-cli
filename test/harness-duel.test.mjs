@@ -145,6 +145,7 @@ describe("pair parsing", () => {
     );
   });
 
+  // #107: a --pair without harness= falls back to the default layout.
   test("a --pair without harness= falls back to the default layout", () => {
     assert.deepEqual(parsePair("model=test/model", []), { harness: "omp", model: "test/model" });
   });
