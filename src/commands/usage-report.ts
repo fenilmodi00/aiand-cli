@@ -78,7 +78,7 @@ export const SORT_COLUMNS = ["period", "requests", "input", "output", "cached", 
 type SortColumn = (typeof SORT_COLUMNS)[number];
 
 /** A verbatim store row: exactly the columns the report aggregates over. */
-export type RequestRow = {
+type RequestRow = {
   id: string;
   model: string;
   api_key: string | null;
@@ -315,18 +315,6 @@ type ReportFilters = {
   agents: string[];
   models: string[];
 };
-
-/**
- * The one store read + filter every section (and the `--vs-list` comparison)
- * shares; exported for the sibling reports downstream tickets build on the
- * same engine. One read, no re-query.
- */
-export function loadRequestRows(
-  filters: ReportFilters,
-  window: { sinceMs: number | null; untilMs: number | null },
-): RequestRow[] {
-  return filterRows(readRequests(window), filters);
-}
 
 function filterRows<T extends RequestRow>(rows: readonly T[], filters: ReportFilters): T[] {
   const agentWanted = filters.agents.length > 0 ? new Set(filters.agents) : null;

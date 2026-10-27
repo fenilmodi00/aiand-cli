@@ -478,43 +478,6 @@ describe("usage report surface: guards and failure paths", () => {
     assert.equal(run.code, 1);
     assert.match(run.stderr, /--by day does not match --sections weekly/);
   });
-
-  test("--vs-list with an invalid --timezone refuses before any store read", async () => {
-    const dir = freshDir("vslist-tz");
-    const run = await runCli(["usage", "--vs-list", "--timezone", "Mars/Olympus"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 1);
-    assert.match(run.stderr, /Invalid --timezone/);
-  });
-
-  test("--vs-list --no-sync renders the empty-store message and skips the network", async () => {
-    const dir = freshDir("vslist-empty");
-    const run = await runCli(["usage", "--vs-list", "--no-sync"], { env: reportEnv(dir) });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /No matching requests\./);
-    assert.match(run.stderr, /sync skipped/);
-  });
-
-  test("--vs-list with rows renders the comparison table and totals line", async () => {
-    const dir = freshDir("vslist-rows");
-    // glm-5.3 is in the bundled window/pricing fixtures: billed cost exists,
-    // the equivalent may be unpriced — the table renders either way.
-    await seedStore(dir, [
-      row("2026-10-20T10:00:00.000Z", {
-        id: "v1",
-        cost: 0.02,
-        input: 1_000_000,
-        output: 1_000_000,
-        cached: 0,
-      }),
-    ]);
-    const run = await runCli(["usage", "--vs-list", "--no-sync"], { env: reportEnv(dir) });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /List-price comparison/);
-    assert.match(run.stdout, /zai-org\/glm-5\.3/);
-    assert.match(run.stdout, /total billed/);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -730,9 +693,9 @@ describe("usage --import-ccusage: table output and flag guards", () => {
     assert.match(run.stderr, /--include-imported is a report flag/);
   });
 
-  test("--import-ccusage with --metrics / --range / --vs-list refuses (view flags on the import)", async () => {
+  test("--import-ccusage with --metrics / --range refuses (view flags on the import)", async () => {
     const dir = freshDir("import-guard-views");
-    for (const extra of [["--metrics"], ["--range", "7days"], ["--vs-list"]]) {
+    for (const extra of [["--metrics"], ["--range", "7days"]]) {
       const run = await runCli(["usage", "--import-ccusage", "-", ...extra], {
         env: reportEnv(dir),
         input: JSON.stringify(PAYLOAD),

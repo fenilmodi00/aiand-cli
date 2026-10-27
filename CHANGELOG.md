@@ -8,6 +8,11 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Removed
+- The vendor list-price comparison (`usage --vs-list`, the bundled vendor
+  list-price snapshot module, the list-prices comparison module, the
+  `--prices-file` flag, and the `config set prices.<model>.input|output|cacheRead`
+  overrides with their sanitizer). It compared spend against third-party list
+  prices the user never pays — the gateway catalog is the only pricing source.
 - The peak/off-peak cost split (`usage --sections peak` and
   `usage --show-windows`) along with its window-table module and provenance
   entries. The aiand gateway does not bill by peak/off-peak windows, so the

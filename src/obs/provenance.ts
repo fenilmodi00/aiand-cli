@@ -207,26 +207,6 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "missingDays",
     provenance: estimated("per-day row presence in the local store over the requested window"),
   },
-  // vs-list (vendor list-price equivalent, ticket #81)
-  {
-    report: "usage",
-    field: "vs-list.billed",
-    provenance: gatewayBilled("sum of the gateway-computed per-request cost; never recomputed"),
-  },
-  {
-    report: "usage",
-    field: "vs-list.equivalent",
-    provenance: estimated(
-      "vendor list-price snapshot (<name>@<date>, or user overrides) applied to stored token counts",
-    ),
-  },
-  {
-    report: "usage",
-    field: "vs-list.savings",
-    provenance: estimated(
-      "list-price equivalent minus gateway-billed cost; both sides priced only",
-    ),
-  },
   // forecast (burn-rate v1 + budgets, ticket #74)
   {
     report: "forecast",

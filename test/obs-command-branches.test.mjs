@@ -459,15 +459,6 @@ test("usage: by-units, sections, filters, sort, formats, and flag errors", async
   assert.equal(none.code, 0, `${none.stdout}${none.stderr}`);
 });
 
-test("usage: --vs-list vendor equivalent renders; mixed currencies stay per-currency", async () => {
-  const cfg = cfgDir("usage-vslist");
-  await seedStore(cfg, rows());
-  const out = await runCli(["usage", "--no-sync", "--vs-list"], {
-    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
-  });
-  assert.equal(out.code, 0, `${out.stdout}${out.stderr}`);
-});
-
 test("orgs + models: error paths and help are clean", async () => {
   const cfg = cfgDir("orgs-models");
   const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
@@ -562,136 +553,9 @@ test("usage: --import-ccusage flag-guards reject bad combinations", async () => 
   // --include-imported alongside the import itself is a flag error.
   const both = await runCli(["usage", "--import-ccusage", "-", "--include-imported"], base);
   assert.notEqual(both.code, 0);
-  // --vs-list / --metrics / --range with the import is a flag error.
-  const mixed = await runCli(["usage", "--import-ccusage", "-", "--vs-list"], base);
+  // --metrics / --range with the import is a flag error.
+  const mixed = await runCli(["usage", "--import-ccusage", "-", "--metrics"], base);
   assert.notEqual(mixed.code, 0);
-});
-
-// ---------------------------------------------------------------------------
-// price-snapshot parse guards (pure)
-// ---------------------------------------------------------------------------
-
-test("parseSnapshot: refuses bad shapes, parses good ones; resolveAlias maps", async () => {
-  const { parseSnapshot, resolveAlias, BUNDLED_SNAPSHOT } = await import(
-    "../dist/pricing/price-snapshot.js"
-  );
-  assert.throws(() => parseSnapshot(null, "x"), /not a JSON object/);
-  assert.throws(() => parseSnapshot("[]", "x"), /not a JSON object|JSON/);
-  assert.throws(() => parseSnapshot({ format: 2 }, "x"), /format must be 1/);
-  assert.throws(() => parseSnapshot({ format: 1, date: "october" }, "x"), /date must be/);
-  assert.throws(
-    () => parseSnapshot({ format: 1, date: "2026-10-20", sources: "no" }, "x"),
-    /sources must be an array/,
-  );
-  assert.throws(
-    () => parseSnapshot({ format: 1, date: "2026-10-20", sources: [{ name: 1 }] }, "x"),
-    /source entries need/,
-  );
-  const good = parseSnapshot(
-    {
-      format: 1,
-      date: "2026-10-20",
-      sources: [{ name: "s", url: "https://x" }],
-      aliases: [{ alias: "a/b", vendorId: "b", source: "doc" }],
-      models: { b: { input: 1, output: 2, cacheRead: null, source: "s" } },
-    },
-    "test",
-  );
-  assert.equal(good.sources.length, 1);
-  assert.equal(resolveAlias(good, "a/b"), "b");
-  assert.equal(resolveAlias(good, "zzz"), "zzz");
-  // The bundled snapshot resolves at least one alias.
-  const anyAlias = BUNDDED_SAFE();
-  assert.ok(anyAlias !== undefined);
-  function BUNDDED_SAFE() {
-    return BUNDLED_SNAPSHOT.aliases[0];
-  }
-  // Tier parsing: good tiers round-trip, bad tiers refuse per field.
-  const tiered = parseSnapshot(
-    {
-      format: 1,
-      date: "2026-10-20",
-      models: {
-        b: {
-          input: 1,
-          output: 2,
-          cacheRead: null,
-          source: "s",
-          tiers: [{ minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null }],
-        },
-      },
-    },
-    "test",
-  );
-  assert.equal(tiered.models.b.tiers.length, 1);
-  const tier = tiered.models.b.tiers[0];
-  assert.deepEqual(tier, { minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null });
-  assert.throws(
-    () =>
-      parseSnapshot(
-        {
-          format: 1,
-          date: "2026-10-20",
-          models: { b: { input: 1, output: 2, source: "s", tiers: "nope" } },
-        },
-        "test",
-      ),
-    /tiers must be an array/,
-  );
-  assert.throws(
-    () =>
-      parseSnapshot(
-        {
-          format: 1,
-          date: "2026-10-20",
-          models: {
-            b: {
-              input: 1,
-              output: 2,
-              source: "s",
-              tiers: [{ minInput: -1, maxInput: null, input: 1, output: 1, cacheRead: null }],
-            },
-          },
-        },
-        "test",
-      ),
-    /tier.minInput/,
-  );
-  assert.throws(
-    () =>
-      parseSnapshot(
-        {
-          format: 1,
-          date: "2026-10-20",
-          models: {
-            b: {
-              input: 1,
-              output: 2,
-              source: "s",
-              tiers: [{ minInput: 0, maxInput: null, input: "x", output: 1, cacheRead: null }],
-            },
-          },
-        },
-        "test",
-      ),
-    /tier input\/output prices must be numbers/,
-  );
-  assert.throws(
-    () =>
-      parseSnapshot(
-        {
-          format: 1,
-          date: "2026-10-20",
-          models: { b: { input: 1, output: 2, source: "s", cacheRead: "x" } },
-        },
-        "test",
-      ),
-    /cacheRead must be a number or null/,
-  );
-  // Every bundled alias resolves to its vendor id, and unknowns pass through.
-  for (const alias of BUNDLED_SNAPSHOT.aliases) {
-    assert.equal(resolveAlias(BUNDLED_SNAPSHOT, alias.alias), alias.vendorId);
-  }
 });
 
 test("usage: --by session renders the sessionization annotation; mixed currencies stay apart", async () => {

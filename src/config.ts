@@ -41,27 +41,12 @@ export type Config = {
    */
   budget?: BudgetConfig;
   /**
-   * User price overrides (ticket #81): `prices.<gateway model id>` records
-   * per-1M-token vendor list prices (`input`, `output`, `cacheRead`) that the
-   * `usage --vs-list` comparison prefers over the snapshot. Absent fields
-   * fall back to the snapshot; models with neither are reported `unpriced`
-   * (never-guess). Values are finite non-negative numbers.
-   */
-  prices?: Record<string, PriceOverride>;
-  /**
    * MCP server settings (ticket #70), stored under the `mcp` key of
    * config.json. `realProjectNames` (default false) lets the `aiand mcp`
    * tools expose real harness/project names to callers; the default
    * pseudonymizes them (`project-a1b2`) — the CodeBurn privacy posture.
    */
   mcp?: McpConfig;
-};
-
-/** One model's user price override (the `prices` section of config.json). */
-export type PriceOverride = {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
 };
 
 /** The `mcp` section of config.json (see Config.mcp). */
@@ -162,30 +147,6 @@ function sanitizeBudget(raw: unknown): BudgetConfig | undefined {
 }
 
 /**
- * The stored `prices` section (ticket #81), sanitized: only well-formed model
- * keys with finite non-negative input/output/cacheRead numbers survive — a
- * hand-edited or malformed value degrades to absent rather than poisoning
- * the --vs-list math.
- */
-function sanitizePrices(raw: unknown): Record<string, PriceOverride> | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const prices: Record<string, PriceOverride> = {};
-  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!model || model === "__proto__" || typeof value !== "object" || value === null) continue;
-    const entry = value as Record<string, unknown>;
-    const override: PriceOverride = {};
-    for (const field of ["input", "output", "cacheRead"] as const) {
-      const number = entry[field];
-      if (typeof number === "number" && Number.isFinite(number) && number >= 0) {
-        override[field] = number;
-      }
-    }
-    if (Object.keys(override).length > 0) prices[model] = override;
-  }
-  return Object.keys(prices).length > 0 ? prices : undefined;
-}
-
-/**
  * The stored `mcp` section (ticket #70), sanitized: only a real boolean
  * `realProjectNames` survives — a hand-edited garbage value degrades to the
  * pseudonymizing default rather than leaking names.
@@ -199,13 +160,11 @@ function sanitizeMcp(raw: unknown): McpConfig | undefined {
 export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(configPath());
   const budget = sanitizeBudget(raw?.budget);
-  const prices = sanitizePrices(raw?.prices);
   const mcp = sanitizeMcp(raw?.mcp);
   return {
     profile: raw?.profile ?? "default",
     profiles: raw?.profiles ?? { default: { ...DEFAULT_PROFILE } },
     ...(budget ? { budget } : {}),
-    ...(prices ? { prices } : {}),
     ...(mcp ? { mcp } : {}),
   };
 }

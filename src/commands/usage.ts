@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { basename } from "node:path";
 import {
   ANALYTICS_RANGES,
   type AnalyticsMetric,
@@ -15,16 +13,12 @@ import { importCcusage, parseCcusagePayload, readImportPayload } from "../obs/cc
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
   describeProvenance,
-  estimated,
   formatLabel,
-  gatewayBilled,
   PROVENANCE_CATALOG,
   type ProvenanceEntry,
   provenanceAudit,
 } from "../obs/provenance.js";
-import { computeVsList, loadPriceOverrides, readSnapshotFile } from "../pricing/list-prices.js";
-import { BUNDLED_SNAPSHOT } from "../pricing/price-snapshot.js";
-import { computeCoverage, syncWarningLine } from "../store/coverage.js";
+import { syncWarningLine } from "../store/coverage.js";
 import { noSyncRequested } from "../store/index.js";
 import { reconcileUsage, VERIFY_RANGES, type VerifyRow } from "../store/reconcile.js";
 import { runPreReadSync } from "../store/sync.js";
@@ -34,7 +28,6 @@ import {
   type BlockSection,
   buildReport,
   isValidTimezone,
-  loadRequestRows,
   parseJqPath,
   parseLast,
   parseSince,
@@ -63,7 +56,6 @@ Usage
   aiand usage --metrics              full metric breakdown (legacy view)
   aiand usage --audit                provenance of every reported number
   aiand usage --verify               reconciliation gate vs the gateway
-  aiand usage --vs-list              vendor list-price equivalent + ai& savings
   aiand usage --import-ccusage <f|-> import ccusage --json output (offline)
 
 Report options (local store, auto-synced before read; --no-sync / AIAND_NO_SYNC=1
@@ -140,23 +132,7 @@ Legacy gateway options
 Percentages compare the window against the one immediately before it.
 Cost is always the gateway-billed amount in the request's currency (mixed
 currencies are shown per currency, never summed) and is never recomputed
-from price tables; tokens follow the gateway convention: input includes cached.
-
-List-price comparison (--vs-list; feature catalog B8)
-  --vs-list           recompute stored tokens at vendor list prices and set
-                      the equivalent beside the gateway-billed cost;
-                      savings = equivalent - billed, shown only where BOTH
-                      sides are priced (partial rows say so)
-  --prices-file <p>   use a snapshot file instead of the bundled one
-                      (format 1; schema in src/pricing/price-snapshot.ts)
-  --config prices.<model>.input|.output|.cacheRead <n>
-                      per-model user overrides, USD per 1M tokens; labeled
-                      estimated(user-override) in the output
-  Never-guess: exact vendor-id match only (through the snapshot alias map);
-  a model without an exact price is unpriced — never $0.00, never
-  interpolated. The equivalent is always an estimate
-  (estimated(vendor-list-price <snapshot>@<date>)); the gateway-billed cost
-  stays the billing-grade number.`;
+from price tables; tokens follow the gateway convention: input includes cached.`;
 
 /** Report-only flags that select the local-store report path. */
 const REPORT_STRING_FLAGS = ["by", "sections", "last", "timezone", "sort", "order", "jq", "format"];
@@ -203,8 +179,6 @@ export async function run(argv: string[]): Promise<void> {
     compact: { type: "boolean", default: false },
     jq: { type: "string" },
     format: { type: "string" },
-    "vs-list": { type: "boolean", default: false },
-    "prices-file": { type: "string" },
     "import-ccusage": { type: "string" },
     "include-imported": { type: "boolean", default: false },
   });
@@ -217,7 +191,7 @@ export async function run(argv: string[]): Promise<void> {
         "--include-imported is a report flag: import first, then run the report with it.",
       );
     }
-    if (bool(parsed, "metrics") || str(parsed, "range") !== undefined || bool(parsed, "vs-list")) {
+    if (bool(parsed, "metrics") || str(parsed, "range") !== undefined) {
       throw new CliError(
         "--import-ccusage only imports data; run the report separately afterwards.",
       );
@@ -238,15 +212,6 @@ export async function run(argv: string[]): Promise<void> {
       throw new CliError("--verify cannot be combined with --metrics.");
     }
     return runVerify(parsed);
-  }
-
-  if (bool(parsed, "vs-list")) {
-    if (bool(parsed, "metrics") || str(parsed, "range") !== undefined) {
-      throw new CliError(
-        "--vs-list is a local-store view and cannot be combined with --metrics/--range.",
-      );
-    }
-    return runVsList(parsed);
   }
 
   const report = wantsReport(parsed);
@@ -632,169 +597,4 @@ async function runReport(parsed: Parsed): Promise<void> {
     sections,
     unit: reportUnit,
   });
-}
-
-// ---------------------------------------------------------------------------
-// --vs-list: vendor list-price equivalent (feature catalog B8, ticket #81)
-// ---------------------------------------------------------------------------
-
-const USD = "usd";
-
-function formatMoney(value: number): string {
-  return value.toFixed(6);
-}
-
-async function runVsList(parsed: Parsed): Promise<void> {
-  if (str(parsed, "format") !== undefined) {
-    throw new CliError(
-      "--vs-list supports --json (and --jq) output only; --format csv is not defined for it.",
-    );
-  }
-  const timezone = str(parsed, "timezone") ?? "UTC";
-  if (!isValidTimezone(timezone)) {
-    throw new CliError(`Invalid --timezone value: ${timezone}.`, {
-      hint: "Use an IANA timezone, e.g. America/New_York or Europe/Berlin.",
-    });
-  }
-
-  const since = str(parsed, "since");
-  const until = str(parsed, "until");
-  const sinceMs = since === undefined ? null : parseSince(since, timezone);
-  const untilMs = until === undefined ? null : parseUntil(until, timezone);
-  const last = str(parsed, "last");
-  const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
-  assertWindowOrder(sinceMs, untilMs);
-
-  const pricesFile = str(parsed, "prices-file");
-  const snapshot = pricesFile
-    ? readSnapshotFile(pricesFile, basename(pricesFile), (p) => readFileSync(p, "utf8"))
-    : BUNDLED_SNAPSHOT;
-  const overrides = loadPriceOverrides();
-
-  // One sync, one store read — the same engine every section shares.
-  // #87: validate the profile even when sync is skipped or fails open.
-  const profileName = str(parsed, "profile");
-  if (profileName !== undefined) assertSafeProfileName(profileName);
-  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
-
-  const rows = loadRequestRows(
-    {
-      agents: [...list(parsed, "agent"), ...list(parsed, "harness")],
-      models: list(parsed, "model"),
-    },
-    {
-      sinceMs:
-        sinceMs !== null && lastSinceMs !== null
-          ? Math.max(sinceMs, lastSinceMs)
-          : (sinceMs ?? lastSinceMs),
-      untilMs,
-    },
-  ).map((row) => ({
-    model: row.model,
-    input_tokens: row.input_tokens,
-    output_tokens: row.output_tokens,
-    cached_tokens: row.cached_tokens,
-    cost_value: row.cost_value,
-    currency: row.currency,
-  }));
-  const result = computeVsList(rows, snapshot, overrides);
-
-  const syncWarning = syncWarningLine(
-    computeCoverage("30days", { now: new Date(), sync: sync ?? undefined }),
-  );
-  if (syncWarning) err(style.yellow(`Warning: ${syncWarning}`));
-
-  const windowSince = sinceMs ?? lastSinceMs;
-  const payload = {
-    meta: {
-      snapshot_name: result.snapshotName,
-      snapshot_date: result.snapshotDate,
-      window: {
-        since: windowSince === null ? null : new Date(windowSince).toISOString(),
-        until: untilMs === null ? null : new Date(untilMs).toISOString(),
-        timezone,
-      },
-      provenance: {
-        billed: formatLabel(gatewayBilled("sum of the gateway-computed per-request cost")),
-        equivalent: formatLabel(
-          estimated(
-            `vendor-list-price ${result.snapshotName}@${result.snapshotDate} applied to stored tokens`,
-          ),
-        ),
-        savings: formatLabel(estimated("list-price equivalent minus gateway-billed cost")),
-      },
-    },
-    rows: result.rows,
-    totals: result.totals,
-  };
-  const filter = str(parsed, "jq");
-  if (filter !== undefined || bool(parsed, "json")) {
-    if (filter !== undefined) return json(applyJqPath(payload, parseJqPath(filter)));
-    return json(payload);
-  }
-
-  heading("List-price comparison");
-  out(
-    style.dim(
-      `snapshot ${result.snapshotName}@${result.snapshotDate}` +
-        `  ·  equivalent = estimated(vendor-list-price)` +
-        `  ·  billed = gateway-billed`,
-    ),
-  );
-  out();
-  if (result.rows.length === 0) {
-    out(style.dim("No matching requests."));
-    return;
-  }
-  table(
-    [
-      ...result.rows.map((row) => ({
-        model: row.model,
-        requests: row.requests,
-        input: row.input_tokens,
-        output: row.output_tokens,
-        cached: row.cached_tokens,
-        billed: row.billed === null ? "-" : `${USD} ${formatMoney(row.billed)}`,
-        equivalent: row.equivalent === null ? "unpriced" : `${USD} ${formatMoney(row.equivalent)}`,
-        savings:
-          row.savings === null
-            ? row.status === "partial"
-              ? "partial"
-              : "-"
-            : `${USD} ${formatMoney(row.savings)}`,
-        status: row.status,
-      })),
-    ],
-    [
-      { header: "model", value: (r) => r.model },
-      { header: "requests", value: (r) => num(r.requests), align: "right" },
-      { header: "input tok", value: (r) => num(r.input), align: "right" },
-      { header: "output tok", value: (r) => num(r.output), align: "right" },
-      { header: "cached tok", value: (r) => num(r.cached), align: "right" },
-      { header: "billed", value: (r) => r.billed, align: "right" },
-      { header: "equivalent", value: (r) => r.equivalent, align: "right" },
-      { header: "savings", value: (r) => r.savings, align: "right" },
-      { header: "status", value: (r) => r.status },
-    ],
-  );
-  const totals = result.totals;
-  out();
-  out(
-    style.dim(
-      `total billed ${totals.billed === null ? "-" : formatMoney(totals.billed)} ${USD}` +
-        `  ·  equivalent ${totals.equivalent === null ? "unpriced" : formatMoney(totals.equivalent)} ${USD}` +
-        `  ·  savings ${totals.savings === null ? "-" : formatMoney(totals.savings)} ${USD}` +
-        " (savings only where both sides are priced)",
-    ),
-  );
-  for (const row of result.rows) {
-    if (row.reason) out(style.dim(`unpriced/partial (${row.model}): ${row.reason}`));
-  }
-  if (Object.keys(overrides).length > 0) {
-    out(
-      style.dim(
-        `user overrides applied: ${Object.keys(overrides).join(", ")} (estimated(user-override))`,
-      ),
-    );
-  }
 }

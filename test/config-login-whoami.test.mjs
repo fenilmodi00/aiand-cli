@@ -224,37 +224,6 @@ describe("config", () => {
     assert.deepEqual(budget.harness, {});
   });
 
-  test("price overrides: set, validate, and reject bad numbers", async () => {
-    const { env } = fresh();
-    const set = await runCli(["config", "set", "prices.vendor/model.input", "1.25", "--json"], {
-      env,
-    });
-    assert.equal(set.code, 0, set.stderr);
-    assert.deepEqual(JSON.parse(set.stdout), {
-      key: "prices.vendor/model.input",
-      value: 1.25,
-      model: "vendor/model",
-      field: "input",
-    });
-
-    const text = await runCli(["config", "set", "prices.vendor/model.cacheRead", "0.5"], { env });
-    assert.equal(text.code, 0, text.stderr);
-    assert.match(text.stdout, /USD per 1M tokens/);
-
-    // Leading space keeps the negative number a positional, not an option.
-    const negative = await runCli(["config", "set", "prices.vendor/model.output", " -1"], { env });
-    assert.equal(negative.code, 1, negative.stderr);
-    assert.match(negative.stderr, /non-negative number/);
-
-    const notANumber = await runCli(["config", "set", "prices.vendor/model.output", "x"], { env });
-    assert.equal(notANumber.code, 1, notANumber.stderr);
-    assert.match(notANumber.stderr, /non-negative number/);
-
-    const proto = await runCli(["config", "set", "prices.__proto__.input", "1"], { env });
-    assert.equal(proto.code, 1, proto.stderr);
-    assert.match(proto.stderr, /not a settable price key/);
-  });
-
   test("budget: monthly, per-harness, and warn-pct", async () => {
     const { env } = fresh();
     const monthly = await runCli(["config", "set", "budget.monthly", "100", "--json"], { env });
