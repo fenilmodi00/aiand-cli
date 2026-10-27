@@ -7,7 +7,22 @@ import { getLogsPaged, LOG_PAGE_MAX, type LogEntry } from "../api/logs.js";
 import { ApiError } from "../cli/errors.js";
 import { configDir, PRIVATE_DIR_MODE, withFileLock } from "../fsutil.js";
 import { MIGRATIONS } from "./migrations/index.js";
-import { parseWireTimestamp } from "./reconcile.js";
+
+/**
+ * Parse a gateway `created_at` into epoch ms. The gateway serves its verbatim
+ * wire format (`2026-10-26 05:02:11.844519+00` — space separator, `+00`
+ * offset), which V8's Date.parse rejects and which bare text comparison
+ * misorders against ISO (`' ' < 'T'`). Inlined here rather than imported from
+ * ./reconcile.js to keep the store free of a store/index <-> reconcile
+ * import cycle (reconcile imports this module's public surface).
+ */
+function parseWireTimestamp(created_at: string): number {
+  const ms = Date.parse(created_at.replace(" ", "T").replace(/\+00$/, "Z"));
+  if (Number.isNaN(ms)) {
+    throw new Error(`Gateway log row has an unparseable created_at: ${created_at}`);
+  }
+  return ms;
+}
 
 /**
  * The local request store: a metadata-only SQLite mirror of the gateway's
@@ -407,8 +422,7 @@ function watermarkOf(db: DatabaseSync): { createdAt: string; id: string } | null
     // format (`2026-10-01 15:20:…+00`) with ISO — a text ORDER BY puts
     // `' '` before `'T'` and picks a same-day ISO row over a newer wire row.
     .prepare(
-      `SELECT created_at, id FROM requests ` +
-        `ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
+      `SELECT created_at, id FROM requests ` + `ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
     )
     .get() as Record<string, unknown> | undefined;
   const createdAt = row?.created_at;
@@ -543,9 +557,7 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
     // The incremental stop floor: watermark minus the overlap window. Only
     // set when the store already holds data; a fresh sync drains the range.
     const existing = watermarkOf(db);
-    const floorMs = existing
-      ? parseWireTimestamp(existing.createdAt) - OVERLAP_MS
-      : undefined;
+    const floorMs = existing ? parseWireTimestamp(existing.createdAt) - OVERLAP_MS : undefined;
     let previousAfter: string | undefined;
     let previousAfterId: string | undefined;
     for (;;) {
