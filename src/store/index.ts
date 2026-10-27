@@ -128,7 +128,7 @@ export function resetStore(): ResetResult | { ok: false; error: string } {
  * timeline; stored rows stay verbatim.
  */
 const normalizedExpr = (col = "created_at"): string => {
-  const g = `replace(trim(${col}),'+00','Z')`;
+  const g = `replace(replace(trim(${col}),' ','T'),'+00','Z')`;
   return (
     `printf('%s%02d:%02d:%sZ', substr(${g},1,11), ` +
     `CAST(substr(${g},12,2) AS INT), CAST(substr(${g},15,2) AS INT), ` +
@@ -403,7 +403,13 @@ function setMeta(db: DatabaseSync, key: string, value: string): void {
 
 function watermarkOf(db: DatabaseSync): { createdAt: string; id: string } | null {
   const row = db
-    .prepare("SELECT created_at, id FROM requests ORDER BY created_at DESC, id DESC LIMIT 1")
+    // Newest by INSTANT, not text: stored rows are verbatim and mix wire
+    // format (`2026-10-01 15:20:…+00`) with ISO — a text ORDER BY puts
+    // `' '` before `'T'` and picks a same-day ISO row over a newer wire row.
+    .prepare(
+      `SELECT created_at, id FROM requests ` +
+        `ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
+    )
     .get() as Record<string, unknown> | undefined;
   const createdAt = row?.created_at;
   const id = row?.id;

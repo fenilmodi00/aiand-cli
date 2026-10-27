@@ -49,6 +49,20 @@ function entries(count, start = 1) {
   return Array.from({ length: count }, (_, i) => entry(start + i));
 }
 
+/**
+ * Rewrite `created_at` into the gateway's verbatim wire format
+ * (`2026-10-01 10:01:00.000000+00` — space separator, `+00` offset), the
+ * shape the real gateway serves (see mock-gateway's logs-window rows).
+ * Sync tests must cover this format: a bare-text comparison misorders it
+ * against ISO bounds (`' ' < 'T'`), which was the early-stop bug #94 fixed.
+ */
+function wire(row) {
+  return {
+    ...row,
+    created_at: row.created_at.replace("T", " ").replace(/(\.\d{3})Z$/, "$1000+00"),
+  };
+}
+
 function fakeSession(url) {
   return {
     profile: { name: "test", authUrl: url, apiUrl: url },
@@ -163,14 +177,28 @@ describe("#94 sync engine vs pinned /logs semantics", () => {
         if (!first.ok) return;
         assert.equal(first.inserted, 250);
 
-        for (let i = 0; i < 2; i += 1) {
-          const again = await mod.syncStore(fakeSession(url));
-          assert.equal(again.ok, true);
-          if (!again.ok) return;
-          assert.equal(again.inserted, 0, "quiescent sync inserts nothing");
-          assert.equal(again.pages, 1, `no-op sync round ${i + 1} must stop after one page`);
-        }
-        assert.equal(mod.getStoreInfo().rows, 250);
+        // New same-day traffic lands in WIRE format (space separator, +00),
+        // newer than the watermark. Under a bare-text early-stop comparison
+        // `'2026-10-01 …' <= '2026-10-01T…'` is true for every same-day row
+        // (`' ' < 'T'`), so the drain would stop at page 1 and skip these —
+        // this test pins the instant-based comparison.
+        const burst = entries(120, 300).map(wire); // same day, 14:39 … newer
+        setRows([...rows, ...burst]);
+        const second = await mod.syncStore(fakeSession(url));
+        assert.equal(second.ok, true);
+        if (!second.ok) return;
+        // The burst is 120 rows: page 1 drains the newest 100, page 2 the
+        // remaining 20 (riding with the 100 re-served ISO rows, 0 net there).
+        assert.equal(second.inserted, 120, "wire-format same-day burst must be fully drained");
+        assert.equal(second.watermark.id, burst.at(-1).id);
+        assert.equal(mod.getStoreInfo().rows, 370);
+
+        // And back to quiescent: one page, nothing inserted.
+        const again = await mod.syncStore(fakeSession(url));
+        assert.equal(again.ok, true);
+        if (!again.ok) return;
+        assert.equal(again.inserted, 0, "quiescent sync inserts nothing");
+        assert.equal(again.pages, 1, "quiescent sync must stop after one page");
       });
     });
   });
@@ -203,6 +231,86 @@ describe("#94 sync engine vs pinned /logs semantics", () => {
         assert.equal(mod.getStoreInfo().rows, 150);
       });
     });
+  });
+
+  test("after_id tie-breaking at the anchor timestamp (pinned semantics)", async () => {
+    const mod = await store();
+    const dir = join(box.dir, "tie-break");
+    mkdirSync(dir, { recursive: true });
+    // Three rows share one timestamp; ids order them log-0001 < log-0002 < log-0003.
+    const tied = entries(3).map((e) => ({ ...e, created_at: "2026-10-01T10:00:00.000Z" }));
+    tied[0].id = "log-0001";
+    tied[1].id = "log-0002";
+    tied[2].id = "log-0003";
+
+    await withPinnedGateway(async (url, setRows) => {
+      setRows(tied);
+      await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+        // Ties serve newest-first by id (log-0003 first). after_id = the tie's
+        // first-served (highest) id → returns the remaining siblings…
+        const first = await fetch(
+          `${url}/logs?after=2026-10-01T10%3A00%3A00.000Z&after_id=log-0003`,
+        ).then((r) => r.json());
+        assert.deepEqual(
+          first.data.map((e) => e.id),
+          ["log-0002", "log-0001"],
+        );
+        // …after_id = the tie's last-served (lowest) id → excludes all of them.
+        const last = await fetch(
+          `${url}/logs?after=2026-10-01T10%3A00%3A00.000Z&after_id=log-0001`,
+        ).then((r) => r.json());
+        assert.deepEqual(last.data, []);
+      });
+    });
+  });
+
+  test("paired-param 400 fires only when exactly one of after/after_id is sent", async () => {
+    const dir = join(box.dir, "pair-400");
+    mkdirSync(dir, { recursive: true });
+
+    await withPinnedGateway(async (url) => {
+      // Exactly one param → the real contract's 400…
+      const one = await fetch(`${url}/logs?after=2026-10-01T10%3A00%3A00.000Z`);
+      assert.equal(one.status, 400);
+      assert.equal((await one.json()).error, "after and after_id must be sent together");
+      // …both together → 200 (no row matches an empty store, but the shape holds).
+      const both = await fetch(
+        `${url}/logs?after=2026-10-01T10%3A00%3A00.000Z&after_id=log-0001`,
+      );
+      assert.equal(both.status, 200);
+      const body = await both.json();
+      assert.deepEqual(body, { data: [], has_more: false, next_after: null, next_after_id: null });
+    });
+
+    // The same 400 driven end-to-end through the sync engine: a lone `after`
+    // cursor surfaces as ok:false + recorded last_sync_error, not a throw.
+    const mod = await store();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      if (String(input).includes("/logs")) {
+        return new Response(
+          JSON.stringify({ error: "after and after_id must be sent together" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return realFetch(input, init);
+    };
+    try {
+      await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+        const result = await mod.syncStore(fakeSession("http://127.0.0.1:9"));
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.match(result.error, /after and after_id must be sent together/);
+        const meta = await readRows(
+          dir,
+          "SELECT value FROM sync_meta WHERE key = 'last_sync_error'",
+        );
+        assert.equal(meta.length, 1);
+        assert.match(meta[0].value, /after and after_id must be sent together/);
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   test("stuck-cursor guard still fires when the gateway re-serves the same top page", async () => {

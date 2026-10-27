@@ -230,12 +230,13 @@ const server = createServer((req, res) => {
       } catch {
         rows = [];
       }
+      // Newest-first by INSTANT, not text: wire-format rows (`… …+00`, space
+      // separator) must order above same-day ISO rows, exactly as the real
+      // gateway orders them — a text sort puts `' '` before `'T'` and
+      // misorders the burst that pins the #94 early-stop fix.
+      const instant = (e) => Date.parse(e.created_at.replace(" ", "T").replace(/\+00$/, "Z"));
       const newestFirst = [...rows].sort((a, b) =>
-        a.created_at < b.created_at
-          ? 1
-          : a.created_at > b.created_at
-            ? -1
-            : b.id.localeCompare(a.id),
+        instant(a) < instant(b) ? 1 : instant(a) > instant(b) ? -1 : b.id.localeCompare(a.id),
       );
       const after = url.searchParams.get("after");
       const afterId = url.searchParams.get("after_id");
@@ -246,10 +247,14 @@ const server = createServer((req, res) => {
       if (after) {
         // Cursor semantics: (after, after_id) names the LAST row served; the
         // next page continues downward — strictly older rows, with after_id
-        // breaking ties at exactly the anchor timestamp.
+        // breaking ties at exactly the anchor timestamp. Compared as
+        // instants, for the same wire-vs-ISO reason as the sort above.
+        const afterMs = Date.parse(after.replace(" ", "T").replace(/\+00$/, "Z"));
         remaining = newestFirst.filter(
-          (e) =>
-            e.created_at < after || (e.created_at === after && afterId !== null && e.id < afterId),
+          (e) => {
+            const ms = instant(e);
+            return ms < afterMs || (ms === afterMs && afterId !== null && e.id < afterId);
+          },
         );
       }
       const limit = Math.max(0, Math.min(100, Number(url.searchParams.get("limit") ?? 100)));

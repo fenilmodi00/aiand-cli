@@ -261,19 +261,33 @@ function localTotals(since: string, until: string): Totals {
 }
 
 /**
+ * Parse a gateway `created_at` into an instant. The gateway serves it in
+ * verbatim wire format (`2026-10-26 05:02:11.844519+00` — space separator,
+ * `+00` offset), which V8's Date.parse rejects outright; rewrite it to
+ * strict ISO first (#96). Any timestamp compared with another — never a
+ * bare string compare, since `' ' < 'T'` misorders wire vs ISO text.
+ * Throws on an unparseable value; callers surface that, never silently
+ * misorder rows.
+ */
+export function parseWireTimestamp(created_at: string): number {
+  const ms = Date.parse(created_at.replace(" ", "T").replace(/\+00$/, "Z"));
+  if (Number.isNaN(ms)) {
+    throw new Error(`Gateway log row has an unparseable created_at: ${created_at}`);
+  }
+  return ms;
+}
+
+/**
  * Window membership for the REMOTE side, by instant rather than text: the
  * gateway serves `created_at` in its verbatim wire format
  * (`2026-10-26 05:02:11.844519+00` — space separator, `+00` offset), which
- * bare string comparison orders before every ISO `T` bound (`' ' < 'T'`) and
- * V8's Date.parse rejects outright, so explicit windows returned 0/0/0 while
- * rows sat inside them (OBS-BF-11, #96). The local side filters on the same
- * timeline through the store's normalized SQL expressions (#86).
+ * bare string comparison orders before every ISO `T` bound (`' ' < 'T'`), so
+ * explicit windows returned 0/0/0 while rows sat inside them (OBS-BF-11,
+ * #96). The local side filters on the same timeline through the store's
+ * normalized SQL expressions (#86).
  */
 function inWindow(entry: LogEntry, sinceMs: number, untilMs: number): boolean {
-  const ms = Date.parse(entry.created_at.replace(" ", "T").replace(/\+00$/, "Z"));
-  if (Number.isNaN(ms)) {
-    throw new Error(`Gateway log row has an unparseable created_at: ${entry.created_at}`);
-  }
+  const ms = parseWireTimestamp(entry.created_at);
   return ms >= sinceMs && ms <= untilMs;
 }
 
