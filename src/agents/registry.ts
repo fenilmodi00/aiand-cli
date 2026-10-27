@@ -6,6 +6,7 @@ import { hermesAdapter } from "./hermes/adapter.js";
 import { ompAdapter } from "./omp/adapter.js";
 import { opencodeAdapter } from "./opencode/adapter.js";
 import { piAdapter } from "./pi/adapter.js";
+import { primeAdapter } from "./prime/adapter.js";
 import type { AgentAdapter } from "./types.js";
 
 /** Every adapter ships here, in display order: adding one is an import plus a line. */
@@ -18,6 +19,7 @@ const registered: AgentAdapter[] = [
   copilotAdapter,
   copilotAppAdapter,
   hermesAdapter,
+  primeAdapter,
 ];
 
 export const AGENTS: readonly AgentAdapter[] = registered;

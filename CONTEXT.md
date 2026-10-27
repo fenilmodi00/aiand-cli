@@ -12,7 +12,7 @@ agent's native wire format, so the CLI never runs a local proxy, translator,
 or daemon to serve one. _Avoid:_ relay, proxy.
 
 **Wire format** - the request/response dialect an agent speaks: OpenAI-compatible chat
-(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app, and Hermes through
+(OpenCode, Prime, Pi, Oh My Pi, the Copilot CLI, the Copilot app, and Hermes through
 its dedicated `aiand` provider) or Anthropic Messages
 (Claude Code) or OpenAI Responses (Codex).
 The CLI points the agent at the gateway in its own dialect; it never translates between dialects.
@@ -27,7 +27,7 @@ primary product surface; `init` and the launcher are conveniences layered
 over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app and hermes.
+shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app, hermes and prime.
 One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
@@ -108,6 +108,8 @@ and `off` stay tolerant when a Hermes rewrite drops the stamp (the AddedState
 record backstops it). The generated plugin also declares each model's published
 reasoning levels, so Hermes clamps a user's pick onto them and an unset level
 runs at the model's engine default.
+For Prime it is `x-aiand` on the `providers.aiand` block in `models.json`:
+the harness ignores unknown keys there and never rewrites the file.
 
 **restore** - `aiand restore <agent> --force`: the break-glass byte-for-byte
 snapshot restore. Overwrites any edits made since `on`, which is why it is

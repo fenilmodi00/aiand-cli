@@ -90,17 +90,18 @@ aiand currently supports [OpenCode](https://opencode.ai),
 [Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
 [Oh My Pi](https://omp.sh),
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
-the [GitHub Copilot app](https://github.com/features/ai/github-app)
-and [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research).
+the [GitHub Copilot app](https://github.com/features/ai/github-app),
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research) and
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent).
 
 `aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
-`aiand copilot` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
+`aiand copilot`, `aiand hermes` and `aiand prime` open the agent on ai&, and `aiand code` opens the default
 one, OpenCode. If you are signed out, aiand signs you in. If the agent is
 missing and its install command is an npm install, aiand offers to install
 it with the install command shown by `aiand <agent> --help`; other install
 hints are printed with no offer. If the agent is not wired
 yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp`, `copilot` and `hermes` use ai& afterwards too.
+`codex --profile aiand`, `pi`, `omp`, `copilot`, `hermes` and `prime-agent` use ai& afterwards too.
 
 Everything after the agent name goes to the agent as typed, such as
 `aiand claude -p "explain this repo"`. Put aiand's own flags before the
@@ -298,6 +299,25 @@ catalog: `--model <id>` to choose (a session launch always names a model, so
 `--model native` is the usual catalog error). `--provider`, `--model`, and `-m` in the arguments after `--` are
 stripped so nothing can override the injected routing, and the overlay is
 removed after the session ends — success, failure, or Ctrl-C.
+
+```bash
+aiand prime            # open Prime Agent on ai&, wiring it first if needed
+aiand prime on           # route Prime Agent through ai&
+aiand prime status
+aiand prime off
+aiand run-agent prime    # launch Prime Agent on ai&, nothing written
+```
+
+`on` adds an `aiand` provider to `~/.prime/agent/models.json` (or
+`$PRIME_AGENT_CODING_AGENT_DIR`), with every model from the live catalog, and
+writes the `defaultProvider`/`defaultModel` pair into `settings.json` beside
+it, so plain `prime-agent` starts on ai&. A model pair of your own is kept
+unless you pass `--model`; `--model native` leaves it alone entirely. Your
+other providers, your own edits, and your `auth.json` logins are untouched.
+The file carries your key, so it is written at mode `0600`. Prime Agent never
+rewrites `models.json`, so the route survives its own updates. A pair `--model`
+set aside, `off` puts back; a provider block you edited, `off` leaves and only
+removes the key and the marker from it.
 
 When your key rotates, aiand updates the agents it wired, so they keep working
 without another `on`.

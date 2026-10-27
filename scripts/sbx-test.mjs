@@ -123,6 +123,7 @@ const SCRUB = [
   "OPENCODE_CONFIG_CONTENT",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+  "PRIME_AGENT_CODING_AGENT_DIR",
   "HERMES_HOME",
   "PI_CODING_AGENT_DIR",
   "PI_CONFIG_DIR",
@@ -191,6 +192,7 @@ const MAX_TOKENS = "512";
 const OPENCODE_CFG = join(MAIN_HOME, ".config", "opencode", "opencode.json");
 const CLAUDE_CFG = join(MAIN_HOME, ".claude", "settings.json");
 const CODEX_CFG = join(MAIN_HOME, ".codex", "aiand.config.toml");
+const PRIME_MODELS_CFG = join(MAIN_HOME, ".prime", "agent", "models.json");
 const PI_DIR = join(MAIN_HOME, ".pi", "agent");
 const PI_MODELS = join(PI_DIR, "models.json");
 const PI_AUTH = join(PI_DIR, "auth.json");
@@ -245,7 +247,17 @@ function readCopilotDb(...sqls) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "hermes"];
+const STUB_NAMES = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "omp",
+  "copilot",
+  "copilot-app",
+  "hermes",
+  "prime-agent",
+];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -256,12 +268,19 @@ function writeStubs() {
 const name = process.argv[2];
 const args = process.argv.slice(3);
 const record = { name, args, env: { ...process.env } };
-// The launcher deletes a --settings throwaway after exit: keep what it held.
+// The launcher deletes a --settings / agent-dir throwaway after exit: keep
+// what it held.
 const settingsAt = args.indexOf("--settings");
 if (settingsAt !== -1) {
   const file = args[settingsAt + 1];
   record.settingsMode = fs.statSync(file).mode & 0o777;
   record.settings = JSON.parse(fs.readFileSync(file, "utf8"));
+}
+if (process.env.PRIME_AGENT_CODING_AGENT_DIR) {
+  const file = process.env.PRIME_AGENT_CODING_AGENT_DIR + "/models.json";
+  record.overlayMode = fs.statSync(file).mode & 0o777;
+  record.overlay = JSON.parse(fs.readFileSync(file, "utf8"));
+  record.overlayDir = process.env.PRIME_AGENT_CODING_AGENT_DIR;
 }
 // Same for the PI_CODING_AGENT_DIR overlay the launcher deletes
 // after exit: pi's overlay holds models.json + auth.json, omp's
@@ -515,6 +534,19 @@ const AGENT_DEFS = {
       const model = /^model = "(.+)"$/m.exec(text)?.[1];
       const ids = (loadCatalog() ?? []).map((m) => m.id);
       t.ok(ids.length === 0 || ids.includes(model), "model is a catalog id", String(model));
+    },
+  },
+  prime: {
+    bin: "prime-agent",
+    seed(state) {
+      state.created = [join(MAIN_HOME, ".prime", "agent", "settings.json")];
+      state.cfg = seedFile(state, PRIME_MODELS_CFG, '{"theme":"dark"}\n');
+    },
+    contents(t) {
+      const cfg = parseJson(readFileSync(PRIME_MODELS_CFG, "utf8")) ?? {};
+      const aiand = cfg.providers?.aiand ?? {};
+      t.ok(aiand["x-aiand"] === true, "providers.aiand carries the marker");
+      t.ok(aiand.apiKey === KEY, "providers.aiand.apiKey is the session key");
     },
   },
   pi: {
@@ -780,7 +812,17 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "hermes"];
+const WIRING_ONE = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "omp",
+  "copilot",
+  "copilot-app",
+  "hermes",
+  "prime",
+];
 
 // Whole-registry assertion (`status` lists every shipped adapter) reads the
 // shipped registry instead of a hand-kept list, which goes stale silently as
@@ -1794,6 +1836,24 @@ define("launcher", "launcher-codex", (t) => {
     "the env key is handed back for Codex's own aiand key export",
   );
   t.ok(!existsSync(CODEX_CFG), "no profile written");
+});
+
+define("launcher", "launcher-prime", (t) => {
+  const r = launchCheck("prime-agent", ["prime", "--", "--dump"]);
+  okStatus(t, r, "run-agent prime");
+  const rec = stubRecord("prime-agent");
+  t.ok(rec !== null, "stub recorded its launch");
+  if (!rec) return;
+  t.ok(rec.args.at(-1) === "--dump", "passthrough reaches the binary");
+  t.ok(rec.overlayMode === 0o600, "overlay models.json is 0600", String(rec.overlayMode));
+  t.ok(rec.overlay?.providers?.aiand?.apiKey === KEY, "the key rides in the overlay");
+  t.ok(
+    rec.overlay?.providers?.aiand?.baseUrl === "https://api.aiand.com/v1",
+    "overlay baseUrl is gateway /v1",
+  );
+  t.ok(!Object.values(rec.env).includes(KEY), "the key is not in the child env");
+  t.ok(!existsSync(rec.overlayDir), "throwaway agent dir removed after exit");
+  t.ok(!existsSync(join(MAIN_HOME, ".prime")), "no user prime dir written");
 });
 
 define("launcher", "launcher-pi", (t) => {
