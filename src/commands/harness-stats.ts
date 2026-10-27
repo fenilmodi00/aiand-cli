@@ -113,7 +113,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
         provenance: { ...stats.provenance, emptyWindow: true },
         harnesses: [],
         excluded: stats.excluded,
-        excludedMixed: stats.excludedMixed,
+        excludedMixedSpend: stats.excludedMixed,
       });
     }
     out(
@@ -309,7 +309,7 @@ export function payload(
     provenance: stats.provenance,
     harnesses: harnesses.map((row) => ({ ...row })),
     excluded: stats.excluded,
-    excludedMixed: stats.excludedMixed,
+    excludedMixedSpend: stats.excludedMixed,
   };
 }
 
