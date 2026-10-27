@@ -1,4 +1,5 @@
 import { currencySymbol } from "../cli/output.js";
+import { formatMoneyFixed } from "../pricing/currency.js";
 import { CHART_COLORS, lineChart } from "./charts.js";
 import {
   type Costs,
@@ -44,7 +45,7 @@ function esc(text: string): string {
 function money(value: number, currency: string): string {
   const symbol = currencySymbol(currency === "" ? null : currency);
   const code = currency === "" || currency === "usd" ? "" : `${esc(currency)} `;
-  return `${code}${symbol}${value.toFixed(6)}`;
+  return `${code}${symbol}${formatMoneyFixed(value, 6)}`;
 }
 
 function costCell(costs: Costs): string {

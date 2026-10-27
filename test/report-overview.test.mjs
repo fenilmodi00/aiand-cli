@@ -414,6 +414,37 @@ describe("overview text", () => {
     assert.equal(payload.budget.configured, false);
   });
 
+  // #99: report --json carries a totals block matching the HTML's numbers.
+  test("report --json includes totals matching the HTML (#99)", async () => {
+    const dir = freshDir("report-json-totals");
+    await seedStore(dir, FIXTURE_ROWS);
+    seedKeysAndCatalog(dir);
+    const outPath = join(dir, "report.html");
+    const result = await runCli(
+      ["report", "--since", "2026-10-19", "--until", "2026-10-22", "--out", outPath, "--json"],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(result.code, 0);
+    const payload = JSON.parse(result.stdout);
+    assert.ok(payload.totals);
+    assert.equal(payload.totals.requests, 3);
+    assert.equal(payload.totals.inputTokens, 24000);
+    assert.equal(payload.totals.outputTokens, 800);
+    assert.equal(payload.totals.cachedTokens, 11000);
+    assert.deepEqual(payload.totals.costs, { usd: 0.0126 });
+    assert.ok(typeof payload.totals.savings === "number" && payload.totals.savings > 0);
+
+    // --no-cost masks monetary fields in the totals block too.
+    const masked = await runCli(
+      ["report", "--since", "2026-10-19", "--until", "2026-10-22", "--no-cost", "--json"],
+      { env: reportEnv(dir) },
+    );
+    const maskedPayload = JSON.parse(masked.stdout);
+    assert.equal(maskedPayload.totals.requests, 3);
+    assert.ok(!("costs" in maskedPayload.totals));
+    assert.ok(!("savings" in maskedPayload.totals));
+  });
+
   test("budget section renders pacing when configured", async () => {
     const dir = freshDir("budget");
     const now = new Date();

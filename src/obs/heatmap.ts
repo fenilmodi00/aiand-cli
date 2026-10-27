@@ -1,4 +1,5 @@
 import { currencySymbol } from "../cli/output.js";
+import { formatMoneyFixed } from "../pricing/currency.js";
 import { WEEKDAYS, zonedParts } from "./zoned-time.js";
 
 /**
@@ -237,7 +238,7 @@ function formatCell(cell: { value: number }, grid: HeatmapGrid): string {
   if (grid.metric === "requests") return `${cell.value} request(s)`;
   const symbol = currencySymbol(grid.currency);
   const code = grid.currency === null || grid.currency === "usd" ? "" : `${grid.currency} `;
-  return `${code}${symbol}${cell.value.toFixed(4)}`;
+  return `${code}${symbol}${formatMoneyFixed(cell.value, 4)}`;
 }
 
 function provenanceLine(grid: HeatmapGrid): string {

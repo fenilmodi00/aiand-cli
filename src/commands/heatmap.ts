@@ -1,6 +1,6 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { bool, list, oneOf, parse, str } from "../cli/args.js";
-import { err, out, style } from "../cli/output.js";
+import { err, json, out, style } from "../cli/output.js";
 import { assertSafeProfileName } from "../config.js";
 import {
   buildHeatmapGrid,
@@ -10,6 +10,7 @@ import {
   type HeatmapMetric,
   renderHeatmap,
 } from "../obs/heatmap.js";
+import { WEEKDAYS } from "../obs/zoned-time.js";
 import { assertTimezone, resolveWindow, syncWarningFor, type WindowSpec } from "../report/data.js";
 import type { SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
@@ -97,6 +98,26 @@ export async function run(argv: string[]): Promise<void> {
   if (warning) err(style.yellow(`Warning: ${warning}`));
 
   const grid = buildHeatmapGrid(rows, { metric, timezone });
+  if (bool(parsed, "json")) {
+    // #99: machine-readable per-cell dump — the same grid the text render
+    // draws, flattened to { day, hour, count/spend } entries.
+    json({
+      metric,
+      timezone,
+      currency: grid.currency,
+      currencyHandling: grid.currencyHandling,
+      rowCount: grid.rowCount,
+      peak: grid.peak,
+      cells: grid.grid.flatMap((week, d) =>
+        week.map((value, h) => ({
+          day: WEEKDAYS[d],
+          hour: h,
+          ...(metric === "cost" ? { spend: value } : { count: value }),
+        })),
+      ),
+    });
+    return;
+  }
   const depth: ColorDepth = colorDepth();
   out(renderHeatmap(grid, depth));
 }
