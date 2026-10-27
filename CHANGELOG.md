@@ -7,6 +7,40 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+
+### Fixed
+- `aiand dashboard` TUI looked dead on real stores: every period key, arrow,
+  `p`, and `r` froze the frame for seconds (only `c` and `q`, which skip the
+  data refresh, responded). Root cause: harness attribution re-read
+  `agent-keys.json` once per request row (~2.7s for a 2799-row store on
+  Windows). The report build now reads the key map once and resolves every
+  row from memory, so a refresh is ~350ms and all keys respond.
+- `aiand dashboard` TUI left the previous frame's tail rows on screen when a
+  keypress produced a shorter frame (`p` scope changes, `c` compare toggle):
+  the in-place redraw never cleared below the frame, so the old footer and
+  stale panels stayed visible and actions looked like they ran twice. The
+  redraw now blanks the orphaned rows, mirroring the prompt renderer.
+- `est. saved` showed $0.0000 despite a high cache-hit rate: savings priced
+  cached tokens at the cheap cached rate, which is exactly what the gateway
+  already bills, so the counterfactual equaled the billed cost. Savings now
+  price all input at the full rate (what a cold cache would have cost),
+  matching the `aiand cache` formula.
+
+### Changed
+- The dashboard TUI now uses the same brand theme as the home screen
+  (two-tone ai& wordmark, accent-highlighted active period tab, themed
+  section titles and muted meta lines) and its layout spans the full
+  terminal width (the pinned-sessions divider no longer caps at 60
+  columns).
+- Command output now shares the menu's visual language (ticket #76 follow-up
+  to the brand theme): the shared style helpers paint red/green/yellow/cyan
+  with the ai& palette's danger/success/warning/accent roles instead of raw
+  terminal colors, section titles across `usage`, `sessions`, `cache`,
+  `efficiency`, `recommend`, and the harness commands render as accent
+  focus-bar headings (`▌ Title`) like the menu chrome, and the interactive
+  menu frames each run with its command heading so tiled command output
+  reads as one continuous surface.
+
 ## [0.7.0] - 2026-10-26
 
 ### Added
