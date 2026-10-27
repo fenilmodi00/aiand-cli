@@ -161,6 +161,14 @@ test("mixed-model sessions are excluded AND counted, never assigned", async () =
     assert.equal(stats.provenance.excludedMixed, 1);
     assert.equal(stats.excluded.length, 1);
     assert.equal(stats.excluded[0].models.length, 2);
+    // OBS-LT-4: the excluded session's gateway-billed spend, one definition.
+    assert.deepEqual(stats.excludedMixed, {
+      sessions: 1,
+      requests: 2,
+      tokens: { in: 2000, out: 200, cached: 1000 },
+      cost: 0.02,
+      currency: "usd",
+    });
 
     const claude = stats.harnesses.find((h) => h.harness === "claude");
     const opencode = stats.harnesses.find((h) => h.harness === "opencode");
@@ -349,6 +357,72 @@ test("cli: stats --json schema, attribution, and mixed exclusion on a seeded sto
   ]) {
     assert.ok(field in claude, `field ${field} present per requirement 6`);
   }
+  // OBS-LT-4: the mixed session's gateway-billed spend rides the payload.
+  assert.deepEqual(payload.excludedMixedSpend, {
+    sessions: 1,
+    requests: 2,
+    tokens: { in: 2000, out: 200, cached: 1000 },
+    cost: 0.02,
+    currency: "usd",
+  });
+});
+
+test("cli: excluded mixed-model spend line renders when present, absent without one (OBS-LT-4)", async () => {
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  // With a mixed session: stats, compare, and matrix all show the line.
+  const withCfg = cfgDir("cli");
+  const stats = await runCli(["harness", "stats", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: withCfg }),
+  });
+  assert.equal(stats.code, 0);
+  assert.match(stats.stdout, /excluded mixed-model spend \(1 session\(s\), gateway-billed/);
+  assert.match(stats.stdout, /\$0\.0200/);
+
+  const compare = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: withCfg }),
+  });
+  assert.equal(compare.code, 0);
+  assert.match(compare.stdout, /excluded mixed-model spend \(1 session\(s\), gateway-billed/);
+
+  const matrix = await runCli(["harness", "matrix", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: withCfg }),
+  });
+  assert.equal(matrix.code, 0);
+  assert.match(matrix.stdout, /excluded mixed-model spend \(1 session\(s\), gateway-billed/);
+
+  // --no-cost hides the cost figure but keeps the line.
+  const noCost = await runCli(["harness", "stats", "--no-sync", "--no-cost"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: withCfg }),
+  });
+  assert.equal(noCost.code, 0);
+  assert.match(noCost.stdout, /excluded mixed-model spend \(1 session\(s\), gateway-billed/);
+  assert.ok(!noCost.stdout.includes("$0.0200"), "no-cost hides the cost figure");
+
+  // Without a mixed session: no line anywhere.
+  const plainCfg = cfgDir("no-mixed");
+  await withEnv({ AIAND_CONFIG_DIR: plainCfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+  });
+  const plainMask = await withEnv({ AIAND_CONFIG_DIR: plainCfg }, async () =>
+    (await import("../dist/api/agent-keys.js")).maskKey("sk-test-claude-super-secret-key-000"),
+  );
+  await withEnv({ AIAND_CONFIG_DIR: plainCfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(
+      opened.db,
+      Array.from({ length: 6 }, (_, i) =>
+        row({ id: `p${i}`, api_key: plainMask, created_at: iso(i * 60_000) }),
+      ),
+    );
+    opened.db.close();
+  });
+  const plain = await runCli(["harness", "stats", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: plainCfg }),
+  });
+  assert.equal(plain.code, 0);
+  assert.ok(!plain.stdout.includes("excluded mixed-model spend"), "no line without mixed");
 });
 
 test("cli: compare marks winners and errors below two harnesses", async () => {

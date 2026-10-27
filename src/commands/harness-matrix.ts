@@ -17,7 +17,7 @@ import {
 } from "../obs/pair-stats.js";
 import { getStoreInfo, noSyncRequested, syncStore } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { parseWindowFlags, readHarnessRows } from "./harness-stats.js";
+import { excludedMixedLine, parseWindowFlags, readHarnessRows } from "./harness-stats.js";
 import { applyJqPath, isValidTimezone, parseJqPath } from "./usage-report.js";
 
 /**
@@ -64,7 +64,9 @@ Options
 
 Reading the numbers: sessions are the #66 time-gap heuristic (${sessionizationNote(10)});
 sessions whose model mix spans models are EXCLUDED and counted in the footer,
-never assigned to a model. Verdicts reuse the cache-report thresholds (warn
+never assigned to a model — the footer also shows their gateway-billed spend
+(in --json under \`excludedMixedSpend\`) so totals reconcile with \`usage\`.
+Verdicts reuse the cache-report thresholds (warn
 under 5 requests). Costs are gateway-billed store sums; ratios are estimated.
 The error rate counts non-2xx statuses excluding 429 (a rate limit is not the
 pair's quality). cost/session is the median; --show p90 adds the tail.`;
@@ -157,6 +159,7 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
       provenance: stats.provenance,
       pairs: pairs.map(annotatedPairRow),
       excludedMixed: stats.provenance.excludedMixed,
+      excludedMixedSpend: stats.excludedMixed,
       synthetic: syntheticPayload(synthetic),
     };
     const filter = str(parsed, "jq");
@@ -164,8 +167,9 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
   }
 
   const header = describeRange(sinceMs, untilMs);
+  const excludedLine = excludedMixedLine(stats.excludedMixed, false);
   if (format === "markdown") {
-    renderMarkdown(pairs, header, showP90, stats.provenance.excludedMixed);
+    renderMarkdown(pairs, header, showP90, stats.provenance.excludedMixed, excludedLine);
   } else {
     renderTable(pairs, showP90);
     out();
@@ -174,6 +178,7 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
         `${stats.provenance.excludedMixed} mixed-model session(s) excluded — counted, assigned to no model`,
       ),
     );
+    if (excludedLine !== null) out(style.dim(excludedLine));
     out(
       style.dim(
         `n = sessions per row · verdicts warn under 5 requests; ` +
@@ -361,12 +366,14 @@ function renderMarkdown(
   header: string,
   showP90: boolean,
   excludedMixed: number,
+  excludedLine: string | null,
 ): void {
   out(`### harness × model matrix — ${header}`);
   out();
   for (const line of markdownTable(pairs, showP90)) out(line);
   out();
   out(`_${excludedMixed} mixed-model session(s) excluded — counted, assigned to no model._`);
+  if (excludedLine !== null) out(`_${excludedLine}_`);
 }
 
 function describeRange(sinceMs: number | null, untilMs: number | null): string {

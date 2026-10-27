@@ -2,6 +2,8 @@ import { cacheVerdict } from "../api/cache-report.js";
 import { sessionizeRows } from "../store/sessions.js";
 import {
   errorCount,
+  excludedMixedAggregate,
+  type ExcludedMixedAggregate,
   type HarnessRequestRow,
   type HarnessStatsOptions,
   percentile,
@@ -59,6 +61,8 @@ export type PairStats = {
   pairs: PairStatsRow[];
   /** Mixed-model sessions excluded from every pair above. */
   excluded: SessionSample[];
+  /** Their gateway-billed spend — the reconciliation line (OBS-LT-4). */
+  excludedMixed: ExcludedMixedAggregate;
 };
 
 /** A session is ranked only with enough of them; below this → "insufficient data". */
@@ -100,6 +104,7 @@ export function buildPairStats(
   const details = sessionizeRows(scoped, gapMinutes);
 
   const excluded: SessionSample[] = [];
+  const excludedSessions: { rows: HarnessRequestRow[] }[] = [];
   const byPair = new Map<string, { rows: HarnessRequestRow[]; sessions: SessionSample[] }>();
 
   for (const session of details) {
@@ -115,6 +120,7 @@ export function buildPairStats(
     };
     if (models.length > 1) {
       excluded.push(sample);
+      excludedSessions.push(session);
       continue;
     }
     const model = models[0] ?? "";
@@ -198,6 +204,7 @@ export function buildPairStats(
     },
     pairs,
     excluded,
+    excludedMixed: excludedMixedAggregate(excludedSessions),
   };
 }
 

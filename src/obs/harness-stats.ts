@@ -53,6 +53,40 @@ export type HarnessStatsRow = {
   samples: SessionSample[];
 };
 
+/**
+ * The gateway-billed spend of the mixed-model sessions excluded from every
+ * aggregate — the visibility line that lets harness totals reconcile with
+ * `usage` (OBS-LT-4). One definition, shared by `harness stats`, `compare`,
+ * `matrix`, and `recommend`.
+ */
+export type ExcludedMixedAggregate = {
+  sessions: number;
+  requests: number;
+  /** Gateway token sums; input INCLUDES cached (same as every row above). */
+  tokens: { in: number; out: number; cached: number };
+  cost: number | null;
+  currency: string | null;
+};
+
+/** Sum the excluded sessions' rows. Pure; same provenance as pair costs. */
+export function excludedMixedAggregate(
+  sessions: readonly { rows: readonly HarnessRequestRow[] }[],
+): ExcludedMixedAggregate {
+  const rows = sessions.flatMap((session) => [...session.rows]);
+  const costRows = rows.filter((r) => typeof r.cost_value === "number");
+  return {
+    sessions: sessions.length,
+    requests: rows.length,
+    tokens: {
+      in: rows.reduce((sum, r) => sum + (r.input_tokens ?? 0), 0),
+      out: rows.reduce((sum, r) => sum + (r.output_tokens ?? 0), 0),
+      cached: rows.reduce((sum, r) => sum + (r.cached_tokens ?? 0), 0),
+    },
+    cost: costRows.length > 0 ? costRows.reduce((sum, r) => sum + (r.cost_value ?? 0), 0) : null,
+    currency: costRows[0]?.currency ?? null,
+  };
+}
+
 export type HarnessStatsOptions = {
   gapMinutes?: number;
   timezone?: string;
@@ -78,6 +112,8 @@ export type HarnessStats = {
   harnesses: HarnessStatsRow[];
   /** Mixed-model sessions excluded from every aggregate above. */
   excluded: SessionSample[];
+  /** Their gateway-billed spend — the reconciliation line (OBS-LT-4). */
+  excludedMixed: ExcludedMixedAggregate;
 };
 
 /**
@@ -124,6 +160,7 @@ export function buildHarnessStats(
   const details = sessionizeRows(scoped, gapMinutes);
 
   const excluded: SessionSample[] = [];
+  const excludedSessions: { rows: HarnessRequestRow[] }[] = [];
   const byHarness = new Map<string, { rows: HarnessRequestRow[]; sessions: SessionSample[] }>();
 
   for (const session of details) {
@@ -142,6 +179,7 @@ export function buildHarnessStats(
     // assigned.
     if (models.length > 1) {
       excluded.push(sample);
+      excludedSessions.push(session);
       continue;
     }
     const bucket = byHarness.get(session.agent) ?? { rows: [], sessions: [] };
@@ -219,6 +257,7 @@ export function buildHarnessStats(
     },
     harnesses,
     excluded,
+    excludedMixed: excludedMixedAggregate(excludedSessions),
   };
 }
 
