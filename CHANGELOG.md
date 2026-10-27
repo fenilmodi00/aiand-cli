@@ -140,7 +140,7 @@ breaking changes while the command surface settles.
   terminal colors, section titles across `usage`, `sessions`, `cache`,
   `efficiency`, `recommend`, and the harness commands render as accent
   focus-bar headings (`▌ Title`) like the menu chrome, and the interactive
-  menu frames each run with its command heading so tiled command output
+  menu frames each run with the command heading so tiled command output
   reads as one continuous surface.
 
 ### Removed
@@ -150,6 +150,17 @@ breaking changes while the command surface settles.
   `harness stats` / `compare` / `matrix` answer the same harness×model
   question from real traffic, and the synthetic `harness` benchmark remains
   the offline performance path.
+- The `claude_code.*` OTel metric family (`claude_code.session.count`,
+  `claude_code.cost.usage`, `claude_code.token.usage` with the
+  input-excludes-cache conversion) from `aiand export` — dashboard-
+  compatibility cargo named after one vendor's agent on a CLI that ships
+  eight. The vendor-neutral `gen_ai.*` family is the sole export surface and
+  now carries cost (`gen_ai.client.inference.usage.cost`) and per-model token
+  usage itself; the constant-0 `cache_write`/`reasoning`/`cacheCreation`
+  series it emitted despite the store having no such data are gone too
+  (emit-only-where-data-exists). The gateway has no cache-write split or
+  reasoning-token column, so those series were zeros reading as real
+  measurements.
 
 ## [0.7.0] - 2026-10-26
 

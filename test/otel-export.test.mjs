@@ -4,10 +4,9 @@ import { join } from "node:path";
 import test, { before, describe } from "node:test";
 import { CLOSED_URL, cliEnv, runCli, withEnv, withFetch, withTestEnv } from "./helpers.mjs";
 
-// Ticket #72 (OBS-P3-2): OTel metrics export — the claude_code.* family
-// (Claude Code dashboard compatibility) and the gen_ai.* family (OTel GenAI
-// semconv), hand-emitted OTLP/HTTP JSON + Prometheus text from the local
-// store. // #72
+// Ticket #72 (OBS-P3-2): OTel metrics export — the gen_ai.* family (OTel
+// GenAI semconv), hand-emitted OTLP/HTTP JSON + Prometheus text from the
+// local store. // #72
 
 const box = withTestEnv("aiand-otel-export-", () => {
   process.env.NO_COLOR = "1";
@@ -141,17 +140,13 @@ async function buildFixturePayload(dir, { extraRows = [] } = {}) {
 }
 
 const EXPECTED_METRICS = [
-  "claude_code.cost.usage",
-  "claude_code.session.count",
-  "claude_code.token.usage",
   "gen_ai.client.inference.duration",
   "gen_ai.client.inference.operation.input_tokens",
   "gen_ai.client.inference.operation.output_tokens",
   "gen_ai.client.inference.usage.cache_read_tokens",
-  "gen_ai.client.inference.usage.cache_write_tokens",
+  "gen_ai.client.inference.usage.cost",
   "gen_ai.client.inference.usage.input_tokens",
   "gen_ai.client.inference.usage.output_tokens",
-  "gen_ai.client.inference.usage.reasoning_tokens",
   "gen_ai.server.request.duration",
   "gen_ai.server.time_to_first_token",
 ];
@@ -189,66 +184,51 @@ describe("otel export: payload from a fixture store (#72)", () => {
     assert.deepEqual(payload.metricNames, EXPECTED_METRICS);
   });
 
-  test("input-excludes-cache conversion + all four token types", async () => {
-    // Parse the OTLP payload and pull the claude_code.token.usage series.
-    // Series carry session.id, so the successful session (two rows) and the
-    // failed request's session are separate points; totals must still hold.
+  test("gen_ai token counters: verbatim gateway sums incl. cache", async () => {
+    // Parse the OTLP payload and sum the token usage counters. Series carry
+    // session.id, so the successful session (two rows) and the failed
+    // request's session are separate points; totals must still hold.
     const doc = JSON.parse(payload.otlp);
-    const metric = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
-      (m) => m.name === "claude_code.token.usage",
-    );
-    assert.ok(metric, "claude_code.token.usage emitted");
-    const points = metric.sum.dataPoints.map((p) => ({
-      type: p.attributes.find((a) => a.key === "type").value.stringValue,
-      value: Number(p.asInt ?? p.asDouble),
-    }));
-    const total = (type) =>
-      points.filter((p) => p.type === type).reduce((sum, p) => sum + p.value, 0);
-    // Gateway rows: input=1000 INCLUDES cached=400 → type=input must be
-    // (1000 - 400) × 2 = 1200, not 2000.
-    assert.equal(total("input"), 1200);
-    assert.equal(total("output"), 600);
-    assert.equal(total("cacheRead"), 800);
-    // OBS-GW-1: 0 until the gateway splits cache writes.
-    assert.equal(total("cacheCreation"), 0);
-    assert.deepEqual(
-      points.filter((p) => p.type === "cacheCreation").map((p) => p.value),
-      [0, 0],
+    const metrics = doc.resourceMetrics[0].scopeMetrics[0].metrics;
+    const total = (name) => {
+      const metric = metrics.find((m) => m.name === name);
+      assert.ok(metric, `${name} emitted`);
+      return metric.sum.dataPoints.reduce((sum, p) => sum + Number(p.asInt ?? p.asDouble), 0);
+    };
+    // Gateway rows: input=1000 INCLUDES cached=400 → verbatim 1000 × 2 = 2000;
+    // cache read is its own series (400 × 2 = 800), never subtracted.
+    assert.equal(total("gen_ai.client.inference.usage.input_tokens"), 2000);
+    assert.equal(total("gen_ai.client.inference.usage.output_tokens"), 600);
+    assert.equal(total("gen_ai.client.inference.usage.cache_read_tokens"), 800);
+    // Emit-only-where-data-exists: no constant-zero cache_write/reasoning
+    // series when the store has no such columns.
+    assert.ok(
+      !metrics.some(
+        (m) =>
+          m.name === "gen_ai.client.inference.usage.cache_write_tokens" ||
+          m.name === "gen_ai.client.inference.usage.reasoning_tokens",
+      ),
+      "no constant-zero cache_write/reasoning series",
     );
   });
 
-  test("cost.usage sums gateway-billed cost as double, per model + agent + masked key", async () => {
+  test("cost counter sums gateway-billed cost as double, per model + agent + masked key", async () => {
     const doc = JSON.parse(payload.otlp);
     const metric = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
-      (m) => m.name === "claude_code.cost.usage",
+      (m) => m.name === "gen_ai.client.inference.usage.cost",
     );
+    assert.ok(metric, "gen_ai cost counter emitted");
     assert.equal(metric.unit, "USD");
     assert.equal(metric.sum.dataPoints.length, 2, "success session + failed session");
     const total = metric.sum.dataPoints.reduce((sum, p) => sum + Number(p.asInt ?? p.asDouble), 0);
     assert.equal(total, 0.0052);
     const point = metric.sum.dataPoints.find((p) => Number(p.asInt ?? p.asDouble) > 0);
     const attrs = Object.fromEntries(point.attributes.map((a) => [a.key, a.value.stringValue]));
-    assert.equal(attrs.model, "zai-org/glm-5.3");
+    assert.equal(attrs["gen_ai.request.model"], "zai-org/glm-5.3");
     assert.equal(attrs["agent.name"], "claude");
     assert.equal(attrs["aiand.key.masked"], "sk-abcd...1234");
-    assert.equal(attrs.query_source, "claude");
-  });
-
-  test("session.count: two heuristic sessions with start_type + standard attrs", async () => {
-    const doc = JSON.parse(payload.otlp);
-    const metric = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
-      (m) => m.name === "claude_code.session.count",
-    );
-    assert.equal(metric.sum.dataPoints.length, 2, "10-min gap split, 25-min gap split");
-    for (const point of metric.sum.dataPoints) {
-      const attrs = Object.fromEntries(point.attributes.map((a) => [a.key, a.value.stringValue]));
-      // Honest derived marker: sessions are time-gap heuristics (#66).
-      assert.equal(attrs.start_type, "derived");
-      assert.match(attrs["session.id"], /^[0-9a-f]{16}$/);
-      assert.equal(attrs["agent.name"], "claude");
-      assert.equal(attrs["terminal.type"], process.env.TERM ?? "unknown");
-      assert.match(attrs["app.version"], /^\d+\.\d+/);
-    }
+    assert.equal(attrs["query.source"], "claude");
+    assert.match(attrs["session.id"], /^[0-9a-f]{16}$/);
   });
 
   test("gen_ai counters: required attrs, failed ops carry error.type + usage", async () => {
@@ -306,15 +286,19 @@ describe("otel export: payload from a fixture store (#72)", () => {
 
   test("delta temporality default; --temporality cumulative switches the enum", async () => {
     assert.equal(payload.temporality, "delta");
-    let doc = JSON.parse(payload.otlp);
-    assert.equal(doc.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality, 1);
+    const firstSum = () => {
+      const doc = JSON.parse(payload.otlp);
+      return doc.resourceMetrics[0].scopeMetrics[0].metrics.find((m) => m.sum).sum;
+    };
+    assert.equal(firstSum().aggregationTemporality, 1);
     const cumulative = await withStoreEnv(dir, async () => {
       const otel = await import("../dist/obs/otel.js");
       return otel.buildExportPayload({ ...WINDOW, temporality: "cumulative" });
     });
     assert.equal(cumulative.temporality, "cumulative");
-    doc = JSON.parse(cumulative.otlp);
-    assert.equal(doc.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality, 2);
+    const doc = JSON.parse(cumulative.otlp);
+    const sum = doc.resourceMetrics[0].scopeMetrics[0].metrics.find((m) => m.sum).sum;
+    assert.equal(sum.aggregationTemporality, 2);
   });
 
   test("deterministic: same store + flags → identical payload modulo timestamps", async () => {
@@ -360,16 +344,16 @@ describe("otel export: Prometheus text exposition (#72)", () => {
     // A minimal parser: every sample line is name{labels} value, TYPE declares
     // each metric once, and histogram le bounds are numerically ordered.
     const types = lines.filter((l) => l.startsWith("# TYPE "));
-    assert.ok(types.some((l) => l === "# TYPE claude_code_token_usage counter"));
+    assert.ok(types.some((l) => l === "# TYPE gen_ai_client_inference_usage_cost counter"));
     assert.ok(types.some((l) => l === "# TYPE gen_ai_server_time_to_first_token histogram"));
     const samples = lines.filter((l) => l.length > 0 && !l.startsWith("#"));
     const sampleRe = /^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})? (-?\d+(\.\d+)?|NaN|\+Inf)$/;
     for (const line of samples) assert.match(line, sampleRe);
 
-    const inputLine = samples.find(
-      (l) => l.startsWith("claude_code_token_usage{") && l.includes('type="input"'),
+    const inputLine = samples.find((l) =>
+      l.startsWith("gen_ai_client_inference_usage_input_tokens{"),
     );
-    assert.match(inputLine, / 600$/);
+    assert.match(inputLine, / 1000$/);
     // Label values are escaped.
     assert.ok(
       samples.some((l) => l.includes('aiand_key_masked="sk-we\\"ird\\\\key"')),
@@ -414,8 +398,8 @@ describe("otel export: Prometheus text exposition (#72)", () => {
     });
     for (const line of payload.prometheus.split("\n")) {
       if (
-        line.startsWith("claude_code_cost_usage{") ||
-        line.startsWith("claude_code_token_usage{")
+        line.startsWith("gen_ai_client_inference_usage_cost{") ||
+        line.startsWith("gen_ai_client_inference_usage_input_tokens{")
       ) {
         assert.match(line, /agent_name="/, "agent.name on cost/token series");
         assert.match(line, /aiand_key_masked="/, "masked key on cost/token series");
@@ -464,7 +448,7 @@ describe("otel export: CLI surface (#72)", () => {
     ]);
     assert.equal(code, 0, stderr);
     const text = readFileSync(file, "utf8");
-    assert.match(text, /# TYPE claude_code_token_usage counter/);
+    assert.match(text, /# TYPE gen_ai_client_inference_usage_cost counter/);
     assert.match(stderr, /Wrote prometheus metrics for 2 requests/);
   });
 
