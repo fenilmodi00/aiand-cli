@@ -7,6 +7,16 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Removed
+- `aiand forecast --model v2` and `aiand forecast bench` (the calibrated
+  Gamma-process Monte Carlo forecaster and its scoring bench, #77): the v2
+  model was built for a quota-window billing shape ai& doesn't have — it is
+  prepaid with a monthly budget, and the question "will I hit my budget?" is
+  what the v1 linear burn-rate extrapolation already answers. `aiand forecast`
+  now runs only the v1 burn-rate model; `overview`, `report`, `cache`, and the
+  MCP forecast payload are unchanged. Model docs: `docs/observability/forecast-v2.md`
+  is removed with it.
+
 ### Added
 - The bundled list-price snapshot (`bundled@2026-10-28`) now prices the
   gateway's first-party models — zai-org/glm-5.3, zai-org/glm-5.3-flash,

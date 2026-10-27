@@ -268,22 +268,6 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "suggestBudget",
     provenance: heuristic("P90 of monthly totals"),
   },
-  // forecast v2 (calibrated Gamma-process Monte Carlo, ticket #77)
-  {
-    report: "forecast",
-    field: "v2.rate, v2.verdict, v2.pacing",
-    provenance: heuristic("forecast v2 rate (OLS 30-min + conjugate prior)"),
-  },
-  {
-    report: "forecast",
-    field: "v2.projectedMonthEnd, v2.ci80, v2.eta, v2.projectedUtilization",
-    provenance: estimated("calibrated Monte Carlo v2 (Gamma process, rectified-Gaussian rate)"),
-  },
-  {
-    report: "forecast",
-    field: "bench.metrics, bench.regression",
-    provenance: heuristic("forecast bench replay scoring (CRPS/pinball/coverage/bias)"),
-  },
   // ccusage import (ticket #73) — EXTERNAL rows, default-excluded from
   // gateway totals; ccusage cost is price-table-derived, never billed.
   {
