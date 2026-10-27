@@ -16,7 +16,7 @@ withTestEnv("aiand-self-keys-", (dir) => {
 });
 
 // Long enough for a real mask (head + tail), shaped like a gateway key.
-const CLI_KEY = "sk-self-1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff77779953";
+const CLI_KEY = "sk-test-self-1111aaaa2222bbbb3333cccc4444dddd5555eeee";
 const FOREIGN_MASK = "sk-foreign...9999";
 
 function cfgDir(name) {
