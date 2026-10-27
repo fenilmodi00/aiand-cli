@@ -8,6 +8,7 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand store reset` (ticket #95, OBS-BF-10) — clears the request/session/envelope rows so the next `store sync` is a full re-pull, keeping the schema, migrations, and the ccusage import dedupe ledger intact; confirms unless `--force`, `--json` reports what was cleared. Self-heal for a stale store without hand-deleting `store.db`.
 - `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
 
 - `aiand dashboard`, `aiand heatmap`, and `aiand wrapped` (ticket #75),
