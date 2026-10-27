@@ -6,6 +6,7 @@ import { resolveProfile } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import { buildExportPayload, EXPORT_RANGES, type Temporality } from "../obs/otel.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
+import { assertWindowOrder } from "./usage-report.js";
 
 /**
  * `aiand export` (feature catalog G2, ticket #72): metrics export from the
@@ -93,11 +94,10 @@ export async function run(argv: string[]): Promise<void> {
     }
   }
   // #87: an inverted --since/--until pair exports an empty window; reject it.
-  if (since !== undefined && until !== undefined && Date.parse(since) > Date.parse(until)) {
-    throw new CliError(`--since ${since} is after --until ${until}.`, {
-      hint: "Pass an earlier --since or a later --until.",
-    });
-  }
+  assertWindowOrder(
+    since === undefined ? null : Date.parse(since),
+    until === undefined ? null : Date.parse(until),
+  );
   const endpoint = str(parsed, "endpoint");
   const file = str(parsed, "file");
   if (endpoint !== undefined && file !== undefined) {

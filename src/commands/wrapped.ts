@@ -1,7 +1,6 @@
-import { openSession } from "../api/client.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
 import { err, json, out, style } from "../cli/output.js";
-import { assertSafeProfileName, resolveProfile } from "../config.js";
+import { assertSafeProfileName } from "../config.js";
 import {
   buildWrappedStory,
   renderWrappedText,
@@ -15,8 +14,7 @@ import {
   syncWarningFor,
   type WindowSpec,
 } from "../report/data.js";
-import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { runPreReadSync } from "../store/sync.js";
 
 /**
  * `aiand wrapped` (feature catalog F5, ticket #75): the share-friendly period
@@ -70,19 +68,7 @@ export async function run(argv: string[]): Promise<void> {
   // #87: validate --profile even when sync is skipped or fails open.
   const profileName = str(parsed, "profile");
   if (profileName !== undefined) assertSafeProfileName(profileName);
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null = null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(profileName));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const now = new Date();
   const windowSpec: WindowSpec = {

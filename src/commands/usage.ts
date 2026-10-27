@@ -25,10 +25,10 @@ import {
 import { computeVsList, loadPriceOverrides, readSnapshotFile } from "../pricing/list-prices.js";
 import { PEAK_WINDOWS, windowLabel } from "../pricing/peak-windows.js";
 import { BUNDLED_SNAPSHOT } from "../pricing/price-snapshot.js";
-import type { SyncOutcome } from "../store/coverage.js";
 import { computeCoverage, syncWarningLine } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { noSyncRequested } from "../store/index.js";
 import { reconcileUsage, VERIFY_RANGES, type VerifyRow } from "../store/reconcile.js";
+import { runPreReadSync } from "../store/sync.js";
 import {
   applyJqPath,
   assertWindowOrder,
@@ -583,20 +583,7 @@ async function runReport(parsed: Parsed): Promise<void> {
   // sync is skipped or fails open, an unsafe --profile never renders a report.
   const profileName = str(parsed, "profile");
   if (profileName !== undefined) assertSafeProfileName(profileName);
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null = null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(profileName));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      // Fail-open: a sign-in or network problem never blocks the local report.
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const report = buildReport({
     unit: reportUnit,
@@ -725,19 +712,7 @@ async function runVsList(parsed: Parsed): Promise<void> {
   // #87: validate the profile even when sync is skipped or fails open.
   const profileName = str(parsed, "profile");
   if (profileName !== undefined) assertSafeProfileName(profileName);
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(profileName));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const rows = loadRequestRows(
     {

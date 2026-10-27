@@ -1,4 +1,5 @@
 import { estimated, formatLabel } from "../obs/provenance.js";
+import { currencyKey } from "./currency.js";
 
 /**
  * Peak / off-peak windows (feature catalog B9, ticket #81).
@@ -206,7 +207,7 @@ function emptyBucket(): PeakBucketTotals {
 function addCost(bucket: PeakBucketTotals, currency: string, value: number): void {
   // #89: same casefold as the usage-report accumulator so a stored "USD"
   // can't split the gateway's "usd" peak/off-peak lane.
-  const key = currency.toLowerCase();
+  const key = currencyKey(currency);
   bucket.costs[key] = (bucket.costs[key] ?? 0) + value;
 }
 

@@ -14,6 +14,7 @@ import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
 import {
@@ -414,7 +415,7 @@ function accMix(mix: Mix, row: ReportRow): void {
   mix.cachedTokens += row.cached_tokens ?? 0;
   if (row.cost_value !== null) {
     // #89: casefold so mixed-case stored currencies stay in one lane.
-    const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
+    const currency = currencyKey(row.currency);
     mix.costs[currency] = (mix.costs[currency] ?? 0) + row.cost_value;
   }
 }

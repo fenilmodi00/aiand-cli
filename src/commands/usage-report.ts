@@ -3,6 +3,7 @@ import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, num, out, style, table } from "../cli/output.js";
 import { type ImportedReportRow, loadImportedRows } from "../obs/ccusage-import.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { currencyKey } from "../pricing/currency.js";
 import { type PeakSplit, splitPeakOffPeak } from "../pricing/peak-windows.js";
 import {
   type CoverageReport,
@@ -89,9 +90,6 @@ export type RequestRow = {
   cost_value: number | null;
   currency: string | null;
 };
-
-/** Currency map key for a row with no `currency` (never mixed into a real code). */
-const UNKNOWN_CURRENCY = "";
 
 type Costs = Record<string, number>;
 
@@ -252,7 +250,7 @@ function accumulate(acc: Accumulator, row: RequestRow): void {
   if (row.cost_value !== null) {
     // #89: casefold so gateway "usd" and ccusage-imported "USD" land in one
     // lane; genuinely different currencies still get their own keys.
-    const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
+    const currency = currencyKey(row.currency);
     acc.costs.set(currency, (acc.costs.get(currency) ?? 0) + row.cost_value);
   }
 }
@@ -656,10 +654,7 @@ export function buildReport(options: BuildReportOptions): Report {
       cached_tokens: session.cached_tokens,
       // #89: same casefold as accumulate so mixed-case stored currencies
       // can't split one currency into two session lanes.
-      costs:
-        session.cost === null
-          ? {}
-          : { [(session.currency ?? UNKNOWN_CURRENCY).toLowerCase()]: session.cost },
+      costs: session.cost === null ? {} : { [currencyKey(session.currency)]: session.cost },
       started_at: session.started_at,
       agent: session.agent,
       turns: session.turns,

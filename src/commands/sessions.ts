@@ -5,6 +5,7 @@ import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
+import { currencyKey } from "../pricing/currency.js";
 import {
   createdSince,
   createdUntilIncl,
@@ -84,7 +85,7 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
     modelCounts.set(row.model, (modelCounts.get(row.model) ?? 0) + 1);
     if (typeof row.cost_value === "number" && Number.isFinite(row.cost_value)) {
       // #89: casefold so mixed-case stored currencies stay in one lane.
-      const currency = (row.currency ?? UNKNOWN_CURRENCY).toLowerCase();
+      const currency = currencyKey(row.currency);
       costs[currency] = (costs[currency] ?? 0) + row.cost_value;
     }
     if (row.ttft_ms !== null) ttfts.push(row.ttft_ms);

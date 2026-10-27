@@ -35,6 +35,7 @@ import {
   syncWarningLine,
 } from "../store/coverage.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
+import { assertWindowOrder } from "./usage-report.js";
 
 export const help = `${style.bold("aiand forecast")} -- burn-rate projection against your budget
 
@@ -462,11 +463,7 @@ function untilOrNow(parsed: ReturnType<typeof parse>): Date {
   const since = str(parsed, "since");
   if (since !== undefined) {
     const sinceMs = Date.parse(since);
-    if (!Number.isNaN(sinceMs) && sinceMs > ms) {
-      throw new CliError(`--since ${since} is after --until ${until}.`, {
-        hint: "Pass an earlier --since or a later --until.",
-      });
-    }
+    if (!Number.isNaN(sinceMs)) assertWindowOrder(sinceMs, ms);
   }
   return new Date(ms);
 }

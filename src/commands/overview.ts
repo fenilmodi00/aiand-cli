@@ -1,7 +1,6 @@
-import { openSession } from "../api/client.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { err, json, out, style } from "../cli/output.js";
-import { assertSafeProfileName, resolveProfile } from "../config.js";
+import { assertSafeProfileName } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import {
   assertTimezone,
@@ -13,8 +12,7 @@ import {
   syncWarningFor,
 } from "../report/data.js";
 import { renderOverviewText } from "../report/overview.js";
-import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { runPreReadSync } from "../store/sync.js";
 
 /**
  * `aiand overview` (feature catalog F3, ticket #76): the copy-pasteable
@@ -71,20 +69,7 @@ export async function run(argv: string[]): Promise<void> {
   // #87: validate --profile even when sync is skipped or fails open.
   const profileName = str(parsed, "profile");
   if (profileName !== undefined) assertSafeProfileName(profileName);
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(profileName));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      // Fail-open: a sign-in or network problem never blocks the local summary.
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const now = new Date();
   const { sinceMs, untilMs } = resolveWindow(
