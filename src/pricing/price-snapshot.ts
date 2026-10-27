@@ -5,9 +5,9 @@ import { CliError } from "../cli/errors.js";
  *
  * Dual-source discipline (ccusage's): the snapshot is a data file whose
  * entries each cite where the price came from; the CLI never invents one.
- * The bundled snapshot below starts EMPTY of model prices on purpose — the
- * never-guess policy (spec H1) means an entry lands only through a reviewed
- * change citing a vendor pricing page. Until then, models show as
+ * The bundled snapshot below prices the gateway's first-party models from
+ * vendor pricing pages; a model without a vendor-published price stays out
+ * (never-guess policy, spec H1) and shows as
  * `unpriced` (never $0.00) unless the user supplies prices via
  * `aiand config set prices.<model>.input|.output|.cacheRead` or
  * `aiand usage --prices-file <path>` with an updated snapshot.
@@ -65,9 +65,19 @@ const BUNDLED_ALIASES: readonly PriceAlias[] = [
     source: "Z.ai publishes GLM ids without the gateway's zai-org/ org prefix (docs.z.ai)",
   },
   {
-    alias: "moonshotai/kimi-k3",
-    vendorId: "kimi-k3",
-    source: "Moonshot platform ids (platform.moonshot.ai) carry no moonshotai/ prefix",
+    alias: "zai-org/glm-5.3-flash",
+    vendorId: "glm-5.3-flash",
+    source: "Z.ai publishes GLM ids without the gateway's zai-org/ org prefix (docs.z.ai)",
+  },
+  {
+    alias: "deepseek-ai/deepseek-v4-pro",
+    vendorId: "deepseek-v4-pro",
+    source: "DeepSeek API docs model list (api-docs.deepseek.com/quick_start/pricing)",
+  },
+  {
+    alias: "deepseek-ai/deepseek-v4.1-flash",
+    vendorId: "deepseek-v4.1-flash",
+    source: "DeepSeek API docs model list (api-docs.deepseek.com/quick_start/pricing)",
   },
   {
     alias: "qwen/qwen3.8-27b",
@@ -75,28 +85,103 @@ const BUNDLED_ALIASES: readonly PriceAlias[] = [
     source: "Alibaba Model Studio ids carry no qwen/ org prefix",
   },
   {
-    alias: "google/gemma-4-31b-it",
-    vendorId: "gemma-4-31b-it",
-    source: "Google AI Studio ids carry no google/ org prefix",
+    alias: "qwen/qwen3.6-27b",
+    vendorId: "qwen3.6-27b",
+    source: "Alibaba Model Studio ids carry no qwen/ org prefix",
+  },
+  {
+    alias: "moonshotai/kimi-k3",
+    vendorId: "kimi-k3",
+    source: "Moonshot platform ids (platform.moonshot.ai) carry no moonshotai/ prefix",
   },
 ];
 
 const BUNDLED_SOURCES: readonly SnapshotSource[] = [
+  {
+    name: "Z.ai developer pricing",
+    url: "https://docs.z.ai/guides/overview/pricing",
+  },
+  {
+    name: "DeepSeek models & pricing",
+    url: "https://api-docs.deepseek.com/quick_start/pricing",
+  },
+  {
+    name: "Alibaba Model Studio model pricing",
+    url: "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+  },
+  {
+    name: "Kimi API model pricing",
+    url: "https://platform.kimi.ai/docs/pricing/chat",
+  },
   { name: "LiteLLM model prices", url: "https://models.litellm.ai" },
   { name: "models.dev", url: "https://models.dev" },
 ];
 
 /**
- * The bundled snapshot: schema-complete, price-empty. See the module comment
- * for why empty is the honest default.
+ * The bundled snapshot, priced from vendor pages (see sources). Entries cite
+ * the page they came from; a model with no vendor page stays out rather than
+ * being guessed (e.g. google/gemma-4-31b-it: Google's own pages publish no
+ * paid per-token price for it — AI Studio is free-tier only and Vertex lists
+ * a different Gemma 4 size).
  */
 export const BUNDLED_SNAPSHOT: PriceSnapshot = {
   format: 1,
   name: "bundled",
-  date: "2026-10-25",
+  date: "2026-10-28",
   sources: BUNDLED_SOURCES,
   aliases: BUNDLED_ALIASES,
-  models: {},
+  models: {
+    "glm-5.3": {
+      input: 1.4,
+      output: 4.4,
+      cacheRead: 0.26,
+      source: "https://docs.z.ai/guides/overview/pricing (GLM-5.3 row)",
+    },
+    "glm-5.3-flash": {
+      input: 0.15,
+      output: 0.5,
+      cacheRead: 0.03,
+      source: "https://docs.z.ai/guides/overview/pricing (GLM-5.3-Flash row)",
+    },
+    "deepseek-v4-pro": {
+      // DeepSeek bills peak (01:00-04:00, 06:00-10:00 UTC Mon-Fri) vs
+      // off-peak, not by input length; the peak rates are the conservative
+      // bound, so they are the listed price.
+      input: 1.32,
+      output: 3.96,
+      cacheRead: 0.044,
+      source:
+        "https://api-docs.deepseek.com/quick_start/pricing (deepseek-v4-pro, peak rates; off-peak is half)",
+    },
+    "deepseek-v4.1-flash": {
+      input: 0.3,
+      output: 1.2,
+      cacheRead: 0.006,
+      source:
+        "https://api-docs.deepseek.com/quick_start/pricing (deepseek-flash peak rates; off-peak is half)",
+    },
+    "qwen3.8-27b": {
+      input: 2,
+      output: 6,
+      cacheRead: 0.4,
+      source:
+        "https://www.alibabacloud.com/help/en/model-studio/model-pricing (qwen3.8-27b, International; cache hit per /help/en/model-studio/context-cache: 20% of the input price)",
+    },
+    "qwen3.6-27b": {
+      input: 0.6,
+      output: 3.6,
+      cacheRead: null,
+      source:
+        "https://www.alibabacloud.com/help/en/model-studio/model-pricing (qwen3.6-27b, International, 0<Token<=256K)",
+    },
+    "kimi-k3": {
+      input: 3,
+      output: 15,
+      cacheRead: 0.3,
+      source:
+        "https://platform.kimi.ai/docs/pricing/chat (K3 series; Moonshot list $3/$15, cache hit $0.30 per MTok)",
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------

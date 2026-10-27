@@ -7,6 +7,21 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+- The bundled list-price snapshot (`bundled@2026-10-28`) now prices the
+  gateway's first-party models — zai-org/glm-5.3, zai-org/glm-5.3-flash,
+  deepseek-ai/deepseek-v4-pro, deepseek-ai/deepseek-v4.1-flash,
+  qwen/qwen3.8-27b, qwen/qwen3.6-27b, moonshotai/kimi-k3 — each entry citing
+  the vendor pricing page it was read from, so `usage --vs-list` reports
+  `priced` rows with non-null savings for real traffic instead of
+  `equivalent unpriced` everywhere. google/gemma-4-31b-it is deliberately
+  absent: Google publishes no paid per-token price for it (AI Studio serves
+  it free-tier only; Vertex AI lists a different Gemma 4 size), so under the
+  never-guess policy it stays unpriced. DeepSeek entries list peak rates
+  (DeepSeek bills peak vs off-peak, not by input length; peak is exactly 2x
+  off-peak, so priced savings are conservative by at most 2x on off-peak
+  requests).
+
 
 ### Fixed
 - bare `aiand key` now says what the command is for and gives a
