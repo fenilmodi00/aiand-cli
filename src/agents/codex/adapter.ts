@@ -1,4 +1,4 @@
-import { unlink } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { Model } from "../../api/models.js";
 import { CliError } from "../../cli/errors.js";
@@ -100,6 +100,76 @@ function resolveAuthCommand(): string | null {
   }
   // Codex spawns the auth command without a PATHEXT lookup, so bare `aiand` misses `aiand.cmd`.
   return findWindowsExecutable(AUTH_COMMAND, process.env);
+}
+
+/** Host of the gateway the CLI itself dials, for native-key routing checks. */
+const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
+
+/**
+ * Raw api keys of every provider in config.toml (global and the aiand
+ * profile) whose base_url reaches the ai& gateway. The CLI-baked provider
+ * (auth.command = `aiand`) is excluded — the sweep's recordAgentKey already
+ * owns that key. Never throws: a missing, unreadable, or malformed config
+ * returns []. No OAuth: auth.json `tokens.*` are never collected, only the
+ * plaintext OPENAI_API_KEY.
+ */
+async function codexNativeAiandKeys(): Promise<string[]> {
+  const dir = process.env.CODEX_HOME || join(agentHome(), ".codex");
+  const keys: string[] = [];
+  let authJson: Record<string, unknown> | null = null; // auth.json, read at most once
+  for (const file of ["config.toml", `${PROFILE}.config.toml`]) {
+    let text: string;
+    try {
+      text = await readFile(join(dir, file), "utf8");
+    } catch {
+      continue; // missing or unreadable — nothing native there
+    }
+    const providerKeys = readKeys(splitSections(text));
+    for (const [name, table] of Object.entries(providerKeys)) {
+      if (!/^model_providers\./.test(name)) continue;
+      const base = table.base_url;
+      let host: string;
+      try {
+        if (typeof base !== "string") continue;
+        host = new URL(base).hostname;
+      } catch {
+        continue; // not a URL — not a gateway route
+      }
+      if (host !== GATEWAY_HOST) continue;
+      // Ours only executes auth.command at Codex's request time; the sweep
+      // never does (arbitrary code exec), so a provider wired to it is
+      // skipped and its key attributed via recordAgentKey instead.
+      const auth = table.auth;
+      if (
+        auth &&
+        typeof auth === "object" &&
+        !Array.isArray(auth) &&
+        isAuthCommand((auth as Record<string, unknown>).command)
+      ) {
+        continue;
+      }
+      if (typeof table.experimental_bearer_token === "string" && table.experimental_bearer_token)
+        keys.push(table.experimental_bearer_token);
+      // env_key names an environment variable Codex itself reads at request
+      // time, so resolving it here mirrors what the provider actually sends.
+      const envKey = table.env_key;
+      if (typeof envKey === "string" && process.env[envKey]?.trim())
+        keys.push(process.env[envKey]!);
+      if (table.requires_openai_auth === true && authJson === null) {
+        try {
+          authJson = JSON.parse(await readFile(join(dir, "auth.json"), "utf8")) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          authJson = {}; // unreadable — no key to attribute
+        }
+      }
+      const openaiKey = authJson?.OPENAI_API_KEY;
+      if (typeof openaiKey === "string" && openaiKey) keys.push(openaiKey);
+    }
+  }
+  return keys;
 }
 
 const spawnableByCodex = (command: unknown): boolean =>
@@ -481,6 +551,7 @@ export const codexAdapter: AgentAdapter = {
   enableGuard,
   enable,
   disable,
+  nativeAiandKeys: codexNativeAiandKeys,
   async refreshKey(): Promise<boolean> {
     return false;
   },

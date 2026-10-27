@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
+import { agentHome, DEFAULT_BASE_URL, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { detectBinary } from "../detect.js";
 import {
@@ -31,6 +31,7 @@ import type {
 } from "../types.js";
 import { applyModelPicker, buildModelPicker, stripModelPicker } from "./picker.js";
 import {
+  API_KEY_KEY,
   BASE_URL_KEY,
   buildClaudeSettings,
   CONTEXT_KEY,
@@ -110,6 +111,48 @@ async function markedFile(path: string): Promise<boolean> {
 
 const routedByUs = (env: Record<string, unknown> | undefined): boolean =>
   env?.[MARKER_KEY] === ENV_ON && isRoutableBaseUrl(env[BASE_URL_KEY]);
+
+/** Host of the gateway the CLI itself dials, for native-key routing checks. */
+const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
+
+/**
+ * Raw api keys the user set in settings.json whose ANTHROPIC_BASE_URL reaches
+ * the ai& gateway, so native Claude Code use attributes to its agent. The row
+ * with our marker is excluded — bakedKey/recordAgentKey already record that
+ * one. Never throws: a missing, unreadable, or malformed settings.json
+ * returns []. Deliberately not consulted: process.env (wrong process and
+ * ephemeral), .credentials.json and the keychain (OAuth subscription tokens,
+ * not ai& keys). Attribution only; nothing here rewrites the file.
+ */
+async function claudeNativeAiandKeys(): Promise<string[]> {
+  const path = claudeSettingsPath();
+  const raw = await readTextIfExists(path);
+  if (!raw) return [];
+  let settings: Record<string, unknown>;
+  try {
+    settings = parseSettings(path, raw);
+  } catch {
+    return [];
+  }
+  const env = asObject(settings.env);
+  if (!env) return [];
+  const baseURL = env[BASE_URL_KEY];
+  if (typeof baseURL !== "string") return [];
+  let host: string;
+  try {
+    host = new URL(baseURL).hostname;
+  } catch {
+    return []; // not a URL — not a gateway route
+  }
+  if (host !== GATEWAY_HOST) return [];
+  if (env[MARKER_KEY] === ENV_ON) return []; // ours — bakedKey covers it
+  const keys: string[] = [];
+  for (const key of [TOKEN_KEY, API_KEY_KEY]) {
+    const value = env[key];
+    if (typeof value === "string" && value !== "" && !keys.includes(value)) keys.push(value);
+  }
+  return keys;
+}
 
 function parseSettings(path: string, raw: string): Record<string, unknown> {
   if (!raw.trim()) return {};
@@ -445,6 +488,7 @@ export const claudeAdapter: AgentAdapter = {
   // has one would silently bill the user's subscription instead of ai&. Both
   // launchers (run-agent, agentSession) delete these before the spawn.
   shadowEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  nativeAiandKeys: claudeNativeAiandKeys,
   async bakedKey(): Promise<string | null> {
     // The key Claude Code sends is the token in our env block. A config
     // without our marker is the user's, and its token is not ours to claim.

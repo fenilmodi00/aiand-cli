@@ -85,6 +85,16 @@ export type AgentAdapter = {
   //   its key and report no client field, so this is how a request is
   //   attributed to the agent that sent it. Adapters that bake a key
   //   implement it by reading their own config — the same file they write.
+  nativeAiandKeys?(): Promise<string[]>;
+  // ^ Keys this agent holds in ITS OWN native credential store that reach
+  //   the ai& gateway — e.g. omp's auth_credentials row for a provider named
+  //   "aiand", or a hand-pointed gateway URL in another agent's own config.
+  //   The CLI did not bake these (that is `bakedKey`), but the gateway still
+  //   sees their masked form in /logs, so observability must attribute them
+  //   to this agent instead of "unknown". Returns [] when the store cannot
+  //   be read; never throws. Read-only: recording these keys never rewires
+  //   or claims the agent — `off`/forgetAgentKeys still drops the agent's
+  //   recorded keys (a later sync re-adds the native ones it still holds).
   enable(input: EnableInput): Promise<EnableResult>;
   enableGuard?(opts: GuardOptions): Promise<void>;
   // ^ Runs inside agentOn, before the snapshot + enable(). Adapters whose

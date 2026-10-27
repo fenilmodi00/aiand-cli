@@ -1,3 +1,4 @@
+import { recordAgentKey } from "../api/agent-keys.js";
 import { AGENTS } from "./registry.js";
 
 /** One agent's key-refresh outcome, after a fresh credential is stored. */
@@ -80,6 +81,11 @@ export async function rebakeAgentKeys(
 
     try {
       if (!(await adapter.refreshKey({ apiKey, previousKey }))) continue;
+      // The gateway's /logs identify this agent's rows by the new key from
+      // now on; remember it so rotation never strands history as "unknown".
+      await recordAgentKey(adapter.id, apiKey).catch(() => {
+        // Observability must never break a refresh that already succeeded.
+      });
       notes.push({ agent: adapter.id, state: "refreshed", note: "Key refreshed." });
     } catch (error) {
       notes.push({

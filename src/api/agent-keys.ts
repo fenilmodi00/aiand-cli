@@ -10,10 +10,17 @@ import { PRIVATE_FILE_MODE } from "../fsutil.js";
  * the only way to attribute a request to an agent is to remember which key we
  * baked into that agent's config. This file is that memory: the CLI writes it
  * when it wires an agent, and the observability commands read it back.
- *
  * Keys are stored masked (the same shape /logs returns) plus a fingerprint of
  * the full key, so two keys that share a mask are still told apart and the
  * secret never lands on disk.
+ *
+ * Two kinds of mapping share this file. A CLI-baked key is recorded at `on`
+ * time (and on rebake, so rotation never strands history). A native key —
+ * one the agent holds in its own credential store, e.g. omp's own `aiand`
+ * provider login — is swept on every store sync: the agent may rotate or
+ * delete it at any time, so the sweep re-adds whatever is currently present;
+ * mappings are never dropped by the sweep, because history under a
+ * rotated-away key must stay attributed.
  */
 export type AgentKeyRecord = {
   /** Agent id as the registry spells it: "claude", "codex", "opencode", … */
@@ -33,7 +40,7 @@ type AgentKeyFile = {
 
 const AGENT_KEYS_FILE = "agent-keys.json";
 
-function agentKeysPath(): string {
+export function agentKeysPath(): string {
   return join(configDir(), AGENT_KEYS_FILE);
 }
 
@@ -136,11 +143,27 @@ export async function collectBakedKeys(
 }
 
 /**
+ * Every agent sharing a masked key, in recording order. A key the CLI baked
+ * into several agents (one sign-in, `aiand init` wiring many) is genuinely
+ * ambiguous per request — the gateway identifies only the key — so
+ * consumers either label such traffic distinctly or keep first-recording
+ * order stable for deterministic output.
+ */
+export function agentsForMaskedKey(masked: string): string[] {
+  return readFile(agentKeysPath())
+    .keys.filter((entry) => entry.masked === masked)
+    .map((entry) => entry.agent);
+}
+
+/**
  * The agent that owns a masked key, or undefined when the key was never
  * wired by this CLI (an agent wired by hand, or a key from another machine).
+ * When several agents share the key, the first in recording order wins —
+ * deterministic, and honest consumers surface the sharing via
+ * agentsForMaskedKey.
  */
 export function agentForMaskedKey(masked: string): string | undefined {
-  return readFile(agentKeysPath()).keys.find((entry) => entry.masked === masked)?.agent;
+  return agentsForMaskedKey(masked)[0];
 }
 
 /** Drop a mapping — used when an agent is unwired. */
@@ -153,4 +176,33 @@ export async function forgetAgentKeys(agent: string): Promise<number> {
     mode: PRIVATE_FILE_MODE,
   });
   return file.keys.length - keys.length;
+}
+
+/**
+ * Remember an agent's NATIVE key mappings — keys it holds in its own
+ * credential store (see AgentAdapter.nativeAiandKeys), which the CLI never
+ * baked. Additive and idempotent per (agent, fingerprint): history under a
+ * key the agent has since rotated or deleted must STAY attributed, so the
+ * sweep never removes entries; `forgetAgentKeys` (`off`) is the only removal
+ * path, and a later sync re-adds whatever is still present. Never throws:
+ * an unreadable caller state leaves the file as it was.
+ */
+export async function recordNativeAgentKeys(agent: string, keys: readonly string[]): Promise<void> {
+  const path = agentKeysPath();
+  const file = readFile(path);
+  const existing = new Set(file.keys.map((entry) => `${entry.agent}:${entry.fingerprint}`));
+  const additions: AgentKeyRecord[] = [];
+  for (const key of keys) {
+    if (!key) continue;
+    const fingerprint = await keyFingerprint(key);
+    if (existing.has(`${agent}:${fingerprint}`)) continue;
+    existing.add(`${agent}:${fingerprint}`);
+    additions.push({ agent, masked: maskKey(key), fingerprint, at: Date.now() });
+  }
+  if (additions.length === 0) return;
+  await writeFileAtomic(
+    path,
+    `${JSON.stringify({ version: 1, keys: [...file.keys, ...additions] }, null, 2)}\n`,
+    { mode: PRIVATE_FILE_MODE },
+  );
 }

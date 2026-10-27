@@ -1,6 +1,6 @@
 import { chmod, mkdir, rm, rmdir, unlink } from "node:fs/promises";
 import { CliError } from "../../cli/errors.js";
-import { writeFileAtomic } from "../../config.js";
+import { DEFAULT_BASE_URL, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
@@ -428,6 +428,37 @@ async function disable(): Promise<DisableResult> {
   // reports false and the command layer prints "nothing to turn off".
   return { stripped: !bare || envText !== rawEnv, notes };
 }
+const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
+
+/**
+ * Raw keys of user-owned provider blocks in config.yaml whose base_url
+ * reaches the ai& gateway. Hermes never keeps the key inline: the block's
+ * key_env names a variable, and the value lives in ~/.hermes/.env or the
+ * user's own environment — resolving that exact variable mirrors what the
+ * provider reads at request time, so it is attribution-truthful. The
+ * CLI-baked block (managed_by: aiand) is excluded: hermes defines no
+ * bakedKey, and the CLI-wired key is recorded by rebake's recordAgentKey
+ * after refreshKey writes .env (src/agents/rebake.ts). Never throws: a
+ * missing, unreadable, or malformed config returns []. No OAuth/keychain
+ * path exists for hermes providers, so nothing is skipped for unreadability.
+ */
+async function hermesNativeAiandKeys(): Promise<string[]> {
+  const configText = await readTextIfExists(hermesConfigPath());
+  if (!configText || !hasProviderAiand(configText)) return [];
+  if (hasHermesMarker(configText)) return [];
+  const base = readProviderField(configText, "base_url");
+  try {
+    if (!base || new URL(base).hostname !== GATEWAY_HOST) return [];
+  } catch {
+    return []; // not a URL — not a gateway route
+  }
+  const keyEnv = readProviderField(configText, "key_env");
+  if (!keyEnv) return [];
+  const envText = await readTextIfExists(hermesEnvPath());
+  const key = readEnvValue(envText, keyEnv) ?? process.env[keyEnv];
+  return key?.trim() ? [key] : [];
+}
+
 export const hermesAdapter: AgentAdapter = {
   id: HERMES_ID,
   label: "Hermes Agent",
@@ -460,6 +491,7 @@ export const hermesAdapter: AgentAdapter = {
   detect(): DetectResult {
     return detectBinary(HERMES_BIN);
   },
+  nativeAiandKeys: hermesNativeAiandKeys,
   managedFiles(): string[] {
     return [hermesEnvPath(), hermesConfigPath(), hermesInitPyPath(), hermesPluginYamlPath()];
   },

@@ -10,6 +10,7 @@ import {
   agentHome,
   commandName,
   configDir,
+  DEFAULT_BASE_URL,
   isRoutableBaseUrl,
   trimSlash,
   writeFileAtomic,
@@ -48,6 +49,9 @@ type OpencodeRecord = {
 
 /** OpenAI-compatible base URL OpenCode dials for every ai& model. */
 const OPENCODE_BASE_URL = "https://api.aiand.com/v1";
+
+/** Host of the gateway the CLI itself dials, for native-key routing checks. */
+const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
 
 /** The adapter id (`aiand opencode`), also the key for its snapshot state. */
 const OPENCODE_ID = "opencode";
@@ -254,6 +258,46 @@ const providerOptions = (parsed: Record<string, unknown>) => aiandProviderField(
 /** True when our stamp sits on `provider.aiand.options`. */
 function hasOwnershipMarker(parsed: Record<string, unknown>): boolean {
   return providerOptions(parsed)?.[OPENCODE_MARKER_KEY] === true;
+}
+
+/**
+ * Raw api keys of every provider in opencode.json whose baseURL reaches
+ * the ai& gateway (same host the CLI dials), skipping the provider row
+ * with no apiKey. The CLI-baked row (marker present) is excluded —
+ * bakedKey/recordAgentKey already record that one. Never throws: a
+ * missing, unreadable, or malformed config returns [].
+ */
+async function opencodeNativeAiandKeys(): Promise<string[]> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = await readOpencodeConfig();
+  } catch {
+    return [];
+  }
+  const provider = parsed.provider;
+  if (!provider || typeof provider !== "object" || Array.isArray(provider)) return [];
+  const providers = provider as Record<string, unknown>;
+  const ours = hasOwnershipMarker(parsed);
+  const keys: string[] = [];
+  for (const id of Object.keys(providers)) {
+    const block = providers[id];
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+    const options = (block as Record<string, unknown>).options;
+    if (!options || typeof options !== "object" || Array.isArray(options)) continue;
+    const baseURL = (options as Record<string, unknown>).baseURL;
+    if (typeof baseURL !== "string") continue;
+    let host: string;
+    try {
+      host = new URL(baseURL).hostname;
+    } catch {
+      continue; // not a URL — not a gateway route
+    }
+    if (host !== GATEWAY_HOST) continue;
+    if (ours && id === OPENCODE_PROVIDER_ID) continue;
+    const key = (options as Record<string, unknown>).apiKey;
+    if (typeof key === "string" && key !== "") keys.push(key);
+  }
+  return keys;
 }
 
 /**
@@ -468,6 +512,7 @@ export const opencodeAdapter: AgentAdapter = {
   bin: OPENCODE_BIN,
   install: OPENCODE_INSTALL,
   aliases: ["code"],
+  nativeAiandKeys: opencodeNativeAiandKeys,
   detect(): DetectResult {
     return detectBinary(OPENCODE_BIN);
   },

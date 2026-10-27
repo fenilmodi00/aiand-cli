@@ -479,6 +479,13 @@ export const copilotAppAdapter: AgentAdapter = {
   async bakedKey(): Promise<string | null> {
     // The key the app sends is the bearer in our provider row. A row the
     // CLI does not own is the user's, and its key is not ours to claim.
+    // Deliberately no nativeAiandKeys here: a user-made provider row keeps
+    // its key in the OS keychain (authKind "api_key"), unreachable from
+    // data.db, and the only in-db readable shape (authKind "none") is
+    // byte-identical to what `on` writes — indistinguishable from ours, so a
+    // native sweep could only double-claim the baked key or claim nothing.
+    // `aiand cache --attribute copilot-app=<masked-key>` labels such a key
+    // by hand when the user wants it attributed.
     try {
       const provider = await findAppProvider(
         (await getAddedState<CopilotAppRecord>(COPILOT_APP_ID))?.providerId,

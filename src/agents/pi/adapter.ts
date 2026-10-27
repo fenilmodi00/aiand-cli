@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, commandName, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
+import {
+  agentHome,
+  commandName,
+  DEFAULT_BASE_URL,
+  isRoutableBaseUrl,
+  writeFileAtomic,
+} from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
@@ -84,6 +90,45 @@ function aiandCredential(auth: Record<string, unknown>): Record<string, unknown>
 /** True when our stamp sits on the auth.json `aiand` credential. */
 function hasOwnershipMarker(auth: Record<string, unknown>): boolean {
   return aiandCredential(auth)?.[PI_MARKER_KEY] === PI_MARKER;
+}
+
+/** Host of the gateway the CLI itself dials, for native-key routing checks. */
+const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
+
+/**
+ * Raw api keys from auth.json credentials whose models.json baseUrl
+ * reaches the ai& gateway (same host the CLI dials). The CLI-baked
+ * credential (managedBy marker present) is excluded — bakedKey/
+ * recordAgentKey already record that one. Never throws: a missing,
+ * unreadable, or malformed file returns [].
+ */
+async function piNativeAiandKeys(): Promise<string[]> {
+  let auth: Record<string, unknown>;
+  let models: Record<string, unknown>;
+  try {
+    auth = await readJsoncObject(piAuthPath(), INVALID_CONFIG_HINT);
+    models = await readJsoncObject(piModelsPath(), INVALID_CONFIG_HINT);
+  } catch {
+    return [];
+  }
+  const baseUrl = aiandProvider(models)?.baseUrl;
+  if (typeof baseUrl !== "string") return [];
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return []; // not a URL — not a gateway route
+  }
+  if (host !== GATEWAY_HOST) return [];
+  if (hasOwnershipMarker(auth)) return []; // ours — bakedKey covers it
+  const keys: string[] = [];
+  for (const value of Object.values(auth)) {
+    const credential = asObject(value);
+    if (!credential) continue;
+    const key = credential.key;
+    if (typeof key === "string" && key !== "") keys.push(key);
+  }
+  return keys;
 }
 
 async function probe(): Promise<ProbeResult> {
@@ -523,6 +568,7 @@ export const piAdapter: AgentAdapter = {
     return files;
   },
   probe,
+  nativeAiandKeys: piNativeAiandKeys,
   async bakedKey(): Promise<string | null> {
     // The key Pi sends is the one in our auth.json credential. A credential
     // without our marker is the user's, and its key is not ours to claim.

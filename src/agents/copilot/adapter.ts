@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
+import { agentHome, DEFAULT_BASE_URL, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
@@ -113,6 +113,47 @@ function isOurRow(
   if (row === undefined || !isRoutableBaseUrl(row.baseUrl)) return false;
   if (added?.wroteBaseUrl !== undefined) return row.baseUrl === added.wroteBaseUrl;
   return row.baseUrl === expectedBaseUrl && typeof row.apiKey === "string";
+}
+
+/**
+ * Raw api keys of every row in providers.json `providers[]` whose baseUrl
+ * reaches the ai& gateway. Host equality (not bare isRoutableBaseUrl) is
+ * the gate so foreign https providers are never claimed; rows the CLI
+ * baked (isOurRow via the added record) are excluded so bakedKey/
+ * recordAgentKey own that key and it is not double-claimed. Any row name
+ * qualifies — the sweep must see user-added gateway rows too. Never
+ * throws: a missing, unparseable, or malformed config returns [].
+ */
+async function copilotNativeAiandKeys(): Promise<string[]> {
+  const gatewayHost = new URL(DEFAULT_BASE_URL).hostname;
+  let providers: Record<string, unknown>;
+  try {
+    providers = await readJsoncObject(copilotProvidersPath(), INVALID_CONFIG_HINT);
+  } catch {
+    return []; // missing or unreadable — nothing native there
+  }
+  const rows = Array.isArray(providers.providers) ? providers.providers : [];
+  // Rows the CLI baked are identified by the AddedState record's
+  // wroteBaseUrl — the only per-row ownership proof. isOurRow's no-record
+  // fallback (expectedBaseUrl + apiKey) would swallow a hand-written
+  // gateway row too, which is exactly what this sweep must attribute.
+  const bakedBaseUrl = (await getAddedState<CopilotRecord>(COPILOT_ID))?.wroteBaseUrl;
+  const keys: string[] = [];
+  for (const row of rows.map(asObject)) {
+    let host: string;
+    try {
+      if (typeof row?.baseUrl !== "string") continue;
+      host = new URL(row.baseUrl).hostname;
+    } catch {
+      continue; // not a URL — not a gateway route
+    }
+    if (host !== gatewayHost) continue;
+    if (bakedBaseUrl !== undefined && row.baseUrl === bakedBaseUrl) continue;
+    if (typeof row.apiKey === "string" && row.apiKey && !keys.includes(row.apiKey)) {
+      keys.push(row.apiKey);
+    }
+  }
+  return keys;
 }
 
 async function probe(): Promise<ProbeResult> {
@@ -530,6 +571,7 @@ export const copilotAdapter: AgentAdapter = {
     const key = row?.apiKey;
     return typeof key === "string" && key.length > 0 ? key : null;
   },
+  nativeAiandKeys: copilotNativeAiandKeys,
   // Inherited env names that would repoint a launcher session off
   // ai&: the 1.0.89 payload's single-provider BYOK
   // surface `COPILOT_PROVIDER_*` — grepped from

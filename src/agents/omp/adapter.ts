@@ -20,6 +20,7 @@ import type {
   EnableResult,
   ProbeResult,
 } from "../types.js";
+import { ompNativeAiandKeys } from "./auth-store.js";
 import { OMP_INSTALL } from "./install.js";
 import { ompConfigPath, ompModelsPath, ompRefreshKey, ompSessionLaunch } from "./launch.js";
 import {
@@ -527,6 +528,7 @@ export const ompAdapter: AgentAdapter = {
   // catalog-validated: sessionLaunch drops the model pin and
   // lets omp's own default resolution pick.
   allowUnpinnedModel: true,
+  nativeAiandKeys: ompNativeAiandKeys,
   detect(): DetectResult {
     return detectBinary(OMP_BIN);
   },

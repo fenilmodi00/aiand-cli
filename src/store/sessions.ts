@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { agentForMaskedKey } from "../api/agent-keys.js";
+import { agentForMaskedKey, agentKeysPath } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
 import { configPath } from "../config.js";
 import { openStore, storePath } from "./index.js";
@@ -302,13 +302,28 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
   ).run(key, value);
 }
 
-/** Row count + watermark + threshold: any change invalidates the materialized table. */
+/**
+ * Row count + watermark + threshold + key-map revision: any change
+ * invalidates the materialized table. The map revision matters because
+ * `agent` labels are baked into the materialized rows at rebuild time — a
+ * native-key attribution sweep changes attribution without touching the
+ * request rows, so the fingerprint must notice (same rows + new map →
+ * different labels).
+ */
 function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
   const count = db.prepare("SELECT COUNT(*) AS n FROM requests").get() as Record<string, unknown>;
   const watermark = db
     .prepare("SELECT id, created_at FROM requests ORDER BY created_at DESC, id DESC LIMIT 1")
     .get() as Record<string, unknown> | undefined;
-  return `${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${gapMinutes}`;
+  let mapRev = "";
+  try {
+    mapRev = createHash("sha256").update(readFileSync(agentKeysPath(), "utf8")).digest("hex");
+  } catch {
+    // No map file (or unreadable): a stable sentinel keeps the fingerprint
+    // deterministic — same missing map, same fingerprint.
+    mapRev = "none";
+  }
+  return `${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${gapMinutes}:${mapRev}`;
 }
 
 /**

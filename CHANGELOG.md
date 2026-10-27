@@ -9,6 +9,31 @@ breaking changes while the command surface settles.
 
 
 ### Fixed
+- Harness attribution showed `unknown` for traffic an agent sent with a key
+  the CLI never baked — most visibly omp running on its own OMP
+  authentication (`aiand harness compare`, dashboard, sessions, usage, and
+  OTel export all ride the same key map). Adapters now expose
+  `nativeAiandKeys` (omp's `agent.db` `aiand` credentials; OpenCode/Pi
+  providers hand-pointed at the gateway; Claude Code settings env blocks
+  pointing at the gateway; Codex `config.toml` gateway providers via
+  `env_key`/`experimental_bearer_token`/`requires_openai_auth`; Copilot CLI
+  `providers.json` gateway rows; Hermes `config.yaml` gateway blocks with
+  their `key_env` var), and every store sync sweeps them into
+  `agent-keys.json` before anything else — purely local, so it runs even
+  when the gateway is unreachable. Never swept, deliberately:
+  Claude/Codex OAuth credential stores (OAuth tokens are not ai& keys),
+  `apiKeyHelper`/`auth.command` scripts (no arbitrary execution at sync
+  time), plain env vars outside the config that names them, and the Copilot
+  app's user-made provider rows (their keys live in the OS keychain, and
+  the only in-db readable shape is byte-identical to what `on` writes —
+  `aiand cache --attribute copilot-app=<masked-key>` labels those by hand).
+  A key the agent has since rotated away with no trace left anywhere stays
+  `unknown` (never guessed); the materialized `sessions` table
+  re-attributes when the key map changes.
+- Re-login/key rotation stranded pre-rotation history as `unknown`: rebake
+  swapped the new key into agent configs but never recorded it in
+  `agent-keys.json`. Rebake now records the swapped-in key, so rows under
+  both the old and new keys keep their harness label.
 - `aiand dashboard` TUI looked dead on real stores: every period key, arrow,
   `p`, and `r` froze the frame for seconds (only `c` and `q`, which skip the
   data refresh, responded). Root cause: harness attribution re-read

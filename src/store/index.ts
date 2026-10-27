@@ -507,6 +507,36 @@ const SYNC_RANGE = "30days";
 const OVERLAP_MS = 5 * 60 * 1000;
 
 /**
+ * Refresh every adapter's NATIVE key mappings (keys in an agent's own
+ * credential store that this CLI never baked) into the local key map, so
+ * gateway rows under them attribute to the agent instead of "unknown".
+ * Purely local: no gateway involved, so it runs regardless of sync outcome
+ * and observability commands may call it directly on --no-sync. Best-effort
+ * end to end — never throws; one unreadable agent store never blocks the
+ * others.
+ */
+export async function sweepNativeAgentKeys(): Promise<void> {
+  try {
+    // Dynamic: agents/registry statically imports store consumers
+    // (envelope-capture) and agent-keys imports config — a static import
+    // here would close a store→agents→store cycle (same pattern as
+    // src/api/client.ts's rebake import).
+    const { AGENTS } = await import("../agents/registry.js");
+    const { recordNativeAgentKeys } = await import("../api/agent-keys.js");
+    for (const adapter of AGENTS) {
+      if (!adapter.nativeAiandKeys) continue;
+      try {
+        await recordNativeAgentKeys(adapter.id, await adapter.nativeAiandKeys());
+      } catch {
+        // One unreadable agent store never blocks the others.
+      }
+    }
+  } catch {
+    // registry import trouble must not fail the caller
+  }
+}
+
+/**
  * Incremental watermark pull of /logs into the store. Never throws: a
  * network/auth failure returns { ok: false } so the calling command warns
  * and serves local data.
@@ -527,6 +557,9 @@ export async function syncStore(
   session: Session,
   opts: { range?: string } = {},
 ): Promise<SyncResult> {
+  // Local attribution repair first: it needs no gateway, so a sync that
+  // fails at the network layer still leaves the key map fresh.
+  await sweepNativeAgentKeys();
   try {
     // Cross-process serialization on top of WAL + busy_timeout: the
     // watermark must advance one writer at a time.
