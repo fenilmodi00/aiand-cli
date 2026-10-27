@@ -321,7 +321,7 @@ describe("overview text", () => {
     assert.equal(
       text,
       [
-        "ai& overview — 2026-10-01 to 2026-10-21 (UTC) · 3 requests",
+        "ai& overview — 2026-10-19 to 2026-10-21 (UTC) · 3 requests",
         "cost: gateway-billed · savings: estimated (catalog prices)",
         "",
         "Totals",
@@ -426,7 +426,9 @@ describe("overview text", () => {
       join(dir, "config.json"),
       JSON.stringify({ budget: { monthly: 150, currency: "usd" } }),
     );
-    const result = await runCli(["overview", "--last", "1d"], { env: reportEnv(dir) });
+    // #97: the window is honored verbatim — the month-start row is only in
+    // range because --since asks for it, never via silent widening.
+    const result = await runCli(["overview", "--since", monthPrefix], { env: reportEnv(dir) });
     assert.equal(result.code, 0);
     assert.ok(result.stdout.includes("Budget"));
     assert.ok(result.stdout.includes("$0.00 of $150.00") || result.stdout.includes("150.00"));
@@ -476,7 +478,7 @@ describe("offline HTML report", () => {
     });
     assert.ok(html.includes('class="theme-light"'));
     assert.ok(html.includes("Generated 2026-10-22 12:00:00Z"));
-    assert.match(html, /range\s+2026-10-01\s+to\s+2026-10-21/);
+    assert.match(html, /range\s+2026-10-19\s+to\s+2026-10-21/);
     assert.ok(html.includes("3 requests"));
     // chart series: one per harness cost line + cumulative savings
     assert.ok(html.includes("claude</span>"));
@@ -531,7 +533,8 @@ describe("offline HTML report", () => {
       JSON.stringify({ budget: { monthly: 150, currency: "usd" } }),
     );
     const outPath = join(dir, "budget.html");
-    const result = await runCli(["report", "--last", "1d", "--out", outPath], {
+    // #97: the window is honored verbatim — no silent month-start widening.
+    const result = await runCli(["report", "--since", day, "--out", outPath], {
       env: reportEnv(dir),
     });
     assert.equal(result.code, 0);
@@ -612,5 +615,110 @@ describe("offline HTML report", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.stderr.includes("sync failed"));
     assert.ok(result.stdout.includes("Totals"), "local summary still renders");
+  });
+});
+
+// #97 (OBS-BF-12): report and overview honor the exact requested window —
+// no silent month-start widening. The three surfaces (report, overview,
+// usage) must agree on the same flags.
+describe("requested window honored (#97)", () => {
+  test("--last 1d covers exactly the trailing 24h, agreeing with usage", async () => {
+    const dir = freshDir("last-1d");
+    const now = new Date();
+    const inWindow = new Date(now.getTime() - 2 * 3_600_000).toISOString();
+    const outside = new Date(now.getTime() - 25 * 3_600_000).toISOString();
+    await seedStore(dir, [
+      row(inWindow, { id: "in", cost_value: 0.01, cost: "0.01" }),
+      row(outside, { id: "out", cost_value: 0.02, cost: "0.02" }),
+    ]);
+    const overview = await runCli(["overview", "--last", "1d", "--json"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(overview.code, 0, overview.stderr);
+    const payload = JSON.parse(overview.stdout);
+    assert.equal(payload.totals.requests, 1);
+    assert.ok(payload.meta.range.since, "range.since present");
+    const sinceMs = Date.parse(payload.meta.range.since);
+    assert.ok(
+      Math.abs(now.getTime() - 24 * 3_600_000 - sinceMs) < 120_000,
+      `range.since ${payload.meta.range.since} is the trailing 24h`,
+    );
+
+    // Cross-surface: usage --last 1d sees the same single request. The two
+    // invocations resolve `now` a second or two apart — compare with slack.
+    const usage = await runCli(["usage", "--last", "1d", "--json"], { env: reportEnv(dir) });
+    assert.equal(usage.code, 0, usage.stderr);
+    const usagePayload = JSON.parse(usage.stdout);
+    assert.equal(usagePayload.sections.totals.requests, 1);
+    assert.ok(
+      Math.abs(Date.parse(usagePayload.meta.range.since) - sinceMs) < 120_000,
+      `usage range.since ${usagePayload.meta.range.since} agrees with overview`,
+    );
+  });
+
+  test("report --last 1d JSON range metadata equals the requested window", async () => {
+    const dir = freshDir("report-1d");
+    const now = new Date();
+    await seedStore(dir, [row(new Date(now.getTime() - 3_600_000).toISOString(), { id: "r1" })]);
+    const outPath = join(dir, "r.html");
+    const result = await runCli(["report", "--last", "1d", "--out", outPath, "--json"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    const sinceMs = Date.parse(payload.meta.range.since);
+    assert.ok(
+      Math.abs(now.getTime() - 24 * 3_600_000 - sinceMs) < 120_000,
+      `meta.range.since ${payload.meta.range.since} is the trailing 24h, not month-start`,
+    );
+    // The HTML footer's range label matches the requested window too.
+    const html = readFileSync(outPath, "utf8");
+    assert.ok(!html.includes(`range ${now.toISOString().slice(0, 7)}-01 to`));
+  });
+
+  test("explicit --since inside the month is honored verbatim on every surface", async () => {
+    const dir = freshDir("since-inside");
+    const now = new Date();
+    const monthPrefix = now.toISOString().slice(0, 7);
+    const inside = new Date(now.getTime() - 3 * 24 * 3_600_000).toISOString().slice(0, 10);
+    await seedStore(dir, [
+      row(new Date(now.getTime() - 3_600_000).toISOString(), {
+        id: "recent",
+        cost_value: 0.01,
+        cost: "0.01",
+      }),
+      row(`${monthPrefix}-05T10:00:00.000Z`, { id: "old", cost_value: 0.02, cost: "0.02" }),
+    ]);
+    const expectedSince = `${inside}T00:00:00.000Z`;
+    for (const [cmd, args, read] of [
+      ["overview", ["overview", "--since", inside, "--json"], (p) => p],
+      ["usage", ["usage", "--since", inside, "--json"], (p) => p.sections],
+    ]) {
+      const r = await runCli(args, { env: reportEnv(dir) });
+      assert.equal(r.code, 0, `${cmd}: ${r.stderr}`);
+      const payload = JSON.parse(r.stdout);
+      assert.equal(payload.meta.range.since, expectedSince, `${cmd} --since verbatim`);
+      assert.equal(read(payload).totals.requests, 1, `${cmd} sees only in-window rows`);
+    }
+    const report = await runCli(
+      ["report", "--since", inside, "--out", join(dir, "r.html"), "--json"],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(report.code, 0, report.stderr);
+    assert.equal(JSON.parse(report.stdout).meta.range.since, expectedSince);
+  });
+
+  test("a window crossing the month boundary still works (no regression)", async () => {
+    const dir = freshDir("cross-boundary");
+    await seedStore(dir, FIXTURE_ROWS); // 2026-10-20..21, pinned store rows
+    const overview = await runCli(
+      ["overview", "--since", "2026-09-25", "--until", "2026-10-22", "--json"],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(overview.code, 0, overview.stderr);
+    const payload = JSON.parse(overview.stdout);
+    assert.equal(payload.meta.range.since, "2026-09-25T00:00:00.000Z");
+    assert.equal(payload.totals.requests, 3);
+    assert.ok(payload.meta.range.since < "2026-10-01");
   });
 });

@@ -555,6 +555,14 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- `aiand report` and `aiand overview` honor the exact requested window
+  (#97). A `--last 1d` window that started inside the current calendar
+  month was silently widened to month-start (including explicit `--since`
+  dates), so the report covered the whole month while `usage` honored the
+  same flags exactly — and the rendered range label and `--json` range
+  metadata lied about it. The three surfaces now agree: the range label
+  and metadata equal the requested window.
+
 - Store sync cursor: the outer sync loop advanced by `created_at` alone,
   so any timestamp owning more rows than one page re-served the identical
   page forever — a live sync captured 103 of 832 rows and never finished
