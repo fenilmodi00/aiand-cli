@@ -8,6 +8,7 @@ export type Model = {
   owned_by: string;
   provider: string;
   context_window: number;
+  max_output_tokens: number | null;
   capabilities: string[];
   reasoning_efforts: string[] | null;
   reasoning_effort_default: string | null;

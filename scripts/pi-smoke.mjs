@@ -28,6 +28,7 @@ const SMOKE_MODEL = {
   owned_by: "zai-org",
   provider: "zai-org",
   context_window: 200000,
+  max_output_tokens: 32768,
   capabilities: ["text", "vision", "tool_calling"],
   // Pi's default thinking level is medium. This model does not publish
   // medium, so Pi moves up to high. The double is lenient, but the shape
