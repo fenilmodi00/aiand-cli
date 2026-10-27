@@ -6,7 +6,7 @@ import { cliEnv, FAKE_API_KEY, runCli, withMockGateway, withTestEnv } from "./he
 
 /**
  * `aiand harness` — the synthetic benchmark run path (the default command, as
- * opposed to `harness duel`/`latency`/`stats`). Everything goes through the
+ * opposed to `harness stats`). Everything goes through the
  * mock gateway in its own process: the benchmark posts real request shapes to
  * <base>/v1/chat/completions, so the OpenAI-dialect layouts (`omp`) run for
  * real while the Anthropic ones are covered by harness-bench.test.mjs, which
