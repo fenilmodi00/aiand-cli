@@ -508,6 +508,33 @@ test("cli: recommend --json carries provenance and the min-sample guard", async 
   assert.ok(!payload.synthetic, "recommend never carries synthetic rows");
 });
 
+// #100: recommend on an empty/future window exits 0 with an explicit empty
+// answer — the same honest-empty contract harness compare now follows.
+test("cli: recommend on an empty window exits 0 with an explicit empty result (#100)", async () => {
+  const cfg = cfgDir("recommend-empty-window");
+  // No rows at all.
+  const empty = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(empty.code, 0, `exit 0 on an empty window\n${empty.stderr}`);
+  const emptyPayload = JSON.parse(empty.stdout);
+  assert.deepEqual(emptyPayload.ranked, []);
+  assert.deepEqual(emptyPayload.insufficient, []);
+
+  // A future --since over rows that exist: same contract, text mode too.
+  const masks = await seedAgentKeys(cfg);
+  await seedStore(cfg, [
+    row({ id: "f1", api_key: masks.claude, created_at: iso(0) }),
+    row({ id: "f2", api_key: masks.claude, created_at: iso(60_000) }),
+  ]);
+  const future = await runCli(["recommend", "--no-sync", "--since", "2099-01-01"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(future.code, 0, `exit 0 on a future window\n${future.stderr}`);
+  assert.match(future.stdout, /no \(harness, model\) pair has 5\+ sessions/);
+  assert.ok(!future.stdout.includes("Apply:"), "nothing recommended, no apply line");
+});
+
 // #91: the matrix synthetic render in markdown (table variant covered above)
 // and the fail-open sync warning on the matrix auto-sync path.
 test("cli: matrix --format markdown --synthetic renders the markdown synthetic block", async () => {

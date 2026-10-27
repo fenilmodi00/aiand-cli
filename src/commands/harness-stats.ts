@@ -104,6 +104,27 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     },
   });
 
+  // #100: an empty (or entirely filtered-out) window is a clean empty answer,
+  // not an error — the same honest-empty contract `recommend` already follows.
+  if (rows.length === 0) {
+    if (bool(parsed, "json")) {
+      return json({
+        provenance: { ...stats.provenance, emptyWindow: true },
+        harnesses: [],
+        excluded: stats.excluded,
+      });
+    }
+    out(
+      style.yellow(
+        mode === "compare"
+          ? "harness compare: no requests in this window — nothing to compare."
+          : "harness stats: no requests in this window.",
+      ),
+    );
+    out(style.dim("Run `aiand store --sync`, wire an agent with `aiand init`, or widen --last."));
+    return;
+  }
+
   const harnessFilter = str(parsed, "harness");
   let harnesses = stats.harnesses;
   if (harnessFilter !== undefined) {

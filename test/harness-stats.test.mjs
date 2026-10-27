@@ -600,3 +600,48 @@ test("cli: --last combined with --since/--until pins both window edges", async (
   assert.ok(claude, "harness present");
   assert.equal(claude.requests, 6, "all rows sit inside the pinned window");
 });
+
+// #100: an empty (future) window is an honest empty answer, exit 0 — the same
+// contract `recommend` already follows — in both text and --json modes.
+test("cli: compare on an empty window exits 0 with an explicit empty result (#100)", async () => {
+  const cfg = cfgDir("compare-empty");
+  // No rows at all: an empty store.
+
+  const plain = await runCli(["harness", "compare", "--no-sync", "--last", "30d"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(plain.code, 0, `exit 0 on an empty window\n${plain.stderr}`);
+  assert.match(plain.stdout, /no requests in this window/);
+  assert.match(plain.stdout, /widen --last|store --sync/);
+
+  // A future --since filters out rows that exist: same contract.
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { openStore, storePath } = await import("../dist/store/index.js");
+    const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    const mask = (await import("../dist/api/agent-keys.js")).maskKey(
+      "sk-test-claude-super-secret-key-000",
+    );
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      row({ id: "c0", api_key: mask, created_at: iso(0) }),
+      row({ id: "c1", api_key: mask, created_at: iso(60_000) }),
+    ]);
+    opened.db.close();
+  });
+  const future = await runCli(["harness", "compare", "--no-sync", "--since", "2099-01-01"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(future.code, 0, `exit 0 on a future window\n${future.stderr}`);
+  assert.match(future.stdout, /no requests in this window/);
+
+  const asJson = await runCli(
+    ["harness", "compare", "--no-sync", "--since", "2099-01-01", "--json"],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
+  );
+  assert.equal(asJson.code, 0, asJson.stderr);
+  const empty = JSON.parse(asJson.stdout);
+  assert.equal(empty.provenance.emptyWindow, true, "explicit empty marker in --json");
+  assert.deepEqual(empty.harnesses, []);
+});
