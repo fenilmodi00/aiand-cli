@@ -2,14 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import test, { describe } from "node:test";
+import test from "node:test";
 
 const {
-  CLOSED_URL,
   FAKE_API_KEY,
   FakeInput,
   FakeOutput,
-  captureStdio,
   fixtureFile,
   makeFixture,
   seedCatalogCache,
