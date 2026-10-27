@@ -1295,8 +1295,8 @@ function renderTotalsFields(
       "error rate",
       `${(totals.errorRate * 100).toFixed(1)}% (${totals.errors}/${totals.requests} non-2xx excl. 429)`,
     ]);
+    pairs.push(["error rate provenance", meta.provenance.errorRate ?? ""]);
   }
-  pairs.push(["error rate provenance", meta.provenance.errorRate ?? ""]);
   if (view.showCost) {
     for (const [currency, sum] of Object.entries(totals.costs)) {
       pairs.push([`cost (${currency === "" ? "unknown" : currency})`, formatCost(sum, currency)]);

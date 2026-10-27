@@ -875,6 +875,8 @@ describe("usage error rate (#98)", () => {
     const plain = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
     assert.equal(plain.code, 0, plain.stderr);
     assert.doesNotMatch(plain.stdout, /error rate/); // honest labeling: absent, not 0.0
+    // #98: the provenance row goes with the line — no labelled blank row.
+    assert.ok(!plain.stdout.split("\n").some((l) => l.trim() === "error rate provenance"));
   });
 
   test("usage and harness stats report the same errorRate for identical rows (#88/#98)", async () => {
