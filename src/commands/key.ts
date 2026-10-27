@@ -27,7 +27,7 @@ export async function run(argv: string[]): Promise<void> {
   const [verb] = parsed.positionals;
   if (verb !== "export") {
     throw new CliError(verb ? `Unknown verb "${verb}".` : "No verb given.", {
-      hint: "Verbs: export",
+      hint: "Verbs: export -- prints the active session key. Try: aiand key export",
     });
   }
 

@@ -82,10 +82,11 @@ describe("aiand key export", () => {
     assert.match(stderr, /Verbs: export/);
   });
 
-  test("missing verb errors, listing export", async () => {
+  test("missing verb errors, naming the verb and a copy-pasteable example", async () => {
     const { code, stderr } = await cli(["key"]);
     assert.equal(code, 1);
     assert.match(stderr, /No verb given\./);
-    assert.match(stderr, /Verbs: export/);
+    assert.match(stderr, /Verbs: export -- prints the active session key/);
+    assert.match(stderr, /Try: aiand key export/);
   });
 });
