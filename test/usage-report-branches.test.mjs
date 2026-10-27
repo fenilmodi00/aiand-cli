@@ -194,7 +194,7 @@ describe("usage report: filters, currency, breakdown", () => {
     const dir = freshDir("csv-sections");
     await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "c1" })]);
     const noBlock = await runCli(
-      ["usage", "--format", "csv", "--sections", "totals,by-model,by-agent,peak"],
+      ["usage", "--format", "csv", "--sections", "totals,by-model,by-agent"],
       { env: reportEnv(dir) },
     );
     assert.equal(noBlock.code, 1);
@@ -210,7 +210,7 @@ describe("usage report: filters, currency, breakdown", () => {
     );
   });
 
-  test("--sections includes every registry entry in one run (by-model/by-agent/peak/json)", async () => {
+  test("--sections includes every registry entry in one run (by-model/by-agent/json)", async () => {
     const dir = freshDir("all-sections");
     await seedStore(dir, [
       row("2026-10-20T10:00:00.000Z", { id: "m1" }),
@@ -220,7 +220,7 @@ describe("usage report: filters, currency, breakdown", () => {
       [
         "usage",
         "--sections",
-        "daily,totals,by-model,by-agent,peak,imported,grand-total",
+        "daily,totals,by-model,by-agent,imported,grand-total",
         "--include-imported",
         "--json",
       ],
@@ -228,7 +228,7 @@ describe("usage report: filters, currency, breakdown", () => {
     );
     assert.equal(run.code, 0, run.stderr);
     const sections = JSON.parse(run.stdout).sections;
-    for (const name of ["daily", "totals", "by-model", "by-agent", "peak", "grand-total"]) {
+    for (const name of ["daily", "totals", "by-model", "by-agent", "grand-total"]) {
       assert.ok(sections[name] !== undefined, `section ${name} present`);
     }
     // imported absent: nothing was imported
@@ -378,43 +378,7 @@ describe("usage report: imported ccusage lane branches", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// usage-report.js: peak section edge rows and totals-only table
-// ---------------------------------------------------------------------------
-
-describe("usage report: peak + totals-only rendering", () => {
-  test("--sections peak renders unclassified families with the no-guessing note", async () => {
-    const dir = freshDir("peak-unclassified");
-    await seedStore(dir, [
-      // glm rows get windowed; unknown-vendor model has no family.
-      row("2026-10-05T07:00:00Z", { id: "p1", cost: 1.0 }),
-      row("2026-10-05T12:00:00Z", { id: "p2", cost: 3.0 }),
-      row("2026-10-05T13:00:00Z", { id: "p3", cost: 2.0, model: "other-vendor/unknown" }),
-    ]);
-    const run = await runCli(["usage", "--sections", "peak", "--no-totals"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /Peak \/ off-peak/);
-    assert.match(run.stdout, /unclassified/);
-    assert.match(run.stdout, /no window-table entry for other-vendor\/unknown/);
-    assert.match(run.stdout, /window sources: /);
-    assert.match(run.stdout, /n\/a/); // unclassified model row cells
-    assert.match(run.stdout, /-/); // empty unclassified bucket for glm
-  });
-
-  test("peak renders the routed-traffic line only when routed requests exist", async () => {
-    const dir = freshDir("peak-routed");
-    // Store rows carry no route metadata, so routed stays empty — the line
-    // must not print. (buildReport maps store rows without a route field.)
-    await seedStore(dir, [row("2026-10-05T07:00:00Z", { id: "r1", cost: 1.0 })]);
-    const run = await runCli(["usage", "--sections", "peak", "--no-totals"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    assert.doesNotMatch(run.stdout, /routed \(non-first-party\)/);
-  });
-
+describe("usage report: totals-only rendering", () => {
   test("--sections totals only: no block table, the Totals field list renders", async () => {
     const dir = freshDir("totals-only");
     await seedStore(dir, [
@@ -789,33 +753,26 @@ describe("usage --import-ccusage: table output and flag guards", () => {
 });
 
 // #91: the report-render branches the golden tests never hit — human output
-// for every section on a seeded store (totals/by-model/by-agent/peak), the
-// mixed-currency peak cells, and the empty-group table note.
-test("usage human output renders every section and the mixed-currency peak cells", async () => {
+// for every section on a seeded store (totals/by-model/by-agent) and the
+// empty-group table note.
+test("usage human output renders every section", async () => {
   const dir = freshDir("render-all-sections");
   await seedStore(dir, [
-    // Peak GLM row (14:00-18:00 SGT window) + off-peak + an unclassified
-    // non-first-party model, all in one currency.
-    row("2026-10-20T08:30:00.000Z", { id: "rp1", cost: 0.02 }), // 16:30 SGT → peak
-    row("2026-10-20T02:00:00.000Z", { id: "rp2", cost: 0.01 }), // off-peak
+    row("2026-10-20T08:30:00.000Z", { id: "rp1", cost: 0.02 }),
+    row("2026-10-20T02:00:00.000Z", { id: "rp2", cost: 0.01 }),
     row("2026-10-20T03:00:00.000Z", {
       id: "rp3",
       cost: 0.01,
       model: "other-vendor/model-x",
-    }), // routed/unclassified family
+    }),
   ]);
-  const run = await runCli(
-    ["usage", "--by", "day", "--sections", "totals,by-model,by-agent,peak"],
-    {
-      env: reportEnv(dir),
-    },
-  );
+  const run = await runCli(["usage", "--by", "day", "--sections", "totals,by-model,by-agent"], {
+    env: reportEnv(dir),
+  });
   assert.equal(run.code, 0, run.stderr);
   assert.match(run.stdout, /Totals/);
   assert.match(run.stdout, /By model/);
   assert.match(run.stdout, /By agent/);
-  assert.match(run.stdout, /Peak \/ off-peak/);
-  assert.match(run.stdout, /no window-table entry for other-vendor\/model-x/);
 
   // --compact collapses the group table's token columns.
   const compact = await runCli(["usage", "--by", "day", "--sections", "by-model", "--compact"], {

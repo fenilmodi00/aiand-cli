@@ -23,7 +23,6 @@ import {
   provenanceAudit,
 } from "../obs/provenance.js";
 import { computeVsList, loadPriceOverrides, readSnapshotFile } from "../pricing/list-prices.js";
-import { PEAK_WINDOWS, windowLabel } from "../pricing/peak-windows.js";
 import { BUNDLED_SNAPSHOT } from "../pricing/price-snapshot.js";
 import { computeCoverage, syncWarningLine } from "../store/coverage.js";
 import { noSyncRequested } from "../store/index.js";
@@ -64,7 +63,6 @@ Usage
   aiand usage --metrics              full metric breakdown (legacy view)
   aiand usage --audit                provenance of every reported number
   aiand usage --verify               reconciliation gate vs the gateway
-  aiand usage --show-windows         print the peak/off-peak window table
   aiand usage --vs-list              vendor list-price equivalent + ai& savings
   aiand usage --import-ccusage <f|-> import ccusage --json output (offline)
 
@@ -144,15 +142,6 @@ Cost is always the gateway-billed amount in the request's currency (mixed
 currencies are shown per currency, never summed) and is never recomputed
 from price tables; tokens follow the gateway convention: input includes cached.
 
-Peak / off-peak (--sections peak or --show-windows; ticket #81)
-  --sections peak     per-model split of gateway-billed cost by the vendor
-                      window table (GLM peak: Mon-Fri 14:00-18:00 SGT);
-                      percentages are shares of cost and sum to 100;
-                      unclassified families and non-first-party (routed)
-                      traffic are reported explicitly, never guessed
-  --show-windows      print the window table itself with its per-entry
-                      sources (offline; --json for the raw table)
-
 List-price comparison (--vs-list; feature catalog B8)
   --vs-list           recompute stored tokens at vendor list prices and set
                       the equivalent beside the gateway-billed cost;
@@ -215,14 +204,11 @@ export async function run(argv: string[]): Promise<void> {
     jq: { type: "string" },
     format: { type: "string" },
     "vs-list": { type: "boolean", default: false },
-    "show-windows": { type: "boolean", default: false },
     "prices-file": { type: "string" },
     "import-ccusage": { type: "string" },
     "include-imported": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
-
-  if (bool(parsed, "show-windows")) return printWindows(parsed);
 
   const importTarget = str(parsed, "import-ccusage");
   if (importTarget !== undefined) {
@@ -646,32 +632,6 @@ async function runReport(parsed: Parsed): Promise<void> {
     sections,
     unit: reportUnit,
   });
-}
-
-// ---------------------------------------------------------------------------
-// Peak window table (--show-windows) — offline data inspection
-// ---------------------------------------------------------------------------
-
-function printWindows(parsed: Parsed): void {
-  const rows = PEAK_WINDOWS.map((family) => ({
-    family: family.family,
-    matches: family.match,
-    windows: family.windows.map(windowLabel).join(", "),
-    source: family.source,
-  }));
-  if (bool(parsed, "json")) {
-    json(PEAK_WINDOWS);
-    return;
-  }
-  heading("Peak / off-peak window table");
-  out(style.dim("model ids containing `matches` (case-insensitive) are split by these windows."));
-  out();
-  table(rows, [
-    { header: "family", value: (r) => r.family },
-    { header: "matches", value: (r) => r.matches },
-    { header: "peak windows", value: (r) => r.windows },
-    { header: "source", value: (r) => style.dim(r.source) },
-  ]);
 }
 
 // ---------------------------------------------------------------------------
