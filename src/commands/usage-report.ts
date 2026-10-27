@@ -2,6 +2,7 @@ import { agentForMaskedKey } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, num, out, style, table } from "../cli/output.js";
 import { type ImportedReportRow, loadImportedRows } from "../obs/ccusage-import.js";
+import { errorCount } from "../obs/harness-stats.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
 import { currencyKey } from "../pricing/currency.js";
 import { type PeakSplit, splitPeakOffPeak } from "../pricing/peak-windows.js";
@@ -84,6 +85,7 @@ export type RequestRow = {
   model: string;
   api_key: string | null;
   created_at: string;
+  status_code: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
@@ -92,6 +94,9 @@ export type RequestRow = {
 };
 
 type Costs = Record<string, number>;
+
+/** Imported ccusage rows ride `RequestRow` plus a source label (#73). */
+type ImportedRequestRow = RequestRow & { sourceLabel: string };
 
 type BlockRow = {
   /** Stable display key: `YYYY-MM-DD`, `YYYY-Www`, `YYYY-MM`, or a session id. */
@@ -120,7 +125,12 @@ type GroupRow = {
   costs: Costs;
 };
 
-type TotalsRow = Omit<GroupRow, "key">;
+type TotalsRow = Omit<GroupRow, "key"> & {
+  /** #98: the shared #88 error count (non-2xx excluding 429); null status is unknown, not an error. */
+  errors: number;
+  /** #98: errors / requests; null when the window holds no requests — never a fabricated 0. */
+  errorRate: number | null;
+};
 
 /**
  * The `--include-imported` combined view (ticket #73): gateway-only totals
@@ -131,8 +141,12 @@ type TotalsRow = Omit<GroupRow, "key">;
 type GrandTotalRow = {
   /** Identical to `sections.totals`. */
   gateway: TotalsRow;
-  /** The imported lane's own rollup, null when nothing imported in window. */
-  imported: TotalsRow | null;
+  /**
+   * The imported lane's own rollup, null when nothing imported in window.
+   * Imported ccusage rows carry no gateway status, so this lane has no
+   * `errors`/`errorRate` — unknown, never a fabricated 0.
+   */
+  imported: Omit<GroupRow, "key"> | null;
   requests: number;
   input_tokens: number;
   output_tokens: number;
@@ -197,7 +211,7 @@ function readRequests(window: { sinceMs: number | null; untilMs: number | null }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, status_code, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost_value, currency FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -626,6 +640,7 @@ export function buildReport(options: BuildReportOptions): Report {
     model: row.model,
     api_key: null,
     created_at: row.created_at,
+    status_code: null,
     input_tokens: row.input_tokens,
     output_tokens: row.output_tokens,
     cached_tokens: row.cached_tokens,
@@ -633,7 +648,7 @@ export function buildReport(options: BuildReportOptions): Report {
     currency: row.currency,
     sourceLabel: row.sourceLabel,
   }));
-  const filteredImported = filterRows(importedRows, options.filters);
+  const filteredImported: ImportedRequestRow[] = filterRows(importedRows, options.filters);
 
   const blockSection = UNIT_SECTION[options.unit];
   const wants = new Set<SectionName>(options.sections);
@@ -706,7 +721,13 @@ export function buildReport(options: BuildReportOptions): Report {
 
   const totalsAcc = emptyAccumulator();
   for (const row of rows) accumulate(totalsAcc, row);
-  const totals = finalize(totalsAcc);
+  // #98: the shared #88 definition (non-2xx excluding 429) — no second formula.
+  const errors = errorCount(rows);
+  const totals: TotalsRow = {
+    ...finalize(totalsAcc),
+    errors,
+    errorRate: totalsAcc.requests > 0 ? errors / totalsAcc.requests : null,
+  };
 
   const byModelAll = new Map<string, Accumulator>();
   const byAgentAll = new Map<string, Accumulator>();
@@ -841,6 +862,9 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
     cost: formatLabel(
       gatewayBilled("sum of the gateway-computed per-request cost; never recomputed"),
     ),
+    // #98: the shared #88 definition — same label harness-stats emits.
+    errors: formatLabel(estimated("non-2xx statuses excluding 429 over the window's rows")),
+    errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
   };
   if (sessionUnit) labels.sessions = formatLabel(heuristic("time-gap sessionization"));
   labels.peak = formatLabel(
@@ -1035,7 +1059,7 @@ export function renderReport(report: Report, view: RenderOptions): void {
     out();
     out(style.bold("Totals"));
     out();
-    renderTotalsFields(report.sections.totals as TotalsRow | undefined, view);
+    renderTotalsFields(report.sections.totals as TotalsRow | undefined, report, view);
   }
 
   if (view.sections.includes("by-model")) {
@@ -1176,6 +1200,20 @@ function renderBlockTable(blocks: BlockRow[], report: Report, view: RenderOption
   if (view.showCost) columns.push({ header: "cost", value: (r) => r.cost, align: "right" });
 
   table(rows, columns);
+
+  // #98: same number the `--json` totals carry; absent (not 0.0) on an empty
+  // window. `logs --errors` counts the same non-2xx-excluding-429 set.
+  if (view.totals && report.sections.totals) {
+    const totals = report.sections.totals as TotalsRow;
+    if (totals.errorRate !== null) {
+      out(
+        style.dim(
+          `error rate  ${(totals.errorRate * 100).toFixed(1)}% ` +
+            `(${totals.errors}/${totals.requests} non-2xx excl. 429) · estimated`,
+        ),
+      );
+    }
+  }
 }
 
 function renderBreakdowns(report: Report, view: RenderOptions): void {
@@ -1238,14 +1276,27 @@ function renderPerCurrency(blocks: BlockRow[]): void {
   ]);
 }
 
-function renderTotalsFields(totals: TotalsRow | undefined, view: RenderOptions): void {
+function renderTotalsFields(
+  totals: TotalsRow | undefined,
+  report: Report,
+  view: RenderOptions,
+): void {
   if (!totals) return;
+  const meta = report.meta;
   const pairs: [string, string][] = [
     ["requests", num(totals.requests)],
     ["input tokens", num(totals.input_tokens)],
     ["output tokens", num(totals.output_tokens)],
     ["cached tokens", num(totals.cached_tokens)],
   ];
+  // #98: same number as `--json` totals; absent (not 0.0) on an empty window.
+  if (totals.errorRate !== null) {
+    pairs.push([
+      "error rate",
+      `${(totals.errorRate * 100).toFixed(1)}% (${totals.errors}/${totals.requests} non-2xx excl. 429)`,
+    ]);
+  }
+  pairs.push(["error rate provenance", meta.provenance.errorRate ?? ""]);
   if (view.showCost) {
     for (const [currency, sum] of Object.entries(totals.costs)) {
       pairs.push([`cost (${currency === "" ? "unknown" : currency})`, formatCost(sum, currency)]);

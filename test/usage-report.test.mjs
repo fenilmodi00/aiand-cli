@@ -412,6 +412,8 @@ describe("usage --jq and --format csv", () => {
       output_tokens: 100,
       cached_tokens: 260,
       costs: { usd: 0.0168 },
+      errors: 0, // #98: the shared #88 count over the window's rows
+      errorRate: 0, // 0/4 — all 200s; only an empty window yields null
     });
   });
 
@@ -793,5 +795,112 @@ describe("CLI error hardening (#87)", () => {
     );
     assert.equal(both.code, 1);
     assert.match(both.stderr, /mutually exclusive/);
+  });
+});
+
+// #98 (OBS-BF-13): usage surfaces the error rate from the single #88
+// definition (non-2xx excluding 429, over requests) — plain, --json, and
+// harness stats agree on identical data; an empty window is null/absent,
+// never a fabricated 0.0.
+describe("usage error rate (#98)", () => {
+  test("window with only 200s: rate 0 in --json, plain line shows 0.0%", async () => {
+    const dir = freshDir("err-all-200");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "e1", status_code: 200 }),
+      row("2026-10-20T11:00:00.000Z", { id: "e2", status_code: 200 }),
+    ]);
+    const json = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(json.code, 0, json.stderr);
+    const totals = JSON.parse(json.stdout).sections.totals;
+    assert.equal(totals.errors, 0);
+    assert.equal(totals.errorRate, 0);
+    assert.equal(totals.requests, 2);
+
+    const plain = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.match(plain.stdout, /error rate\s+0\.0% \(0\/2 non-2xx excl\. 429\)/);
+  });
+
+  test("429 is excluded from the numerator (gateway pressure, not quality)", async () => {
+    const dir = freshDir("err-429");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "r429", status_code: 429 }),
+      row("2026-10-20T10:05:00.000Z", { id: "r200", status_code: 200 }),
+      row("2026-10-20T10:10:00.000Z", { id: "r200b", status_code: 200 }),
+      row("2026-10-20T10:15:00.000Z", { id: "r200c", status_code: 200 }),
+    ]);
+    const json = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(json.code, 0, json.stderr);
+    const totals = JSON.parse(json.stdout).sections.totals;
+    assert.equal(totals.errors, 0); // #88: 429 excluded
+    assert.equal(totals.errorRate, 0);
+    assert.equal(totals.requests, 4);
+  });
+
+  test("499 and 5xx are counted (null status is unknown per #88, but the store cannot hold one)", async () => {
+    const dir = freshDir("err-499-5xx");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "x499", status_code: 499 }),
+      row("2026-10-20T10:05:00.000Z", { id: "x500", status_code: 500 }),
+      ...Array.from({ length: 6 }, (_, i) =>
+        row(`2026-10-20T1${i}:20:00.000Z`, { id: `xok${i}`, status_code: 200 }),
+      ),
+    ]);
+    const json = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(json.code, 0, json.stderr);
+    const totals = JSON.parse(json.stdout).sections.totals;
+    assert.equal(totals.requests, 8);
+    assert.equal(totals.errors, 2); // 499 + 500
+    assert.ok(Math.abs(totals.errorRate - 2 / 8) < 1e-9); // #98
+    assert.match(json.stdout, /non-2xx excluding 429 \/ requests/); // provenance label
+  });
+
+  test("empty window: errorRate null, no error-rate line in plain output", async () => {
+    const dir = freshDir("err-empty");
+    const json = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(json.code, 0, json.stderr);
+    const totals = JSON.parse(json.stdout).sections.totals;
+    assert.equal(totals.requests, 0);
+    assert.equal(totals.errorRate, null); // never a fabricated 0.0 // #98
+    assert.equal(totals.errors, 0);
+
+    const plain = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.doesNotMatch(plain.stdout, /error rate/); // honest labeling: absent, not 0.0
+  });
+
+  test("usage and harness stats report the same errorRate for identical rows (#88/#98)", async () => {
+    const dir = freshDir("err-parity");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "p429", status_code: 429 }),
+      row("2026-10-20T10:05:00.000Z", { id: "p500", status_code: 500 }),
+      row("2026-10-20T10:10:00.000Z", { id: "p302", status_code: 302 }),
+      ...Array.from({ length: 7 }, (_, i) =>
+        row(`2026-10-20T1${i}:20:00.000Z`, { id: `pok${i}`, status_code: 200 }),
+      ),
+    ]);
+    const json = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(json.code, 0, json.stderr);
+    const usageTotals = JSON.parse(json.stdout).sections.totals;
+    // 429 excluded; 500 + 302 counted: 2/10 by the shared definition.
+    assert.equal(usageTotals.errors, 2);
+    assert.ok(Math.abs(usageTotals.errorRate - 0.2) < 1e-9); // #98
+
+    const stats = await runCli(["harness", "stats", "--no-sync", "--json"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(stats.code, 0, stats.stderr);
+    const harnessRate = JSON.parse(stats.stdout).harnesses[0].errorRate;
+    assert.equal(harnessRate, usageTotals.errorRate, "harness stats errorRate identical"); // #88
   });
 });

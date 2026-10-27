@@ -113,6 +113,9 @@ ccusage import (--import-ccusage; ticket #73, offline — no sync, no network)
                               Unknown schemas are refused, never guessed.
   --json                      (with --import-ccusage) print the import summary
   --json             machine-readable payload { meta, sections }
+                     totals carry errors / errorRate (#98): non-2xx statuses
+                     excluding 429 over requests — the shared #88 definition;
+                     errorRate is null on an empty window, never 0.0
   --jq <filter>      minimal dot-path filter on the --json document
                      (.sections.totals, .sections.daily[0], .sections.daily[])
   --format csv       flat CSV of the primary section; fixed header
