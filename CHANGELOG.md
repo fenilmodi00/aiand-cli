@@ -303,6 +303,11 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Budget pacing in `aiand report` / `aiand overview` no longer projects a
+  month from a narrow window (ticket #97): when the requested window starts
+  after the current month began (e.g. `--last 1d`), the budget section now
+  loads month-span rows for its month-to-date math while `meta.range` and
+  every other section keep the requested window.
 - `aiand usage --verify --since/--until` now honors the requested window on
   the remote side (OBS-BF-11, #96): gateway log rows carry `created_at` in
   the wire format (`2026-10-26 05:02:11.844519+00`), which bare string

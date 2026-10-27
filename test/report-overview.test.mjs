@@ -457,12 +457,48 @@ describe("overview text", () => {
       join(dir, "config.json"),
       JSON.stringify({ budget: { monthly: 150, currency: "usd" } }),
     );
-    // #97: the window is honored verbatim — the month-start row is only in
-    // range because --since asks for it, never via silent widening.
+    // #97: meta.range stays the requested window — the month-start row is in
+    // range here because --since asks for it; the budget's own month-span
+    // load only kicks in when the requested window starts after the month.
     const result = await runCli(["overview", "--since", monthPrefix], { env: reportEnv(dir) });
     assert.equal(result.code, 0);
     assert.ok(result.stdout.includes("Budget"));
     assert.ok(result.stdout.includes("$0.00 of $150.00") || result.stdout.includes("150.00"));
+  });
+
+  // #97: `--last 1d` with a budget must not project a month from 24h of
+  // rows — the budget section loads its own month-span rows while
+  // meta.range (and every other section) keeps the requested window.
+  test("budget derives month-to-date even when the requested window is narrower (#97)", async () => {
+    const dir = freshDir("budget-narrow");
+    const now = new Date();
+    const monthPrefix = `${now.toISOString().slice(0, 7)}-01`;
+    await seedStore(dir, [
+      row(`${monthPrefix}T10:00:00.000Z`, { id: "m1", cost_value: 0.5, cost: "0.5" }),
+      row(new Date(now.getTime() - 60 * 60 * 1000).toISOString(), {
+        id: "r1",
+        cost_value: 0.25,
+        cost: "0.25",
+      }),
+    ]);
+    seedKeysAndCatalog(dir);
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ budget: { monthly: 150, currency: "usd" } }),
+    );
+    const result = await runCli(["overview", "--last", "1d", "--json"], { env: reportEnv(dir) });
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    // meta.range stays the requested window, never the widened month start.
+    if (now.getUTCDate() !== 1) {
+      const sinceMs = Date.parse(payload.meta.range.since);
+      assert.ok(sinceMs > Date.parse(monthPrefix), "range must be the requested window");
+    }
+    // Month-to-date covers both rows (0.5 + 0.25), not just the window's 0.25.
+    assert.ok(
+      Math.abs(payload.budget.currentSpend - 0.75) < 1e-9,
+      `expected month-to-date 0.75, got ${payload.budget.currentSpend}`,
+    );
   });
 });
 

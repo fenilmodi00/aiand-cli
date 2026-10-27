@@ -12,7 +12,7 @@ import {
 } from "../commands/usage-report.js";
 import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
-import { forecast } from "../obs/forecast.js";
+import { forecast, monthWindow } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
 import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
@@ -38,7 +38,10 @@ import {
  *     model catalog (model-catalog.json) — no network, no guessing;
  *   - sessions come from the #66 time-gap sessionizer, annotated as
  *     `heuristic`;
- *   - budget pacing reuses the #74 burn-rate v1 over the SAME loaded rows.
+ *   - budget pacing reuses the #74 burn-rate v1. Its month-to-date math
+ *     needs the current calendar month, so when the requested window starts
+ *     after the month began, a separate month-span load feeds just the
+ *     budget (#97); meta.range stays the requested window.
  */
 
 export const REPORT_SECTIONS = ["timeseries", "matrix", "sessions", "budget"] as const;
@@ -641,8 +644,13 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
       .slice(0, Math.max(1, options.top));
   }
 
-  // -- budget pacing (#74 burn-rate v1 over the SAME rows) ---------------------
-  const budget = buildBudget(wants, rows, currencyKeys, currencyHandling, now);
+  // -- budget pacing (#74 burn-rate v1) ----------------------------------------
+  // The forecast's month-to-date math needs rows from the start of the current
+  // calendar month. When the requested window starts later than that (#97),
+  // load a separate month-span row set for the budget only — meta.range and
+  // every other section keep the requested window.
+  const budgetRows = buildBudgetRows(wants, rows, options, load, now);
+  const budget = buildBudget(wants, budgetRows, currencyKeys, currencyHandling, now);
 
   const coverage = computeCoverage("30days", { now, sync: options.sync ?? undefined });
 
@@ -707,9 +715,32 @@ function filterRows(rows: readonly ReportRow[], options: BuildDataOptions): Repo
   });
 }
 
-function buildBudget(
+/**
+ * The rows the budget section forecasts over. The #74 forecast derives
+ * month-to-date from the current calendar month, so when the requested
+ * window starts after the month began, re-load from the store with the
+ * month-start window (#97). The same harness/model filters apply; the load
+ * is skipped entirely when no budget is configured or no budget section is
+ * requested, and `load` stays a single call when the window already covers
+ * the month.
+ */
+function buildBudgetRows(
   wants: Set<string>,
   rows: readonly ReportRow[],
+  options: BuildDataOptions,
+  load: LoadFn,
+  now: Date,
+): readonly ReportRow[] {
+  if (!wants.has("budget")) return rows;
+  if (loadBudget().monthly === null) return rows;
+  const { startMs } = monthWindow(now);
+  if (options.sinceMs === null || options.sinceMs <= startMs) return rows;
+  return filterRows(load({ sinceMs: startMs, untilMs: options.untilMs }), options);
+}
+
+function buildBudget(
+  wants: Set<string>,
+  budgetRows: readonly ReportRow[],
   currencyKeys: string[],
   currencyHandling: "single" | "mixed" | "none",
   now: Date,
@@ -729,7 +760,9 @@ function buildBudget(
   const result = forecast({
     // ForecastRow reads cost_value first; the gateway `cost` string is not
     // needed because the store's parsed companion is already verbatim.
-    rows: rows.map((row) => ({ ...row, cost: null })),
+    // #97: budgetRows span the current month when the requested window
+    // starts after it, so month-to-date never projects from a sliver.
+    rows: budgetRows.map((row) => ({ ...row, cost: null })),
     now,
     budget: monthly,
     currency: budgetCurrency ?? currency,
