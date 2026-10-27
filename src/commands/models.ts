@@ -1,4 +1,4 @@
-import { visionLabel } from "../agents/catalog.js";
+import { saveCatalogCache, visionLabel } from "../agents/catalog.js";
 import { openSession } from "../api/client.js";
 import { listModels, type Model } from "../api/models.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
@@ -38,6 +38,9 @@ export async function run(argv: string[]): Promise<void> {
   const session = hasKey ? await openSession(profile) : null;
 
   let models = await listModels(session, profile.apiUrl);
+  // The report/overview savings read this cache offline; `models` is the
+  // catalog-reading command the "run once to cache it" note names.
+  await saveCatalogCache(profile.apiUrl, models).catch(() => {});
 
   const search = str(parsed, "search")?.toLowerCase();
   if (search) {

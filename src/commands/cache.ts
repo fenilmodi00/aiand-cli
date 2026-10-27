@@ -1,3 +1,4 @@
+import { saveCatalogCache } from "../agents/catalog.js";
 import { AGENTS } from "../agents/registry.js";
 import { collectBakedKeys, listAgentKeys } from "../api/agent-keys.js";
 import {
@@ -105,7 +106,10 @@ export async function run(argv: string[]): Promise<void> {
   // Catalog prices, so the savings are priced at each model's real rates.
   const prices: Record<string, ModelPrice> = {};
   try {
-    for (const model of await listModels(session, session.profile.apiUrl)) {
+    const catalog = await listModels(session, session.profile.apiUrl);
+    // Same 6h cache the report/overview savings read offline.
+    await saveCatalogCache(session.profile.apiUrl, catalog).catch(() => {});
+    for (const model of catalog) {
       prices[model.id] = {
         inputPer1m: Number(model.input_per_1m),
         cachedPer1m: Number(model.cached_input_per_1m ?? 0),

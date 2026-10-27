@@ -15,7 +15,7 @@ import {
 import { yamlRender } from "./yaml.js";
 
 /** The agent config dir: ~/.omp/agent/, or $PI_CODING_AGENT_DIR when set. */
-function ompAgentDir(): string {
+export function ompAgentDir(): string {
   if (process.env.PI_CODING_AGENT_DIR) return process.env.PI_CODING_AGENT_DIR;
   return join(agentHome(), process.env.PI_CONFIG_DIR || ".omp", "agent");
 }

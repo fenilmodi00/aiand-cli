@@ -11,7 +11,7 @@ export const MARKER_KEY = "AIAND_MANAGED";
 export const BASE_URL_KEY = "ANTHROPIC_BASE_URL";
 export const TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN";
 /** Blanked so a key exported in the shell cannot win over ours. */
-const API_KEY_KEY = "ANTHROPIC_API_KEY";
+export const API_KEY_KEY = "ANTHROPIC_API_KEY";
 /**
  * The gateway flattens `system` into one string, so Claude Code's attribution
  * block would reach the model as prompt text; its docs name this variable as

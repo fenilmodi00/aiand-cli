@@ -262,13 +262,13 @@ async function setBudget(field: string, value: string, key: string, parsed: Pars
  */
 function get(args: string[], parsed: Parsed): void {
   const [key] = args;
-  if (key !== undefined && key !== "budget" && key !== "mcp") {
+  if (key !== undefined && key !== "budget" && key !== "mcp" && key !== "mcp.realProjectNames") {
     throw new CliError(`"${key}" is not a gettable key.`, {
-      hint: "Gettable keys: budget, mcp.",
+      hint: "Gettable keys: budget, mcp, mcp.realProjectNames.",
     });
   }
 
-  if (key === "mcp") {
+  if (key === "mcp" || key === "mcp.realProjectNames") {
     const config = loadConfig();
     const real = config.mcp?.realProjectNames === true;
     if (bool(parsed, "json")) {

@@ -185,6 +185,10 @@ describe("config", () => {
     const got = await runCli(["config", "get", "mcp", "--json"], { env });
     assert.deepEqual(JSON.parse(got.stdout), { real_project_names: true });
 
+    const gotKey = await runCli(["config", "get", "mcp.realProjectNames"], { env });
+    assert.equal(gotKey.code, 0, gotKey.stderr);
+    assert.match(gotKey.stdout, /mcp\.realProjectNames\s+true/);
+
     const off = await runCli(["config", "set", "mcp.realProjectNames", "false", "--json"], { env });
     assert.equal(off.code, 0, off.stderr);
     assert.deepEqual(JSON.parse(off.stdout), { key: "mcp.realProjectNames", value: false });

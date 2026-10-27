@@ -248,6 +248,17 @@ describe("vs-list pricing (B8)", () => {
     assert.equal(result.totals.savings, null);
   });
 
+  test("unpriced model still reports its gateway-billed cost, never $0.000000", () => {
+    const result = computeVsList(
+      [vsRow({ model: "vendor/who-knows", cost_value: 4.99 })],
+      snapshot(),
+    );
+    const rowResult = result.rows[0];
+    assert.equal(rowResult.status, "unpriced");
+    assert.equal(rowResult.billed, 4.99);
+    assert.equal(result.totals.billed, 4.99);
+  });
+
   test("exact-only: no fuzzy id matching", () => {
     const result = computeVsList([vsRow({ model: "glm-5.3-mini" })], snapshot());
     assert.equal(result.rows[0].status, "unpriced");

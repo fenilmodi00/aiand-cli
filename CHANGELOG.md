@@ -9,6 +9,19 @@ breaking changes while the command surface settles.
 
 
 ### Fixed
+- Live-gateway sandbox testing of every command on this branch surfaced three
+  defects, now fixed and regression-tested. `config get
+  mcp.realProjectNames` was rejected as "not a gettable key" even though
+  `config set`/`unset` accept it — `get` now resolves the sub-key like `mcp`.
+  `usage --vs-list` showed `usd 0.000000` billed for models the bundled
+  list-price snapshot does not price: the billed accumulator lived inside the
+  priced-row branch, so gateway-billed cost was silently dropped for unpriced
+  models (the plain `usage` report showed the real total). Billed now
+  accumulates for every row; equivalent/savings stay `unpriced`-honest. And
+  the note "run any catalog-reading command once to cache it" never came
+  true: `aiand models` and `aiand cache` fetched the catalog but never wrote
+  the 6h `model-catalog.json` cache the offline readers (report/overview
+  savings) price from. Both commands now persist the cache on fetch.
 - Harness attribution showed `unknown` for traffic an agent sent with a key
   the CLI never baked — most visibly omp running on its own OMP
   authentication (`aiand harness compare`, dashboard, sessions, usage, and

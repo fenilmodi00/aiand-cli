@@ -224,6 +224,11 @@ export function computeVsList(
     let firstUnpricedReason: string | null = null;
 
     for (const row of modelRows) {
+      // Billed is gateway data — it accumulates whether or not the snapshot
+      // prices this model. A fully-unpriced model must still show its real
+      // billed cost (the plain `usage` report shows it), not $0.000000.
+      if (row.cost_value !== null) billed += row.cost_value;
+      else billedKnown = false;
       const resolved = resolveRequestPrice(snapshot, overrides, row);
       if ("unpriced" in resolved) {
         if (firstUnpricedReason === null) firstUnpricedReason = resolved.unpriced;
@@ -231,8 +236,6 @@ export function computeVsList(
       }
       pricedCount += 1;
       equivalent += requestEquivalent(row, resolved);
-      if (row.cost_value !== null) billed += row.cost_value;
-      else billedKnown = false;
       if ((row.currency ?? "").toLowerCase() !== "usd") usdOnly = false;
     }
 

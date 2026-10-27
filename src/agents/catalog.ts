@@ -67,9 +67,22 @@ function isFresh(cache: CatalogCache, baseUrl: string): boolean {
 }
 
 /**
+ * Persist a fetched catalog as the 6h cache every offline reader
+ * (report savings, `overview`) prices from. Any command that reads the
+ * live catalog should call this on success — the "savings unavailable"
+ * note tells users a catalog-reading command will cache it.
+ */
+export async function saveCatalogCache(baseUrl: string, models: Model[]): Promise<void> {
+  const next: CatalogCache = { fetchedAt: Date.now(), baseUrl, models };
+  await writeFileAtomic(catalogCachePath(), `${JSON.stringify(next, null, 2)}\n`, {
+    mode: PRIVATE_FILE_MODE,
+  });
+}
+
+/**
  * The live /v1/models list, cached for 6h at <configDir>/model-catalog.json.
- * A fresh cache short-circuits the network entirely; a failed fetch does not
- * serve an expired cache.
+ * A fresh cache short-circuits the network entirely; a failed fetch does
+ * not serve an expired cache.
  */
 export async function getCatalog(baseUrl: string): Promise<Model[]> {
   const cached = await readCache();
@@ -77,10 +90,7 @@ export async function getCatalog(baseUrl: string): Promise<Model[]> {
 
   try {
     const models = await listModels(null, baseUrl);
-    const next: CatalogCache = { fetchedAt: Date.now(), baseUrl, models };
-    await writeFileAtomic(catalogCachePath(), `${JSON.stringify(next, null, 2)}\n`, {
-      mode: PRIVATE_FILE_MODE,
-    });
+    await saveCatalogCache(baseUrl, models);
     return models;
   } catch (error) {
     if (error instanceof CliError) throw error;

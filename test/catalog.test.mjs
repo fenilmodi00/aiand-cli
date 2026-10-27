@@ -182,4 +182,18 @@ describe("getCatalog cache", () => {
       },
     );
   });
+
+  test("saveCatalogCache writes the file readers price offline savings from", async () => {
+    rmSync(join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"), { force: true });
+    await catalog.saveCatalogCache("https://api.aiand.com", fixtureModels);
+    const raw = JSON.parse(
+      (await import("node:fs")).readFileSync(
+        join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(raw.baseUrl, "https://api.aiand.com");
+    assert.ok(raw.fetchedAt <= Date.now());
+    assert.equal(raw.models.length, fixtureModels.length);
+  });
 });
