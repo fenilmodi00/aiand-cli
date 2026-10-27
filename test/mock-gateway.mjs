@@ -50,6 +50,7 @@ function catalogModel(id, capabilities = ["tools"]) {
     owned_by: "aiand",
     provider: "aiand",
     context_window: 128000,
+    max_output_tokens: 32768,
     capabilities,
     reasoning_efforts: null,
     reasoning_effort_default: null,

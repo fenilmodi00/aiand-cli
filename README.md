@@ -342,7 +342,7 @@ disk.
 ```bash
 aiand run "why is the sky blue?"
 cat main.ts | aiand run "review this file"
-aiand run -m deepseek-ai/deepseek-v4-flash --system "be terse" "summarize CAP theorem"
+aiand run -m deepseek-ai/deepseek-v4.1-flash --system "be terse" "summarize CAP theorem"
 aiand run --no-stream --json "hello" | jq .usage
 ```
 
@@ -354,7 +354,7 @@ request ID (`-q` hides it). Cost and timing usually appear only with
 `--no-stream`:
 
 ```
-deepseek-ai/deepseek-v4-flash  ·  9 in / 21 out  ·  0.00000660 USD  ·  181ms  ·  919a9aa4…
+deepseek-ai/deepseek-v4.1-flash  ·  9 in / 21 out  ·  0.00001530 USD  ·  181ms  ·  919a9aa4…
 ```
 
 Without `-m`, aiand uses your profile's model, or the recommended default from
@@ -426,7 +426,7 @@ the gateway rather than asserting it.
 
 ```bash
 aiand config                                     # current settings
-aiand config set model deepseek-ai/deepseek-v4-flash
+aiand config set model deepseek-ai/deepseek-v4.1-flash
 aiand config profiles                            # list profiles
 aiand config use work                            # switch profile
 aiand config path                                # where the files are

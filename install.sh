@@ -8,8 +8,10 @@
 # toolchain, and drops an `aiand` launcher on PATH via ~/.local/bin.
 # Re-running the installer replaces the previous install only after the new
 # build is staged and verified — a failed stage leaves the old install
-# untouched. Nothing under ~/.config/aiand (profiles, credentials, agent
-# snapshots) is ever touched — updating the CLI never unwires your agents.
+# untouched. The installer never rewrites or deletes anything under
+# ~/.config/aiand (profiles, credentials, agent snapshots) — updating the CLI
+# never unwires your agents. Answering yes to the closing login question runs
+# `aiand login`, which stores a session there.
 #
 # `uninstall` turns every aiand-routed agent `off` first (via the installed
 # CLI's `aiand init --off`, aborting before deleting anything when off fails
@@ -548,6 +550,62 @@ EOF
     install_note "Another aiand at ${shadow} shadows the new launcher in this shell (open a new terminal if aiand is not found)."
   fi
 }
+# Run the freshly written launcher, not dist/ directly: this is the command
+# the user will type, so it proves the launcher itself works.
+show_installed_version() {
+  local launcher="$1" version
+  if ! version="$("${launcher}" --version 2>/dev/null)" || [[ -z "${version}" ]]; then
+    echo "error: ${launcher} --version failed after install." >&2
+    exit 1
+  fi
+  log "Installed aiand ${version} (${launcher})"
+}
+
+# True iff a person is at a terminal we can both write to and read from. Under
+# `curl | bash` stdin is the script, so answers come from /dev/tty; opening it
+# (not just -r) fails when there is no controlling terminal (CI, sandboxes).
+can_prompt() {
+  [[ -t 1 && -t 2 && -z "${CI:-}" ]] || return 1
+  { : </dev/tty; } 2>/dev/null
+}
+
+# Offer the next step instead of printing it. Never fails the install: the CLI
+# is already in place, and `aiand login` can always be run later.
+offer_login() {
+  local launcher="$1" answer
+  # `aiand login` stores nothing while the environment key is the session.
+  if [[ -n "${AIAND_API_KEY:-}" ]]; then
+    log "Done. Using the key in AIAND_API_KEY."
+    return
+  fi
+  if ! can_prompt; then
+    log "Done. Run 'aiand login' to sign in."
+    return
+  fi
+  # --local reads the stored session without a network call.
+  if "${launcher}" whoami --local >/dev/null 2>&1 </dev/null; then
+    log "Done. You are already signed in."
+    return
+  fi
+  # Ctrl+C here cancels the question or the login, not the finished install.
+  # A no-op trap (not '') leaves children at the default SIGINT, so login
+  # still stops. bash 3.2 restarts `read` after a trap, so the question runs
+  # in a subshell, which resets the trap and dies on Ctrl+C.
+  trap ':' INT
+  if ! answer="$(read -r -p "Log in to ai& now? [Y/n] " reply </dev/tty && printf '%s' "${reply}")"; then
+    answer="n"
+    printf '\n' >&2
+  fi
+  if [[ -n "${answer}" && ! "${answer}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+    log "Done. Run 'aiand login' when you are ready."
+  elif "${launcher}" login </dev/tty; then
+    log "Done."
+  else
+    log "Login did not finish. Run 'aiand login' to try again."
+  fi
+  trap 'exit 130' INT
+}
+
 uninstall_cli() {
   # See the header for the contract. --force skips the agent teardown for
   # broken installs where no working launcher remains.
@@ -722,7 +780,8 @@ main() {
   install_cli_launcher "${final_dir}"
 
   print_install_notes
-  log "Done. Run 'aiand --version' to check the install."
+  show_installed_version "${HOME}/.local/bin/aiand"
+  offer_login "${HOME}/.local/bin/aiand"
 }
 
 main "$@"

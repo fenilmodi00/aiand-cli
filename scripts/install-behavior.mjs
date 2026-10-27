@@ -71,6 +71,7 @@ function childEnv(home, extra = {}) {
     AIAND_DIR: undefined,
     AIAND_UNINSTALL_FORCE: undefined,
     AIAND_SOURCE: undefined,
+    AIAND_API_KEY: undefined,
     ...extra,
   };
 }
@@ -729,11 +730,22 @@ if (!HAS_BASH) {
         AIAND_SKIP_BUILD: "1",
         AIAND_NO_MODIFY_PATH: "1",
       });
-      const first = runBash([installer], env);
+      const first = runBash([installer], {
+        ...env,
+        AIAND_API_KEY: "sk-test-install-behavior-0000",
+      });
       check(
         "re-run: first install exits zero",
         (first.status ?? 1) === 0,
         `status=${first.status}`,
+      );
+      // `aiand login` stores nothing under AIAND_API_KEY, so no login hint.
+      const firstErr = first.stderr ?? "";
+      check(
+        "re-run: AIAND_API_KEY means done, not a login hint",
+        firstErr.includes("Done. Using the key in AIAND_API_KEY.") &&
+          !firstErr.includes("Run 'aiand login'"),
+        firstErr.split("\n").find((l) => l.includes("Done")) ?? "(no done line)",
       );
 
       writeFileSync(
@@ -761,6 +773,19 @@ if (!HAS_BASH) {
         (second.status ?? 1) === 0,
         (second.stderr ?? "").split("\n").find((l) => /error/i.test(l)) ??
           `status=${second.status}`,
+      );
+      // spawnSync pipes stdio, so there is no terminal: the installer must
+      // print the version itself and never block on the login question.
+      const secondErr = second.stderr ?? "";
+      check(
+        "re-run: installer prints the installed version",
+        secondErr.includes("Installed aiand 0.0.0-two"),
+        secondErr.split("\n").find((l) => l.includes("Installed")) ?? "(no version line)",
+      );
+      check(
+        "re-run: no terminal means no login prompt, only the hint",
+        !secondErr.includes("Log in to ai& now?") && secondErr.includes("Run 'aiand login'"),
+        secondErr.split("\n").find((l) => l.includes("Done") || l.includes("Log in")) ?? "",
       );
       const launcher = join(home, ".local", "bin", "aiand");
       // The launcher is a bash script, which Windows cannot exec directly.

@@ -37,6 +37,7 @@ const E2E_MODEL = {
   owned_by: "zai-org",
   provider: "zai-org",
   context_window: 200000,
+  max_output_tokens: 32768,
   capabilities: ["text", "vision", "tool_calling"],
   reasoning_efforts: null,
   reasoning_effort_default: null,

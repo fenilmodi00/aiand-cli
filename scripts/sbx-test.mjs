@@ -328,6 +328,7 @@ function seedSmokeCatalogCache() {
     owned_by: provider,
     provider,
     context_window: 200000,
+    max_output_tokens: 32768,
     capabilities,
     reasoning_efforts: null,
     reasoning_effort_default: null,

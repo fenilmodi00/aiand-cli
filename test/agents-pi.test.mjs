@@ -166,10 +166,27 @@ describe("pi adapter", () => {
     assert.deepEqual(entry.input, ["text", "image"]);
     assert.equal(entry.reasoning, false);
     assert.equal(entry.contextWindow, 128000);
-    assert.equal(entry.maxTokens, 128000);
+    assert.equal(entry.maxTokens, 32768);
     assert.deepEqual(entry.cost, { input: 0.6, output: 2.2, cacheRead: 0, cacheWrite: 0 });
     const textOnly = piModelEntry(CATALOG[1]);
     assert.deepEqual(textOnly.input, ["text"]);
+  });
+
+  test("maxTokens is the catalog output cap, not the context window", () => {
+    const entry = piModelEntry(
+      catalogModel("deepseek-ai/deepseek-v4.1-flash", {
+        context_window: 1048576,
+        max_output_tokens: 384000,
+      }),
+    );
+    assert.equal(entry.contextWindow, 1048576);
+    assert.equal(entry.maxTokens, 384000);
+  });
+
+  test("a null catalog cap omits maxTokens instead of writing null", () => {
+    const entry = piModelEntry(catalogModel("zai-org/glm-5.3", { max_output_tokens: null }));
+    assert.equal("maxTokens" in entry, false);
+    assert.equal(entry.contextWindow, 128000);
   });
 
   test("GLM-5.3 publishes low, high, and max for Pi", () => {
