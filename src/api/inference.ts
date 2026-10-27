@@ -2,6 +2,7 @@ import { ApiError, CliError, cancelled } from "../cli/errors.js";
 import {
   gatewayNotJsonError,
   HEADERS,
+  midStreamAbortError,
   parseJsonResponse,
   request,
   type Session,
@@ -252,6 +253,9 @@ async function* parseSse(response: Response): AsyncGenerator<StreamChunk> {
     if (cause instanceof Error && cause.name === "AbortError") {
       throw cancelled();
     }
-    throw cause;
+    // #104: a gateway that cuts the body mid-stream throws undici's
+    // `TypeError: terminated` (or an errno cause) — classify it as a
+    // retryable network failure instead of a raw exit-70 crash.
+    throw midStreamAbortError(response.url, cause);
   }
 }

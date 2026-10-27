@@ -269,11 +269,14 @@ export function resolveProfile(override?: string): ResolvedProfile {
   // profile's data. The fallback stays (automation depends on it), but it
   // warns on stderr so --json stdout remains parseable. The warning fires
   // only when a profile was explicitly requested, not for the default flow.
-  if (override !== undefined && override !== "" && !Object.hasOwn(config.profiles, name)) {
-    if (!warnedProfileFallbacks.has(override)) {
-      warnedProfileFallbacks.add(override);
+  // #103: AIAND_PROFILE must warn too — the env form is as explicit a request
+  // as the flag, so it gets the same stderr warning (still once per process).
+  const explicit = override ?? (process.env.AIAND_PROFILE?.trim() || undefined);
+  if (explicit !== undefined && explicit !== "" && !Object.hasOwn(config.profiles, name)) {
+    if (!warnedProfileFallbacks.has(explicit)) {
+      warnedProfileFallbacks.add(explicit);
       err(
-        `Warning: profile "${override}" is not defined in ${configPath()}; ` +
+        `Warning: profile "${explicit}" is not defined in ${configPath()}; ` +
           "falling back to the built-in defaults (empty profile: env vars and global settings only).",
       );
     }

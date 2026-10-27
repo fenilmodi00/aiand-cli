@@ -1,5 +1,5 @@
 import { VERSION } from "../api/client.js";
-import { bool, parse } from "../cli/args.js";
+import { bool, parse, str } from "../cli/args.js";
 import { out, style } from "../cli/output.js";
 import { runMcpServer } from "../mcp/server.js";
 import { noSyncRequested } from "../store/index.js";
@@ -44,5 +44,6 @@ export async function run(argv: string[]): Promise<void> {
     output: process.stdout,
     version: VERSION,
     noSync: bool(parsed, "no-sync") || noSyncRequested(),
+    profile: str(parsed, "profile") || process.env.AIAND_PROFILE,
   });
 }

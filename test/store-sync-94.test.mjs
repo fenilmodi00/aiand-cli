@@ -234,7 +234,7 @@ describe("#94 sync engine vs pinned /logs semantics", () => {
   });
 
   test("after_id tie-breaking at the anchor timestamp (pinned semantics)", async () => {
-    const mod = await store();
+    const _mod = await store();
     const dir = join(box.dir, "tie-break");
     mkdirSync(dir, { recursive: true });
     // Three rows share one timestamp; ids order them log-0001 < log-0002 < log-0003.
@@ -274,9 +274,7 @@ describe("#94 sync engine vs pinned /logs semantics", () => {
       assert.equal(one.status, 400);
       assert.equal((await one.json()).error, "after and after_id must be sent together");
       // …both together → 200 (no row matches an empty store, but the shape holds).
-      const both = await fetch(
-        `${url}/logs?after=2026-10-01T10%3A00%3A00.000Z&after_id=log-0001`,
-      );
+      const both = await fetch(`${url}/logs?after=2026-10-01T10%3A00%3A00.000Z&after_id=log-0001`);
       assert.equal(both.status, 200);
       const body = await both.json();
       assert.deepEqual(body, { data: [], has_more: false, next_after: null, next_after_id: null });
@@ -288,10 +286,10 @@ describe("#94 sync engine vs pinned /logs semantics", () => {
     const realFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       if (String(input).includes("/logs")) {
-        return new Response(
-          JSON.stringify({ error: "after and after_id must be sent together" }),
-          { status: 400, headers: { "Content-Type": "application/json" } },
-        );
+        return new Response(JSON.stringify({ error: "after and after_id must be sent together" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
       }
       return realFetch(input, init);
     };

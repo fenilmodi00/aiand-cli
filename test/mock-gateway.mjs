@@ -250,12 +250,10 @@ const server = createServer((req, res) => {
         // breaking ties at exactly the anchor timestamp. Compared as
         // instants, for the same wire-vs-ISO reason as the sort above.
         const afterMs = Date.parse(after.replace(" ", "T").replace(/\+00$/, "Z"));
-        remaining = newestFirst.filter(
-          (e) => {
-            const ms = instant(e);
-            return ms < afterMs || (ms === afterMs && afterId !== null && e.id < afterId);
-          },
-        );
+        remaining = newestFirst.filter((e) => {
+          const ms = instant(e);
+          return ms < afterMs || (ms === afterMs && afterId !== null && e.id < afterId);
+        });
       }
       const limit = Math.max(0, Math.min(100, Number(url.searchParams.get("limit") ?? 100)));
       const data = remaining.slice(0, limit);

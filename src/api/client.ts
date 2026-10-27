@@ -196,12 +196,59 @@ export function gatewayNotJsonError(response: Response, detail: string): ApiErro
 }
 
 /**
+ * Classify a mid-body-read connection failure (#104). When the gateway cuts
+ * the response body, undici surfaces `TypeError: terminated`,
+ * `TypeError: fetch failed`, or an errno cause (ECONNRESET etc.); rethrowing
+ * that raw hits the top-level handler as exit 70 (a CLI bug). A lost
+ * connection is a retryable network condition instead. Narrow on purpose:
+ * only clearly-network shapes classify; anything else rethrows raw so
+ * genuine bugs keep exiting 70. AbortError is never seen here — callers map
+ * it to cancelled() first so Ctrl-C still exits 130.
+ */
+export function midStreamAbortError(url: string, cause: unknown): unknown {
+  if (cause instanceof Error && cause.name === "AbortError") return cause;
+  const isNetwork =
+    (cause instanceof TypeError &&
+      (cause.message === "terminated" || cause.message === "fetch failed")) ||
+    (cause instanceof Error &&
+      cause.cause instanceof Error &&
+      /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE)$/.test(
+        (cause.cause as NodeJS.ErrnoException).code ?? "",
+      ));
+  if (!isNetwork) return cause;
+  // Same credential scrubbing as fetchOrFail: undici reasons may echo the
+  // request URL, which can carry userinfo.
+  const reason = (cause instanceof Error ? cause.message : String(cause)).replace(
+    /\/\/[^/@\s]+@/g,
+    "//[redacted]@",
+  );
+  const origin = (() => {
+    try {
+      return new URL(url).origin;
+    } catch {
+      return "the gateway";
+    }
+  })();
+  return new ApiError(
+    SYNTHETIC_STATUS.UNREACHABLE,
+    origin === "the gateway"
+      ? `The connection was lost mid-response (${reason}).`
+      : `The connection to ${origin} was lost mid-response (${reason}).`,
+    {
+      hint: "Re-run the command; if it keeps happening, check your network or the gateway status.",
+    },
+  );
+}
+
+/**
  * Parse a 2xx body as JSON. A gateway (or middlebox) answering 200 with
  * HTML/text is a gateway failure: report it as a 502 ApiError so `status`
  * files it under unreachable instead of crashing on a raw SyntaxError.
  */
 export async function parseJsonResponse<T>(response: Response): Promise<T> {
-  const text = await response.text();
+  const text = await response.text().catch((cause) => {
+    throw midStreamAbortError(response.url, cause);
+  });
   try {
     return JSON.parse(text) as T;
   } catch (cause) {

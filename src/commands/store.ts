@@ -1,5 +1,5 @@
 import { openSession } from "../api/client.js";
-import { bool, parse } from "../cli/args.js";
+import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, json, out, relativeTime, style } from "../cli/output.js";
 import { confirm } from "../cli/prompt.js";
@@ -45,6 +45,10 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  // #103: resolve up front so `store status` (no network) also warns on an
+  // unknown --profile instead of silently serving default-profile state.
+  resolveProfile(str(parsed, "profile")); // #103
+
   const wantsSync = parsed.positionals[0] === "sync";
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
 
@@ -60,7 +64,7 @@ export async function run(argv: string[]): Promise<void> {
 
   const before = getStoreInfo();
   warnStatus(before);
-  const session = await openSession(resolveProfile());
+  const session = await openSession(resolveProfile(str(parsed, "profile"))); // #103
   const result = await syncStore(session);
   const info = getStoreInfo();
 

@@ -150,4 +150,93 @@ describe("SSE reading", () => {
     ]);
     assert.equal(out.map((c) => c.text ?? "").join(""), "crlf");
   });
+
+  // #104: a gateway cutting the body mid-stream must classify as a retryable
+  // network failure (ApiError, exit 1), not escape as a raw undici
+  // `TypeError: terminated` that the top-level handler reports as exit 70.
+  test("classifies a mid-stream connection cut as unreachable, not a raw crash", async () => {
+    const { streamChatCompletion } = await import("../dist/api/inference.js");
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ choices: [{ delta: { content: "par" } }] })}\n\n`,
+              ),
+            );
+            // Body cut without close: the undici/undici-like reader throws
+            // TypeError("terminated") / fetch failed on the next pull.
+            controller.error(new TypeError("terminated"));
+          },
+        }),
+        {
+          status: 200,
+          url: "https://example.invalid/v1/chat/completions",
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      );
+    try {
+      const { chunks: stream } = await streamChatCompletion(
+        {
+          profile: { name: "t", apiUrl: "https://example.invalid" },
+          token: "sk-x",
+          credential: null,
+        },
+        { model: "m", messages: [] },
+      );
+      await assert.rejects(
+        async () => {
+          for await (const _c of stream) _c;
+        },
+        (error) => {
+          assert.equal(error.name, "ApiError");
+          assert.equal(error.exitCode, 1);
+          assert.match(error.message, /connection (to \S+ )?was lost mid-response/);
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // #104 regression guard: Ctrl-C mid-stream still maps to cancelled()
+  // (exit 130), not to the network classification.
+  test("still maps a mid-stream Ctrl-C abort to cancelled (exit 130)", async () => {
+    const { streamChatCompletion } = await import("../dist/api/inference.js");
+    const abort = new DOMException("The operation was aborted.", "AbortError");
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: {}\n\n"));
+            controller.error(abort);
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      );
+    try {
+      const { chunks: stream } = await streamChatCompletion(
+        {
+          profile: { name: "t", apiUrl: "https://example.invalid" },
+          token: "sk-x",
+          credential: null,
+        },
+        { model: "m", messages: [] },
+      );
+      await assert.rejects(
+        async () => {
+          for await (const _c of stream) _c;
+        },
+        (error) => {
+          assert.equal(error.exitCode, 130);
+          return true;
+        },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -98,15 +98,17 @@ export async function run(argv: string[]): Promise<void> {
     last: { type: "string" },
     json: { type: "boolean", default: false },
     "no-sync": { type: "boolean", default: false },
+    profile: { type: "string" },
   });
   if (bool(parsed, "help")) return out(help);
-
+  // #103: resolve up front so the warning fires even on --no-sync.
+  resolveProfile(str(parsed, "profile"));
   const window = resolveWindow(parsed, new Date());
   const sinceIso = window.sinceMs !== null ? new Date(window.sinceMs).toISOString() : undefined;
   const untilIso = window.untilMs !== null ? new Date(window.untilMs).toISOString() : undefined;
 
   if (!bool(parsed, "no-sync") && !noSyncRequested()) {
-    const session = await openSession(resolveProfile());
+    const session = await openSession(resolveProfile(str(parsed, "profile"))); // #103
     const result = await syncStore(session); // #85
     if (!result.ok)
       err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));

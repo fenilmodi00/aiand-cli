@@ -96,6 +96,8 @@ export type McpServerOptions = McpServerIo & {
   version: string;
   /** The `--no-sync` flag; AIAND_NO_SYNC=1 is honored as well. */
   noSync?: boolean;
+  /** The `--profile` flag (or AIAND_PROFILE), forwarded so unknown profiles warn (#103). */
+  profile?: string;
 };
 
 /**
@@ -103,8 +105,12 @@ export type McpServerOptions = McpServerIo & {
  * `output`; returns cleanly when the input ends (the MCP client went away).
  */
 export async function runMcpServer(options: McpServerOptions): Promise<void> {
+  // #103: resolve up front so an explicit unknown --profile / AIAND_PROFILE
+  // warns once at startup instead of silently serving the default profile.
+  resolveProfile(options.profile); // #103
   const context: ServerContext = {
     noSync: options.noSync === true || noSyncRequested(),
+    profile: options.profile,
     version: options.version,
   };
   const lines = createInterface({ input: options.input });
@@ -241,7 +247,7 @@ async function handleMessage(message: RpcMessage, context: ServerContext): Promi
 // Tool plumbing: arguments, the shared sync, pseudonymization
 // ---------------------------------------------------------------------------
 
-type ServerContext = { noSync: boolean; version: string };
+type ServerContext = { noSync: boolean; profile?: string; version: string };
 
 type ToolDefinition = {
   name: string;
@@ -298,7 +304,7 @@ function argEnum<T extends string>(
 async function syncBeforeRead(context: ServerContext): Promise<SyncOutcome> {
   if (context.noSync) return { skipped: true };
   try {
-    const session = await openSession(resolveProfile());
+    const session = await openSession(resolveProfile(context.profile)); // #103
     const result = await syncStore(session);
     if (!result.ok) err(`aiand mcp: store sync failed: ${result.error}`);
     return result.ok ? { ok: true } : { ok: false, error: result.error };

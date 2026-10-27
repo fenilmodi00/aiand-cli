@@ -303,6 +303,12 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- `store`, `efficiency`, and `mcp` no longer fall back to the default profile silently when an explicit unknown `--profile` (or `AIAND_PROFILE`) is set (OBS-BF-17, #103): the same stderr warning `config`/`cache` emit (naming the requested profile and the fallback) now fires, while `--json` stdout stays parseable.
+- A gateway cutting a response body mid-stream during `run`/`chat` no longer
+  crashes with a raw undici stack and exit 70 (OBS-BF-18, #104): the
+  connection loss is now classified as a retryable unreachable-gateway
+  failure (human message + retry hint, exit 1); Ctrl-C mid-stream still
+  exits 130.
 - Budget pacing in `aiand report` / `aiand overview` no longer projects a
   month from a narrow window (ticket #97): when the requested window starts
   after the current month began (e.g. `--last 1d`), the budget section now
