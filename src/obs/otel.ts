@@ -10,20 +10,14 @@ import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
  *
  * Hand-emitted OTLP/HTTP JSON (the /v1/metrics protobuf-JSON shape) plus the
  * Prometheus text exposition — no OTel SDK dependency (zero-runtime-deps
- * rule). Two metric families from ONE read of the local store:
+ * rule). One metric family from one read of the local store:
  *
- *   - `claude_code.*` — drop-in compatibility with dashboards built for
- *     Claude Code's OTel output (monitoring-usage contract).
  *   - `gen_ai.*` — vendor-neutral OpenTelemetry GenAI semconv.
  *
- * Key conversion (the Appendix §3 trap): the gateway's `input_tokens`
- * INCLUDES `cached_tokens`, but Claude Code's `token.usage type=input`
- * EXCLUDES cache — so `claude_code.token.usage{type="input"}` emits
- * `input_tokens - cached_tokens` while `gen_ai.*.input_tokens` stays the
- * verbatim gateway sum (semconv reports the billable total, with cache read
- * tokens as their own series). Both conventions are stated in code and docs;
- * provenance discipline (#68) means every value is a plain gateway-billed sum
- * except the sanctioned input-minus-cache conversion.
+ * Values are verbatim gateway-billed sums: `input_tokens` INCLUDES
+ * `cached_tokens` (the gateway's and ai&'s convention), with cache read
+ * tokens as their own series per semconv. Cost is the gateway-computed
+ * per-request cost, emitted only where the store has a value.
  *
  * Collision safety (claude-code#56317): every cost/token series carries the
  * masked key AND the agent name, so two agent processes never fold into one
@@ -31,11 +25,9 @@ import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
  *
  * Honesty annotations: `session.id` is the heuristic time-gap id (#66 — see
  * sessions.ts); real gateway session ids are OBS-GW-1/#80 ask 4.
- * `cacheCreation` / `gen_ai.*.cache_write_tokens` are always 0 until the
- * gateway splits cache writes (OBS-GW-1). The store has no reasoning-token
- * or code/PR/commit data, so `reasoning_tokens` emits 0 and the
- * `claude_code.lines_of_code/commit/pull_request/active_time` counters are
- * omitted entirely (emit-only-where-data-exists rule).
+ * Cache-write and reasoning token series are NOT emitted: the store has no
+ * such columns, and the exporter never fabricates zeros for metrics that
+ * would read as real measurements (emit-only-where-data-exists rule).
  *
  * Privacy: attributes are metadata only — masked keys, agent ids, model ids.
  * No prompt or completion content exists in the store and none is emitted.
@@ -223,7 +215,7 @@ function sessionForRow(row: RequestRow, sessions: readonly SessionRow[]): Sessio
 }
 
 /**
- * Build both metric families from one read of the local store.
+ * Build the gen_ai metric family from one read of the local store.
  * Pure over the rows: same rows + same options → byte-identical series
  * (timestamps are applied at serialization, so golden fixtures are stable
  * modulo timestamps).
@@ -231,47 +223,6 @@ function sessionForRow(row: RequestRow, sessions: readonly SessionRow[]): Sessio
 function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[]): Series[] {
   const series: Series[] = [];
 
-  const baseAttrs = (row: RequestRow, session: SessionRow | undefined) =>
-    attrsOf({
-      "agent.name": row.api_key ? (agentForMaskedKey(row.api_key) ?? "unknown") : "unknown",
-      // Collision safety (claude-code#56317): the masked key distinguishes
-      // concurrent processes sharing an agent name.
-      "aiand.key.masked": row.api_key ?? "unknown",
-      "app.version": VERSION,
-      "session.id": session?.session_id, // heuristic (#66) until the gateway provides real ids
-      "terminal.type": terminalType(),
-    });
-
-  // --- claude_code.session.count -------------------------------------------
-  for (const session of sessions) {
-    // start_type has no gateway equivalent; sessions are DERIVED by the
-    // time-gap heuristic (#66), so the value names that honestly instead of
-    // borrowing a Claude Code-native value it does not mean.
-    series.push({
-      name: "claude_code.session.count",
-      kind: "sum",
-      unit: "1",
-      attrs: [
-        ...attrsOf({
-          "agent.name": session.agent,
-          "aiand.key.masked": session.api_key ?? "unknown",
-          "app.version": VERSION,
-          "session.id": session.session_id,
-          start_type: "derived",
-          "terminal.type": terminalType(),
-        }),
-      ],
-      value: 1,
-    });
-  }
-
-  // --- claude_code.cost.usage ----------------------------------------------
-  const costGroups = new Map<string, { attrs: [string, string][]; total: number }>();
-  // --- claude_code.token.usage ---------------------------------------------
-  const tokenGroups = new Map<
-    string,
-    { attrs: [string, string][]; values: Record<string, number> }
-  >();
   // --- gen_ai usage counters -------------------------------------------------
   const genUsage = new Map<string, { attrs: [string, string][]; values: Record<string, number> }>();
   // --- gen_ai histograms -----------------------------------------------------
@@ -288,63 +239,43 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
 
   for (const row of rows) {
     const session = sessionForRow(row, sessions);
-    const base = baseAttrs(row, session);
-    const model = row.model;
-    const querySource = session ? session.agent : "unknown";
-
-    const cost = costOf(row);
-    if (cost !== null) {
-      const attrs = [...base, ...attrsOf({ model, query_source: querySource })].sort((a, b) =>
-        a[0].localeCompare(b[0]),
-      );
-      const key = JSON.stringify(attrs);
-      const group = costGroups.get(key);
-      if (group) group.total += cost;
-      else costGroups.set(key, { attrs, total: cost });
-    }
 
     const input = row.input_tokens ?? 0;
     const cached = row.cached_tokens ?? 0;
     const output = row.output_tokens ?? 0;
-    const tokenAttrs = [...base, ...attrsOf({ model })].sort((a, b) => a[0].localeCompare(b[0]));
-    const tokenKey = JSON.stringify(tokenAttrs);
-    const tokenGroup = tokenGroups.get(tokenKey) ?? { attrs: tokenAttrs, values: {} };
-    // Gateway convention: input INCLUDES cached — Claude Code's type=input
-    // EXCLUDES it, so convert. Never negative.
-    tokenGroup.values.input = (tokenGroup.values.input ?? 0) + Math.max(input - cached, 0);
-    tokenGroup.values.output = (tokenGroup.values.output ?? 0) + output;
-    tokenGroup.values.cacheRead = (tokenGroup.values.cacheRead ?? 0) + cached;
-    // cacheCreation stays 0 until the gateway splits cache writes (OBS-GW-1);
-    // emitting the 0 keeps dashboards reading the series instead of erroring.
-    tokenGroup.values.cacheCreation = (tokenGroup.values.cacheCreation ?? 0) + 0;
-    tokenGroups.set(tokenKey, tokenGroup);
 
     // gen_ai: provider + required semconv attrs. error.type groups failed
     // rows separately; usage is recorded on failed operations too (semconv).
     const failed = row.status_code >= 400;
-    const provider = providerForModel(model);
+    const model = row.model;
     const genBase = attrsOf({
       "aiand.key.masked": row.api_key ?? "unknown",
       "agent.name": row.api_key ? (agentForMaskedKey(row.api_key) ?? "unknown") : "unknown",
+      "app.version": VERSION,
       "error.type": failed ? String(row.status_code) : undefined,
       "gen_ai.operation.name": "chat",
-      "gen_ai.provider.name": provider,
+      "gen_ai.provider.name": providerForModel(model),
       "gen_ai.request.model": model,
       "gen_ai.response.model": model,
       "gen_ai.token.modality": "text",
+      "query.source": session ? session.agent : "unknown",
+      "session.id": session?.session_id, // heuristic (#66) until the gateway provides real ids
+      "terminal.type": terminalType(),
     });
     const genKey = JSON.stringify(genBase);
     const gen = genUsage.get(genKey) ?? { attrs: genBase, values: {} };
-    // Gateway-verbatim sums (input includes cache; cache read is its own
-    // series per semconv — see module doc for the two-convention note).
+    // Gateway-verbatim sums: input includes cache; cache read is its own
+    // series per semconv.
     gen.values.input_tokens = (gen.values.input_tokens ?? 0) + input;
     gen.values.output_tokens = (gen.values.output_tokens ?? 0) + output;
     gen.values.cache_read_tokens = (gen.values.cache_read_tokens ?? 0) + cached;
-    gen.values.cache_write_tokens = (gen.values.cache_write_tokens ?? 0) + 0; // OBS-GW-1
-    gen.values.reasoning_tokens = (gen.values.reasoning_tokens ?? 0) + 0; // no store column yet
+
+    const cost = costOf(row);
+    if (cost !== null) gen.values.cost = (gen.values.cost ?? 0) + cost;
+
     genUsage.set(genKey, gen);
 
-    const histKey = JSON.stringify(genBase);
+    const histKey = genKey;
     const hist = genHist.get(histKey) ?? {
       attrs: genBase,
       tokens: [],
@@ -361,51 +292,26 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
     genHist.set(histKey, hist);
   }
 
-  for (const group of costGroups.values()) {
-    series.push({
-      name: "claude_code.cost.usage",
-      kind: "sum",
-      unit: "USD",
-      attrs: group.attrs,
-      value: group.total,
-    });
-  }
-
-  const TOKEN_TYPES: readonly { key: string; type: string }[] = [
-    { key: "input", type: "input" },
-    { key: "output", type: "output" },
-    { key: "cacheRead", type: "cacheRead" },
-    { key: "cacheCreation", type: "cacheCreation" },
-  ];
-  for (const group of tokenGroups.values()) {
-    for (const entry of TOKEN_TYPES) {
-      series.push({
-        name: "claude_code.token.usage",
-        kind: "sum",
-        unit: "1",
-        attrs: [...group.attrs, ...attrsOf({ type: entry.type })].sort((a, b) =>
-          a[0].localeCompare(b[0]),
-        ),
-        value: group.values[entry.key] ?? 0,
-      });
-    }
-  }
-
-  const GEN_TOKEN_NAMES: readonly { key: string; name: string }[] = [
-    { key: "input_tokens", name: "gen_ai.client.inference.usage.input_tokens" },
-    { key: "output_tokens", name: "gen_ai.client.inference.usage.output_tokens" },
-    { key: "cache_read_tokens", name: "gen_ai.client.inference.usage.cache_read_tokens" },
-    { key: "cache_write_tokens", name: "gen_ai.client.inference.usage.cache_write_tokens" },
-    { key: "reasoning_tokens", name: "gen_ai.client.inference.usage.reasoning_tokens" },
+  const GEN_TOKEN_NAMES: readonly { key: string; name: string; unit: string }[] = [
+    { key: "cost", name: "gen_ai.client.inference.usage.cost", unit: "USD" },
+    { key: "input_tokens", name: "gen_ai.client.inference.usage.input_tokens", unit: "{token}" },
+    { key: "output_tokens", name: "gen_ai.client.inference.usage.output_tokens", unit: "{token}" },
+    {
+      key: "cache_read_tokens",
+      name: "gen_ai.client.inference.usage.cache_read_tokens",
+      unit: "{token}",
+    },
   ];
   for (const group of genUsage.values()) {
     for (const entry of GEN_TOKEN_NAMES) {
+      const value = group.values[entry.key];
+      if (value === undefined) continue; // emit-only-where-data-exists
       series.push({
         name: entry.name,
         kind: "sum",
-        unit: "{token}",
+        unit: entry.unit,
         attrs: group.attrs,
-        value: group.values[entry.key] ?? 0,
+        value,
       });
     }
   }
@@ -618,7 +524,7 @@ function serializePrometheus(series: readonly Series[]): string {
 
 /**
  * Read the window's rows from the local store in one pass, sessionize, build
- * both families, and serialize both wire formats. Never throws at the caller
+ * the gen_ai family, and serialize both wire formats. Never throws at the caller
  * for a degraded store — an unavailable store exports an empty payload.
  */
 export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {

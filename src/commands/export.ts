@@ -10,9 +10,8 @@ import { assertWindowOrder } from "./usage-report.js";
 
 /**
  * `aiand export` (feature catalog G2, ticket #72): metrics export from the
- * local request store in two families — `claude_code.*` (drop-in dashboard
- * compatibility) and `gen_ai.*` (vendor-neutral OTel GenAI semconv) — in one
- * store read. See src/obs/otel.ts for the metric contract.
+ * local request store — the vendor-neutral `gen_ai.*` OTel GenAI semconv
+ * family in one store read. See src/obs/otel.ts for the metric contract.
  *
  * Destinations: stdout (default), `--file`, or a push to `--endpoint`
  * (OTLP/HTTP JSON per protobuf-JSON encoding; the Prometheus format pushes
@@ -44,11 +43,9 @@ Options
   --file <path>       write the payload to this file instead of stdout
   --no-sync           skip the store sync first (also AIAND_NO_SYNC=1)
 
-Both metric families are emitted from one read of the local store:
-claude_code.* for Claude Code dashboard compatibility and gen_ai.* per the
-OpenTelemetry GenAI semantic conventions. Session ids are heuristic (time-gap
-derived); cacheCreation/cache-write tokens are 0 until the gateway splits
-cache writes. No prompt or completion content is ever exported.`;
+Metrics are emitted from one read of the local store, per the OpenTelemetry
+GenAI semantic conventions. Session ids are heuristic (time-gap derived);
+no prompt or completion content is ever exported.`;
 
 function parseHeader(raw: string): [string, string] {
   const sep =

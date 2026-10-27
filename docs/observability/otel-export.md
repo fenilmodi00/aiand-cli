@@ -1,12 +1,8 @@
 # OTel metrics export
 
 `aiand export` turns the local request store (see `aiand store`) into metrics
-in **two families from one read of the store**:
+in **one vendor-neutral family from one read of the store**:
 
-- **`claude_code.*`** — the same metric names, units, and attribute names
-  Claude Code's own OTel output uses, so dashboards built for
-  [Claude Code's monitoring-usage contract](https://code.claude.com/docs/en/monitoring-usage)
-  work against ai& with zero changes.
 - **`gen_ai.*`** — the vendor-neutral
   [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
 
@@ -45,28 +41,18 @@ agent processes exporting concurrently can never fold into one counter
 [#56317](https://github.com/anthropics/claude-code/issues/56317) failure
 mode).
 
-### `claude_code.*` family
-
-| Metric | Kind | Notes |
-| --- | --- | --- |
-| `claude_code.session.count` | counter | 1 per session, `start_type="derived"` — sessions come from ai&'s time-gap heuristic, not the gateway, so the value names that honestly instead of borrowing a Claude Code-native start type. |
-| `claude_code.cost.usage` | counter (USD) | Sum of gateway-computed per-request cost; attrs `model`, `query_source` (the attributed agent). |
-| `claude_code.token.usage` | counter | attr `type` ∈ `input \| output \| cacheRead \| cacheCreation`. **Conversion:** the gateway's `input_tokens` includes `cached_tokens`, but this contract's `type=input` excludes cache — ai& emits `input − cached`. `cacheRead` = `cached_tokens`. `cacheCreation` is **0** until the gateway splits cache writes. |
-
-`claude_code.lines_of_code.count`, `claude_code.commit.count`,
-`claude_code.pull_request.count`, and `claude_code.active_time.total` are
-**omitted**: the store carries no envelope data for them, and the exporter
-never fabricates zeros for metrics that would read as real measurements.
-
 ### `gen_ai.*` family
 
-- Counters: `gen_ai.client.inference.usage.{input,output,cache_read,cache_write,reasoning}_tokens`
-  (unit `{token}`). `input_tokens` is the **verbatim gateway sum** (includes
-  cache, which is the GenAI semconv billing convention — note this differs
-  from `claude_code.token.usage type=input`, which excludes cache by design).
-  `cache_read_tokens` = cached tokens; `cache_write_tokens` and
-  `reasoning_tokens` are **0** (gateway cache-write split pending; the store
-  has no reasoning-token column).
+- Counters (unit `{token}`): `gen_ai.client.inference.usage.{input,output,cache_read}_tokens`.
+  `input_tokens` is the **verbatim gateway sum** (includes cache, which is the
+  GenAI semconv billing convention); `cache_read_tokens` = cached tokens.
+  Cache-write and reasoning token counters are **not emitted**: the gateway
+  has no cache-write split and the store has no reasoning-token column, and
+  the exporter never fabricates zeros for metrics that would read as real
+  measurements (emit-only-where-data-exists).
+- Cost: `gen_ai.client.inference.usage.cost` (unit `USD`) — the
+  gateway-computed per-request cost summed over the window; attributed agent
+  rides on `query.source`.
 - Required attributes on every gen_ai series: `gen_ai.operation.name`
   (`chat`), `gen_ai.provider.name`, `gen_ai.token.modality` (`text`),
   `gen_ai.request.model`, `gen_ai.response.model`.
@@ -99,16 +85,14 @@ A model matching nothing maps to its **family string** (the segment before
   ids, so `session.id` is ai&'s time-gap derived id (default 10-minute idle
   gap). Boundaries are approximate; a gateway-provided session id is tracked
   for the gateway backlog.
-- **`cacheCreation` / cache-write tokens are 0** until the gateway exposes a
-  cache-write split.
+- **Cache-write and reasoning tokens are not emitted.** The gateway exposes
+  no cache-write split and the store has no reasoning-token column; the
+  exporter emits only where data exists.
 - **No content, ever.** Attributes are metadata only (masked keys, agent ids,
   model ids). The store holds no prompt/completion content and the exporter
   cannot emit any.
 
-## Grafana: import a Claude Code dashboard unchanged
-
-Because the `claude_code.*` names, units, and attribute keys match Claude
-Code's OTel output, a dashboard built for it works against ai&:
+## Grafana: point any OTel-capable dashboard at the export
 
 1. Run an OTel collector with an HTTP receiver on `:4318` and a Prometheus
    exporter (or Grafana Alloy's `otlp` receiver).
@@ -116,13 +100,7 @@ Code's OTel output, a dashboard built for it works against ai&:
    `aiand export --format otel --endpoint http://localhost:4318/v1/metrics --range 30days`
    — with default **delta** temporality each push contributes exactly its
    window, so a repeated 30-day delta push is idempotent-safe.
-3. Import any Claude Code usage dashboard and point its datasource at the
-   collector's Prometheus endpoint. Series such as
-   `claude_code_token_usage_total{type="input",model="zai-org/glm-5.3"}`
-   appear exactly as the dashboard expects.
-
-> Note the one semantic difference a dashboard cannot see: panels that sum
-> `type="input"` and `type="cacheRead"` to get total tokens billed are
-> correct against ai& — the same expression against a Claude Code emitter
-> would double-count, because Claude Code's input excludes cache and ours
-> (post-conversion) matches Claude Code's convention.
+3. Point the dashboard's datasource at the collector's Prometheus endpoint.
+   Series such as
+   `gen_ai_client_inference_usage_input_tokens_total{gen_ai_request_model="zai-org/glm-5.3"}`
+   appear under the vendor-neutral GenAI semconv names.
