@@ -294,6 +294,17 @@ breaking changes while the command surface settles.
   Plain `aiand status` keeps its documented auth exit codes and now shows
   the statusline line under the auth fields.
 
+### Fixed
+
+- `aiand usage --verify --since/--until` now honors the requested window on
+  the remote side (OBS-BF-11, #96): gateway log rows carry `created_at` in
+  the wire format (`2026-10-26 05:02:11.844519+00`), which bare string
+  comparison ordered before every ISO bound, so windowed verifies compared
+  the local store against remote 0/0/0. Remote rows are now filtered by
+  instant, matching the store's #86 normalized window comparisons; the
+  exit-code contract (0 match, 1 mismatch with per-metric deltas) is
+  unchanged.
+
 ### Changed
 
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario

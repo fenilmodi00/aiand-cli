@@ -16,6 +16,10 @@
 //   /stub/500/*          every endpoint answers 500 (gateway outage).
 //   /stub/two-orgs/*     /api/orgs lists two Orgs (First Org, Second Org).
 //   /stub/vision-catalog/* /v1/models serves one vision + one text-only model.
+//   /stub/logs-window/*  /logs serves three wire-format rows (2 inside the
+//                        last 20 minutes, one 2h old) for windowed --verify.
+//   /stub/logs-window-drift/* the same, with win-0001 carrying 100 extra
+//                        output tokens — a real in-window divergence.
 //   (no prefix)          happy path: 200 identity + orgs.
 //
 // Response shapes match src/api/account.ts (/api/user, /api/orgs) and
@@ -74,6 +78,39 @@ const VISION_CATALOG = [
   catalogModel("vendor/vision-model", ["vision", "tool_calling"]),
   catalogModel("vendor/text-model", ["tool_calling"]),
 ];
+
+// #96: rows served by the `logs-window` scenarios. `null` until the first
+// /logs request builds them, so one mock process serves one consistent
+// fixture across its sync + verify calls.
+let WINDOW_ROWS = null;
+function buildWindowRows() {
+  // The gateway's verbatim wire format (space separator, `+00` offset) —
+  // the exact shape the #86 store normalization and the OBS-BF-11 remote
+  // filter both have to parse.
+  const wireFormat = (date) =>
+    `${date.toISOString().slice(0, 10)} ${date.toISOString().slice(11, 23)}+00`;
+  const ago = (ms) => wireFormat(new Date(Date.now() - ms));
+  const row = (id, created_at, input_tokens, output_tokens, cost) => ({
+    id,
+    model: "test/model",
+    api_key: "sk-abcd...1234",
+    status_code: 200,
+    ttft_ms: 120,
+    latency_ms: 1_400,
+    input_tokens,
+    output_tokens,
+    cached_tokens: 0,
+    cost,
+    currency: "usd",
+    created_at,
+  });
+  return [
+    row("win-0001", ago(5 * 60_000), 1_000, 300, "0.0042"),
+    row("win-0002", ago(15 * 60_000), 2_000, 500, "0.0100"),
+    // Outside a 20-minute verify window: exercises the remote-side filter.
+    row("win-0003", ago(2 * 3_600_000), 4_000, 700, "0.0200"),
+  ];
+}
 
 function reply(res, status, body, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
@@ -225,6 +262,19 @@ const server = createServer((req, res) => {
         next_after: hasMore && last ? last.created_at : null,
         next_after_id: hasMore && last ? last.id : null,
       });
+    // #96: wire-format rows for windowed `usage --verify` — two inside the
+    // last 20 minutes, one 2h old. Built ONCE on first request so the sync
+    // and the verify fetch see identical created_at values (fresh timestamps
+    // per request would slide past the sync watermark and double-count).
+    if (scenario === "logs-window" || scenario === "logs-window-drift") {
+      if (WINDOW_ROWS === null) WINDOW_ROWS = buildWindowRows();
+      const data =
+        scenario === "logs-window-drift"
+          ? WINDOW_ROWS.map((r) =>
+              r.id === "win-0001" ? { ...r, output_tokens: r.output_tokens + 100 } : r,
+            )
+          : WINDOW_ROWS;
+      return reply(res, 200, { data, has_more: false, next_after: null, next_after_id: null });
     }
     return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
   }
