@@ -565,7 +565,7 @@ function renderFrame(
 
   // -- body: responsive panels + scrollable per-day list, or the compare view ----
   if (state.compare) {
-    lines.push(...renderCompare(state, view.width));
+    lines.push(...renderCompare(state, view.width, view.showCost));
   } else {
     const panels = renderPanels(state, view);
     const columns = columnsFor(view.width);
@@ -738,7 +738,7 @@ function renderDailyList(
 
 // -- compare view ----------------------------------------------------------------
 
-function renderCompare(state: DashboardState, width: number): string[] {
+function renderCompare(state: DashboardState, width: number, showCost: boolean): string[] {
   const lines: string[] = [style.bold("Harness compare")];
   const stats = state.compareStats;
   if (!stats || stats.harnesses.length === 0) {
@@ -750,8 +750,9 @@ function renderCompare(state: DashboardState, width: number): string[] {
   for (const row of stats.harnesses) {
     const cell = (value: string, winner: string | null): string =>
       winner === row.harness ? `${style.bold(value)} ${WINNER_MARKER}` : ` ${value} `;
-    const costP50 =
-      row.costPerSession.p50 === null
+    const costP50 = !showCost
+      ? "—"
+      : row.costPerSession.p50 === null
         ? "n/a"
         : formatMoney(row.costPerSession.p50, row.currency).trim();
     const cache = `${Math.round(row.cacheHitRatio * 100)}`.padStart(3);
