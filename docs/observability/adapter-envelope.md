@@ -66,9 +66,9 @@ Envelopes are stored in the local store (`migration 0003`, table `envelopes`),
 linked to the gateway request rows by the same masked `api_key` plus
 `created_at`; `session_id` / `request_id` are best-effort nullable links.
 
-Gateway alignment: the same JSON body travels as the **`x-aiand-envelope`**
-header (gateway ask #2, ticket #80). A future gateway echo drops in without a
-schema change — the store columns already carry `request_id`.
+Local capture is the only envelope path today. Forwarding envelopes through
+the gateway (which would populate `request_id`) is a tracked gateway ask
+(ticket #80); no schema change is needed when it lands.
 
 ## Metrics unlocked (offline, local-capture only)
 

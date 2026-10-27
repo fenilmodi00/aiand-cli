@@ -13,12 +13,10 @@ const box = withTestEnv("aiand-envelope-test-", (dir) => {
 });
 
 const {
-  ENVELOPE_HEADER,
   ENVELOPE_MAX_BYTES,
   ENVELOPE_SCHEMA_VERSION,
   editTargetToken,
   envelopeFits,
-  envelopeHeader,
   envelopeJson,
   hashPath,
   normalizeEnvelope,
@@ -114,11 +112,8 @@ describe("envelope schema (aiand-envelope/v1)", () => {
     assert.deepEqual(env, again);
   });
 
-  test("header constant matches the gateway ask (#80)", () => {
-    assert.equal(ENVELOPE_HEADER, "x-aiand-envelope");
+  test("schema version is the v1 contract", () => {
     assert.equal(ENVELOPE_SCHEMA_VERSION, "aiand-envelope/v1");
-    const env = normalizeEnvelope({ tools: ["Edit"], editTargets: ["a.ts"] });
-    assert.equal(envelopeHeader(env), envelopeJson(env));
   });
 
   test("parseEnvelope rejects non-envelope JSON", () => {

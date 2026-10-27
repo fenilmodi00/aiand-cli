@@ -14,20 +14,16 @@ import { resolve } from "node:path";
  * pseudonymous project key, never the path itself.
  *
  * Versioning: `ENVELOPE_SCHEMA_VERSION` is recorded per row. Unknown fields
- * are dropped by `normalizeEnvelope` (forward-compatible), and a gateway echo
- * arrives as an opaque JSON blob in the `x-aiand-envelope` header (gateway ask
- * #2, ticket #80) — a future echo drops in without a schema change.
+ * are dropped by `normalizeEnvelope` (forward-compatible), so a future schema
+ * bump does not strand stored rows.
  *
- * Size bound: an envelope must fit in the 2 KiB class so it can travel as a
- * header. `normalizeEnvelope` enforces the caps deterministically (ordered
+ * Size bound: an envelope must fit in the 2 KiB class so it stays compact in
+ * the store. `normalizeEnvelope` enforces the caps deterministically (ordered
  * truncation, never reordering), and `envelopeFits` verifies the serialized
  * size.
  */
 
 export const ENVELOPE_SCHEMA_VERSION = "aiand-envelope/v1";
-
-/** The HTTP header name a future gateway echo carries (gateway ask #2, #80). */
-export const ENVELOPE_HEADER = "x-aiand-envelope";
 
 /** Deterministic truncation caps that keep the serialized envelope ≤ 2 KiB. */
 const ENVELOPE_MAX_TOOLS = 32;
@@ -157,14 +153,9 @@ export function envelopeFits(envelope: EnvelopeV1): boolean {
   return Buffer.byteLength(envelopeJson(envelope), "utf8") <= ENVELOPE_MAX_BYTES;
 }
 
-/** The canonical compact JSON body — exactly what the gateway echo would carry. */
+/** The canonical compact JSON body of the envelope. */
 export function envelopeJson(envelope: EnvelopeV1): string {
   return JSON.stringify(envelope);
-}
-
-/** The `x-aiand-envelope` header value (gateway ask #2, ticket #80). */
-export function envelopeHeader(envelope: EnvelopeV1): string {
-  return envelopeJson(envelope);
 }
 
 /** Structural check: is this value a recognizable `aiand-envelope/v1` record? */
@@ -181,9 +172,9 @@ function isEnvelopeV1(value: unknown): value is EnvelopeV1 {
 }
 
 /**
- * Parse a stored/echoed envelope JSON string; null when not recognizable.
+ * Parse a stored envelope JSON string; null when not recognizable.
  * Unknown fields are DROPPED on read (the v1 forward-compatibility contract),
- * so a richer future echo still reads as a valid v1 record.
+ * so a richer future schema version still reads as a valid v1 record.
  */
 export function parseEnvelope(json: string): EnvelopeV1 | null {
   try {

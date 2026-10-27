@@ -22,6 +22,13 @@ breaking changes while the command surface settles.
   off-peak, so priced savings are conservative by at most 2x on off-peak
   requests).
 
+### Removed
+- The adapter-envelope gateway-echo scaffolding: the `x-aiand-envelope` header
+  constant and its serializer from `src/agents/envelope.ts`. Nothing sent the
+  header and nothing read it back — the gateway does not forward or echo
+  envelopes (gateway ask #2 remains open in ticket #80). Locally captured
+  envelopes (the store table, `envelope-capture`, and the `efficiency` reports
+  built on them) are the only envelope path and are unchanged.
 
 ### Fixed
 - bare `aiand key` now says what the command is for and gives a
