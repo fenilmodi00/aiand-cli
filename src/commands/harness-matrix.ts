@@ -36,7 +36,7 @@ const SORT_KEYS: readonly PairSortKey[] = ["cost", "ttft", "hit", "errors"];
 const help = `${style.bold("aiand harness matrix")} -- (harness × model) pairs on your workload
 
 Usage
-  aiand harness matrix [--last 7d] [--harness <name>] [--model <glob>]
+  aiand harness matrix [--last <window>] [--harness <name>] [--model <glob>]
   aiand harness matrix --sort cost --order asc --top 10
   aiand harness matrix --synthetic        (add the saved sweep in its own block)
   aiand harness matrix --format markdown

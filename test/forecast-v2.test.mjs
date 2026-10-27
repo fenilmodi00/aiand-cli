@@ -537,4 +537,48 @@ describe("forecast CLI · v2 + bench", () => {
     r = await cli(["forecast", "frobnicate"]);
     assert.equal(r.code, 1);
   });
+
+  // #101: v2 honors the documented 2-hour span gate — 59 minutes of one
+  // afternoon never projects a month.
+  test("#101 v2 reports indeterminate when the trailing window has under 2 hours of data", async () => {
+    const { forecastV2 } = await v2();
+    // Dense 5-minute rows but only 59 minutes of history: above the OLS
+    // window, far under the 2h span gate.
+    const rows = constantRateRows(0.05, 5 / 60).filter(
+      (r) => Date.parse(r.created_at) >= NOW_MS - 59 * 60_000,
+    );
+    assert.equal(
+      forecastV2({ rows, now: new Date(NOW_MS), seed: 7, budget: 20 }).verdict,
+      "insufficient-data",
+    );
+
+    // Crossing the 2h gate flips to a projection.
+    const ok = constantRateRows(0.05, 5 / 60).filter(
+      (r) => Date.parse(r.created_at) >= NOW_MS - 3 * HOUR_MS,
+    );
+    assert.equal(
+      forecastV2({ rows: ok, now: new Date(NOW_MS), seed: 7, budget: 20 }).verdict,
+      "ok",
+    );
+  });
+
+  test("#101 v2 CLI renders indeterminate for a 59-minute window; help states the gate + --until pinning", async () => {
+    const rows = constantRateRows(0.05, 5 / 60)
+      .filter((r) => Date.parse(r.created_at) >= NOW_MS - 59 * 60_000)
+      .map((r, i) => ({ ...r, id: `thin-${i}` }));
+    await seedStore(rows);
+    await cli(["config", "set", "budget.monthly", "20"]);
+    const r = await cli(["forecast", "--model", "v2", "--json", "--until", UNTIL]);
+    assert.equal(r.code, 0);
+    const payload = JSON.parse(r.stdout);
+    assert.equal(payload.verdict, "no-data"); // insufficient-data maps to the no-data verdict
+    assert.equal(payload.projected_month_end, null);
+
+    const human = await cli(["forecast", "--model", "v2", "--until", UNTIL]);
+    assert.match(human.stdout, /indeterminate/);
+
+    const help = await cli(["forecast", "--help"]);
+    assert.match(help.stdout, /fewer than 2 hours of data/);
+    assert.match(help.stdout, /pin\s+--until/);
+  });
 });

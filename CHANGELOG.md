@@ -596,6 +596,17 @@ breaking changes while the command surface settles.
   states the real default (all stored history, not 7d); and the dead
   unit-mixing verdict-group `misses` metric (`requests - cachedTokens`) is
   gone from the harness stats, pair stats, and matrix row builders.
+- Help and docs state the truth (#101): `forecast --model v2` now honors the
+  same insufficient-span rule as v1 — fewer than 2 hours of data in the
+  trailing 24h window (with no 7d fallback) reports indeterminate instead of
+  projecting a month from 59 minutes of one afternoon (Changed); the
+  forecast help and `docs/observability/forecast-v2.md` say that byte-
+  identical default-seed runs require pinning `--until`/`--since`, since the
+  trailing 30-minute OLS window follows the current time; the `harness
+  stats`/`compare`/`matrix` synopses no longer show a `--last 7d` default
+  the options text says does not exist; and the `harness recommend` alias
+  route now accepts the documented flags (`--last`, `--range`, `--sort`,
+  `--top`, `--harness`, `--json`) instead of rejecting them as unknown.
 - Battle-probe regression tests (#92): the burst-pagination fixture now also
   asserts id-uniqueness of the 250 ingested rows, a CLI-level test pins the
   stuck-cursor `store sync --json` exit path (`result.ok: false` with

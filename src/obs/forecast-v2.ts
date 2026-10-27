@@ -519,12 +519,21 @@ export type ForecastV2Result = {
 /**
  * The full v2 projection to the END OF THE CURRENT UTC MONTH (the v1 window),
  * reusing the v1 month-window convention. Thin data → `insufficient-data`
- * (never a fabricated rate); a zero-budget / no-budget forecast still
- * projects spend, just without utilization or ETA.
+ * (never a fabricated rate): that includes the v1 span rule (#101) — fewer
+ * than 2 hours of data in the trailing 24h window with no 7d fallback means
+ * no projection, matching the documented promise; a zero-budget / no-budget
+ * forecast still projects spend, just without utilization or ETA.
  */
 export function forecastV2(input: ForecastV2Input): ForecastV2Result {
   const nowMs = input.now.getTime();
   const { startMs, endMs } = monthWindow(input.now);
+  // #101: the same insufficient-span honesty as v1's headline rate — fewer
+  // than 2 hours of data in the trailing 24h window (with no 7d fallback
+  // either) means there is no rate worth projecting from; a 59-minute
+  // afternoon never forecasts a month.
+  const spanOk =
+    burnRate(input.rows, 24 * HOUR_MS, nowMs, MIN_24H_SPAN_HOURS * HOUR_MS).ok ||
+    burnRate(input.rows, 7 * DAY_MS, nowMs, MIN_7D_SPAN_DAYS * DAY_MS).ok;
   const currentSpend = attributedSpend(input.rows, startMs, endMs);
   const horizonHours = Math.max(1, (endMs - nowMs) / HOUR_MS);
   const remaining = input.budget !== null ? Math.max(0, input.budget - currentSpend) : null;
@@ -544,7 +553,7 @@ export function forecastV2(input: ForecastV2Input): ForecastV2Result {
       const cost = typeof r.cost_value === "number" ? r.cost_value : Number(r.cost);
       return Number.isFinite(cost) && cost > 0;
     }) || (sim.rate.prior?.windows ?? 0) > 0;
-  if (!hasData) {
+  if (!hasData || !spanOk) {
     return {
       verdict: "insufficient-data",
       currentSpend,

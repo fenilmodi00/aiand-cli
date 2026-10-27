@@ -57,6 +57,10 @@ against a **monthly budget**. The math is otherwise the same, point by point.
 8. **Determinism.** mulberry32 seeded by FNV-1a of the window id (the UTC
    month) or an explicit `--seed` (number or string). Identical store rows +
    seed → byte-identical output, including `--json` (golden-fixture tested).
+   The seed makes the Monte Carlo reproducible, not the window: the trailing
+   30-minute OLS window follows the current time, so unpinned back-to-back
+   runs can differ. Pin `--until` (and `--since`) for byte-identical output
+   across runs.
    The PRNG, normal (Box-Muller), and Gamma (Marsaglia-Tsang with the
    shape<1 boost) samplers are hand-rolled — the CLI has zero runtime
    dependencies.
