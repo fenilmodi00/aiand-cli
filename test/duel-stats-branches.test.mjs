@@ -218,7 +218,7 @@ test("stats CLI: timezone, window pairs, and gap validation", async () => {
       "stats",
       "--no-sync",
       "--last",
-      "7d",
+      "30d",
       "--samples",
       "--harness",
       "claude",

@@ -574,6 +574,92 @@ test("parseSnapshot: refuses bad shapes, parses good ones; resolveAlias maps", a
   function BUNDDED_SAFE() {
     return BUNDLED_SNAPSHOT.aliases[0];
   }
+  // Tier parsing: good tiers round-trip, bad tiers refuse per field.
+  const tiered = parseSnapshot(
+    {
+      format: 1,
+      date: "2026-10-20",
+      models: {
+        b: {
+          input: 1,
+          output: 2,
+          cacheRead: null,
+          source: "s",
+          tiers: [{ minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null }],
+        },
+      },
+    },
+    "test",
+  );
+  assert.equal(tiered.models.b.tiers.length, 1);
+  const tier = tiered.models.b.tiers[0];
+  assert.deepEqual(tier, { minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null });
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: { b: { input: 1, output: 2, source: "s", tiers: "nope" } },
+        },
+        "test",
+      ),
+    /tiers must be an array/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: {
+            b: {
+              input: 1,
+              output: 2,
+              source: "s",
+              tiers: [{ minInput: -1, maxInput: null, input: 1, output: 1, cacheRead: null }],
+            },
+          },
+        },
+        "test",
+      ),
+    /tier.minInput/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: {
+            b: {
+              input: 1,
+              output: 2,
+              source: "s",
+              tiers: [{ minInput: 0, maxInput: null, input: "x", output: 1, cacheRead: null }],
+            },
+          },
+        },
+        "test",
+      ),
+    /tier input\/output prices must be numbers/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: { b: { input: 1, output: 2, source: "s", cacheRead: "x" } },
+        },
+        "test",
+      ),
+    /cacheRead must be a number or null/,
+  );
+  // Every bundled alias resolves to its vendor id, and unknowns pass through.
+  for (const alias of BUNDLED_SNAPSHOT.aliases) {
+    assert.equal(resolveAlias(BUNDLED_SNAPSHOT, alias.alias), alias.vendorId);
+  }
 });
 
 test("usage: --by session renders the sessionization annotation; mixed currencies stay apart", async () => {

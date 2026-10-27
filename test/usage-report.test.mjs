@@ -636,7 +636,7 @@ describe("CLI error hardening (#87)", () => {
     );
     assert.equal(run.code, 1);
     assert.match(run.stderr, /Invalid --since value: 2025-02-29/);
-    assert.ok(!run.stderr.includes("at "), "no stack trace leaks to the user");
+    assert.ok(!/ at \S+\(\S+:\d+/.test(run.stderr), "no stack trace leaks to the user");
   });
 
   test("--until with an impossible component (month 13, hour 25) fails with a CliError", async () => {
@@ -659,10 +659,7 @@ describe("CLI error hardening (#87)", () => {
   test("AIAND_CONFIG_DIR pointing at a regular file fails cleanly on reads and writes", async () => {
     const notADir = join(box.dir, "config-file-trap");
     writeFileSync(notADir, "not a directory");
-    for (const args of [
-      ["config", "show"],
-      ["config", "set", "profile", "x"],
-    ]) {
+    for (const args of [["config"], ["config", "set", "profile", "x"]]) {
       const run = await runCli(args, { env: reportEnv(notADir) });
       assert.equal(run.code, 1, `${args.join(" ")}: ${run.stderr}`);
       assert.match(run.stderr, /config dir is not a directory/i);

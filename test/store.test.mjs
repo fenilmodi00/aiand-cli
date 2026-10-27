@@ -371,6 +371,13 @@ describe("sync engine", () => {
       // Bounded rounds: no identical page ever re-fetched.
       const urls = served.map((u) => u.search);
       assert.equal(new Set(urls).size, urls.length, "repeated identical request detected");
+      // #92: id-uniqueness — the 250 ingested rows are 250 distinct logs.
+      const distinct = await readRows(
+        dir,
+        "SELECT COUNT(DISTINCT id) AS n, COUNT(*) AS total FROM requests",
+      );
+      assert.equal(distinct[0].n, 250);
+      assert.equal(distinct[0].total, 250);
     });
   });
 
@@ -478,6 +485,44 @@ describe("store CLI", () => {
     assert.ok(existsSync(secondOut.store.path));
     const quarantined = second.stderr.match(/quarantined to (\S+?);/)?.[1];
     assert.ok(quarantined && existsSync(quarantined), "quarantine file should exist");
+  });
+
+  test("#92: CLI store sync --json on a stuck cursor: result ok:false carries error, warning on stderr, exit 0", async () => {
+    const dir = join(box.dir, "cli-sync-stuck");
+    mkdirSync(dir, { recursive: true });
+    // Same broken double as the engine-level stuck test: after+after_id
+    // re-serves the identical first page forever.
+    const burst = entries(150).map((e) => ({ ...e, created_at: "2026-10-01T10:00:00.000Z" }));
+    const stuckPage = {
+      data: burst.slice(0, 100),
+      has_more: true,
+      next_after: "2026-10-01T10:00:00.000Z",
+      next_after_id: "log-0100",
+    };
+    serveLogs = (url) => {
+      const after = url.searchParams.get("after");
+      const afterId = url.searchParams.get("after_id");
+      if (after && afterId) return stuckPage;
+      if (after) return { data: [], has_more: false, next_after: null, next_after_id: null };
+      return stuckPage;
+    };
+    resetServed();
+
+    const run = await runCli(["store", "sync", "--json"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: baseUrl }),
+    });
+    // Fail-open contract: a partial sync never fails the command.
+    assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+    assert.match(run.stderr, /sync failed|stuck|incomplete/i, "warning must be visible");
+    const out = JSON.parse(run.stdout);
+    assert.ok(out.result, "result object always present");
+    assert.equal(out.result.ok, false);
+    assert.equal(typeof out.result.inserted, "number");
+    assert.equal(typeof out.result.pages, "number");
+    assert.match(out.result.error, /stuck|re-serving|incomplete/i);
+    assert.equal(out.store.rows, 100);
+    // Bounded rounds even through the CLI path.
+    assert.ok(served.length < 10, `expected prompt termination, got ${served.length} rounds`);
   });
 
   test("--no-sync makes zero network calls", async () => {

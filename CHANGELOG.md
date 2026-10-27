@@ -595,8 +595,16 @@ breaking changes while the command surface settles.
   states the real default (all stored history, not 7d); and the dead
   unit-mixing verdict-group `misses` metric (`requests - cachedTokens`) is
   gone from the harness stats, pair stats, and matrix row builders.
-- Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
-  Inside an action opened from the main menu — the init agent picker, the
+- Battle-probe regression tests (#92): the burst-pagination fixture now also
+  asserts id-uniqueness of the 250 ingested rows, a CLI-level test pins the
+  stuck-cursor `store sync --json` exit path (`result.ok: false` with
+  `error`, visible warning, exit 0), window-boundary coverage extends to
+  mid-day instants and exactly-on-boundary upper edges per read surface
+  (`usage`, `sessions`, `export`), and the battle report's critical repros
+  are pinned deterministically: `--since <today>` matches wire-format rows
+  stored by a real sync, and `usage --verify` reports MISMATCH with exit 1
+  when rows are deleted from the local store behind the gateway.
+- Escape and Ctrl-C now navigate instead of killing the CLI from the menu.  Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints
   the cancel as a dim line, and redraws the main menu; only at the menu
   itself do they leave (Esc quits with a visible `Bye.`, Ctrl-C exits 130).

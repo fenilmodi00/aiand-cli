@@ -182,6 +182,86 @@ describe("window filters match gateway wire-format rows (#86)", () => {
     assert.equal(code, 0);
     assert.ok(!stdout.includes("no activity"), "same-day wire rows must render");
   });
+
+  // #92 (OBS-BF-8): instants the #86 suite left unpinned — a mid-day ISO
+  // `--since` (both bounds same day) and an exactly-on-boundary wire row at
+  // the inclusive upper edge, per read surface. The old ISO-string
+  // comparator also failed here (space < 'T' at any hour, not just midnight).
+  test("usage: mid-day --since/--until instants and exactly-on-boundary upper edge (#92)", async () => {
+    // Since 09:00Z excludes the midnight row; the exactly-10:00 wire row is
+    // the inclusive upper bound and must be counted.
+    const dirMid = freshDir("midday");
+    await seedStore(dirMid, [
+      row(WIRE_MIDNIGHT, { id: "at-midnight" }),
+      row("2026-10-26 10:00:00.000000+00", { id: "at-boundary" }),
+      // Sub-millisecond precision is knowingly dropped by the shared
+      // comparator; 1s past the bound is the smallest resolvable exclusion (datetime() truncates sub-seconds).
+      row("2026-10-26 10:00:01.000000+00", { id: "just-after" }),
+      row("2026-10-26 18:00:00.000000+00", { id: "evening" }),
+    ]);
+    const run = JSON.parse(
+      (
+        await runCli(
+          [
+            "usage",
+            "--by",
+            "day",
+            "--json",
+            "--since",
+            `${DAY}T09:00:00Z`,
+            "--until",
+            `${DAY}T10:00:00.000Z`,
+          ],
+          { env: cliEnvFor(dirMid) },
+        )
+      ).stdout,
+    );
+    assert.equal(
+      run.sections.totals.requests,
+      1,
+      "only the exactly-on-boundary 10:00 row; 10:00:01 excluded (second-precision bound)",
+    );
+  });
+
+  test("sessions: mid-day window with an exactly-on-boundary wire row (#92)", async () => {
+    const dirMid = freshDir("midday-sessions");
+    await seedStore(dirMid, [
+      row("2026-10-26 09:00:00.000000+00", { id: "at-since" }),
+      row("2026-10-26 12:00:00.000000+00", { id: "at-until" }),
+      // Sub-ms precision is knowingly dropped; 1s is the smallest exclusion (datetime() truncates sub-seconds).
+      row("2026-10-26 12:00:01.000000+00", { id: "after-until" }),
+    ]);
+    const { readSessionRows } = await import("../dist/commands/sessions.js");
+    await withEnv({ AIAND_CONFIG_DIR: dirMid }, async () => {
+      const rows = readSessionRows(
+        {
+          sinceMs: Date.parse(`${DAY}T09:00:00.000Z`),
+          untilMs: Date.parse(`${DAY}T12:00:00.000Z`),
+        },
+        { agents: [], models: [] },
+      );
+      assert.deepEqual(
+        rows.map((r) => r.id).sort(),
+        ["at-since", "at-until"],
+        "both boundary instants inclusive",
+      );
+    });
+  });
+
+  test("export: mid-day window counts wire rows strictly inside and on the bound (#92)", async () => {
+    const dirMid = freshDir("midday-export");
+    await seedStore(dirMid, [
+      row("2026-10-26 08:59:59.999000+00", { id: "before" }),
+      row("2026-10-26 09:00:00.000000+00", { id: "on-since" }),
+      row("2026-10-26 11:30:00.000000+00", { id: "inside" }),
+    ]);
+    const { code, stderr } = await runCli(
+      ["export", "--format", "otel", "--since", `${DAY}T09:00:00Z`, "--until", `${DAY}T11:30:00Z`],
+      { env: cliEnvFor(dirMid) },
+    );
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /2 requests/, "on-since + inside; before excluded");
+  });
 });
 
 describe("window filters: --timezone behavior preserved (#86)", () => {
