@@ -119,15 +119,15 @@ describe("forecast CLI · command", () => {
     assert.match(r.stdout, /heuristic\(burn-rate v1\)/);
     assert.match(r.stdout, /budgets are advisory/);
 
-    // #77: the bench stub became the real bench — no history → the refusal copy.
+    // #120: the bench subcommand and --model v2 are removed; v1 burn-rate only.
     r = await cli(["forecast", "bench"]);
-    assert.equal(r.code, 0);
-    assert.match(r.stdout, /insufficient history for the bench/);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /Unknown subcommand "bench"/);
 
-    // #99: with --json the same refusals are machine-readable.
-    r = await cli(["forecast", "bench", "--json"]);
-    assert.equal(r.code, 0);
-    assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });
+    r = await cli(["forecast", "--model", "v2"]);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /--model/);
+
     r = await cli(["forecast", "--suggest-budget", "--json"]);
     assert.equal(r.code, 0);
     assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });

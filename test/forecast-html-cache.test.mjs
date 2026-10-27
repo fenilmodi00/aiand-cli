@@ -100,7 +100,7 @@ test("forecast: without --no-sync and no stored credential, the sync fails open"
   assert.match(r.stderr, /Warning: sync failed \(Not logged in\.\)/);
 });
 
-test("forecast: sync-failed run still renders v1 and v2 outputs from local data", async () => {
+test("forecast: sync-failed run still renders the v1 table from local data", async () => {
   const cfg = cfgDir("sync-failed-tables");
   const now = new Date();
   const iso = (h) => new Date(Date.now() - h * 3_600_000).toISOString();
@@ -113,51 +113,13 @@ test("forecast: sync-failed run still renders v1 and v2 outputs from local data"
     JSON.stringify({ budget: { monthly: 1, currency: "usd" } }),
   );
   // A sign-in failure is caught, not thrown: the run must degrade to the
-  // local rows and still print both models (the sync-failed warning itself
+  // local rows and still print the table (the sync-failed warning itself
   // is asserted by the two tests above).
   const v1 = await cli(["forecast", "--base-url", CLOSED_URL, "--until", now.toISOString()], cfg, {
     AIAND_API_KEY: undefined,
   });
   assert.equal(v1.code, 0, v1.stderr);
   assert.match(v1.stdout, /Forecast ·/);
-
-  const v2 = await cli(
-    [
-      "forecast",
-      "--model",
-      "v2",
-      "--seed",
-      "7",
-      "--base-url",
-      CLOSED_URL,
-      "--until",
-      now.toISOString(),
-    ],
-    cfg,
-    { AIAND_API_KEY: undefined },
-  );
-  assert.equal(v2.code, 0, v2.stderr);
-  assert.match(v2.stdout, /Forecast \(v2 calibrated Monte Carlo\)/);
-});
-
-test("forecast bench: --json shape and the bench flags reach the CLI layer", async () => {
-  const cfg = cfgDir("bench-json");
-  // Empty store: every bench run refuses with the insufficient-history copy.
-  let r = await cli(["forecast", "bench", "--json", "--until", "2026-03-20T12:00:00Z"], cfg);
-  assert.equal(r.code, 0, r.stderr);
-  // #99: with --json the refusal is a machine-readable status payload.
-  assert.deepEqual(JSON.parse(r.stdout), { status: "insufficient-history", windows: 0 });
-
-  // Non-integer / non-positive values fail loudly (the int() + guard path).
-  for (const args of [
-    ["forecast", "bench", "--horizon-hours", "abc"],
-    ["forecast", "bench", "--windows", "0"],
-    ["forecast", "bench", "--horizon-hours", "-2"],
-  ]) {
-    r = await cli(args, cfg);
-    assert.equal(r.code, 1, `${args.join(" ")}\n${r.stderr}`);
-    assert.ok(r.stderr.length > 0);
-  }
 });
 
 test("forecast: bad --until / --since / --last / --range values are user errors", async () => {
