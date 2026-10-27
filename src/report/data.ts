@@ -481,24 +481,15 @@ export type BuildDataOptions = {
 };
 
 /**
- * The single data pass. When the budget section is selected and a budget is
- * configured, the load window extends to cover the current month plus the
- * trailing 7 days so the #74 projection reads the SAME rows — no second
- * store pass for the pacing verdict.
+ * The single data pass. The load window is exactly the requested window
+ * (#97) — no silent month-start widening; `usage` honors the same flags
+ * verbatim and the three surfaces must agree.
  */
 export function buildReportData(options: BuildDataOptions, load: LoadFn = storeLoad): ReportData {
   const now = options.now ?? new Date();
   const wants = new Set<string>(options.sections);
 
-  // -- window (extended for the budget projection when needed) ---------------
-  let sinceMs = options.sinceMs;
-  if (wants.has("budget")) {
-    const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
-    const floor = Math.min(monthStart, now.getTime() - 7 * 86_400_000);
-    sinceMs = sinceMs === null ? floor : Math.min(sinceMs, floor);
-  }
-
-  const rows = filterRows(load({ sinceMs, untilMs: options.untilMs }), options);
+  const rows = filterRows(load({ sinceMs: options.sinceMs, untilMs: options.untilMs }), options);
   const prices = readCachedPrices();
 
   // -- the one accumulation walk --------------------------------------------
@@ -660,7 +651,7 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
       generatedAt: now.toISOString(),
       timezone: options.timezone,
       range: {
-        since: sinceMs === null ? null : new Date(sinceMs).toISOString(),
+        since: options.sinceMs === null ? null : new Date(options.sinceMs).toISOString(),
         until: options.untilMs === null ? null : new Date(options.untilMs).toISOString(),
       },
       currencyHandling,
