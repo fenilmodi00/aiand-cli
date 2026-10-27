@@ -422,7 +422,7 @@ function watermarkOf(db: DatabaseSync): { createdAt: string; id: string } | null
     // format (`2026-10-01 15:20:…+00`) with ISO — a text ORDER BY puts
     // `' '` before `'T'` and picks a same-day ISO row over a newer wire row.
     .prepare(
-      `SELECT created_at, id FROM requests ` + `ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
+      `SELECT created_at, id FROM requests ORDER BY ${normalizedExpr()} DESC, id DESC LIMIT 1`,
     )
     .get() as Record<string, unknown> | undefined;
   const createdAt = row?.created_at;
