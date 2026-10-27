@@ -645,3 +645,51 @@ test("cli: compare on an empty window exits 0 with an explicit empty result (#10
   assert.equal(empty.provenance.emptyWindow, true, "explicit empty marker in --json");
   assert.deepEqual(empty.harnesses, []);
 });
+
+// #101: help synopsis, options, and behavior tell one --last story; the
+// `harness recommend` alias accepts the documented flags.
+test("#101 compare/stats/matrix synopsis shows no fake --last default; harness recommend alias takes documented flags", async () => {
+  const cfg = cfgDir("help-story");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = (await import("../dist/store/index.js")).openStore(
+      (await import("../dist/store/index.js")).storePath(),
+    );
+    assert.ok(opened.ok);
+    seedRequests(
+      opened.db,
+      Array.from({ length: 6 }, (_, i) => row({ id: `s101-${i}`, created_at: iso(i * 60_000) })),
+    );
+    opened.db.close();
+  });
+
+  // The synopses never present a --last value as the default; the options
+  // line states the real default (all stored history).
+  for (const args of [
+    ["harness", "--help"],
+    ["harness", "stats", "--help"],
+    ["harness", "compare", "--help"],
+    ["harness", "matrix", "--help"],
+  ]) {
+    const h = await runCli(args, { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+    assert.equal(h.code, 0);
+    assert.ok(
+      !/\[--last \d+[dhw]\]/.test(h.stdout),
+      `no fake default in synopsis: ${args.join(" ")}\n${h.stdout}`,
+    );
+  }
+
+  // The alias route accepts the documented flags (same parse as recommend).
+  for (const flagArgs of [
+    ["harness", "recommend", "--no-sync"],
+    ["harness", "recommend", "--no-sync", "--last", "30d"],
+    ["harness", "recommend", "--no-sync", "--range", "30d"],
+    ["harness", "recommend", "--no-sync", "--sort", "ttft"],
+    ["harness", "recommend", "--no-sync", "--top", "3"],
+    ["harness", "recommend", "--no-sync", "--harness", "claude"],
+    ["harness", "recommend", "--no-sync", "--json"],
+  ]) {
+    const r = await runCli(flagArgs, { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+    assert.equal(r.code, 0, `${flagArgs.join(" ")}: ${r.stderr}`);
+    assert.ok(r.stdout.length > 0);
+  }
+});

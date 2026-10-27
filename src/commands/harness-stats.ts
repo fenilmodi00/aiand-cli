@@ -440,7 +440,7 @@ function workloadHelp(mode: "stats" | "compare"): string {
   return `${style.bold(`aiand harness ${mode}`)} — real-workload ${mode === "stats" ? "stats per harness" : "side-by-side harness comparison"}
 
 Usage
-  aiand harness ${mode} [--last 7d] [--harness <name>] [--agent <name>] [--model <glob>]
+  aiand harness ${mode} [--last <window>] [--harness <name>] [--agent <name>] [--model <glob>]
   aiand harness ${mode} --samples          (${mode === "stats" ? "stats" : "compare"}: list sessions behind the numbers)
   aiand harness ${mode} --json
 
