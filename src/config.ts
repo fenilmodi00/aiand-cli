@@ -1,6 +1,7 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "./cli/errors.js";
+import { err } from "./cli/output.js";
 import { configDir, PRIVATE_FILE_MODE, writeFileAtomic } from "./fsutil.js";
 import type { Tier } from "./secrets.js";
 import * as secrets from "./secrets.js";
@@ -256,7 +257,18 @@ export type ResolvedProfile = Profile & { name: string; authUrl: string; apiUrl:
 
 export function resolveProfile(override?: string): ResolvedProfile {
   const name = activeProfileName(override);
-  const stored = loadConfig().profiles[name] ?? { ...DEFAULT_PROFILE };
+  const config = loadConfig();
+  // #100: a mistyped or missing --profile must not silently serve the default
+  // profile's data. The fallback stays (automation depends on it), but it
+  // warns on stderr so --json stdout remains parseable. The warning fires
+  // only when a profile was explicitly requested, not for the default flow.
+  if (override !== undefined && override !== "" && !Object.hasOwn(config.profiles, name)) {
+    err(
+      `Warning: profile "${override}" is not defined in ${configPath()}; ` +
+        `falling back to the "${config.profiles[config.profile] ? config.profile : "default"}" profile's settings.`,
+    );
+  }
+  const stored = config.profiles[name] ?? { ...DEFAULT_PROFILE };
   const base = process.env.AIAND_BASE_URL;
 
   // Env and the default are always strings, so a non-string here necessarily

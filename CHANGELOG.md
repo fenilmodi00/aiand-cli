@@ -295,6 +295,15 @@ breaking changes while the command surface settles.
 
 ### Changed
 
+- Consistent empty-window contract (ticket #100): `harness compare` and
+  `recommend` now both follow the honest-empty pattern — a window with no
+  requests exits 0 with an explicit empty/insufficient result instead of
+  `compare` erroring while `recommend` exited 0, so automation can key on
+  exit codes; "no data" is an answer, not a failure. A `--profile <unknown>`
+  override no longer silently serves the default profile: the fallback stays
+  but a warning naming both profiles prints on stderr (stdout `--json` stays
+  parseable and unchanged).
+
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario
   families — `multi-turn-refactor-long` (a six-turn refactor over a large
   stable file body), `long-file-read` (one very large read dominating the
