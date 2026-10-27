@@ -5,7 +5,7 @@ import type { LogEntry } from "./logs.js";
  * Cache observability over Gateway /logs rows.
  *
  * Every number here is derived from what the Gateway already reports per
- * request: `input_tokens`, `cached_tokens`, `cost`, `api_key`, `endpoint`.
+ * request: `input_tokens`, `cached_tokens`, `cost`, `api_key`.
  * Nothing is estimated, and nothing requires a second data source.
  *
  * The one thing the Gateway does NOT report is which client sent a request.
