@@ -159,6 +159,7 @@ describe("vs-list pricing (B8)", () => {
     assert.equal(result.totals.savings, null);
   });
 
+  // #111: an unpriced row still reports its gateway-billed cost.
   test("unpriced model still reports its gateway-billed cost, never $0.000000", () => {
     const result = computeVsList(
       [vsRow({ model: "vendor/who-knows", cost_value: 4.99 })],

@@ -198,6 +198,7 @@ test("duel CLI: shape-source, turns-cap, format, and pair-count errors", async (
 // harness latency: layout errors and help through the CLI
 // ---------------------------------------------------------------------------
 
+// #107: an unknown --layout names the valid layouts and the default-pair escape.
 test("latency CLI: unknown layout names the valid layouts and the default hint; help lists them", async () => {
   const cfg = cfgDir("latency-flags");
   const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };

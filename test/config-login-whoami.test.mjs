@@ -176,6 +176,7 @@ describe("config", () => {
     assert.match(r.stderr, /"theme" is not a settable key/);
   });
 
+  // #111: `config get` accepts a sub-key, not just a table name.
   test("mcp.realProjectNames set/unset/get round-trip", async () => {
     const { env } = fresh();
     const on = await runCli(["config", "set", "mcp.realProjectNames", "true"], { env });

@@ -367,6 +367,7 @@ test("cli: stats --json schema, attribution, and mixed exclusion on a seeded sto
   });
 });
 
+// #109: the excluded mixed-model spend line renders when present, absent without one.
 test("cli: excluded mixed-model spend line renders when present, absent without one (OBS-LT-4)", async () => {
   const { openStore, storePath } = await import("../dist/store/index.js");
   const { recordAgentKey } = await import("../dist/api/agent-keys.js");
