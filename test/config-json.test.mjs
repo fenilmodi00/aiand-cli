@@ -158,7 +158,7 @@ describe("unknown --profile warning (#100)", () => {
       });
       assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /profile "does-not-exist" is not defined/);
-      assert.match(r.stderr, /falling back to the "default" profile/);
+      assert.match(r.stderr, /falling back to the built-in defaults/);
       assert.match(r.stdout, /does-not-exist/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -175,7 +175,7 @@ describe("unknown --profile warning (#100)", () => {
       assert.match(r.stderr, /profile "ghost" is not defined/);
       const parsed = JSON.parse(r.stdout);
       // The resolved profile keeps the requested name; the warning on stderr
-      // is what names the default profile actually supplying the settings.
+      // names the built-in defaults actually supplying the settings.
       assert.equal(parsed.name, "ghost");
       assert.throws(() => JSON.parse(r.stderr), "the warning is stderr-only");
     } finally {

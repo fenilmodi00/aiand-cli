@@ -325,7 +325,8 @@ breaking changes while the command surface settles.
   `compare` erroring while `recommend` exited 0, so automation can key on
   exit codes; "no data" is an answer, not a failure. A `--profile <unknown>`
   override no longer silently serves the default profile: the fallback stays
-  but a warning naming both profiles prints on stderr (stdout `--json` stays
+  but a warning naming the requested profile and the built-in-default
+  fallback prints once per requested name on stderr (stdout `--json` stays
   parseable and unchanged).
 
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario

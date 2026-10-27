@@ -101,6 +101,13 @@ export type LoadedCredential = Credential & { access_token: string; refresh_toke
 
 const DEFAULT_PROFILE: Profile = {};
 
+/**
+ * #100: the fallback warning fires once per requested profile name per
+ * process — some flows (e.g. login passing profile.name back through
+ * resolveProfile) resolve an already-resolved name repeatedly.
+ */
+const warnedProfileFallbacks = new Set<string>();
+
 export const configPath = (): string => join(configDir(), "config.json");
 export const credentialsPath = (): string => join(configDir(), "credentials.json");
 
@@ -263,10 +270,13 @@ export function resolveProfile(override?: string): ResolvedProfile {
   // warns on stderr so --json stdout remains parseable. The warning fires
   // only when a profile was explicitly requested, not for the default flow.
   if (override !== undefined && override !== "" && !Object.hasOwn(config.profiles, name)) {
-    err(
-      `Warning: profile "${override}" is not defined in ${configPath()}; ` +
-        `falling back to the "${config.profiles[config.profile] ? config.profile : "default"}" profile's settings.`,
-    );
+    if (!warnedProfileFallbacks.has(override)) {
+      warnedProfileFallbacks.add(override);
+      err(
+        `Warning: profile "${override}" is not defined in ${configPath()}; ` +
+          "falling back to the built-in defaults (empty profile: env vars and global settings only).",
+      );
+    }
   }
   const stored = config.profiles[name] ?? { ...DEFAULT_PROFILE };
   const base = process.env.AIAND_BASE_URL;
