@@ -179,6 +179,10 @@ test("heatmap --json emits per-cell JSON (#99)", async () => {
   });
   const reqPayload = JSON.parse(reqs.stdout);
   assert.equal(reqPayload.cells.find((c) => c.day === "Tue" && c.hour === 10).count, 2);
+
+  // The help text lists --json like every other flag.
+  const h = await runCli(["heatmap", "--help"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+  assert.match(h.stdout, /--json/);
 });
 
 test("wrapped: formats/windows/no-cost/json; dead gateway fails open", async () => {

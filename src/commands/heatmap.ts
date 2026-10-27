@@ -21,7 +21,8 @@ import { runPreReadSync } from "../store/sync.js";
  * (or request-count) grid over the local store, in the display timezone.
  * Color degrades with the terminal: truecolor → 256 → 16 → plain
  * characters, and a piped run is pure ASCII/block characters with zero
- * escape codes. `--range` follows the shared window resolution.
+ * escape codes. `--range` follows the shared window resolution; `--json`
+ * dumps the same grid as machine-readable per-cell entries (#99).
  */
 
 export const help = `${style.bold("aiand heatmap")} -- 24h x 7d activity heatmap of the local store
@@ -42,6 +43,7 @@ Options
   --harness <name>    filter to one harness (repeatable)
   --model <glob>      filter to models matching a glob (repeatable)
   --no-sync           skip the pre-read store sync and read as-is
+  --json              machine-readable per-cell dump of the same grid
 
 Rows are weekdays (Mon top), columns are hours 00-23 in your timezone.
 Intensity is one of five buckets; the glyph carries the level even with no
