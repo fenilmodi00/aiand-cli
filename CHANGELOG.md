@@ -11,6 +11,15 @@ breaking changes while the command surface settles.
 ### Fixed
 - bare `aiand key` now says what the command is for and gives a
   copy-pasteable example (`aiand key export`) instead of a bare verb list
+- `harness stats`, `harness compare`, and `harness matrix` made the cost of
+  mixed-model sessions visible (OBS-LT-4): these sessions are excluded from
+  every per-harness/per-pair row by design, but the only trace was a footer
+  count, so harness totals didn't visibly reconcile with `usage`. The footer
+  now also shows the excluded sessions' gateway-billed spend — session and
+  request counts, token sums, and cost with the same provenance as pair
+  costs, never folded into any row. `--json` carries it under
+  `excludedMixedSpend` (one shared definition in `src/obs/pair-stats.ts` /
+  `src/obs/harness-stats.ts`); no line prints when nothing was excluded.
 - `harness latency` / `harness duel` flag UX: an unknown layout in
   `--pair harness=...` (the natural first guess `harness=default` included)
   now names every valid layout AND suggests omitting `harness=`

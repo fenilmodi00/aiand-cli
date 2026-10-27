@@ -162,6 +162,10 @@ test("buildPairStats splits rows per (harness, model) and excludes mixed-model s
   assert.equal(openGpt.requests, 1);
   // Tokens/session are per-session averages.
   assert.equal(openGlm.tokensPerSession.in, 4000, "session token sum across its 2 requests");
+  // OBS-LT-4: the excluded session's gateway-billed spend rides the result.
+  assert.equal(stats.excludedMixed.sessions, 1);
+  assert.equal(stats.excludedMixed.requests, 2);
+  assert.equal(stats.excludedMixed.cost, 0.02);
   // 429 is not an error; non-2xx (other than 429) is.
   const errRows = [
     row({ id: "e1", api_key: masks.claude, created_at: iso(40 * HOUR), status_code: 429 }),
@@ -328,8 +332,12 @@ test("cli: harness matrix renders columns, hides unpriced by default, shows with
   assert.ok(!stdout.includes("openai/gpt-5.2"), "unpriced pair hidden without --unpriced");
   // Cheapest pair first (opencode/glm at 0.05/req → sessions ~0.15 vs claude 0.03/sess... just check opencode present).
   assert.ok(stdout.includes("opencode"));
-  // Mixed-model footer counts exactly one.
+  // Mixed-model footer counts exactly one, with the OBS-LT-4 spend line.
   assert.match(stdout, /1 mixed-model session\(s\) excluded/);
+  assert.match(
+    stdout,
+    /excluded mixed-model spend \(1 session\(s\), gateway-billed, not in any row above\): 2 request\(s\).*\$0\.0200/,
+  );
 
   const priced = await runCli(["harness", "matrix", "--no-sync", "--unpriced"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -383,6 +391,14 @@ test("cli: matrix --json carries per-row provenance labels and --jq works", asyn
   const payload = JSON.parse(stdout);
   assert.ok(payload.provenance);
   assert.equal(payload.provenance.excludedMixed, 1);
+  // OBS-LT-4: the excluded sessions' gateway-billed spend rides the payload.
+  assert.deepEqual(payload.excludedMixedSpend, {
+    sessions: 1,
+    requests: 2,
+    tokens: { in: 2000, out: 200, cached: 1000 },
+    cost: 0.02,
+    currency: "usd",
+  });
   assert.ok(Array.isArray(payload.pairs) && payload.pairs.length >= 2);
   for (const pair of payload.pairs) {
     assert.equal(pair.labels.cost, "gateway-billed");

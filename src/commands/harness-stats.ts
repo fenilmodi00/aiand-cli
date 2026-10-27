@@ -8,6 +8,7 @@ import { resolveProfile } from "../config.js";
 import {
   buildHarnessStats,
   compareWinners,
+  type ExcludedMixedAggregate,
   type HarnessRequestRow,
   type HarnessStatsRow,
   type SessionSample,
@@ -112,6 +113,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
         provenance: { ...stats.provenance, emptyWindow: true },
         harnesses: [],
         excluded: stats.excluded,
+        excludedMixed: stats.excludedMixed,
       });
     }
     out(
@@ -175,6 +177,8 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
         `excluded: ${stats.provenance.excludedMixed} mixed-model session(s) — counted, assigned to no harness`,
       ),
     );
+    const excludedLine = excludedMixedLine(stats.excludedMixed, noCost);
+    if (excludedLine !== null) out(style.yellow(excludedLine));
     if (bool(parsed, "include-mixed")) renderExcluded(stats.excluded, noCost);
   }
 }
@@ -182,6 +186,29 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 // ---------------------------------------------------------------------------
 // Store access (shared with harness matrix / recommend — one query pass)
 // ---------------------------------------------------------------------------
+
+/**
+ * The OBS-LT-4 reconciliation line: the gateway-billed spend of the
+ * mixed-model sessions excluded from every pair/harness row — same
+ * provenance as the pair costs, never folded into them. One definition,
+ * shared by stats, compare, and matrix. Empty when nothing was excluded.
+ */
+export function excludedMixedLine(
+  agg: ExcludedMixedAggregate,
+  noCost: boolean,
+): string | null {
+  if (agg.sessions === 0) return null;
+  const cost =
+    noCost || agg.cost === null
+      ? ""
+      : ` · cost ${currencySymbol(agg.currency ?? "usd")}${agg.cost.toFixed(4)}`;
+  return (
+    `excluded mixed-model spend (${agg.sessions} session(s), gateway-billed, ` +
+    `not in any row above): ${agg.requests} request(s), ` +
+    `${num(agg.tokens.in)} in / ${num(agg.tokens.out)} out / ${num(agg.tokens.cached)} cached` +
+    `${cost}`
+  );
+}
 
 type RowFilters = { agents: string[]; models: string[] };
 
@@ -282,6 +309,7 @@ export function payload(
     provenance: stats.provenance,
     harnesses: harnesses.map((row) => ({ ...row })),
     excluded: stats.excluded,
+    excludedMixed: stats.excludedMixed,
   };
 }
 
@@ -460,6 +488,8 @@ Options
   --json              machine-readable output
 
 Sessions are the #66 time-gap heuristic; mixed-model sessions are excluded
-from every aggregate and counted explicitly. Verdicts reuse the cache-report
+from every aggregate and counted explicitly — the footer also shows their
+gateway-billed spend (in --json under \`excludedMixedSpend\`) so totals
+reconcile with \`usage\`. Verdicts reuse the cache-report
 thresholds. Costs are gateway-billed store sums; ratios are estimated(derived).`;
 }
