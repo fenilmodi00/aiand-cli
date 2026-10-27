@@ -27,6 +27,7 @@
 //
 // Standalone use: `node test/mock-gateway.mjs --port 0` prints one JSON line
 // {"port":<actual>} on stdout and serves until killed.
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const NEW_ACCESS = "sk-new-mock-token";
@@ -163,6 +164,68 @@ const server = createServer((req, res) => {
     // #63: the accuracy gate verifies against /logs, so the 401 stub must
     // cover it too (a gateway auth failure must never verify as green).
     if (scenario === "401") return reply401(res);
+    // #94: the gateway's paired-cursor contract violation, verbatim from the
+    // raw probes. `logs-400` always rejects /logs with it (for driving the
+    // error surface); `logs-400-pair` rejects only requests carrying exactly
+    // one of after/after_id (the real contract shape).
+    if (scenario === "logs-400") {
+      return reply(res, 400, { error: "after and after_id must be sent together" });
+    }
+    if (scenario === "logs-400-pair") {
+      const after = url.searchParams.get("after");
+      const afterId = url.searchParams.get("after_id");
+      if (Boolean(after) !== Boolean(afterId)) {
+        return reply(res, 400, { error: "after and after_id must be sent together" });
+      }
+      return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
+    }
+    // #94: the pinned /logs semantics, probed raw on 2026-10-27 — newest-first
+    // always, `after` an exclusive floor, `after_id` only breaking ties at the
+    // anchor timestamp, and after/after_id required together. Rows come from
+    // the JSON file named by AIAND_MOCK_LOG_FILE (gateway LogEntry shape, any
+    // order — served newest-first); re-read per request so tests can land new
+    // traffic between syncs by rewriting the file.
+    if (scenario === "logs-pinned") {
+      let rows = [];
+      try {
+        const file = process.env.AIAND_MOCK_LOG_FILE;
+        rows = JSON.parse(file ? readFileSync(file, "utf8") : "[]");
+      } catch {
+        rows = [];
+      }
+      const newestFirst = [...rows].sort((a, b) =>
+        a.created_at < b.created_at
+          ? 1
+          : a.created_at > b.created_at
+            ? -1
+            : b.id.localeCompare(a.id),
+      );
+      const after = url.searchParams.get("after");
+      const afterId = url.searchParams.get("after_id");
+      if (Boolean(after) !== Boolean(afterId)) {
+        return reply(res, 400, { error: "after and after_id must be sent together" });
+      }
+      let remaining = newestFirst;
+      if (after) {
+        // Cursor semantics: (after, after_id) names the LAST row served; the
+        // next page continues downward — strictly older rows, with after_id
+        // breaking ties at exactly the anchor timestamp.
+        remaining = newestFirst.filter(
+          (e) =>
+            e.created_at < after || (e.created_at === after && afterId !== null && e.id < afterId),
+        );
+      }
+      const limit = Math.max(0, Math.min(100, Number(url.searchParams.get("limit") ?? 100)));
+      const data = remaining.slice(0, limit);
+      const last = data[data.length - 1];
+      const hasMore = remaining.length > data.length;
+      return reply(res, 200, {
+        data,
+        has_more: hasMore,
+        next_after: hasMore && last ? last.created_at : null,
+        next_after_id: hasMore && last ? last.id : null,
+      });
+    }
     return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
   }
 

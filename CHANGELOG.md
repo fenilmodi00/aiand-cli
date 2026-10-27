@@ -555,6 +555,17 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
+- Incremental store sync (OBS-BF-9, #94): the gateway's `/logs` is newest-first
+  and `after` is an exclusive floor, so an incremental sync that started at
+  `watermark − 5min` could never page forward to rows newer than the watermark —
+  every sync after the first inserted 0 rows and the store went silently stale
+  (`usage --verify` MISMATCH). The sync now pages from the top on every run and
+  stops as soon as a page's oldest row reaches the overlap floor
+  (watermark − 5min): new traffic is picked up in full, the watermark advances,
+  PK dedupe (`INSERT OR IGNORE`) and the stuck-cursor guard are unchanged, and a
+  quiescent no-op sync stops after one page instead of walking the full 30-day
+  range. A gateway 400 "after and after_id must be sent together" surfaces as a
+  clean failed sync (warning + `last_sync_error`, exit 0) — never a raw stack.
 - Store sync cursor: the outer sync loop advanced by `created_at` alone,
   so any timestamp owning more rows than one page re-served the identical
   page forever — a live sync captured 103 of 832 rows and never finished

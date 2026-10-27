@@ -281,12 +281,13 @@ describe("sync engine", () => {
     });
   });
 
-  test("watermark resume: an interrupted sync fetches only the remaining pages", async () => {
+  test("#94: an interrupted sync leaves durable state; the resumed sync completes the drain", async () => {
     const mod = await store();
     const dir = join(box.dir, "sync-resume");
     const rows = entries(250);
-    // Page 1 succeeds, page 2 fails: syncStore reports failure but the
-    // page-1 watermark must already be durable.
+    // Newest-first drain (the pinned /logs semantics): page 1 (the 100
+    // newest rows) succeeds, page 2 fails. The page-1 watermark must already
+    // be durable — the newest rows never re-serve once stored.
     const working = forwardPager(rows);
     serveLogs = (url) => {
       const after = url.searchParams.get("after");
@@ -302,16 +303,14 @@ describe("sync engine", () => {
       const partial = mod.getStoreInfo();
       assert.equal(partial.rows, 100);
 
-      // Heal the double; the resumed sync must not re-walk page 1.
+      // Heal the double; the resumed sync pages from the top again, gets the
+      // 100 newest rows for free (INSERT OR IGNORE) and walks the remaining
+      // older pages.
       serveLogs = working;
       resetServed();
       const resumed = await mod.syncStore(fakeSession(baseUrl));
       assert.equal(resumed.ok, true);
       if (!resumed.ok) return;
-      assert.equal(resumed.inserted, 150);
-      // 5-minute overlap rewinds the cursor slightly (~rows 95-100 refetch),
-      // so two pages cover the rest — never the three a cold start needs.
-      assert.ok(served.length <= 2, `expected <=2 resumed pages, got ${served.length}`);
       assert.equal(mod.getStoreInfo().rows, 250);
     });
   });
