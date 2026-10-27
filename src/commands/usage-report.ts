@@ -1,6 +1,6 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
-import { type Column, currencySymbol, num, out, style, table } from "../cli/output.js";
+import { type Column, currencySymbol, heading, num, out, style, table } from "../cli/output.js";
 import { type ImportedReportRow, loadImportedRows } from "../obs/ccusage-import.js";
 import { errorCount } from "../obs/harness-stats.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
@@ -1029,7 +1029,7 @@ export function primarySection(sections: readonly SectionName[]): BlockSection |
 
 export function renderReport(report: Report, view: RenderOptions): void {
   const meta = report.meta;
-  out(style.bold(`Usage by ${view.unit}`));
+  heading(`Usage by ${view.unit}`);
   const windowBits = [
     meta.range.since ? `from ${meta.range.since.replace("T", " ").slice(0, 19)}Z` : null,
     meta.range.until ? `to ${meta.range.until.replace("T", " ").slice(0, 19)}Z` : null,
@@ -1057,27 +1057,27 @@ export function renderReport(report: Report, view: RenderOptions): void {
 
   if (!Array.isArray(blocks) && view.sections.includes("totals")) {
     out();
-    out(style.bold("Totals"));
+    heading("Totals");
     out();
     renderTotalsFields(report.sections.totals as TotalsRow | undefined, report, view);
   }
 
   if (view.sections.includes("by-model")) {
     out();
-    out(style.bold("By model"));
+    heading("By model");
     out();
     renderGroupTable(report.sections["by-model"] as GroupRow[] | undefined, view, "model");
   }
   if (view.sections.includes("by-agent")) {
     out();
-    out(style.bold("By agent"));
+    heading("By agent");
     out();
     renderGroupTable(report.sections["by-agent"] as GroupRow[] | undefined, view, "agent");
   }
 
   if (view.sections.includes("peak")) {
     out();
-    out(style.bold("Peak / off-peak"));
+    heading("Peak / off-peak");
     out(style.dim(meta.provenance.peak ?? ""));
     out();
     renderPeak(report.sections.peak as PeakSplit | undefined);
@@ -1086,7 +1086,7 @@ export function renderReport(report: Report, view: RenderOptions): void {
   const importedRows = report.sections.imported as GroupRow[] | undefined;
   if (importedRows) {
     out();
-    out(style.bold("Imported (ccusage) — excluded from gateway totals"));
+    heading("Imported (ccusage) — excluded from gateway totals");
     out(style.dim(meta.provenance.imported ?? ""));
     out();
     renderGroupTable(importedRows, view, "source");
@@ -1099,7 +1099,7 @@ export function renderReport(report: Report, view: RenderOptions): void {
   const grandTotal = report.sections["grand-total"] as GrandTotalRow | undefined;
   if (grandTotal) {
     out();
-    out(style.bold("Grand total (gateway + imported)"));
+    heading("Grand total (gateway + imported)");
     out(style.dim(meta.provenance["grand-total.cost"] ?? ""));
     out();
     const rows: (GroupRow | null)[] = [

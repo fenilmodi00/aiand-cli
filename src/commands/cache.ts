@@ -11,7 +11,7 @@ import { openSession } from "../api/client.js";
 import { getLogsPaged, LOG_RANGES } from "../api/logs.js";
 import { listModels } from "../api/models.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import {
@@ -171,7 +171,7 @@ function printCoverage(coverage: ReturnType<typeof computeCoverage>): void {
 function printReport(report: CacheReport, by: GroupBy): void {
   const { totals } = report;
 
-  out(style.bold(`Cache · last ${report.range}`));
+  heading(`Cache · last ${report.range}`);
   out();
   table(
     [
@@ -195,7 +195,7 @@ function printReport(report: CacheReport, by: GroupBy): void {
   const groups = by === "model" ? report.byModel : by === "key" ? report.byKey : report.byAgent;
 
   out();
-  out(style.bold(`By ${by}`));
+  heading(`By ${by}`);
   out();
   printGroups(groups);
 

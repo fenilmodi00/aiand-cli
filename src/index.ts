@@ -6,7 +6,7 @@ import { VERSION } from "./api/client.js";
 import { ApiError, CliError, EXIT } from "./cli/errors.js";
 import { promptMenu } from "./cli/menu.js";
 import { INIT_ALL_ACTION, mainMenuItems, signInItems, signInMode } from "./cli/menu-items.js";
-import { err, out, style } from "./cli/output.js";
+import { err, heading, out, style } from "./cli/output.js";
 import type { PromptInput, PromptOutput } from "./cli/select.js";
 import { renderHome } from "./cli/ui/home.js";
 import { playSplash } from "./cli/ui/splash.js";
@@ -117,7 +117,7 @@ export async function runMainMenu(
 
       // The one-shot setup row: wire every installed agent in one go.
       if (picked === INIT_ALL_ACTION) {
-        out("");
+        heading(findCommand("init")?.summary ?? "Set up agents");
         await initCommand.run(["--all"]);
         await runSystemHousekeeping();
         out("");
@@ -126,7 +126,7 @@ export async function runMainMenu(
 
       const agent = findAgent(picked);
       if (agent) {
-        out("");
+        heading(`Open ${agent.label}`);
         await runAgentCommand(agent, [], []);
         await runSystemHousekeeping();
         // An agent owns the terminal for its whole run; redrawing the menu on
@@ -135,7 +135,7 @@ export async function runMainMenu(
       }
       const command = findCommand(picked);
       if (command) {
-        out("");
+        heading(command.summary);
         // `key` takes a verb, so the menu falls back to the one it prints with.
         const argv = process.argv.includes("--json") ? ["--json"] : [];
         await command.run([...(picked === "key" ? ["export"] : argv)]);

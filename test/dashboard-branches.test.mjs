@@ -170,6 +170,48 @@ test("dashboard TUI: arrows, j/k scroll, r refresh, c toggles back, q quits", as
   });
 });
 
+test("dashboard TUI: a shorter frame clears the previous frame's tail rows", async () => {
+  const cfg = cfgDir("tui-shrink-clear");
+  await seedStore(cfg, 8);
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { runDashboardUi } = await import("../dist/commands/dashboard.js");
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    output.columns = 110;
+    output.rows = 40;
+    const done = runDashboardUi({
+      input,
+      output,
+      timezone: "UTC",
+      models: [],
+      showCost: true,
+      refreshMs: 60_000,
+      sync: { skipped: true },
+      now: new Date(MONDAY_10 + 12 * HOUR),
+    });
+    try {
+      await waitFor(() => output.text.includes("ai& dashboard"));
+      const beforeCompare = output.text.length;
+
+      input.send("c"); // compare on: much shorter frame than the per-day view
+      await waitFor(() => output.text.includes("Harness compare"), 5000, "compare on");
+      // The shrink-clear branch must blank the leftover rows of the taller
+      // per-day frame: the frame body carries one CLEAR_LINE per orphaned row
+      // and no stale footer content survives below the new frame.
+      const compareFrame = output.text.slice(beforeCompare);
+      const footerCount = [...compareFrame.matchAll(/auto-refresh 60s/g)].length;
+      assert.equal(footerCount, 1, "compare frame carries exactly one footer");
+      assert.match(compareFrame, /(?:\x1b\[2K\n)+\x1b\[2K\x1b\[\d+A/, "orphaned rows are blanked");
+
+      input.send("q");
+      await done;
+    } finally {
+      input.send("q");
+      await done.catch(() => {});
+    }
+  });
+});
+
 test("dashboard TUI: narrow terminal renders the one-column frame", async () => {
   const cfg = cfgDir("tui-narrow");
   await seedStore(cfg, 4);

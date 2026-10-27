@@ -1,6 +1,8 @@
 import { EOL } from "node:os";
 import { DAY_SECONDS, HOUR_SECONDS, MINUTE_SECONDS, SECOND_MS } from "../time.js";
 import { colorsEnabled } from "./ui/color.js";
+import { GLYPH } from "./ui/glyphs.js";
+import { createTheme } from "./ui/theme.js";
 
 const ESC = "\x1b[";
 
@@ -19,14 +21,31 @@ export function _setColorEnabled(value: boolean): void {
 const wrap = (open: string, close: string) => (s: string) =>
   enabled ? `${ESC}${open}m${s}${ESC}${close}m` : s;
 
+/**
+ * The shared command-output style. The color roles are bound to the ai&
+ * brand palette — the same theme the menu chrome paints with — so command
+ * output and menu chrome share one visual language: red/green/yellow/cyan
+ * are the theme's danger/success/warning/accent roles. The theme is bound
+ * per call, like the menu's own render, so a changed color env applies
+ * without a process restart; plain text whenever color is off.
+ */
 export const style = {
   bold: wrap("1", "22"),
   dim: wrap("2", "22"),
-  red: wrap("31", "39"),
-  green: wrap("32", "39"),
-  yellow: wrap("33", "39"),
-  cyan: wrap("36", "39"),
+  red: (s: string) => (enabled ? createTheme({ isTTY: true }).danger(s) : s),
+  green: (s: string) => (enabled ? createTheme({ isTTY: true }).success(s) : s),
+  yellow: (s: string) => (enabled ? createTheme({ isTTY: true }).warning(s) : s),
+  cyan: (s: string) => (enabled ? createTheme({ isTTY: true }).accent(s) : s),
 };
+
+/**
+ * A section heading in the menu's own visual language: the focus-bar glyph
+ * in the accent color, then the title bold. The one heading every command
+ * output and the menu chrome share, so a tiled view reads as one surface.
+ */
+export function heading(title: string): void {
+  out(`${style.cyan(GLYPH.focusBar)} ${style.bold(title)}`);
+}
 
 const CURRENCY_SYMBOL: Record<string, string> = { usd: "$", jpy: "¥" };
 

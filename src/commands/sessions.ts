@@ -2,7 +2,17 @@ import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
 import { bool, list, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { type Column, currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import {
+  type Column,
+  currencySymbol,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  style,
+  table,
+} from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
 import { currencyKey } from "../pricing/currency.js";
@@ -429,7 +439,7 @@ type ListView = {
 };
 
 function renderList(sessions: SessionView[], view: ListView): void {
-  out(style.bold("Sessions"));
+  heading("Sessions");
   out(style.dim(`  ${sessionizationNote(view.gapMinutes)}`));
   out();
   if (sessions.length === 0) {
@@ -576,7 +586,7 @@ function runDrillDown(
     return;
   }
 
-  out(style.bold(`Session ${view.id}`));
+  heading(`Session ${view.id}`);
   out(
     style.dim(
       `  harness ${view.harness} · ${view.turns} turn${view.turns === 1 ? "" : "s"} · ` +

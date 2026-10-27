@@ -26,7 +26,7 @@ import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { loadSavedSweep } from "../benchmark/sweep-store.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { err, json, out, style } from "../cli/output.js";
+import { err, heading, json, out, style } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
@@ -305,7 +305,7 @@ function renderLatencyTable(
   live: Awaited<ReturnType<typeof runLatency>>,
   historical: Map<string, ReturnType<typeof historicalTtft>>,
 ): void {
-  out(style.bold("latency A/B · live vs historical"));
+  heading("latency A/B · live vs historical");
   out(
     style.dim(
       "  live = measured through the normal gateway path (no proxy needed); historical = store ttft_ms",
@@ -321,7 +321,7 @@ function renderLatencyTable(
       hist !== null && result.ttft.p50 !== null
         ? `${result.ttft.p50 - hist.p50 >= 0 ? "+" : "−"}${Math.abs(result.ttft.p50 - hist.p50).toFixed(0)}ms`
         : "—";
-    out(`${style.bold(pairLabel(result.pair))}${result.partial ? style.yellow(" (partial)") : ""}`);
+    heading(`${pairLabel(result.pair)}${result.partial ? style.yellow(" (partial)") : ""}`);
     out(
       `  live p50/p90/p95: ${cell(result.ttft.p50)} / ${cell(result.ttft.p90)} / ${cell(result.ttft.p95)}` +
         `   wall p50/p95: ${cell(result.wall.p50)} / ${cell(result.wall.p95)}` +

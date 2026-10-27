@@ -3,7 +3,7 @@ import { openSession } from "../api/client.js";
 import { bool, int, list, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   buildHarnessStats,
@@ -397,7 +397,7 @@ function maybeMark(isWinner: boolean, cell: string): string {
 }
 
 function renderSamples(rows: HarnessStatsRow[]): void {
-  out(style.bold("samples — the sessions behind each median/P90"));
+  heading("samples — the sessions behind each median/P90");
   for (const row of rows) {
     out(style.dim(`${row.harness} · ${row.samples.length} session(s)`));
     table<SessionSample>(row.samples, [
@@ -417,7 +417,7 @@ function renderSamples(rows: HarnessStatsRow[]): void {
 }
 
 function renderExcluded(excluded: SessionSample[], noCost: boolean): void {
-  out(style.bold("mixed-model sessions (excluded from all aggregates)"));
+  heading("mixed-model sessions (excluded from all aggregates)");
   const excludedCostColumn: Column<SessionSample>[] = [
     {
       header: "cost",

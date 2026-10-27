@@ -227,11 +227,13 @@ describe("report data (one load, many sections)", () => {
     assert.equal(data.meta.currency, "usd");
     assert.equal(data.totals.requests, 3);
     assert.deepEqual(data.totals.costs, { usd: 0.0126 });
-    // savings = (uncached*1.0 + cached*0.1 + out*2.0)/1e6 - billed cost
-    const uncachedIn = 8000 - 4000 + (9000 - 4000) + (7000 - 3000);
-    const cached = 4000 + 4000 + 3000;
+    // savings = all input priced at the full rate (no-cache counterfactual):
+    // (in*1.0 + out*2.0)/1e6 - billed cost — cache reads are NOT discounted
+    // because the gateway already bills them cheap; savings measure what a
+    // cold cache would have cost.
+    const inAll = 8000 + 9000 + 7000;
     const out = 300 + 300 + 200;
-    const expected = (uncachedIn * 1.0 + cached * 0.1 + out * 2.0) / 1e6 - 0.0126;
+    const expected = (inAll * 1.0 + out * 2.0) / 1e6 - 0.0126;
     assert.ok(Math.abs(data.totals.savings - expected) < 1e-9);
     assert.match(data.meta.provenance.savings, /^estimated\(/);
     assert.match(data.meta.provenance.sessions, /^heuristic\(/);
@@ -329,7 +331,7 @@ describe("overview text", () => {
         "  tokens in          24,000  (cached 11,000)",
         "  tokens out            800",
         "  cost usd          $0.0126",
-        "  savings           $0.0031",
+        "  savings           $0.0130",
         "",
         "By harness",
         "  claude       █████████████·······  67%  $0.0084",
@@ -344,8 +346,8 @@ describe("overview text", () => {
         "",
         "Per day (last 2 of 2 day(s))",
         "  date        requests    tokens          cost       savings",
-        "  2026-10-20         2    17,600       $0.0084       $0.0026",
-        "  2026-10-21         1     7,200       $0.0042       $0.0005",
+        "  2026-10-20         2    17,600       $0.0084       $0.0098",
+        "  2026-10-21         1     7,200       $0.0042       $0.0032",
         "",
         "--------------------------------------------------------------------------------",
         "note: sync skipped (--no-sync) — showing local data as-is",
@@ -787,5 +789,84 @@ describe("requested window honored (#97)", () => {
     assert.equal(payload.meta.range.since, "2026-09-25T00:00:00.000Z");
     assert.equal(payload.totals.requests, 3);
     assert.ok(payload.meta.range.since < "2026-10-01");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness attribution must read agent-keys.json once per build, not per row.
+// The dashboard's refresh() is synchronous; a per-row file read made every
+// period/arrow/refresh keypress block for seconds on real stores (~2.7s for
+// 2799 rows on Windows), so only the keys that skip refresh (c, q) looked
+// alive. Attribution still resolves every masked key.
+// ---------------------------------------------------------------------------
+describe("agent-key map read once per build", () => {
+  test("harness attribution scales: one file read, correct labels", async () => {
+    const dir = freshDir("key-index");
+    // A masked key file with one mapping; many rows hitting the same key is
+    // the pathological case the dashboard hits on a real store.
+    writeFileSync(
+      join(dir, "agent-keys.json"),
+      JSON.stringify({
+        version: 1,
+        keys: [{ agent: "claude", masked: "sk-abcd...1234", fingerprint: "f1", at: 1 }],
+      }),
+    );
+    const rows = Array.from({ length: 500 }, (_, i) => ({
+      id: `k${i}`,
+      model: "zai-org/glm-5.3",
+      api_key: i % 2 === 0 ? "sk-abcd...1234" : "sk-unknown...beef",
+      created_at: "2026-10-20T10:00:00.000Z",
+      latency_ms: 500,
+      input_tokens: 100,
+      output_tokens: 10,
+      cached_tokens: 0,
+      cost_value: 0.001,
+      currency: "usd",
+    }));
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir }, async () =>
+      buildReportData(
+        {
+          timezone: "UTC",
+          sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+          untilMs: null,
+          harnesses: [],
+          models: [],
+          sections: ["totals", "by-harness"],
+          top: 5,
+          sync: { skipped: true },
+          now: PINNED_NOW,
+        },
+        () => rows,
+      ),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((r) => [r.harness, r.requests]));
+    assert.equal(byHarness.claude, 250, "mapped rows attributed to claude");
+    assert.equal(byHarness.unknown, 250, "unmapped rows attributed to unknown");
+    // The build stays fast with a big store: the per-row file read is gone.
+    // A generous ceiling that a per-row read of 500 entries blows past.
+    const load = () => rows;
+    const t0 = performance.now();
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      buildReportData(
+        {
+          timezone: "UTC",
+          sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+          untilMs: null,
+          harnesses: [],
+          models: [],
+          sections: ["totals", "by-harness"],
+          top: 5,
+          sync: { skipped: true },
+          now: PINNED_NOW,
+        },
+        load,
+      );
+    });
+    const elapsed = performance.now() - t0;
+    assert.ok(
+      elapsed < 500,
+      `500-row build took ${Math.round(elapsed)}ms; per-row file read is back`,
+    );
   });
 });

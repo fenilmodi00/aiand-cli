@@ -2,7 +2,7 @@ import { openSession } from "../api/client.js";
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   annotatedPairRow,
@@ -159,7 +159,7 @@ export async function run(argv: string[]): Promise<void> {
     });
   }
 
-  out(style.bold("recommend · your workload"));
+  heading("recommend · your workload");
   out(
     style.dim(
       `based on your own traffic (${totalSessions} session(s), ${range}); ` +
@@ -321,7 +321,7 @@ function renderRanked(rows: PairStatsRow[]): void {
 
 function renderInsufficient(rows: PairStatsRow[]): void {
   if (rows.length === 0) return;
-  out(style.bold(`insufficient data (fewer than ${MIN_SAMPLE_SESSIONS} sessions — not ranked)`));
+  heading(`insufficient data (fewer than ${MIN_SAMPLE_SESSIONS} sessions — not ranked)`);
   table<PairStatsRow>(rows, [
     { header: "harness", value: (r) => r.harness },
     { header: "model", value: (r) => r.model },

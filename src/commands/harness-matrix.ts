@@ -5,7 +5,7 @@ import { loadSavedSweep, type SavedSweep } from "../benchmark/sweep-store.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   annotatedPairRow,
@@ -259,7 +259,7 @@ function syntheticRow(
 }
 
 function renderSynthetic(sweep: SavedSweep, format: "table" | "markdown"): void {
-  out(style.bold("synthetic sweep (fixed scenario replay — NOT your workload)"));
+  heading("synthetic sweep (fixed scenario replay — NOT your workload)");
   if (format === "markdown") {
     out("| harness | model | requests | hit-ratio | cost | verdict |");
     out("|---|---|---:|---:|---:|---|");

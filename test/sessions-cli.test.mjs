@@ -165,7 +165,7 @@ test("cli: sessions table is a deterministic snapshot over a fixture store", asy
   assert.equal(
     lines(stdout),
     [
-      "Sessions",
+      "▌ Sessions",
       "  sessions derived by 10-min gap heuristic — boundaries are approximate, not authoritative",
       "",
       "SESSION           HARNESS  MODELS             TURNS  INPUT TOK  OUT TOK  CACHED TOK       COST  TTFT P50    P95  ERRORS  START             END",

@@ -3,6 +3,7 @@ import { bool, list, parse, str } from "../cli/args.js";
 import { CliError, cancelled } from "../cli/errors.js";
 import { clipToWidth, currencySymbol, err, out, style, visibleWidth } from "../cli/output.js";
 import { createKeyParser, KEY, type PromptInput, type PromptOutput } from "../cli/select.js";
+import { createTheme, type Theme } from "../cli/ui/theme.js";
 import { resolveProfile } from "../config.js";
 import {
   buildHarnessStats,
@@ -388,9 +389,11 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
 
   const width = (): number => Math.max(20, output.columns || 80);
   const height = (): number => Math.max(12, output.rows || 24);
+  const theme = createTheme(process.stdout);
 
   const draw = (): void => {
     const lines = renderFrame(state, {
+      theme,
       width: width(),
       height: height(),
       showCost: options.showCost,
@@ -400,6 +403,10 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
     });
     let frame = prevLines > 0 ? `\x1b[${prevLines}A\r` : "\r";
     frame += lines.map((line) => `${CLEAR_LINE}${clipToWidth(line, width())}`).join("\n");
+    if (lines.length < prevLines) {
+      const extra = prevLines - lines.length;
+      frame += `\n${(`${CLEAR_LINE}\n`).repeat(extra - 1)}${CLEAR_LINE}\x1b[${extra}A`;
+    }
     output.write(`${frame}\n`);
     prevLines = lines.length;
   };
@@ -520,6 +527,7 @@ const HINTS = "1-6/←→ period · j/k scroll · p harness · c compare · r re
 function renderFrame(
   state: DashboardState,
   view: {
+    theme: Theme;
     width: number;
     height: number;
     showCost: boolean;
@@ -528,26 +536,30 @@ function renderFrame(
     nowMs: number;
   },
 ): string[] {
+  const { theme } = view;
   const period = DASH_PERIODS[state.periodIndex]!;
   const lines: string[] = [];
 
   // -- header + period tabs ---------------------------------------------------
+  // Two-tone brand wordmark, the same treatment as the home screen header.
+  const split = Math.ceil(visibleWidth("ai& dashboard") / 2);
   const scopeLabel = state.scope === "all" ? "all harnesses" : state.scope;
   lines.push(
-    `${style.bold("ai& dashboard")}  ${style.dim(`${period.label} · ${scopeLabel} · ${view.timezone}`)}`,
+    `${theme.brand("ai& dashboard".slice(0, split))}${theme.accent("ai& dashboard".slice(split))}` +
+      `  ${theme.muted(`${period.label} · ${scopeLabel} · ${view.timezone}`)}`,
   );
   const tabs = DASH_PERIODS.map((entry, i) => {
     const text = `${i + 1} ${entry.label}`;
-    return i === state.periodIndex ? style.bold(`[${text}]`) : style.dim(text);
+    return i === state.periodIndex ? theme.accent(`[${text}]`) : theme.muted(text);
   }).join("  ");
   lines.push(tabs);
   lines.push("");
 
   // -- pinned top-5 sessions (never scrolled away) -------------------------------
-  lines.push(style.bold("Top 5 sessions (pinned)"));
+  lines.push(theme.bold("Top 5 sessions (pinned)"));
   const sessions = state.data?.sessions ?? [];
   if (sessions.length === 0) {
-    lines.push(style.dim("  no sessions in this window yet — press r after a sync"));
+    lines.push(theme.muted("  no sessions in this window yet — press r after a sync"));
   } else {
     for (let i = 0; i < Math.min(5, sessions.length); i += 1) {
       const session = sessions[i]!;
@@ -561,15 +573,15 @@ function renderFrame(
       );
     }
   }
-  lines.push(style.dim("─".repeat(Math.min(view.width, 60))));
+  lines.push(theme.muted("─".repeat(view.width)));
 
   // -- body: responsive panels + scrollable per-day list, or the compare view ----
   if (state.compare) {
-    lines.push(...renderCompare(state, view.width, view.showCost));
+    lines.push(...renderCompare(state, view.width, view.showCost, theme));
   } else {
     const panels = renderPanels(state, view);
     const columns = columnsFor(view.width);
-    lines.push(...composeColumns(panels, columns, view.width));
+    lines.push(...composeColumns(panels, columns, view.width, theme));
     lines.push("");
     // Fixed chrome so far, plus the blank + footer still to come.
     const fixed = lines.length + 2;
@@ -580,7 +592,9 @@ function renderFrame(
   lines.push("");
   const refreshed = new Date(view.nowMs).toTimeString().slice(0, 8);
   lines.push(
-    style.dim(`${HINTS} · auto-refresh ${Math.round(view.refreshMs / 1000)}s (last ${refreshed})`),
+    theme.muted(
+      `${HINTS} · auto-refresh ${Math.round(view.refreshMs / 1000)}s (last ${refreshed})`,
+    ),
   );
   return lines;
 }
@@ -603,8 +617,9 @@ function formatCosts(costs: Record<string, number>): string {
 
 function renderPanels(
   state: DashboardState,
-  view: { showCost: boolean },
+  view: { theme: Theme; showCost: boolean },
 ): { title: string; lines: string[] }[] {
+  const { theme } = view;
   const data = state.data;
   const panels: { title: string; lines: string[] }[] = [];
 
@@ -612,7 +627,7 @@ function renderPanels(
   const totals = data?.totals;
   const totalsLines: string[] = [];
   if (!totals || totals.requests === 0) {
-    totalsLines.push(style.dim("no requests in this window"));
+    totalsLines.push(theme.muted("no requests in this window"));
   } else {
     totalsLines.push(`requests      ${totals.requests}`);
     totalsLines.push(`tokens in     ${totals.inputTokens}  (cached ${totals.cachedTokens})`);
@@ -632,7 +647,7 @@ function renderPanels(
   const harnessLines: string[] = [];
   const byHarness = data?.byHarness ?? [];
   if (byHarness.length === 0) {
-    harnessLines.push(style.dim("no harness data"));
+    harnessLines.push(theme.muted("no harness data"));
   } else {
     for (const row of byHarness.slice(0, 6)) {
       const share = row.share === null ? "n/a%" : `${Math.round(row.share * 100)}%`;
@@ -646,7 +661,7 @@ function renderPanels(
   const modelLines: string[] = [];
   const topModels = data?.topModels ?? [];
   if (topModels.length === 0) {
-    modelLines.push(style.dim("no model data"));
+    modelLines.push(theme.muted("no model data"));
   } else {
     for (const model of topModels.slice(0, 5)) {
       const cost = view.showCost ? `  ${formatCosts(model.costs)}` : "";
@@ -663,6 +678,7 @@ function composeColumns(
   panels: { title: string; lines: string[] }[],
   columns: 1 | 2 | 3,
   width: number,
+  theme: Theme,
 ): string[] {
   const gutter = 3;
   const colWidth = Math.max(20, Math.floor((width - gutter * (columns - 1)) / columns));
@@ -678,7 +694,7 @@ function composeColumns(
     .map((group) => {
       const lines: string[] = [];
       for (const panel of group) {
-        lines.push(style.bold(panel.title));
+        lines.push(theme.bold(panel.title));
         lines.push(...panel.lines);
         lines.push("");
       }
@@ -706,14 +722,15 @@ function composeColumns(
 
 function renderDailyList(
   state: DashboardState,
-  view: { showCost: boolean },
+  view: { theme: Theme; showCost: boolean },
   fixedLines: number,
   termHeight: number,
 ): string[] {
+  const { theme } = view;
   const days = state.data?.days ?? [];
-  const lines: string[] = [style.bold("Per day")];
+  const lines: string[] = [theme.bold("Per day")];
   if (days.length === 0) {
-    lines.push(style.dim("  no daily data in this window"));
+    lines.push(theme.muted("  no daily data in this window"));
     return lines;
   }
   // The visible budget is what the terminal has left after the fixed chrome
@@ -721,7 +738,7 @@ function renderDailyList(
   const visible = Math.max(1, termHeight - fixedLines);
   const scroll = Math.min(state.scroll, Math.max(0, days.length - visible));
   state.scroll = scroll;
-  if (scroll > 0) lines.push(style.dim(`  ↑ ${scroll} more`));
+  if (scroll > 0) lines.push(theme.muted(`  ↑ ${scroll} more`));
   for (let i = scroll; i < Math.min(days.length, scroll + visible); i += 1) {
     const day = days[i]!;
     const cost = view.showCost ? `  ${formatCosts(day.costs)}` : "";
@@ -731,25 +748,30 @@ function renderDailyList(
     );
   }
   if (scroll + visible < days.length) {
-    lines.push(style.dim(`  ↓ ${days.length - scroll - visible} more`));
+    lines.push(theme.muted(`  ↓ ${days.length - scroll - visible} more`));
   }
   return lines;
 }
 
 // -- compare view ----------------------------------------------------------------
 
-function renderCompare(state: DashboardState, width: number, showCost: boolean): string[] {
-  const lines: string[] = [style.bold("Harness compare")];
+function renderCompare(
+  state: DashboardState,
+  width: number,
+  showCost: boolean,
+  theme: Theme,
+): string[] {
+  const lines: string[] = [theme.bold("Harness compare")];
   const stats = state.compareStats;
   if (!stats || stats.harnesses.length === 0) {
-    lines.push(style.dim("  no harness sessions in this window"));
+    lines.push(theme.muted("  no harness sessions in this window"));
     return lines;
   }
   const winners = compareWinners(stats.harnesses);
-  lines.push(style.dim("  harness        reqs  sess  cost/sess p50   cache%  err%  ttft p50"));
+  lines.push(theme.muted("  harness        reqs  sess  cost/sess p50   cache%  err%  ttft p50"));
   for (const row of stats.harnesses) {
     const cell = (value: string, winner: string | null): string =>
-      winner === row.harness ? `${style.bold(value)} ${WINNER_MARKER}` : ` ${value} `;
+      winner === row.harness ? `${theme.bold(value)} ${WINNER_MARKER}` : ` ${value} `;
     const costP50 = !showCost
       ? "—"
       : row.costPerSession.p50 === null
@@ -771,11 +793,11 @@ function renderCompare(state: DashboardState, width: number, showCost: boolean):
   }
   if (stats.provenance.excludedMixed > 0) {
     lines.push(
-      style.dim(
+      theme.muted(
         `  ${stats.provenance.excludedMixed} mixed-model session(s) excluded from every row`,
       ),
     );
   }
-  lines.push(style.dim(`  ${stats.provenance.labels.costPerSession}`));
+  lines.push(theme.muted(`  ${stats.provenance.labels.costPerSession}`));
   return lines;
 }

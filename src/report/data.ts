@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { agentForMaskedKey } from "../api/agent-keys.js";
+import { listAgentKeys } from "../api/agent-keys.js";
 import { type CacheGroup, cacheVerdict } from "../api/cache-report.js";
 import { CliError } from "../cli/errors.js";
 import {
@@ -313,8 +313,10 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
-function harnessOf(row: Pick<ReportRow, "api_key">): string {
-  return row.api_key === null ? "unknown" : (agentForMaskedKey(row.api_key) ?? "unknown");
+type KeyIndex = Map<string, string>;
+
+function harnessOf(row: Pick<ReportRow, "api_key">, keyIndex: KeyIndex): string {
+  return row.api_key === null ? "unknown" : (keyIndex.get(row.api_key) ?? "unknown");
 }
 
 // ---------------------------------------------------------------------------
@@ -361,8 +363,9 @@ function readCachedPrices(): Record<string, Price> | null {
 
 /**
  * `costIfUncached − gateway cost` over a per-model token mix, in the
- * cache-report convention: every prompt token at the full input rate plus
- * output at the output rate; unpriced (or currency-mismatched) models
+ * cache-report convention: the no-cache counterfactual — every prompt token
+ * (cached and uncached) at the full input rate plus output at the output
+ * rate; unpriced (or currency-mismatched) models
  * contribute nothing — an unknown price is not a guess. Null when the mix
  * has no single known currency, or no cached catalog exists.
  */
@@ -384,12 +387,10 @@ function savingsOf(
   for (const entry of perModel) {
     const price = prices[entry.model];
     if (!price || price.currency !== currency) continue;
-    // `input_tokens` INCLUDES `cached_tokens`; the uncached prompt is the
-    // non-cached remainder and the cache read is priced at the cached rate.
-    const uncached = entry.inputTokens - entry.cachedTokens;
+    // `input_tokens` INCLUDES `cached_tokens`; the no-cache counterfactual
+    // prices every prompt token at the full input rate.
     costIfUncached +=
-      (uncached * price.inputPer1m + entry.cachedTokens * price.cachedPer1m) / 1e6 +
-      (entry.outputTokens * price.outputPer1m) / 1e6;
+      (entry.inputTokens * price.inputPer1m) / 1e6 + (entry.outputTokens * price.outputPer1m) / 1e6;
   }
   return costIfUncached - (costs[currency] ?? 0);
 }
@@ -492,7 +493,12 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
   const now = options.now ?? new Date();
   const wants = new Set<string>(options.sections);
 
-  const rows = filterRows(load({ sinceMs: options.sinceMs, untilMs: options.untilMs }), options);
+  const keyIndex: KeyIndex = new Map(listAgentKeys().map((entry) => [entry.masked, entry.agent]));
+  const rows = filterRows(
+    load({ sinceMs: options.sinceMs, untilMs: options.untilMs }),
+    options,
+    keyIndex,
+  );
   const prices = readCachedPrices();
 
   // -- the one accumulation walk --------------------------------------------
@@ -507,7 +513,7 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
 
   for (const row of rows) {
     const day = tzDay(Date.parse(row.created_at), options.timezone);
-    const harness = harnessOf(row);
+    const harness = harnessOf(row, keyIndex);
     accGroup(totals, row);
     accGroup(byDay.get(day) ?? byDay.set(day, emptyGroup()).get(day)!, row);
     const dhKey = `${day}\0${harness}`;
@@ -649,7 +655,7 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
   // calendar month. When the requested window starts later than that (#97),
   // load a separate month-span row set for the budget only — meta.range and
   // every other section keep the requested window.
-  const budgetRows = buildBudgetRows(wants, rows, options, load, now);
+  const budgetRows = buildBudgetRows(wants, rows, options, load, now, keyIndex);
   const budget = buildBudget(wants, budgetRows, currencyKeys, currencyHandling, now);
 
   const coverage = computeCoverage("30days", { now, sync: options.sync ?? undefined });
@@ -705,11 +711,15 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
   };
 }
 
-function filterRows(rows: readonly ReportRow[], options: BuildDataOptions): ReportRow[] {
+function filterRows(
+  rows: readonly ReportRow[],
+  options: BuildDataOptions,
+  keyIndex: KeyIndex,
+): ReportRow[] {
   const harnessWanted = options.harnesses.length > 0 ? new Set(options.harnesses) : null;
   const modelMatchers = options.models.map(globToRegExp);
   return rows.filter((row) => {
-    if (harnessWanted && !harnessWanted.has(harnessOf(row))) return false;
+    if (harnessWanted && !harnessWanted.has(harnessOf(row, keyIndex))) return false;
     if (modelMatchers.length > 0 && !modelMatchers.some((re) => re.test(row.model))) return false;
     return true;
   });
@@ -730,12 +740,13 @@ function buildBudgetRows(
   options: BuildDataOptions,
   load: LoadFn,
   now: Date,
+  keyIndex: KeyIndex,
 ): readonly ReportRow[] {
   if (!wants.has("budget")) return rows;
   if (loadBudget().monthly === null) return rows;
   const { startMs } = monthWindow(now);
   if (options.sinceMs === null || options.sinceMs <= startMs) return rows;
-  return filterRows(load({ sinceMs: startMs, untilMs: options.untilMs }), options);
+  return filterRows(load({ sinceMs: startMs, untilMs: options.untilMs }), options, keyIndex);
 }
 
 function buildBudget(
@@ -779,14 +790,24 @@ function buildBudget(
   };
 }
 
+// One formatter per timezone: constructing an Intl.DateTimeFormat is ~0.1ms,
+// and the accumulation walk formats every row, so a per-row constructor made
+// a 2799-row build ~300ms slower than it needs to be.
+const tzDayFormatters = new Map<string, Intl.DateTimeFormat>();
+
 /** The calendar date of an instant, in the display timezone. */
 function tzDay(ms: number, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(ms));
+  let formatter = tzDayFormatters.get(timeZone);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    tzDayFormatters.set(timeZone, formatter);
+  }
+  return formatter.format(new Date(ms));
 }
 
 /** The cumulative savings series for the timeseries chart (total, per day). */

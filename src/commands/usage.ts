@@ -9,7 +9,7 @@ import {
 import { openSession } from "../api/client.js";
 import { bool, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { delta, err, json, num, out, sparkline, style, table } from "../cli/output.js";
+import { delta, err, heading, json, num, out, sparkline, style, table } from "../cli/output.js";
 import { assertSafeProfileName, resolveProfile } from "../config.js";
 import { importCcusage, parseCcusagePayload, readImportPayload } from "../obs/ccusage-import.js";
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
@@ -299,7 +299,7 @@ export async function run(argv: string[]): Promise<void> {
     { label: "total tokens", current: totalTokens, previous: previousTokens },
   ];
 
-  out(style.bold(`Last ${range}`));
+  heading(`Last ${range}`);
   out();
   table(rows, [
     { header: "", value: (r) => style.dim(r.label) },
@@ -340,7 +340,7 @@ function printBudgetFooter(): void {
 }
 
 function printAudit(rows: ProvenanceEntry[]): void {
-  out(style.bold("Provenance of every reported number"));
+  heading("Provenance of every reported number");
   out();
   table<ProvenanceEntry>(rows, [
     { header: "report", value: (r) => r.report },
@@ -363,7 +363,7 @@ function printMetrics(metrics: AnalyticsMetric[], range: string): void {
     return;
   }
 
-  out(style.bold(`Last ${range}`));
+  heading(`Last ${range}`);
   out();
   table<AnalyticsMetric>(metrics, [
     { header: "metric", value: (m) => m.summary[0]?.display_name ?? m.metric_name },
@@ -421,7 +421,7 @@ async function runVerify(parsed: Parsed): Promise<void> {
   if (bool(parsed, "json")) return json(outcome.rows);
 
   const { since: from, until: to } = outcome.rows[0]?.window ?? { since: "", until: "" };
-  out(style.bold("Accuracy check — local store vs gateway"));
+  heading("Accuracy check — local store vs gateway");
   out(style.dim(`window ${from.replace("T", " ")}  to  ${to.replace("T", " ")}`));
   out();
   table<VerifyRow>(outcome.rows, [
@@ -490,7 +490,7 @@ async function runCcusageImport(parsed: Parsed, target: string): Promise<void> {
   const summary = importCcusage(parseCcusagePayload(raw));
   if (bool(parsed, "json")) return json(summary);
 
-  out(style.bold("ccusage import"));
+  heading("ccusage import");
   out();
   table(
     [summary],
@@ -663,7 +663,7 @@ function printWindows(parsed: Parsed): void {
     json(PEAK_WINDOWS);
     return;
   }
-  out(style.bold("Peak / off-peak window table"));
+  heading("Peak / off-peak window table");
   out(style.dim("model ids containing `matches` (case-insensitive) are split by these windows."));
   out();
   table(rows, [
@@ -773,7 +773,7 @@ async function runVsList(parsed: Parsed): Promise<void> {
     return json(payload);
   }
 
-  out(style.bold("List-price comparison"));
+  heading("List-price comparison");
   out(
     style.dim(
       `snapshot ${result.snapshotName}@${result.snapshotDate}` +

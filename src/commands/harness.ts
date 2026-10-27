@@ -4,7 +4,7 @@ import { findHarnessLayout, HARNESS_LAYOUTS } from "../benchmark/harness-layouts
 import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
 import { bool, list, parse, str } from "../cli/args.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { runHarnessDuel, runHarnessLatency } from "./harness-duel.js";
 import { runHarnessMatrix } from "./harness-matrix.js";
@@ -153,10 +153,10 @@ export async function run(argv: string[]): Promise<void> {
 }
 
 function printSweep(sweep: { model: string; results: BenchResult[] }[], title: string): void {
-  out(style.bold(`${title} · every model`));
+  heading(`${title} · every model`);
   out();
   for (const { model, results } of sweep) {
-    out(style.bold(model));
+    heading(model);
     out();
     table<BenchResult>(results, [
       { header: "harness", value: (r) => r.label },
@@ -181,7 +181,7 @@ function printSweep(sweep: { model: string; results: BenchResult[] }[], title: s
 }
 
 function printResults(results: BenchResult[], scenarioTitle: string, model: string): void {
-  out(style.bold(`${scenarioTitle} · ${model}`));
+  heading(`${scenarioTitle} · ${model}`);
   out();
 
   table<BenchResult>(results, [

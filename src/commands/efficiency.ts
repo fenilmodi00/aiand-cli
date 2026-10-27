@@ -4,7 +4,7 @@ import { openSession } from "../api/client.js";
 import { ATTRIBUTION_NOTE, attributeBranchSpend } from "../branch-spend.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   efficiencyByHarness,
@@ -222,12 +222,13 @@ function cost(value: number | null): string {
 function render(payload: EfficiencyPayload): void {
   const { oneShotRetry: efficiency, taskMix, attribution } = payload;
 
-  out(`${style.bold("Efficiency")}  ${style.dim("(adapter envelopes, aiand-envelope/v1)")}`);
+  heading("Efficiency");
+  out(style.dim("(adapter envelopes, aiand-envelope/v1)"));
   out("");
   out(style.dim(payload.coverageNote));
   out("");
 
-  out(style.bold("One-shot / retry"));
+  heading("One-shot / retry");
   const stats = efficiency.overall;
   out(
     `  overall: ${percent(stats.oneShotRate)} one-shot ` +
@@ -238,7 +239,7 @@ function render(payload: EfficiencyPayload): void {
   renderSlices("by model", efficiency.byModel);
   out("");
 
-  out(style.bold("Task mix"));
+  heading("Task mix");
   out(`  primary: ${taskMix.primary}`);
   for (const category of TASK_CATEGORIES) {
     const count = taskMix.counts[category];
@@ -247,7 +248,7 @@ function render(payload: EfficiencyPayload): void {
   out(style.dim(`  ${CLASSIFICATION_NOTE}`));
   out("");
 
-  out(style.bold("Spend by branch"));
+  heading("Spend by branch");
   if (attribution.byBranch.length === 0) {
     out("  no branch-attributed cost in this window");
   } else {
@@ -258,7 +259,7 @@ function render(payload: EfficiencyPayload): void {
     ]);
   }
   out("");
-  out(style.bold("Spend by project"));
+  heading("Spend by project");
   if (attribution.byProject.length === 0) {
     out("  no project-attributed cost in this window");
   } else {
@@ -270,7 +271,7 @@ function render(payload: EfficiencyPayload): void {
   }
   const split = attribution.coverage;
   out("");
-  out(style.bold("Attribution coverage"));
+  heading("Attribution coverage");
   out(
     `  named-branch ${split.namedBranch}  pre-recording ${split.preRecording}  ` +
       `no-branch ${split.noBranch}  (of ${split.total} requests)`,
