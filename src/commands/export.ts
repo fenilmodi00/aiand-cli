@@ -113,13 +113,6 @@ export async function run(argv: string[]): Promise<void> {
       const result = await syncStore(session, { range });
       if (!result.ok) {
         err(style.yellow(`Warning: sync failed (${result.error}). Serving local data.`));
-      } else if (result.error) {
-        // #85: ok-but-partial (stuck cursor) must never pass silently.
-        err(
-          style.yellow(
-            `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
-          ),
-        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error ?? "sync failed");

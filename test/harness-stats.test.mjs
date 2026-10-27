@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
+import { CLOSED_URL, cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
 
 /**
  * Ticket #64 — `aiand harness stats` / `harness compare` on the real workload.
@@ -482,4 +482,121 @@ test("cli: stats and matrix report the same errorRate for the same rows (#88)", 
   // 1 error (500) / 115 requests — 429 excluded by the shared definition.
   assert.ok(Math.abs(statsRate - 1 / 115) < 1e-9, `stats errorRate 1/115, got ${statsRate}`); // #88
   assert.equal(pair.errorRate, statsRate, "matrix errorRate identical to stats"); // #88
+});
+
+// #91: branch coverage for the CLI guards the #85/#88/#90 work added —
+// the fail-open sync warning arms, the mixed-session exclusion render, and
+// the shared window parse's --last/--since combination.
+test("cli: a failed auto-sync warns (code visible) and the stats still render (#85)", async () => {
+  const cfg = cfgDir("sync-warn");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+  });
+  // Env key against a closed gateway: openSession succeeds, syncStore fails
+  // with code network — the `!result.ok` arm of the fail-open sync block.
+  const run = await runCli(["harness", "stats"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: CLOSED_URL }),
+  });
+  assert.equal(run.code, 0, run.stdout);
+  assert.match(run.stderr, /store sync failed \(network\): Could not reach/);
+  assert.ok(run.stdout.includes("harness stats"));
+});
+
+test("cli: --include-mixed renders the excluded-sessions table (#90)", async () => {
+  const cfg = cfgDir("include-mixed");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  let mask;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    mask = (await import("../dist/api/agent-keys.js")).maskKey(
+      "sk-test-claude-super-secret-key-000",
+    );
+  });
+  const rows = [
+    // One clean session…
+    ...Array.from({ length: 5 }, (_, i) =>
+      row({ id: `im${i}`, api_key: mask, created_at: iso(i * 60_000) }),
+    ),
+    // …and one mixed-model session: excluded from aggregates, listed with
+    // --include-mixed (both the cost and the no-cost column arms).
+    row({ id: "imx1", api_key: mask, created_at: iso(3 * HOUR), model: "zai-org/glm-5.3" }),
+    row({
+      id: "imx2",
+      api_key: mask,
+      created_at: iso(3 * HOUR + 60_000),
+      model: "openai/gpt-5.2",
+    }),
+  ];
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, rows);
+    opened.db.close();
+  });
+
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+  const plain = await runCli(["harness", "stats", "--no-sync"], base);
+  assert.equal(plain.code, 0, plain.stdout);
+  assert.match(plain.stdout, /excluded: 1 mixed-model session/);
+
+  const withTable = await runCli(["harness", "stats", "--no-sync", "--include-mixed"], base);
+  assert.equal(withTable.code, 0, withTable.stdout);
+  assert.match(withTable.stdout, /mixed-model sessions \(excluded from all aggregates\)/);
+  assert.ok(/[0-9a-f]{16}/.test(withTable.stdout), "the excluded session id is listed");
+
+  const noCost = await runCli(
+    ["harness", "stats", "--no-sync", "--include-mixed", "--no-cost"],
+    base,
+  );
+  assert.equal(noCost.code, 0, noCost.stdout);
+  assert.match(noCost.stdout, /mixed-model sessions \(excluded from all aggregates\)/);
+});
+
+test("cli: --last combined with --since/--until pins both window edges", async () => {
+  const cfg = cfgDir("window-edges");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  let mask;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    mask = (await import("../dist/api/agent-keys.js")).maskKey(
+      "sk-test-claude-super-secret-key-000",
+    );
+  });
+  const rows = Array.from({ length: 6 }, (_, i) =>
+    row({ id: `w${i}`, api_key: mask, created_at: iso(i * 60_000) }),
+  );
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, rows);
+    opened.db.close();
+  });
+
+  // --last sets the near edge; --since/--until then override both edges
+  // (parseWindowFlags' last-then-since/then-until fallthrough).
+  const run = await runCli(
+    [
+      "harness",
+      "stats",
+      "--no-sync",
+      "--json",
+      "--last",
+      "30d",
+      "--since",
+      "2026-10-19",
+      "--until",
+      "2026-10-21",
+    ],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
+  );
+  assert.equal(run.code, 0, run.stdout);
+  const payload = JSON.parse(run.stdout);
+  assert.match(payload.provenance.range.since, /2026-10-19/);
+  assert.match(payload.provenance.range.until, /2026-10-21/);
+  const claude = payload.harnesses.find((h) => h.harness === "claude");
+  assert.ok(claude, "harness present");
+  assert.equal(claude.requests, 6, "all rows sit inside the pinned window");
 });

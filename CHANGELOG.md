@@ -561,8 +561,9 @@ breaking changes while the command surface settles.
   (#85). The loop now threads the `(created_at, id)` pair from each page's
   last row, a stuck-cursor guard stops instead of spinning (reporting
   `ok: false` with `last_sync_error` recorded), and every observability
-  command surfaces a partial (ok-with-error) sync as a visible yellow
-  warning instead of silently serving incomplete history.
+  command surfaces the stuck cursor as a failed sync (`ok: false`) with a
+  visible yellow warning and `last_sync_error` metadata instead of silently
+  serving incomplete history.
 - Same-day `--since`/`--until` windows matched zero rows on every
   observability surface (`usage`, `sessions`, `heatmap`, `dashboard`,
   `export`, `forecast`, `statusline`, `efficiency`, `report`, coverage
@@ -604,6 +605,13 @@ breaking changes while the command surface settles.
   are pinned deterministically: `--since <today>` matches wire-format rows
   stored by a real sync, and `usage --verify` reports MISMATCH with exit 1
   when rows are deleted from the local store behind the gateway.
+- Branch-coverage push to the 85% gate (#91): targeted tests for the branches
+  the #85–#89 fixes introduced — the #87 date guard's remaining arms
+  (impossible wall-time components, ISO-datetime date-part validation for
+  both flags, the sessions window-order check), the fail-open sync warning
+  on `harness stats`, the `--include-mixed` excluded-sessions render with
+  and without cost columns, and the shared `--last`/`--since`/`--until`
+  window parse's edge combination on the harness surfaces.
 - Escape and Ctrl-C now navigate instead of killing the CLI from the menu.  Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints
   the cancel as a dim line, and redraws the main menu; only at the menu

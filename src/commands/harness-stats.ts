@@ -78,12 +78,6 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
       const result = await syncStore(session);
       if (!result.ok)
         err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
-      else if (result.error)
-        err(
-          style.yellow(
-            `Warning: sync stopped early (stuck cursor) — history may be incomplete: ${result.error}`,
-          ),
-        ); // #85
     } catch (error) {
       err(
         style.yellow(

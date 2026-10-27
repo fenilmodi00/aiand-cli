@@ -120,8 +120,6 @@ export type SyncResult =
       inserted: number;
       pages: number;
       watermark: { createdAt: string; id: string };
-      /** Set when the sync stopped early (stuck cursor): ok, but history may be incomplete. */
-      error?: string; // #85
     }
   | {
       ok: false;

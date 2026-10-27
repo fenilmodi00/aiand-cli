@@ -139,6 +139,16 @@ describe("forecast CLI · command", () => {
     assert.equal(JSON.parse(r.stdout), "no-data");
     r = await cli(["forecast", "--json", "--jq", "missing.path"]);
     assert.equal(JSON.parse(r.stdout), null);
+
+    // #91: the [n] index arm, the non-object descent arm, and the
+    // inverted-window refusal from untilOrNow.
+    r = await cli(["forecast", "--json", "--jq", "window.hoursRemaining"]);
+    assert.equal(typeof JSON.parse(r.stdout), "number");
+    r = await cli(["forecast", "--json", "--jq", "verdict[0].deep"]);
+    assert.equal(JSON.parse(r.stdout), null);
+    const inverted = await cli(["forecast", "--since", "2030-01-01", "--until", "2026-01-01"]);
+    assert.equal(inverted.code, 1);
+    assert.match(inverted.stderr, /is after --until/);
   });
 
   test("#74 pacing verdicts end to end: exceeding with projected figure + date", async () => {

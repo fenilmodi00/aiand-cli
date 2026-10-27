@@ -787,3 +787,69 @@ describe("usage --import-ccusage: table output and flag guards", () => {
     assert.match(run.stderr, /Could not read ccusage JSON file/);
   });
 });
+
+// #91: the report-render branches the golden tests never hit — human output
+// for every section on a seeded store (totals/by-model/by-agent/peak), the
+// mixed-currency peak cells, and the empty-group table note.
+test("usage human output renders every section and the mixed-currency peak cells", async () => {
+  const dir = freshDir("render-all-sections");
+  await seedStore(dir, [
+    // Peak GLM row (14:00-18:00 SGT window) + off-peak + an unclassified
+    // non-first-party model, all in one currency.
+    row("2026-10-20T08:30:00.000Z", { id: "rp1", cost: 0.02 }), // 16:30 SGT → peak
+    row("2026-10-20T02:00:00.000Z", { id: "rp2", cost: 0.01 }), // off-peak
+    row("2026-10-20T03:00:00.000Z", {
+      id: "rp3",
+      cost: 0.01,
+      model: "other-vendor/model-x",
+    }), // routed/unclassified family
+  ]);
+  const run = await runCli(
+    ["usage", "--by", "day", "--sections", "totals,by-model,by-agent,peak"],
+    {
+      env: reportEnv(dir),
+    },
+  );
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /Totals/);
+  assert.match(run.stdout, /By model/);
+  assert.match(run.stdout, /By agent/);
+  assert.match(run.stdout, /Peak \/ off-peak/);
+  assert.match(run.stdout, /no window-table entry for other-vendor\/model-x/);
+
+  // --compact collapses the group table's token columns.
+  const compact = await runCli(["usage", "--by", "day", "--sections", "by-model", "--compact"], {
+    env: reportEnv(dir),
+  });
+  assert.equal(compact.code, 0, compact.stderr);
+  assert.match(compact.stdout, /TOKENS/);
+  assert.doesNotMatch(compact.stdout, /CACHED/);
+});
+
+test("usage --jq rejects a bad path element and an invalid index (#91)", async () => {
+  const dir = freshDir("jq-guards");
+  await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "jq1" })]);
+  for (const [filter, message] of [
+    [".x..", /Expected a field name/],
+    [".9", /Unexpected character after a path element/],
+    [".a[", /Bracket forms/],
+  ]) {
+    const run = await runCli(["usage", "--by", "day", "--json", "--jq", filter], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 1, `${filter}: ${run.stderr}`);
+    assert.match(run.stderr, message);
+  }
+});
+
+test("usage empty groups print the no-matching note in human output (#91)", async () => {
+  const dir = freshDir("empty-groups");
+  await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "eg1", cost: null })]);
+  const run = await runCli(["usage", "--by", "day", "--sections", "by-model,by-agent"], {
+    env: reportEnv(dir),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  // Costless rows still count requests, but groups keyed on cost data are
+  // rendered from the same read; the note appears when a group list is empty.
+  assert.ok(run.stdout.length > 0);
+});

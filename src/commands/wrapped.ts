@@ -41,6 +41,7 @@ Options
   --no-cost           share without the money figures
   --json              the story as a machine-readable object
   --no-sync           skip the pre-read store sync and read as-is
+  --profile <name>    the profile to sync and read (default: active)
 
 Every number carries its provenance in the footer: costs are gateway-billed,
 savings are estimated from catalog prices, sessions are the time-gap
@@ -56,6 +57,7 @@ export async function run(argv: string[]): Promise<void> {
     timezone: { type: "string" },
     format: { type: "string" },
     "no-cost": { type: "boolean", default: false },
+    profile: { type: "string" },
     "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
@@ -76,7 +78,7 @@ export async function run(argv: string[]): Promise<void> {
     try {
       const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
-      sync = result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
+      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
       sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

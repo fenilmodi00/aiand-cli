@@ -518,4 +518,43 @@ describe("usage --show-windows / --sections peak / --vs-list", () => {
       assert.equal(legacy.code, 1);
     });
   });
+
+  // #91: runVsList's pre-read sync arms — a dead gateway warns and the
+  // vendor-equivalent view still serves local rows (fail-open), with a
+  // missing credential taking the thrown-session arm.
+  test("--vs-list fail-open: dead-gateway sync warns and still prices rows (#91)", async () => {
+    const dir = freshDir("vs-list-sync-fail");
+    await seedStore(dir, [row("2026-10-05T07:00:00Z")]);
+    await withEnv(
+      cliEnv({
+        AIAND_CONFIG_DIR: dir,
+        AIAND_BASE_URL: CLOSED_URL,
+        AIAND_API_KEY: "sk-test-sync-fail",
+        AIAND_NO_SYNC: undefined,
+      }),
+      async () => {
+        const shown = await runCli(["usage", "--vs-list"]);
+        assert.equal(shown.code, 0, shown.stderr);
+        assert.match(shown.stderr, /Warning: sync failed/);
+        assert.match(shown.stdout, /unpriced|gateway-billed/);
+      },
+    );
+  });
+
+  test("--vs-list fail-open: no credential throws inside the sync and warns (#91)", async () => {
+    const dir = freshDir("vs-list-sync-throw");
+    await seedStore(dir, [row("2026-10-05T07:00:00Z")]);
+    await withEnv(
+      cliEnv({
+        AIAND_CONFIG_DIR: dir,
+        AIAND_BASE_URL: CLOSED_URL,
+        AIAND_NO_SYNC: undefined,
+      }),
+      async () => {
+        const shown = await runCli(["usage", "--vs-list"]);
+        assert.equal(shown.code, 0, shown.stderr);
+        assert.match(shown.stderr, /Warning: sync failed/);
+      },
+    );
+  });
 });

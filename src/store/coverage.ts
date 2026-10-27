@@ -37,11 +37,7 @@ export type CoverageReport = {
 };
 
 /** Sync outcome a reporting command observed for its own pre-command sync. */
-// #85: ok can carry an error — a stuck cursor stops the sync early while still ok.
-export type SyncOutcome =
-  | { ok: true; error?: string }
-  | { ok: false; error: string }
-  | { skipped: true };
+export type SyncOutcome = { ok: true } | { ok: false; error: string } | { skipped: true };
 
 /** The requested window durations, in ms. LOG_RANGES values plus generic forms. */
 export function rangeDurationMs(range: string): number {
@@ -122,12 +118,7 @@ export function computeCoverage(
       if ("skipped" in options.sync) {
         report.sync = { status: "skipped", at: report.lastSyncAt };
       } else if (options.sync.ok) {
-        // #85: ok-with-error (stuck cursor) — the ingest happened but is partial.
-        report.sync = {
-          status: options.sync.error ? "failed" : "synced",
-          at: report.lastSyncAt,
-          ...(options.sync.error ? { error: options.sync.error } : {}),
-        };
+        report.sync = { status: "synced", at: report.lastSyncAt };
       } else {
         report.sync = { status: "failed", at: report.lastSyncAt, error: options.sync.error };
       }

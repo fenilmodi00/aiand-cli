@@ -694,6 +694,59 @@ describe("CLI error hardening (#87)", () => {
     assert.equal(run.stdout, "", "no report is rendered");
   });
 
+  // #91: the remaining #87 guard branches — wallToUtc's regex-miss and NaN
+  // arms (only reachable through --timezone wall parsing), the ISO-datetime
+  // date-part validation for both flags, and the sessions-window order check.
+  test("--since/--until with a well-shaped but impossible time fail with the parse error", async () => {
+    // An ISO datetime whose date part is real but whose time cannot exist
+    // (minute 60) reaches parseSince/parseUntil's NaN arm.
+    const badMinute = await runCli(
+      ["usage", "--timezone", "UTC", "--since", "2026-10-01T00:60:00", "--json", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(badMinute.code, 1);
+    assert.match(badMinute.stderr, /Invalid --since value: 2026-10-01T00:60:00/);
+    const badSecond = await runCli(
+      ["usage", "--timezone", "UTC", "--until", "2026-10-01T00:00:61", "--json", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(badSecond.code, 1);
+    assert.match(badSecond.stderr, /Invalid --until value: 2026-10-01T00:00:61/);
+  });
+
+  test("ISO datetimes with a nonexistent calendar date are rejected for --since and --until (#87)", async () => {
+    for (const [flag, value] of [
+      ["--since", "2025-02-29T10:00:00Z"],
+      ["--until", "2025-02-29T10:00:00Z"],
+    ]) {
+      const run = await runCli(["usage", flag, value, "--json", "--no-sync"], {
+        env: reportEnv(DIRTY_DIR),
+      });
+      assert.equal(run.code, 1, `${flag} ${value}`);
+      assert.match(run.stderr, /Invalid .* value: 2025-02-29/);
+      assert.match(run.stderr, /calendar date does not exist/);
+    }
+  });
+
+  test("--since with a space-separated ISO datetime still validates the date part", async () => {
+    const run = await runCli(["usage", "--since", "2025-02-29 10:00:00", "--json", "--no-sync"], {
+      env: reportEnv(DIRTY_DIR),
+    });
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /Invalid --since value: 2025-02-29/);
+  });
+
+  test("sessions rejects an inverted --since/--until window with a --last override", async () => {
+    // --last alone is fine, but an explicit inverted pair must refuse even
+    // with --last present (the assertWindowOrder call runs after both parses).
+    const run = await runCli(
+      ["sessions", "--since", "2026-10-20", "--until", "2026-10-19", "--last", "7d", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(run.code, 1);
+    assert.match(run.stderr, /is after --until/);
+  });
+
   test("inverted --since/--until windows are rejected", async () => {
     const run = await runCli(
       ["usage", "--since", "2026-10-20", "--until", "2026-10-19", "--json", "--no-sync"],
@@ -708,5 +761,37 @@ describe("CLI error hardening (#87)", () => {
     );
     assert.equal(sessionsRun.code, 1);
     assert.match(sessionsRun.stderr, /is after --until/);
+
+    const exportRun = await runCli(
+      ["export", "--format", "otel", "--since", "2026-10-20", "--until", "2026-10-19", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(exportRun.code, 1);
+    assert.match(exportRun.stderr, /is after --until/);
+  });
+
+  test("export --since/--until and --endpoint/--file guards (#91)", async () => {
+    const badSince = await runCli(
+      ["export", "--format", "otel", "--since", "not-a-date", "--no-sync"],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(badSince.code, 1);
+    assert.match(badSince.stderr, /Invalid --since value: not-a-date/);
+
+    const both = await runCli(
+      [
+        "export",
+        "--format",
+        "otel",
+        "--endpoint",
+        "https://collector.example/v1/metrics",
+        "--file",
+        "metrics.json",
+        "--no-sync",
+      ],
+      { env: reportEnv(DIRTY_DIR) },
+    );
+    assert.equal(both.code, 1);
+    assert.match(both.stderr, /mutually exclusive/);
   });
 });

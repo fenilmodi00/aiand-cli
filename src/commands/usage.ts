@@ -591,7 +591,7 @@ async function runReport(parsed: Parsed): Promise<void> {
     try {
       const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
-      sync = result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
+      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
       // Fail-open: a sign-in or network problem never blocks the local report.
       sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -733,7 +733,7 @@ async function runVsList(parsed: Parsed): Promise<void> {
     try {
       const session = await openSession(resolveProfile(profileName));
       const result = await syncStore(session);
-      sync = result.ok ? { ok: true, error: result.error } : { ok: false, error: result.error };
+      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
       sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
     }

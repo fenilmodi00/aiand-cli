@@ -172,3 +172,27 @@ describe("aiand efficiency", () => {
     assert.match(stdout, /aiand efficiency/);
   });
 });
+
+// #91: the --last window path and the fail-open sync warning arm.
+test("efficiency --last window and failed-sync warning", async () => {
+  const dir = join(box.dir, "last-sync");
+  seedStore(dir);
+  // --last resolves a window without a --since/--until pair.
+  const last = await runCli(["efficiency", "--last", "30d", "--json"], { env: cliEnvFor(dir) });
+  assert.equal(last.code, 0, last.stdout);
+  const payload = JSON.parse(last.stdout);
+  assert.ok(payload.coverage.requestRows >= 4, "rows inside the 30d window counted");
+
+  // Env key against a dead gateway: sync fails open, the warning names the
+  // code, and the report still renders.
+  const warned = await runCli(["efficiency", "--json"], {
+    env: {
+      ...cliEnvFor(dir),
+      AIAND_NO_SYNC: "",
+      AIAND_API_KEY: FAKE_API_KEY,
+      AIAND_BASE_URL: "http://127.0.0.1:9",
+    },
+  });
+  assert.equal(warned.code, 0, warned.stdout);
+  assert.match(warned.stderr, /store sync failed/);
+});
