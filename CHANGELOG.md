@@ -9,6 +9,8 @@ breaking changes while the command surface settles.
 
 
 ### Fixed
+- bare `aiand key` now says what the command is for and gives a
+  copy-pasteable example (`aiand key export`) instead of a bare verb list
 - `harness latency` / `harness duel` flag UX: an unknown layout in
   `--pair harness=...` (the natural first guess `harness=default` included)
   now names every valid layout AND suggests omitting `harness=`
