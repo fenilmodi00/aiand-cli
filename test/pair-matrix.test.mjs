@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
+import { CLOSED_URL, cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
 
 /**
  * Ticket #79 — `aiand harness matrix` and `aiand recommend`: the shared
@@ -506,4 +506,77 @@ test("cli: recommend --json carries provenance and the min-sample guard", async 
     assert.match(row.reason, /insufficient data/);
   }
   assert.ok(!payload.synthetic, "recommend never carries synthetic rows");
+});
+
+// #91: the matrix synthetic render in markdown (table variant covered above)
+// and the fail-open sync warning on the matrix auto-sync path.
+test("cli: matrix --format markdown --synthetic renders the markdown synthetic block", async () => {
+  const cfg = await seededMatrixStore("matrix-md-synthetic");
+  const saved = {
+    savedAt: "2026-10-26T00:00:00.000Z",
+    scenario: "read-summarize-file",
+    sweep: [
+      {
+        model: "zai-org/glm-5.3",
+        results: [
+          {
+            scenario: "read-summarize-file",
+            harness: "omp",
+            label: "omp",
+            note: "",
+            dialect: "omp",
+            model: "zai-org/glm-5.3",
+            turns: [],
+            requests: 4,
+            inputTokens: 4000,
+            cachedTokens: 3600,
+            costUsd: 0.01,
+            hitRatio: 0.9,
+            costIfUncached: 0.03,
+            savedUsd: 0.02,
+          },
+        ],
+      },
+    ],
+  };
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    writeFileSync(join(cfg, "bench-sweep.json"), JSON.stringify(saved));
+  });
+  const run = await runCli(
+    ["harness", "matrix", "--no-sync", "--unpriced", "--format", "markdown", "--synthetic"],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
+  );
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /synthetic sweep \(fixed scenario replay/);
+  assert.match(run.stdout, /\| omp \| zai-org\/glm-5\.3 \| 4 \|/);
+});
+
+test("cli: matrix auto-sync failure warns (network code) and still renders (#85)", async () => {
+  const cfg = await seededMatrixStore("matrix-sync-warn");
+  const run = await runCli(["harness", "matrix"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: CLOSED_URL }),
+  });
+  assert.equal(run.code, 0, run.stdout);
+  assert.match(run.stderr, /store sync failed \(network\)/);
+});
+
+// #91: recommend's guards the rank tests leave open — sync fail-open warn,
+// unknown-harness apply line, and the already-recommended current pair.
+test("cli: recommend fail-open sync warning and unknown-harness apply line", async () => {
+  const cfg = cfgDir("recommend-guards");
+  const masks = await seedAgentKeys(cfg);
+  await seedStore(cfg, [
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({ id: `rg${i}`, api_key: masks.claude, created_at: iso(i * 60_000) }),
+    ),
+  ]);
+  // Failed sync (closed gateway) warns with the code and still renders.
+  const warned = await runCli(["recommend"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: CLOSED_URL }),
+  });
+  assert.equal(warned.code, 0, warned.stdout);
+  assert.match(warned.stderr, /store sync failed \(network\)/);
+  // One session is below the 5-session guard: the empty-rank branch renders.
+  assert.match(warned.stdout, /nothing to rank yet/);
+  assert.match(warned.stdout, /insufficient data/);
 });

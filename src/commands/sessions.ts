@@ -5,7 +5,15 @@ import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import { currencyKey } from "../pricing/currency.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 import {
   resolveGapMinutes,
   type SessionDetail,
@@ -14,7 +22,13 @@ import {
   sessionizationNote,
   sessionizeRows,
 } from "../store/sessions.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
+import {
+  assertWindowOrder,
+  isValidTimezone,
+  parseLast,
+  parseSince,
+  parseUntil,
+} from "./usage-report.js";
 
 /**
  * `aiand sessions` (feature catalog B2/B3/B5, ticket #62): the per-conversation
@@ -70,7 +84,8 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
   for (const row of detail.rows) {
     modelCounts.set(row.model, (modelCounts.get(row.model) ?? 0) + 1);
     if (typeof row.cost_value === "number" && Number.isFinite(row.cost_value)) {
-      const currency = row.currency ?? UNKNOWN_CURRENCY;
+      // #89: casefold so mixed-case stored currencies stay in one lane.
+      const currency = currencyKey(row.currency);
       costs[currency] = (costs[currency] ?? 0) + row.cost_value;
     }
     if (row.ttft_ms !== null) ttfts.push(row.ttft_ms);
@@ -117,11 +132,11 @@ export function readSessionRows(
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
@@ -260,6 +275,7 @@ export async function run(argv: string[]): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   const topCostRaw = str(parsed, "top-cost");
   let topCost: number | null = null;

@@ -1,9 +1,8 @@
 import { join, resolve } from "node:path";
-import { openSession } from "../api/client.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { openBrowser } from "../cli/browser.js";
 import { err, out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import {
@@ -17,8 +16,7 @@ import {
   syncWarningFor,
 } from "../report/data.js";
 import { renderHtml } from "../report/render-html.js";
-import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { runPreReadSync } from "../store/sync.js";
 
 /**
  * `aiand report` (feature catalog F1, ticket #76): the offline HTML report —
@@ -93,20 +91,10 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   // -- one sync, then ONE store read for every section --------------------------
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      // Fail-open: a sign-in or network problem never blocks the local report.
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  // #87: validate --profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const now = new Date();
   const { sinceMs, untilMs } = resolveWindow(

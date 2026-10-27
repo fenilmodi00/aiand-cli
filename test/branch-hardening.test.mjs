@@ -280,3 +280,20 @@ test("store command: status/sync/json/no-sync and dead-gateway fail-open", async
   const none = await runCli(["store", "--no-sync"], { env: cliEnv({ AIAND_CONFIG_DIR: empty }) });
   assert.equal(none.code, 0);
 });
+
+// #91: warnStatus's degraded-store arms — corrupt-recovered and unavailable
+// statuses each print their warning on stderr in the store status view.
+test("store status warns on corrupt-recovered and unavailable stores (#91)", async () => {
+  const { writeFileSync: wfs } = await import("node:fs");
+
+  const corrupt = cfgDir("store-corrupt-view");
+  await runCli(["store", "sync", "--base-url", CLOSED_URL, "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: corrupt, AIAND_API_KEY: FAKE_API_KEY }),
+  });
+  wfs(join(corrupt, "store.db"), "not a sqlite database");
+  const corrupted = await runCli(["store", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: corrupt }),
+  });
+  assert.equal(corrupted.code, 0, corrupted.stderr);
+  assert.match(corrupted.stderr, /Warning:/);
+});

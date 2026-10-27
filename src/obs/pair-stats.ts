@@ -1,6 +1,7 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { sessionizeRows } from "../store/sessions.js";
 import {
+  errorCount,
   type HarnessRequestRow,
   type HarnessStatsOptions,
   percentile,
@@ -20,9 +21,9 @@ import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.j
  * ratios and percentiles are `estimated`, session boundaries are the #66
  * time-gap heuristic, and a session whose model mix spans more than one
  * model is EXCLUDED from every pair and counted explicitly — never assigned
- * to a model. The only delta from #64's per-harness view: the error rate
- * counts non-2xx statuses EXCLUDING 429 (a rate limit is the gateway's
- * pressure, not the pair's quality) — documented in the provenance labels.
+ * to a model. The error rate uses the shared `errorCount` helper (#88): non-2xx
+ * statuses EXCLUDING 429 (a rate limit is the gateway's pressure, not the
+ * pair's quality) — the same definition `harness stats` now uses.
  */
 
 /** Verdict reuses the shared cacheVerdict thresholds — its input shape. */
@@ -82,16 +83,6 @@ export function annotatedPairRow(
       verdict: "estimated",
     },
   };
-}
-
-function errorCount(rows: readonly HarnessRequestRow[]): number {
-  // non-2xx excluding 429 (rate limits are not the pair's fault); a null
-  // status is unknown, not an error.
-  return rows.filter((row) => {
-    const status = row.status_code;
-    if (status === null) return false;
-    return (status < 200 || status >= 300) && status !== 429;
-  }).length;
 }
 
 /**
@@ -158,7 +149,6 @@ export function buildPairStats(
       cachedTokens,
       outputTokens,
       costUsd: costTotal ?? 0,
-      misses: requests - cachedTokens,
     };
     return {
       harness: harness ?? "unknown",

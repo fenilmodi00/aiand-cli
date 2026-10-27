@@ -574,6 +574,92 @@ test("parseSnapshot: refuses bad shapes, parses good ones; resolveAlias maps", a
   function BUNDDED_SAFE() {
     return BUNDLED_SNAPSHOT.aliases[0];
   }
+  // Tier parsing: good tiers round-trip, bad tiers refuse per field.
+  const tiered = parseSnapshot(
+    {
+      format: 1,
+      date: "2026-10-20",
+      models: {
+        b: {
+          input: 1,
+          output: 2,
+          cacheRead: null,
+          source: "s",
+          tiers: [{ minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null }],
+        },
+      },
+    },
+    "test",
+  );
+  assert.equal(tiered.models.b.tiers.length, 1);
+  const tier = tiered.models.b.tiers[0];
+  assert.deepEqual(tier, { minInput: 0, maxInput: 128, input: 1, output: 2, cacheRead: null });
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: { b: { input: 1, output: 2, source: "s", tiers: "nope" } },
+        },
+        "test",
+      ),
+    /tiers must be an array/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: {
+            b: {
+              input: 1,
+              output: 2,
+              source: "s",
+              tiers: [{ minInput: -1, maxInput: null, input: 1, output: 1, cacheRead: null }],
+            },
+          },
+        },
+        "test",
+      ),
+    /tier.minInput/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: {
+            b: {
+              input: 1,
+              output: 2,
+              source: "s",
+              tiers: [{ minInput: 0, maxInput: null, input: "x", output: 1, cacheRead: null }],
+            },
+          },
+        },
+        "test",
+      ),
+    /tier input\/output prices must be numbers/,
+  );
+  assert.throws(
+    () =>
+      parseSnapshot(
+        {
+          format: 1,
+          date: "2026-10-20",
+          models: { b: { input: 1, output: 2, source: "s", cacheRead: "x" } },
+        },
+        "test",
+      ),
+    /cacheRead must be a number or null/,
+  );
+  // Every bundled alias resolves to its vendor id, and unknowns pass through.
+  for (const alias of BUNDLED_SNAPSHOT.aliases) {
+    assert.equal(resolveAlias(BUNDLED_SNAPSHOT, alias.alias), alias.vendorId);
+  }
 });
 
 test("usage: --by session renders the sessionization annotation; mixed currencies stay apart", async () => {
@@ -599,4 +685,64 @@ test("usage: --by session renders the sessionization annotation; mixed currencie
   assert.equal(mixed.code, 0, mixed.stderr);
   const meta = JSON.parse(mixed.stdout).meta;
   assert.ok(["single", "mixed", "none"].includes(meta.currencyHandling));
+});
+
+// #91: cheap multi-branch drives — one CLI call covers a cluster of flag and
+// fail-open branches the earlier happy paths missed.
+test("usage/sessions/heatmap/wrapped/overview/export flag-guard sweep (#91)", async () => {
+  const cfg = cfgDir("guard-sweep");
+  await seedStore(cfg, rows());
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+
+  // --top validation on report; wrapped has no --top, so its format list
+  // guard is exercised instead.
+  const badTop = await runCli(["report", "--no-sync", "--top", "0"], base);
+  assert.notEqual(badTop.code, 0);
+  const badFormatW = await runCli(["wrapped", "--no-sync", "--format", "pdf"], base);
+  assert.notEqual(badFormatW.code, 0);
+
+  // --profile validation on the report surfaces even with --no-sync.
+  const badProfile = await runCli(["heatmap", "--no-sync", "--profile", "../evil"], base);
+  assert.equal(badProfile.code, 1, badProfile.stderr);
+  assert.match(badProfile.stderr, /not allowed/);
+  const badProfileW = await runCli(["wrapped", "--no-sync", "--profile", "bad/name"], base);
+  assert.equal(badProfileW.code, 1, badProfileW.stderr);
+  const badProfileO = await runCli(["overview", "--no-sync", "--profile", "x/y"], base);
+  assert.equal(badProfileO.code, 1, badProfileO.stderr);
+  const badProfileR = await runCli(["report", "--no-sync", "--profile", ".."], base);
+  assert.equal(badProfileR.code, 1, badProfileR.stderr);
+  const badProfileU = await runCli(["usage", "--by", "day", "--no-sync", "--profile", "a/b"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(badProfileU.code, 1, badProfileU.stderr);
+
+  // Heatmap window + metric composition over a seeded store.
+  for (const args of [
+    ["heatmap", "--no-sync", "--since", "2026-10-19", "--until", "2026-10-21"],
+    ["heatmap", "--no-sync", "--range", "7d"],
+    ["heatmap", "--no-sync", "--timezone", "America/New_York"],
+  ]) {
+    const out = await runCli(args, base);
+    assert.equal(out.code, 0, `${args.join(" ")}: ${out.stdout}${out.stderr}`);
+  }
+
+  // Export: valid --since/--until pair + prometheus file (mutually-exclusive
+  // guard and the inverted-pair guard are asserted in otel-export tests).
+  const file = join(cfg, "export.prom");
+  const exp = await runCli(
+    [
+      "export",
+      "--no-sync",
+      "--format",
+      "prometheus",
+      "--since",
+      "2026-10-19T00:00:00Z",
+      "--until",
+      "2026-10-21T00:00:00Z",
+      "--file",
+      file,
+    ],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_NO_SYNC: "1", CI: "1" }) },
+  );
+  assert.equal(exp.code, 0, exp.stderr);
 });

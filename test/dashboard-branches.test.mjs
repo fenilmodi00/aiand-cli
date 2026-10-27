@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -283,4 +283,60 @@ test("dashboard TUI: stdin end (hangup) exits the loop, cursor restored", async 
     await assert.rejects(done, /Input ended|interactive terminal/i);
     assert.ok(output.text.includes("\x1b[?25h"), "cursor shown again after exit");
   });
+});
+
+// #91: heatmap's fail-open sync arms and window filtering, plus report's
+// --json/--out composition on a seeded store.
+test("heatmap sync fail-open warn, --since/--until window, and --model filter (#91)", async () => {
+  const cfg = cfgDir("heatmap-guards");
+  await seedStore(cfg);
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+
+  // Dead gateway + env key: the failed sync warns, the grid still renders.
+  const warned = await runCli(["heatmap"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg, AIAND_API_KEY: FAKE_API_KEY, AIAND_BASE_URL: CLOSED_URL }),
+  });
+  assert.equal(warned.code, 0, warned.stdout);
+  assert.match(warned.stderr, /sync failed|Warning/);
+
+  // A --since/--until pair that contains the seeded rows renders activity.
+  const windowed = await runCli(
+    ["heatmap", "--no-sync", "--since", "2026-10-19", "--until", "2026-10-20", "--model", "zai*"],
+    base,
+  );
+  assert.equal(windowed.code, 0, windowed.stdout);
+  assert.doesNotMatch(windowed.stdout, /no activity/);
+
+  // A window past all data prints the empty note.
+  const empty = await runCli(["heatmap", "--no-sync", "--since", "2027-01-01"], base);
+  assert.equal(empty.code, 0, empty.stdout);
+  assert.match(empty.stdout, /no activity/);
+});
+
+test("report --json writes the file and emits the report object (#91)", async () => {
+  const cfg = cfgDir("report-json");
+  await seedStore(cfg);
+  const out = join(cfg, "r.html");
+  const run = await runCli(
+    ["report", "--no-sync", "--json", "--out", out, "--sections", "timeseries"],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
+  );
+  assert.equal(run.code, 0, run.stdout + run.stderr);
+  const payload = JSON.parse(run.stdout);
+  assert.equal(payload.report, out);
+  assert.ok(payload.bytes > 0);
+  assert.ok(existsSync(out));
+});
+
+// #91: readHeatRows' fail-open catch — an unreadable store is an empty
+// grid, never a crash (the read path the fail-open sync tests never hit).
+test("heatmap on a corrupt store prints the empty grid and exits 0 (#91)", async () => {
+  const cfg = cfgDir("heatmap-corrupt");
+  await seedStore(cfg);
+  const { writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  writeFileSync(join(cfg, "store.db"), "this is not a sqlite database at all");
+  const run = await runCli(["heatmap", "--no-sync"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+  assert.equal(run.code, 0, `${run.stdout}${run.stderr}`);
+  assert.match(run.stdout, /no activity/i);
 });

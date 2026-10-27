@@ -22,7 +22,14 @@ import {
 } from "../report/data.js";
 import { renderOverviewText } from "../report/overview.js";
 import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 
 /**
  * `aiand dashboard` (feature catalog F2, ticket #75): the interactive
@@ -109,11 +116,11 @@ function readCompareRows(window: { sinceMs: number | null; untilMs: number | nul
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
@@ -558,7 +565,7 @@ function renderFrame(
 
   // -- body: responsive panels + scrollable per-day list, or the compare view ----
   if (state.compare) {
-    lines.push(...renderCompare(state, view.width));
+    lines.push(...renderCompare(state, view.width, view.showCost));
   } else {
     const panels = renderPanels(state, view);
     const columns = columnsFor(view.width);
@@ -731,7 +738,7 @@ function renderDailyList(
 
 // -- compare view ----------------------------------------------------------------
 
-function renderCompare(state: DashboardState, width: number): string[] {
+function renderCompare(state: DashboardState, width: number, showCost: boolean): string[] {
   const lines: string[] = [style.bold("Harness compare")];
   const stats = state.compareStats;
   if (!stats || stats.harnesses.length === 0) {
@@ -743,8 +750,9 @@ function renderCompare(state: DashboardState, width: number): string[] {
   for (const row of stats.harnesses) {
     const cell = (value: string, winner: string | null): string =>
       winner === row.harness ? `${style.bold(value)} ${WINNER_MARKER}` : ` ${value} `;
-    const costP50 =
-      row.costPerSession.p50 === null
+    const costP50 = !showCost
+      ? "—"
+      : row.costPerSession.p50 === null
         ? "n/a"
         : formatMoney(row.costPerSession.p50, row.currency).trim();
     const cache = `${Math.round(row.cacheHitRatio * 100)}`.padStart(3);

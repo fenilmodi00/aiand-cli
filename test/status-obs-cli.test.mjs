@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import { cliEnv, runCli, withTestEnv } from "./helpers.mjs";
+import { BIN, cliEnv, runCli, withTestEnv } from "./helpers.mjs";
 
 // OBS-P2-1 (#71): the observability surface of `aiand status` end to end —
 // --format line / --format json / --write-state, the G5 exit-code contract,
@@ -226,5 +226,39 @@ describe("status observability · auth surface unchanged", () => {
     assert.ok(parsed.auth && typeof parsed.auth === "object");
     assert.ok(Array.isArray(parsed.agents));
     assert.equal(parsed.spend, undefined);
+  });
+});
+
+// #91: the --watch loop branches (writeState+print, piped ticks) and the
+// statusline error-suppression path — one short-lived watch run each.
+describe("status observability · watch loop (#91)", () => {
+  test("piped --watch with --write-state --print emits JSON ticks and snapshot notes", async () => {
+    const { spawn } = await import("node:child_process");
+    const statePath = join(box.dir, "watch-state.json");
+    const child = spawn(
+      process.execPath,
+      [BIN, "status", "--watch", "2", "--format", "json", "--write-state", statePath, "--print"],
+      {
+        env: cliEnv({}),
+        stdio: "ignore",
+      },
+    );
+    // Two ticks at 2s, then kill: enough to enter the loop, write the
+    // snapshot, and take the piped (non-TTY) JSON branch.
+    await new Promise((resolve) => setTimeout(resolve, 5500));
+    child.kill("SIGKILL");
+    const written = await new Promise((resolve, reject) => {
+      const start = Date.now();
+      const poll = () => {
+        try {
+          resolve(JSON.parse(readFileSync(statePath, "utf8")));
+        } catch (error) {
+          if (Date.now() - start > 5000) reject(error);
+          else setTimeout(poll, 200);
+        }
+      };
+      poll();
+    });
+    assert.equal(written.verdict, "no-data");
   });
 });

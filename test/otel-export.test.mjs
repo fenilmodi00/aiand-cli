@@ -562,3 +562,47 @@ describe("otel export: --endpoint push (#72)", () => {
     });
   });
 });
+
+// #91: export's pre-command sync arms — failed sync and thrown session both
+// warn on stderr and the export still serves local data (fail-open).
+describe("otel export: sync fail-open arms (#91)", () => {
+  test("dead gateway: sync failure warns and the export serves local data", async () => {
+    const dir = freshDir("sync-fail-store");
+    await seedStore(dir, [row(T0), row(T1)]);
+    seedAgentKey(dir);
+    const { code, stdout, stderr } = await runCli(
+      ["export", "--format", "otel", "--range", "30days"],
+      {
+        env: cliEnv({
+          AIAND_CONFIG_DIR: dir,
+          AIAND_BASE_URL: CLOSED_URL,
+          NO_COLOR: "1",
+          CI: "1",
+        }),
+      },
+    );
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /Warning: sync failed/);
+    const doc = JSON.parse(stdout);
+    assert.ok(Array.isArray(doc.resourceMetrics));
+  });
+
+  test("no credential: thrown session warns and the export serves local data", async () => {
+    const dir = freshDir("sync-throw-store");
+    await seedStore(dir, [row(T0)]);
+    const { code, stdout, stderr } = await runCli(
+      ["export", "--format", "prometheus", "--range", "30days"],
+      {
+        env: cliEnv({
+          AIAND_CONFIG_DIR: dir,
+          AIAND_BASE_URL: CLOSED_URL,
+          NO_COLOR: "1",
+          CI: "1",
+        }),
+      },
+    );
+    assert.equal(code, 0, stderr);
+    assert.match(stderr, /Warning: sync failed/);
+    assert.match(stdout, /^# TYPE /);
+  });
+});

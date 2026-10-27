@@ -10,7 +10,7 @@ import { openSession } from "../api/client.js";
 import { bool, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { delta, err, json, num, out, sparkline, style, table } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName, resolveProfile } from "../config.js";
 import { importCcusage, parseCcusagePayload, readImportPayload } from "../obs/ccusage-import.js";
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
@@ -25,12 +25,13 @@ import {
 import { computeVsList, loadPriceOverrides, readSnapshotFile } from "../pricing/list-prices.js";
 import { PEAK_WINDOWS, windowLabel } from "../pricing/peak-windows.js";
 import { BUNDLED_SNAPSHOT } from "../pricing/price-snapshot.js";
-import type { SyncOutcome } from "../store/coverage.js";
 import { computeCoverage, syncWarningLine } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { noSyncRequested } from "../store/index.js";
 import { reconcileUsage, VERIFY_RANGES, type VerifyRow } from "../store/reconcile.js";
+import { runPreReadSync } from "../store/sync.js";
 import {
   applyJqPath,
+  assertWindowOrder,
   type BlockSection,
   buildReport,
   isValidTimezone,
@@ -575,22 +576,14 @@ async function runReport(parsed: Parsed): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   // -- one sync, then ONE store read for every section --------------------------
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null = null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      // Fail-open: a sign-in or network problem never blocks the local report.
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  // #87: every path consuming a profile name validates it — even when the
+  // sync is skipped or fails open, an unsafe --profile never renders a report.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const report = buildReport({
     unit: reportUnit,
@@ -707,6 +700,7 @@ async function runVsList(parsed: Parsed): Promise<void> {
   const untilMs = until === undefined ? null : parseUntil(until, timezone);
   const last = str(parsed, "last");
   const lastSinceMs = last === undefined ? null : parseLast(last, new Date()).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
 
   const pricesFile = str(parsed, "prices-file");
   const snapshot = pricesFile
@@ -715,19 +709,10 @@ async function runVsList(parsed: Parsed): Promise<void> {
   const overrides = loadPriceOverrides();
 
   // One sync, one store read — the same engine every section shares.
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  // #87: validate the profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const rows = loadRequestRows(
     {

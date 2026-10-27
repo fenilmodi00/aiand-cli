@@ -1,8 +1,7 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
-import { openSession } from "../api/client.js";
 import { bool, list, oneOf, parse, str } from "../cli/args.js";
 import { err, out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName } from "../config.js";
 import {
   buildHeatmapGrid,
   type ColorDepth,
@@ -13,7 +12,8 @@ import {
 } from "../obs/heatmap.js";
 import { assertTimezone, resolveWindow, syncWarningFor, type WindowSpec } from "../report/data.js";
 import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
+import { runPreReadSync } from "../store/sync.js";
 
 /**
  * `aiand heatmap` (feature catalog F4, ticket #75): the 24h×7d spend
@@ -67,19 +67,10 @@ export async function run(argv: string[]): Promise<void> {
   const metric = oneOf<HeatmapMetric>(parsed, "metric", [...HEATMAP_METRICS], "cost");
 
   // Fail-open sync, the established report pattern.
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  // #87: validate --profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
+  const sync: SyncOutcome = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const spec: WindowSpec = {
     since: str(parsed, "since"),
@@ -97,13 +88,11 @@ export async function run(argv: string[]): Promise<void> {
   });
 
   const syncState =
-    sync === null
-      ? { status: "ok" as const, at: null }
-      : "skipped" in sync
-        ? { status: "skipped" as const, at: null }
-        : sync.ok
-          ? { status: "ok" as const, at: null }
-          : { status: "failed" as const, at: null, error: sync.error };
+    "skipped" in sync
+      ? { status: "skipped" as const, at: null }
+      : sync.ok
+        ? { status: "ok" as const, at: null }
+        : { status: "failed" as const, at: null, error: sync.error };
   const warning = syncWarningFor(syncState);
   if (warning) err(style.yellow(`Warning: ${warning}`));
 
@@ -132,11 +121,11 @@ function readHeatRows(window: { sinceMs: number | null; untilMs: number | null }
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";

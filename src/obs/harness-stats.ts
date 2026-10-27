@@ -97,6 +97,20 @@ export function percentile(values: readonly number[], fraction: number): number 
 }
 
 /**
+ * The one error-count helper for every harness surface (stats, compare,
+ * matrix, recommend — #88): non-2xx excluding 429; a null status is unknown,
+ * not an error. A rate limit is the gateway's pressure, not the pair's
+ * quality.
+ */
+export function errorCount(rows: readonly HarnessRequestRow[]): number {
+  return rows.filter((row) => {
+    const status = row.status_code;
+    if (status === null) return false;
+    return (status < 200 || status >= 300) && status !== 429;
+  }).length;
+}
+
+/**
  * Aggregate per-harness stats from store rows. Deterministic; pure. Mixed-model
  * sessions are excluded from every aggregate and returned separately so callers
  * can print the explicit exclusion count.
@@ -154,7 +168,7 @@ export function buildHarnessStats(
       const ttfts = bucket.rows
         .map((row) => row.ttft_ms)
         .filter((value): value is number => value !== null);
-      const errors = bucket.rows.filter((row) => (row.status_code ?? 0) >= 400).length;
+      const errors = errorCount(bucket.rows);
       // The verdict rides the EXISTING cacheVerdict thresholds — never re-derived.
       const verdictGroup: VerdictGroup = {
         key: harness,
@@ -163,7 +177,6 @@ export function buildHarnessStats(
         cachedTokens,
         outputTokens,
         costUsd: cost ?? 0,
-        misses: requests - cachedTokens,
       };
       return {
         harness,
@@ -190,7 +203,7 @@ export function buildHarnessStats(
     tokens: formatLabel(gatewayBilled("store token sums (input includes cached)")),
     ttft: formatLabel(gatewayBilled("gateway ttft_ms")),
     cacheHitRatio: formatLabel(estimated("cached_tokens / input_tokens")),
-    errorRate: formatLabel(estimated("status_code >= 400 / requests")),
+    errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
     costPerSession: formatLabel(heuristic("per-session cost over time-gap sessions")),
     verdict: formatLabel(estimated("cacheVerdict thresholds")),
   };
@@ -270,7 +283,7 @@ export function harnessStatsLabels(): Record<string, ProvenanceLabel> {
     "harness-stats.tokens": gatewayBilled("store token sums (input includes cached)"),
     "harness-stats.ttft": gatewayBilled("gateway ttft_ms"),
     "harness-stats.cacheHitRatio": estimated("cached_tokens / input_tokens"),
-    "harness-stats.errorRate": estimated("status_code >= 400 / requests"),
+    "harness-stats.errorRate": estimated("non-2xx excluding 429 / requests"),
     "harness-stats.costPerSession": heuristic("per-session cost over time-gap sessions"),
     "harness-stats.verdict": estimated("cacheVerdict thresholds"),
   };

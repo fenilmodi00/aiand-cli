@@ -4,7 +4,7 @@ import { openSession } from "../api/client.js";
 import { ATTRIBUTION_NOTE, attributeBranchSpend } from "../branch-spend.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, json, num, out, style, table } from "../cli/output.js";
+import { currencySymbol, err, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   efficiencyByHarness,
@@ -16,8 +16,15 @@ import {
 } from "../model-efficiency.js";
 import { CLASSIFICATION_NOTE, classifyEnvelopes, TASK_CATEGORIES } from "../obs/classifier.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
-import { noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
-import { parseLast, parseSince, parseUntil } from "./usage-report.js";
+import {
+  createdSince,
+  createdUntilExcl,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
+import { assertWindowOrder, parseLast, parseSince, parseUntil } from "./usage-report.js";
 
 /**
  * `aiand efficiency` (feature catalog C3/C5/B4, ticket #78): the
@@ -55,7 +62,10 @@ function resolveWindow(parsed: ReturnType<typeof parse>, now: Date): Window {
   const since = str(parsed, "since");
   const until = str(parsed, "until");
   if (since !== undefined && until !== undefined) {
-    return { sinceMs: parseSince(since, "UTC"), untilMs: parseUntil(until, "UTC") };
+    const sinceMs = parseSince(since, "UTC");
+    const untilMs = parseUntil(until, "UTC");
+    assertWindowOrder(sinceMs, untilMs);
+    return { sinceMs, untilMs };
   }
   if (since !== undefined || until !== undefined) {
     throw new CliError("--since and --until must be passed together.", {
@@ -97,7 +107,9 @@ export async function run(argv: string[]): Promise<void> {
 
   if (!bool(parsed, "no-sync") && !noSyncRequested()) {
     const session = await openSession(resolveProfile());
-    await syncStore(session);
+    const result = await syncStore(session); // #85
+    if (!result.ok)
+      err(style.yellow(`store sync failed (${result.code ?? "error"}): ${result.error}`));
   }
 
   const opened = openStore(storePath());
@@ -176,11 +188,11 @@ function windowRequests(
   const conditions: string[] = [];
   const params: string[] = [];
   if (sinceIso !== undefined) {
-    conditions.push("created_at >= ?");
+    conditions.push(createdSince());
     params.push(sinceIso);
   }
   if (untilIso !== undefined) {
-    conditions.push("created_at < ?");
+    conditions.push(createdUntilExcl());
     params.push(untilIso);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

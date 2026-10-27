@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { ENVELOPE_SCHEMA_VERSION, type EnvelopeV1, parseEnvelope } from "../agents/envelope.js";
-import { openStore, storePath } from "./index.js";
+import { createdSince, createdUntilExcl, openStore, storePath } from "./index.js";
 
 /**
  * Envelope storage (ticket #78): read/write access to the `envelopes` table
@@ -143,11 +143,11 @@ export function listEnvelopesFromDb(
   const conditions: string[] = [];
   const params: (string | number)[] = [];
   if (query.since !== undefined) {
-    conditions.push("created_at >= ?");
+    conditions.push(createdSince());
     params.push(query.since);
   }
   if (query.until !== undefined) {
-    conditions.push("created_at < ?");
+    conditions.push(createdUntilExcl());
     params.push(query.until);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

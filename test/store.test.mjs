@@ -102,13 +102,22 @@ function resetServed() {
 
 /**
  * A /logs double over `rows` (ascending created_at): pages of `pageSize`
- * walking strictly forward by the `after` cursor, like the gateway.
+ * walking forward by the (after, after_id) cursor pair, like the gateway.
+ * Given only `after` (no after_id) it re-serves the boundary timestamp's
+ * rows from the start — the behavior that strands a created_at-only cursor.
  */
 function forwardPager(rows, pageSize = 100) {
   return (url) => {
     const after = url.searchParams.get("after");
+    const afterId = url.searchParams.get("after_id"); // #85
     const limit = Number(url.searchParams.get("limit") ?? pageSize);
-    const remaining = after ? rows.filter((e) => e.created_at > after) : rows;
+    let remaining;
+    if (!after) remaining = rows;
+    else if (afterId)
+      remaining = rows.filter(
+        (e) => e.created_at > after || (e.created_at === after && e.id > afterId),
+      );
+    else remaining = rows.filter((e) => e.created_at >= after);
     const data = remaining.slice(0, limit);
     const hasMore = remaining.length > data.length;
     return {
@@ -339,6 +348,101 @@ describe("sync engine", () => {
       serveLogs = original;
     }
   });
+
+  test("#85: same-timestamp bursts across pages — 150 rows sharing one created_at + 100 sharing another, all 250 ingested", async () => {
+    const mod = await store();
+    const dir = join(box.dir, "sync-burst");
+    // 150 rows at one timestamp, then 100 at another: page 1 cannot hold
+    // the first burst, so the outer loop must advance by (created_at, id).
+    const burstA = entries(150).map((e) => ({ ...e, created_at: "2026-10-01T10:00:00.000Z" }));
+    const burstB = entries(100, 200).map((e) => ({ ...e, created_at: "2026-10-01T11:00:00.000Z" }));
+    const rows = [...burstA, ...burstB];
+    serveLogs = forwardPager(rows);
+    resetServed();
+
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const result = await mod.syncStore(fakeSession(baseUrl));
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.equal(result.inserted, 250);
+      assert.equal(result.pages, 3);
+      assert.equal(result.watermark.id, rows.at(-1).id);
+      assert.equal(mod.getStoreInfo().rows, 250);
+      // Bounded rounds: no identical page ever re-fetched.
+      const urls = served.map((u) => u.search);
+      assert.equal(new Set(urls).size, urls.length, "repeated identical request detected");
+      // #92: id-uniqueness — the 250 ingested rows are 250 distinct logs.
+      const distinct = await readRows(
+        dir,
+        "SELECT COUNT(DISTINCT id) AS n, COUNT(*) AS total FROM requests",
+      );
+      assert.equal(distinct[0].n, 250);
+      assert.equal(distinct[0].total, 250);
+    });
+  });
+
+  test("#85: stuck-cursor pager (ignores after_id, re-serves the same page) terminates ok:false with error + last_sync_error meta", async () => {
+    const mod = await store();
+    const dir = join(box.dir, "sync-stuck");
+    // A broken gateway double: honors plain `after`, but whenever after_id
+    // accompanies it, re-serves the identical first page — the cursor can
+    // never get past the burst.
+    const burst = entries(150).map((e) => ({ ...e, created_at: "2026-10-01T10:00:00.000Z" }));
+    serveLogs = (url) => {
+      const after = url.searchParams.get("after");
+      const afterId = url.searchParams.get("after_id");
+      if (after && afterId) {
+        return {
+          data: burst.slice(0, 100),
+          has_more: true,
+          next_after: "2026-10-01T10:00:00.000Z",
+          next_after_id: "log-0100",
+        };
+      }
+      if (after) return { data: [], has_more: false, next_after: null, next_after_id: null };
+      return {
+        data: burst.slice(0, 100),
+        has_more: true,
+        next_after: "2026-10-01T10:00:00.000Z",
+        next_after_id: "log-0100",
+      };
+    };
+    resetServed();
+
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const result = await mod.syncStore(fakeSession(baseUrl));
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /stuck|re-serving|incomplete/i);
+      assert.ok(served.length < 10, `expected prompt termination, got ${served.length} rounds`);
+      const meta = await readRows(
+        dir,
+        "SELECT key, value FROM sync_meta WHERE key = 'last_sync_error'",
+      );
+      assert.equal(meta.length, 1);
+      assert.match(meta[0].value, /stuck|re-serving|incomplete/i);
+      // The 100 rows of the served page are still stored, but nothing more.
+      assert.equal(mod.getStoreInfo().rows, 100);
+    });
+  });
+
+  test("#85: CLI store sync --json reports { result, store } with ok/inserted/pages", async () => {
+    const dir = join(box.dir, "cli-sync-json");
+    mkdirSync(dir, { recursive: true });
+    serveLogs = forwardPager(entries(150));
+
+    const run = await runCli(["store", "sync", "--json"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: baseUrl }),
+    });
+    assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+    const out = JSON.parse(run.stdout);
+    assert.ok(out.result, "missing result object");
+    assert.ok(out.store, "missing store object");
+    assert.equal(out.result.ok, true);
+    assert.equal(out.result.inserted, 150);
+    assert.equal(out.result.pages, 2);
+    assert.equal(out.store.rows, 150);
+  });
 });
 
 describe("store CLI", () => {
@@ -381,6 +485,44 @@ describe("store CLI", () => {
     assert.ok(existsSync(secondOut.store.path));
     const quarantined = second.stderr.match(/quarantined to (\S+?);/)?.[1];
     assert.ok(quarantined && existsSync(quarantined), "quarantine file should exist");
+  });
+
+  test("#92: CLI store sync --json on a stuck cursor: result ok:false carries error, warning on stderr, exit 0", async () => {
+    const dir = join(box.dir, "cli-sync-stuck");
+    mkdirSync(dir, { recursive: true });
+    // Same broken double as the engine-level stuck test: after+after_id
+    // re-serves the identical first page forever.
+    const burst = entries(150).map((e) => ({ ...e, created_at: "2026-10-01T10:00:00.000Z" }));
+    const stuckPage = {
+      data: burst.slice(0, 100),
+      has_more: true,
+      next_after: "2026-10-01T10:00:00.000Z",
+      next_after_id: "log-0100",
+    };
+    serveLogs = (url) => {
+      const after = url.searchParams.get("after");
+      const afterId = url.searchParams.get("after_id");
+      if (after && afterId) return stuckPage;
+      if (after) return { data: [], has_more: false, next_after: null, next_after_id: null };
+      return stuckPage;
+    };
+    resetServed();
+
+    const run = await runCli(["store", "sync", "--json"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir, AIAND_API_KEY: "sk-test", AIAND_BASE_URL: baseUrl }),
+    });
+    // Fail-open contract: a partial sync never fails the command.
+    assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+    assert.match(run.stderr, /sync failed|stuck|incomplete/i, "warning must be visible");
+    const out = JSON.parse(run.stdout);
+    assert.ok(out.result, "result object always present");
+    assert.equal(out.result.ok, false);
+    assert.equal(typeof out.result.inserted, "number");
+    assert.equal(typeof out.result.pages, "number");
+    assert.match(out.result.error, /stuck|re-serving|incomplete/i);
+    assert.equal(out.store.rows, 100);
+    // Bounded rounds even through the CLI path.
+    assert.ok(served.length < 10, `expected prompt termination, got ${served.length} rounds`);
   });
 
   test("--no-sync makes zero network calls", async () => {

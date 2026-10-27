@@ -13,9 +13,23 @@ import {
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
-import { getStoreInfo, noSyncRequested, openStore, storePath, syncStore } from "../store/index.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  getStoreInfo,
+  noSyncRequested,
+  openStore,
+  storePath,
+  syncStore,
+} from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "./usage-report.js";
+import {
+  assertWindowOrder,
+  isValidTimezone,
+  parseLast,
+  parseSince,
+  parseUntil,
+} from "./usage-report.js";
 
 /**
  * `aiand harness stats` / `aiand harness compare` (ticket #64): the benchmark
@@ -131,8 +145,8 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     renderCompare(harnesses, noCost);
   } else {
     renderStats(harnesses, noCost);
-    if (bool(parsed, "samples")) renderSamples(harnesses);
   }
+  if (bool(parsed, "samples")) renderSamples(harnesses);
 
   if (stats.provenance.excludedMixed > 0) {
     out(
@@ -162,11 +176,11 @@ export function readHarnessRows(
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
@@ -226,6 +240,7 @@ export function parseWindowFlags(
     sinceMs = parseSince(str(parsed, "since") ?? "", timezone);
   if (str(parsed, "until") !== undefined)
     untilMs = parseUntil(str(parsed, "until") ?? "", timezone);
+  assertWindowOrder(sinceMs, untilMs);
   return { sinceMs, untilMs };
 }
 
@@ -411,7 +426,7 @@ Usage
 Options
   --since <iso>       window start (interpreted in --timezone)
   --until <iso>       window end
-  --last <window>     30m, 12h, 1d, 7d (default), 30d, 4w
+  --last <window>     30m, 12h, 1d, 7d, 30d, 4w (default: all stored history)
   --harness <name>    one harness only (stats)
   --agent <name>      repeatable; masked-key attribution filter
   --model <glob>      repeatable model filter (* wildcards)

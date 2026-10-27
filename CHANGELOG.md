@@ -555,8 +555,64 @@ breaking changes while the command surface settles.
 
 ### Fixed
 
-- Escape and Ctrl-C now navigate instead of killing the CLI from the menu.
-  Inside an action opened from the main menu — the init agent picker, the
+- Store sync cursor: the outer sync loop advanced by `created_at` alone,
+  so any timestamp owning more rows than one page re-served the identical
+  page forever — a live sync captured 103 of 832 rows and never finished
+  (#85). The loop now threads the `(created_at, id)` pair from each page's
+  last row, a stuck-cursor guard stops instead of spinning (reporting
+  `ok: false` with `last_sync_error` recorded), and every observability
+  command surfaces the stuck cursor as a failed sync (`ok: false`) with a
+  visible yellow warning and `last_sync_error` metadata instead of silently
+  serving incomplete history.
+- Same-day `--since`/`--until` windows matched zero rows on every
+  observability surface (`usage`, `sessions`, `heatmap`, `dashboard`,
+  `export`, `forecast`, `statusline`, `efficiency`, `report`, coverage
+  scan). Window filters compared the gateway's wire-format `created_at`
+  (`2026-10-26 05:02:11.844519+00`, space separator, stored verbatim)
+  against ISO `T` strings in SQL text comparisons, and `' ' < 'T'` dropped
+  every same-day row. All date-window filters now compare through one
+  normalized `datetime()` expression shared from the store (#86).
+- CLI error hardening (#87): impossible `--since`/`--until` values (month 13,
+  hour 25) and nonexistent calendar dates (2025-02-29, which used to roll over
+  to March 1) now fail with a `CliError` naming the flag and value instead of a
+  raw stack trace or a silently shifted window. `AIAND_CONFIG_DIR` pointing at
+  a regular file fails with `config dir is not a directory` instead of a raw
+  `ENOTDIR`/`EEXIST` stack on reads and writes alike. `--profile` values are
+  validated on every report path — including `--no-sync` and sync-failure
+  fallbacks, which used to render a report for an unsafe name. Inverted
+  windows (`--since` after `--until`) are rejected on every window-filtered
+  command instead of quietly reporting nothing.
+
+- `usage --include-imported` no longer splits one currency into two lanes in
+  the grand total (`usd` + `USD`): gateway rows carry lowercase currency
+  codes while the ccusage import stored `USD`. Currency keys are now
+  casefolded where rows accumulate into cost maps (gateway rows, imported
+  rows, session rows), so mixed-case spellings of the same currency merge
+  into one summed lane across `--format json`, `csv`, and text renders;
+  genuinely different currencies (`usd` + `eur`) stay separate. (#89)
+- Harness help tells the truth (#90): `harness compare --samples` now renders
+  the contributing session list (previously documented but stats-only);
+  `--last` help on `harness stats`/`compare`, `matrix`, and `duel`/`latency`
+  states the real default (all stored history, not 7d); and the dead
+  unit-mixing verdict-group `misses` metric (`requests - cachedTokens`) is
+  gone from the harness stats, pair stats, and matrix row builders.
+- Battle-probe regression tests (#92): the burst-pagination fixture now also
+  asserts id-uniqueness of the 250 ingested rows, a CLI-level test pins the
+  stuck-cursor `store sync --json` exit path (`result.ok: false` with
+  `error`, visible warning, exit 0), window-boundary coverage extends to
+  mid-day instants and exactly-on-boundary upper edges per read surface
+  (`usage`, `sessions`, `export`), and the battle report's critical repros
+  are pinned deterministically: `--since <today>` matches wire-format rows
+  stored by a real sync, and `usage --verify` reports MISMATCH with exit 1
+  when rows are deleted from the local store behind the gateway.
+- Branch-coverage push to the 85% gate (#91): targeted tests for the branches
+  the #85–#89 fixes introduced — the #87 date guard's remaining arms
+  (impossible wall-time components, ISO-datetime date-part validation for
+  both flags, the sessions window-order check), the fail-open sync warning
+  on `harness stats`, the `--include-mixed` excluded-sessions render with
+  and without cost columns, and the shared `--last`/`--since`/`--until`
+  window parse's edge combination on the harness surfaces.
+- Escape and Ctrl-C now navigate instead of killing the CLI from the menu.  Inside an action opened from the main menu — the init agent picker, the
   sign-in org picker, any prompt — Esc or Ctrl-C cancels that action, prints
   the cancel as a dim line, and redraws the main menu; only at the menu
   itself do they leave (Esc quits with a visible `Bye.`, Ctrl-C exits 130).
@@ -641,6 +697,12 @@ breaking changes while the command surface settles.
   adapters that own no config files, and unusable config paths (a file where
   a directory belongs, a directory where a file belongs, unreadable files)
   refuse exit 1 with a hint instead of a raw stack. (#34, thanks @fenilmodi00)
+- `aiand harness stats` now counts errors the way `harness matrix` and
+  `compare` already do — non-2xx statuses excluding 429 (a rate limit is the
+  gateway's pressure, not the pair's quality); null statuses count as
+  unknown, not errors. Both surfaces share one error-count helper, so the
+  same rows yield the same errorRate everywhere; the stats label says
+  `non-2xx excluding 429 / requests`. (#88)
 
 ## [0.6.0] - 2026-10-06
 

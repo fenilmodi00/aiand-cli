@@ -3,13 +3,20 @@ import { join } from "node:path";
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { type CacheGroup, cacheVerdict } from "../api/cache-report.js";
 import { CliError } from "../cli/errors.js";
-import { isValidTimezone, parseLast, parseSince, parseUntil } from "../commands/usage-report.js";
+import {
+  assertWindowOrder,
+  isValidTimezone,
+  parseLast,
+  parseSince,
+  parseUntil,
+} from "../commands/usage-report.js";
 import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
-import { openStore, storePath } from "../store/index.js";
+import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
 import {
   type SessionizationMeta,
   type SessionRequestRow,
@@ -174,11 +181,11 @@ function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): 
     const conditions: string[] = [];
     const args: (string | number)[] = [];
     if (window.sinceMs !== null) {
-      conditions.push("created_at >= ?");
+      conditions.push(createdSince());
       args.push(new Date(window.sinceMs).toISOString());
     }
     if (window.untilMs !== null) {
-      conditions.push("created_at <= ?");
+      conditions.push(createdUntilIncl());
       args.push(new Date(window.untilMs).toISOString());
     }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
@@ -229,6 +236,7 @@ export function resolveWindow(
   const sinceMs = spec.since === undefined ? null : parseSince(spec.since, timezone);
   const untilMs = spec.until === undefined ? null : parseUntil(spec.until, timezone);
   const lastMs = spec.last === undefined ? null : parseLast(spec.last, now).sinceMs;
+  assertWindowOrder(sinceMs, untilMs);
   const rangeMs = spec.range === undefined ? null : now.getTime() - rangeDurationMs(spec.range);
   const candidates = [sinceMs, lastMs, rangeMs].filter((v): v is number => v !== null);
   return {
@@ -406,7 +414,8 @@ function accMix(mix: Mix, row: ReportRow): void {
   mix.outputTokens += row.output_tokens ?? 0;
   mix.cachedTokens += row.cached_tokens ?? 0;
   if (row.cost_value !== null) {
-    const currency = row.currency ?? UNKNOWN_CURRENCY;
+    // #89: casefold so mixed-case stored currencies stay in one lane.
+    const currency = currencyKey(row.currency);
     mix.costs[currency] = (mix.costs[currency] ?? 0) + row.cost_value;
   }
 }
@@ -595,7 +604,6 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
         cachedTokens: group.mix.cachedTokens,
         outputTokens: group.mix.outputTokens,
         costUsd: 0,
-        misses: 0,
         key: model,
       } as unknown as CacheGroup);
       return {

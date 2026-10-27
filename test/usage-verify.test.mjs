@@ -459,4 +459,65 @@ describe("usage --verify (CI gate)", () => {
     assert.equal(badRange.code, 1);
     assert.match(badRange.stderr, /--range/);
   });
+
+  // #92 (OBS-BF-8): the battle report's critical repros, distilled into
+  // mock-gateway fixtures. (a) `--since <today>` must return same-day rows
+  // from a synced store — the live sync stores the gateway's wire-format
+  // created_at (space separator, `+00`), the exact shape `' ' < 'T'`
+  // comparisons dropped. (b) `usage --verify` catches an injected gap:
+  // rows deleted from the local store behind the gateway's back must
+  // report MISMATCH and exit 1.
+  test("#92: wire-format rows synced via the mock are matched by --since <today>", async () => {
+    const dir = freshDir("repro-since-today");
+    const midnight = new Date();
+    midnight.setUTCHours(0, 0, 0, 0);
+    const wireFormat = (date) =>
+      `${date.toISOString().slice(0, 10)} ${date.toISOString().slice(11, 23)}+00`;
+    // Today's rows in the gateway's verbatim wire format (space + `+00`),
+    // served by the real sync engine into the store — not seeded by hand.
+    const rows = entries(3).map((e, i) => ({
+      ...e,
+      created_at: wireFormat(new Date(midnight.getTime() + (i + 1) * 60_000)),
+    }));
+    await plantStore(dir, rows);
+    serveLogs = forwardPager(rows);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const run = await runCli(["usage", "--by", "day", "--json", "--since", today], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir, AIAND_NO_SYNC: "1", NO_COLOR: "1", CI: "1" }),
+    });
+    assert.equal(run.code, 0, `exit ${run.code}: ${run.stderr}`);
+    const parsed = JSON.parse(run.stdout);
+    assert.equal(
+      parsed.sections.totals.requests,
+      3,
+      "same-day --since must match wire-format rows stored by a real sync",
+    );
+  });
+
+  test("#92: injected gap — rows deleted from the store behind the gateway are MISMATCH, exit 1", async () => {
+    const dir = freshDir("repro-gap");
+    const rows = entries(5);
+    await plantStore(dir, rows);
+    serveLogs = forwardPager(rows);
+    // Inject the gap: delete two rows locally as if they were lost.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(join(dir, "store.db"));
+    db.prepare("DELETE FROM requests WHERE id IN ('log-0001', 'log-0002')").run();
+    db.close();
+
+    const run = await runCli(["usage", "--verify", "--no-sync", "--json"], {
+      env: verifyEnv(dir),
+    });
+    assert.equal(run.code, 1, `expected mismatch exit 1, got ${run.code}: ${run.stdout}`);
+    const parsed = JSON.parse(run.stdout);
+    const requests = parsed.find((r) => r.metric === "requests");
+    assert.equal(requests.status, "mismatch");
+    assert.equal(requests.local, 3);
+    assert.equal(requests.remote, 5);
+    assert.equal(requests.delta, -2);
+    for (const metric of ["tokens", "cost"]) {
+      assert.equal(parsed.find((r) => r.metric === metric).status, "mismatch");
+    }
+  });
 });

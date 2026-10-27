@@ -493,3 +493,40 @@ test("cli: sessions is registered and its --help renders", async () => {
   const registry = await import("../dist/commands/index.js");
   assert.ok(registry.COMMANDS.some((c) => c.name === "sessions"));
 });
+
+// #91: the session flag guards and costless-drilldown render branches the
+// earlier CLI tests leave open.
+test("cli: sessions flag guards all refuse with clear errors", async () => {
+  const cfg = cfgDir("flag-guards");
+  await seedStore(cfg, baseRows());
+  const base = { env: ENV(cfg) };
+
+  const badFormat = await runCli(["sessions", "--format", "yaml"], base);
+  assert.equal(badFormat.code, 1);
+  assert.match(badFormat.stderr, /Invalid --format value: yaml/);
+
+  const csvJson = await runCli(["sessions", "--format", "csv", "--json"], base);
+  assert.equal(csvJson.code, 1);
+  assert.match(csvJson.stderr, /choose one/);
+
+  const badTz = await runCli(["sessions", "--timezone", "Mars/Olympus"], base);
+  assert.equal(badTz.code, 1);
+  assert.match(badTz.stderr, /Invalid --timezone value/);
+
+  const tooMany = await runCli(["sessions", "a", "b"], base);
+  assert.equal(tooMany.code, 1);
+  assert.match(tooMany.stderr, /at most one session id/);
+
+  const badTopCost = await runCli(["sessions", "--top-cost", "1.5"], base);
+  assert.equal(badTopCost.code, 1);
+  assert.match(badTopCost.stderr, /--top-cost/);
+});
+
+test("cli: drill-down on a costless session prints the costless note and n/a cells", async () => {
+  const cfg = cfgDir("costless-drill");
+  await seedStore(cfg, [baseRows().at(-2), baseRows().at(-1)]);
+  const run = await runCli(["sessions", SESSION_B_ID], { env: ENV(cfg) });
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /No billed cost recorded for this session/);
+  assert.match(run.stdout, /n\/a/, "ttft cell renders n/a without ttft rows");
+});

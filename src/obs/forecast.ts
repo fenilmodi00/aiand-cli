@@ -1,6 +1,6 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
-import { openStore, storePath } from "../store/index.js";
+import { createdSince, createdUntilExcl, openStore, storePath } from "../store/index.js";
 import { HOUR_MS } from "../time.js";
 import {
   loadBudget,
@@ -367,7 +367,7 @@ export function readForecastRows(options: { now?: Date; harness?: string } = {})
     const rows = db
       .prepare(
         "SELECT id, api_key, created_at, latency_ms, cost, cost_value, currency FROM requests " +
-          "WHERE created_at >= ? ORDER BY created_at, id",
+          `WHERE ${createdSince()} ORDER BY created_at, id`,
       )
       .all(since) as unknown as ForecastRow[];
 
@@ -427,7 +427,7 @@ export function readMonthTotals(now?: Date): MonthTotal[] {
     const rows = db
       .prepare(
         "SELECT substr(created_at, 1, 7) AS ym, SUM(COALESCE(cost_value, 0)) AS spend, " +
-          "COUNT(DISTINCT currency) AS currencies FROM requests WHERE created_at < ? " +
+          `COUNT(DISTINCT currency) AS currencies FROM requests WHERE ${createdUntilExcl()} ` +
           "GROUP BY ym ORDER BY ym",
       )
       .all(`${current}-01`) as unknown as { ym: string; spend: number; currencies: number }[];

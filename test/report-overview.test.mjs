@@ -593,4 +593,24 @@ describe("offline HTML report", () => {
     assert.ok(result.stderr.includes("sync failed"));
     assert.ok(readFileSync(join(dir, "r.html"), "utf8").includes("store sync: failed"));
   });
+
+  // #91: overview's pre-read sync arms — a dead gateway warns and the
+  // summary still renders local rows (the sync arm its tests never hit).
+  test("overview: dead-gateway sync warns and the summary still renders (#91)", async () => {
+    const dir = freshDir("overview-sync-fail");
+    await seedStore(dir, FIXTURE_ROWS);
+    seedKeysAndCatalog(dir);
+    const result = await runCli(["overview", "--since", "2026-10-19", "--until", "2026-10-22"], {
+      env: cliEnv({
+        AIAND_CONFIG_DIR: dir,
+        AIAND_BASE_URL: "http://127.0.0.1:9",
+        AIAND_API_KEY: "sk-test",
+        NO_COLOR: "1",
+        CI: "1",
+      }),
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stderr.includes("sync failed"));
+    assert.ok(result.stdout.includes("Totals"), "local summary still renders");
+  });
 });

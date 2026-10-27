@@ -1,7 +1,6 @@
-import { openSession } from "../api/client.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
 import { err, json, out, style } from "../cli/output.js";
-import { resolveProfile } from "../config.js";
+import { assertSafeProfileName } from "../config.js";
 import {
   buildWrappedStory,
   renderWrappedText,
@@ -15,8 +14,7 @@ import {
   syncWarningFor,
   type WindowSpec,
 } from "../report/data.js";
-import type { SyncOutcome } from "../store/coverage.js";
-import { noSyncRequested, syncStore } from "../store/index.js";
+import { runPreReadSync } from "../store/sync.js";
 
 /**
  * `aiand wrapped` (feature catalog F5, ticket #75): the share-friendly period
@@ -41,6 +39,7 @@ Options
   --no-cost           share without the money figures
   --json              the story as a machine-readable object
   --no-sync           skip the pre-read store sync and read as-is
+  --profile <name>    the profile to sync and read (default: active)
 
 Every number carries its provenance in the footer: costs are gateway-billed,
 savings are estimated from catalog prices, sessions are the time-gap
@@ -56,6 +55,7 @@ export async function run(argv: string[]): Promise<void> {
     timezone: { type: "string" },
     format: { type: "string" },
     "no-cost": { type: "boolean", default: false },
+    profile: { type: "string" },
     "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
@@ -65,19 +65,10 @@ export async function run(argv: string[]): Promise<void> {
   const format = oneOf(parsed, "format", [...WRAPPED_FORMATS], "text") as WrappedFormat;
 
   // One fail-open sync before the read; the story itself is offline.
-  const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null = null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
-    try {
-      const session = await openSession(resolveProfile(str(parsed, "profile")));
-      const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
-    } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  }
+  // #87: validate --profile even when sync is skipped or fails open.
+  const profileName = str(parsed, "profile");
+  if (profileName !== undefined) assertSafeProfileName(profileName);
+  const sync = await runPreReadSync(profileName, bool(parsed, "no-sync"));
 
   const now = new Date();
   const windowSpec: WindowSpec = {

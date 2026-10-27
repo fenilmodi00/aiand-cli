@@ -35,6 +35,7 @@ import {
   syncWarningLine,
 } from "../store/coverage.js";
 import { noSyncRequested, syncStore } from "../store/index.js";
+import { assertWindowOrder } from "./usage-report.js";
 
 export const help = `${style.bold("aiand forecast")} -- burn-rate projection against your budget
 
@@ -457,6 +458,12 @@ function untilOrNow(parsed: ReturnType<typeof parse>): Date {
     throw new CliError(`Invalid --until value: ${until}.`, {
       hint: "Use an ISO timestamp, e.g. 2026-10-25T00:00:00Z.",
     });
+  }
+  // #87: an inverted --since/--until pair narrows to nothing; reject it up front.
+  const since = str(parsed, "since");
+  if (since !== undefined) {
+    const sinceMs = Date.parse(since);
+    if (!Number.isNaN(sinceMs)) assertWindowOrder(sinceMs, ms);
   }
   return new Date(ms);
 }

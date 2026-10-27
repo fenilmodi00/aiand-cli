@@ -36,6 +36,56 @@ export function storePath(): string {
   return join(configDir(), "store.db");
 }
 
+/**
+ * #86 — Normalized timestamp comparison for SQL window filters.
+ *
+ * Gateway rows are stored verbatim (`2026-10-26 05:02:11.844519+00`, space
+ * separator), and callers bind ISO `T` strings (`new Date(...).toISOString()`).
+ * A bare `created_at >= ?` compares text, and `' ' < 'T'`, so same-day
+ * windows silently match nothing. The helpers rewrite both sides into a
+ * strict-ISO UTC string SQLite's `datetime()` accepts:
+ *
+ * - `+00` (the gateway's offset spelling, rejected by SQLite's parser)
+ *   becomes `Z`; the space separator is handled by `datetime()` itself;
+ * - fractional seconds are re-parsed as a number and re-formatted to
+ *   milliseconds (SQLite's `datetime()` truncates to whole seconds, which
+ *   would make `...:59.999+00` fall inside a window ending at
+ *   `...:59.999Z`); sub-millisecond tails are clamped down to `59.995`
+ *   so a `:59.999999` row can never spill past a `:59.999` inclusive
+ *   boundary (sub-millisecond precision is knowingly dropped — the
+ *   gateway serves millisecond windows);
+ * - `trim()` guards against SQLite 3.52+ returning `NULL` for the
+ *   whitespace-padded strict-ISO form.
+ *
+ * Result: stored wire format and ISO binds compare on the same normalized
+ * timeline; stored rows stay verbatim.
+ */
+const normalizedExpr = (col = "created_at"): string => {
+  const g = `replace(trim(${col}),'+00','Z')`;
+  return (
+    `printf('%s%02d:%02d:%sZ', substr(${g},1,11), ` +
+    `CAST(substr(${g},12,2) AS INT), CAST(substr(${g},15,2) AS INT), ` +
+    `CASE WHEN CAST(substr(${g},18) AS REAL) > 59.995 THEN '59.995' ` +
+    `ELSE printf('%06.3f', CAST(substr(${g},18) AS REAL)) END)`
+  );
+};
+
+/** Normalized window expression over `col` with SQL operator `op`. */
+const windowExpr = (op: ">=" | "<=" | "<", col = "created_at"): string =>
+  `datetime(${normalizedExpr(col)}) ${op} datetime(?)`;
+
+/**
+ * Normalized lower-bound comparison (`>=`) for SQL window filters; bind the
+ * ISO instant string as the sole parameter. See {@link normalizedExpr}.
+ */
+export const createdSince = (col = "created_at"): string => windowExpr(">=", col);
+
+/** Normalized inclusive upper bound (`<=`); see {@link createdSince}. */
+export const createdUntilIncl = (col = "created_at"): string => windowExpr("<=", col);
+
+/** Normalized exclusive upper bound (`<`); see {@link createdSince}. */
+export const createdUntilExcl = (col = "created_at"): string => windowExpr("<", col);
+
 export type StoreStatus =
   | "ok" // open, migrated, healthy
   | "missing" // no db file yet (never synced)
@@ -65,8 +115,19 @@ export type StoreInfo = {
 };
 
 export type SyncResult =
-  | { ok: true; inserted: number; pages: number; watermark: { createdAt: string; id: string } }
-  | { ok: false; error: string; code?: "network" | "auth" | "store" };
+  | {
+      ok: true;
+      inserted: number;
+      pages: number;
+      watermark: { createdAt: string; id: string };
+    }
+  | {
+      ok: false;
+      inserted?: number;
+      pages?: number;
+      error: string;
+      code?: "network" | "auth" | "store";
+    };
 
 /**
  * The `--no-sync` opt-out shared by every observability command: a parsed
@@ -398,14 +459,19 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
     let inserted = 0;
     let pages = 0;
     let cursor = after;
+    let cursorId: string | undefined;
+    let previousCursor: string | undefined;
+    let previousCursorId: string | undefined;
     for (;;) {
-      const { entries, truncated } = await getLogsPaged(session, {
+      const { entries, truncated, lastCursor } = await getLogsPaged(session, {
         range: range as Parameters<typeof getLogsPaged>[1]["range"],
         limit: SYNC_PAGE_SIZE,
         after: cursor,
+        afterId: cursorId,
       });
       pages += 1;
-      inserted += insertEntries(db, entries);
+      const roundInserted = insertEntries(db, entries);
+      inserted += roundInserted;
 
       if (entries.length > 0) {
         // Watermark = max stored created_at (tiebreak max id), read back
@@ -419,14 +485,40 @@ async function syncStoreLocked(session: Session, opts: { range?: string }): Prom
       }
 
       if (!truncated || entries.length === 0) break;
-      const last = entries[entries.length - 1];
-      if (!last) break;
-      cursor = last.created_at;
+      // Advance by the (created_at, id) pair of the last served row: when a
+      // timestamp owns more rows than a page, created_at alone re-serves the
+      // identical page forever.
+      if (lastCursor) {
+        cursor = lastCursor.createdAt;
+        cursorId = lastCursor.id;
+      } else {
+        const last = entries[entries.length - 1];
+        if (!last) break;
+        cursor = last.created_at;
+        cursorId = last.id;
+      }
+      // Stuck-cursor guard: a round that inserts nothing and moves nowhere
+      // means the pager is re-serving the same page — stop instead of
+      // spinning, and say so rather than reporting a silent success.
+      if (roundInserted === 0 && cursor === previousCursor && cursorId === previousCursorId) {
+        const message =
+          "Sync stopped: the gateway kept re-serving the same page despite the cursor advancing " +
+          "(stuck cursor) — history may be incomplete.";
+        try {
+          setMeta(db, "last_sync_error", message);
+          setMeta(db, "last_sync_error_at", new Date().toISOString());
+        } catch {
+          // a store too broken for meta writes cannot record the failure either
+        }
+        return { ok: false, inserted, pages, error: message, code: "store" };
+      }
+      previousCursor = cursor;
+      previousCursorId = cursorId;
     }
 
+    // A clean success clears the failure markers: coverage must report the
+    // CURRENT sync state, not a stale failure that has since been resolved.
     setMeta(db, "last_sync_at", new Date().toISOString());
-    // A success clears the failure markers: coverage must report the CURRENT
-    // sync state, not a stale failure that has since been resolved.
     db.prepare(
       "DELETE FROM sync_meta WHERE key IN ('last_sync_error', 'last_sync_error_at')",
     ).run();

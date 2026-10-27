@@ -210,7 +210,7 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
  * A per-group verdict, in the same spirit as CacheLane's harness health
  * check: enough traffic to judge, then the hit ratio decides.
  */
-export function cacheVerdict(group: CacheGroup): "good" | "warn" | "bad" {
+export function cacheVerdict(group: Omit<CacheGroup, "misses">): "good" | "warn" | "bad" {
   if (group.requests < 5) return "warn";
   // `input_tokens` includes `cached_tokens`.
   const hitRatio = group.inputTokens > 0 ? group.cachedTokens / group.inputTokens : 0;
