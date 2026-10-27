@@ -36,6 +36,71 @@ export function storePath(): string {
   return join(configDir(), "store.db");
 }
 
+/** #95 — What `store reset` cleared, for human and --json reporting. */
+export type ResetResult = {
+  requests: number;
+  sessions: number;
+  envelopes: number;
+  /** Row kept on purpose: the ccusage import dedupe ledger survives a reset. */
+  importedUsageKept: number;
+  storeVersion: number;
+};
+
+/**
+ * #95 (OBS-BF-10) — Self-heal: delete the request/session/envelope data rows
+ * and the sync bookkeeping that describes them, keep the schema, migrations,
+ * and the ccusage import dedupe ledger (ccusage_imports + imported_usage).
+ * The sync watermark is derived from the newest request row, so an empty
+ * `requests` table makes the next `store sync` a full re-pull. Never throws
+ * for expected states (no store file yet → nothing to clear).
+ */
+export function resetStore(): ResetResult | { ok: false; error: string } {
+  const path = storePath();
+  if (!existsSync(path)) {
+    return { ok: false, error: "No local request store yet — nothing to reset." };
+  }
+  const opened = openStore(path);
+  if (!opened.ok) return { ok: false, error: opened.reason };
+  const db = opened.db;
+  try {
+    const count = (table: string): number =>
+      Number(
+        (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>).n,
+      );
+    const importedUsageKept = count("imported_usage");
+    const result: ResetResult = {
+      requests: count("requests"),
+      sessions: count("sessions"),
+      envelopes: count("envelopes"),
+      importedUsageKept,
+      storeVersion: STORE_VERSION,
+    };
+    db.exec("BEGIN");
+    try {
+      db.exec(
+        "DELETE FROM requests; DELETE FROM sessions; DELETE FROM envelopes; " +
+          // Sync bookkeeping describes the deleted rows (last sync time,
+          // watermark-era fingerprint); clear it so nothing claims state the
+          // store no longer has.
+          "DELETE FROM sync_meta",
+      );
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
 /**
  * #86 — Normalized timestamp comparison for SQL window filters.
  *
