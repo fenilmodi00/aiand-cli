@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -166,9 +165,7 @@ describe("store reset", () => {
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM requests").get().n, 0);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 0);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM imported_usage").get().n, 1);
-    const version = after
-      .prepare("SELECT MAX(version) AS v FROM schema_migrations")
-      .get().v;
+    const version = after.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
     after.close();
     assert.equal(version, result.storeVersion);
 

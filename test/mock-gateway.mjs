@@ -262,6 +262,7 @@ const server = createServer((req, res) => {
         next_after: hasMore && last ? last.created_at : null,
         next_after_id: hasMore && last ? last.id : null,
       });
+    }
     // #96: wire-format rows for windowed `usage --verify` — two inside the
     // last 20 minutes, one 2h old. Built ONCE on first request so the sync
     // and the verify fetch see identical created_at values (fresh timestamps

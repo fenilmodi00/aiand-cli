@@ -64,9 +64,7 @@ export function resetStore(): ResetResult | { ok: false; error: string } {
   const db = opened.db;
   try {
     const count = (table: string): number =>
-      Number(
-        (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>).n,
-      );
+      Number((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>).n);
     const importedUsageKept = count("imported_usage");
     const result: ResetResult = {
       requests: count("requests"),

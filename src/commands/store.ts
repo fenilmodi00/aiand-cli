@@ -4,7 +4,13 @@ import { CliError } from "../cli/errors.js";
 import { err, json, out, relativeTime, style } from "../cli/output.js";
 import { confirm } from "../cli/prompt.js";
 import { resolveProfile } from "../config.js";
-import { getStoreInfo, noSyncRequested, type StoreInfo, resetStore, syncStore } from "../store/index.js";
+import {
+  getStoreInfo,
+  noSyncRequested,
+  resetStore,
+  type StoreInfo,
+  syncStore,
+} from "../store/index.js";
 
 /**
  * Minimal store surface for this ticket: status inspection and the manual
@@ -42,7 +48,8 @@ export async function run(argv: string[]): Promise<void> {
   const wantsSync = parsed.positionals[0] === "sync";
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
 
-  if (parsed.positionals[0] === "reset") return runReset(bool(parsed, "force"), bool(parsed, "json"));
+  if (parsed.positionals[0] === "reset")
+    return runReset(bool(parsed, "force"), bool(parsed, "json"));
 
   if (!wantsSync || skipSync) {
     const info = getStoreInfo();
@@ -108,7 +115,11 @@ async function runReset(force: boolean, jsonOut: boolean): Promise<void> {
         `(schema v${storeVersion}; ${importedUsageKept} imported-usage rows kept).`,
     ),
   );
-  out(style.dim("The next `aiand store sync` will be a full re-pull (the gateway serves the last 30 days)."));
+  out(
+    style.dim(
+      "The next `aiand store sync` will be a full re-pull (the gateway serves the last 30 days).",
+    ),
+  );
 }
 
 function printInfo(info: StoreInfo): void {
