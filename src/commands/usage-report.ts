@@ -5,7 +5,6 @@ import { type ImportedReportRow, loadImportedRows } from "../obs/ccusage-import.
 import { errorCount } from "../obs/harness-stats.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
 import { currencyKey } from "../pricing/currency.js";
-import { type PeakSplit, splitPeakOffPeak } from "../pricing/peak-windows.js";
 import {
   type CoverageReport,
   computeCoverage,
@@ -53,7 +52,6 @@ export const SECTION_REGISTRY = [
   "totals",
   "by-model",
   "by-agent",
-  "peak",
   "imported",
   "grand-total",
 ] as const;
@@ -627,7 +625,7 @@ export function buildReport(options: BuildReportOptions): Report {
 
   // Imported ccusage rows (ticket #73) are a second, SEPARATE lane. They
   // never enter `rows`, so no gateway aggregate (blocks, totals, by-model,
-  // by-agent, peak, sessions) can ever double-count them.
+  // by-agent, sessions) can ever double-count them.
   const loadImported = options.loadImported ?? loadImportedRows;
   const importedRows = loadImported({
     sinceMs: options.sinceMs,
@@ -747,18 +745,6 @@ export function buildReport(options: BuildReportOptions): Report {
   if (wants.has("totals")) sections.totals = totals;
   if (wants.has("by-model")) sections["by-model"] = groupRows(byModelAll);
   if (wants.has("by-agent")) sections["by-agent"] = groupRows(byAgentAll);
-  if (wants.has("peak")) {
-    // B9 (ticket #81): shares of gateway-billed cost by the vendor window
-    // table; unclassified families land in their model row, never guessed.
-    const peakRows = rows.map((row) => ({
-      model: row.model,
-      created_at: row.created_at,
-      cost_value: row.cost_value,
-      currency: row.currency,
-    }));
-    const peak: PeakSplit = splitPeakOffPeak(peakRows);
-    sections.peak = peak;
-  }
 
   // Imported ccusage lane (ticket #73): own source rows, default-excluded
   // from every gateway total above. Auto-present only when rows exist.
@@ -867,9 +853,6 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
     errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
   };
   if (sessionUnit) labels.sessions = formatLabel(heuristic("time-gap sessionization"));
-  labels.peak = formatLabel(
-    estimated("peak-window table applied to stored created_at timestamps and gateway costs"),
-  );
   // Imported ccusage lane (ticket #73): ccusage numbers are its own report
   // values, cost is price-table-derived — never gateway-billed.
   labels.imported = formatLabel(
@@ -1073,14 +1056,6 @@ export function renderReport(report: Report, view: RenderOptions): void {
     heading("By agent");
     out();
     renderGroupTable(report.sections["by-agent"] as GroupRow[] | undefined, view, "agent");
-  }
-
-  if (view.sections.includes("peak")) {
-    out();
-    heading("Peak / off-peak");
-    out(style.dim(meta.provenance.peak ?? ""));
-    out();
-    renderPeak(report.sections.peak as PeakSplit | undefined);
   }
 
   const importedRows = report.sections.imported as GroupRow[] | undefined;
@@ -1303,70 +1278,4 @@ function renderTotalsFields(
     }
   }
   for (const [key, value] of pairs) out(`${style.dim(key.padEnd(16))}  ${value}`);
-}
-
-// ---------------------------------------------------------------------------
-// Peak / off-peak section (feature catalog B9, ticket #81)
-// ---------------------------------------------------------------------------
-
-type PeakBucket = { requests: number; costs: Costs };
-
-/**
- * One bucket cell: share% plus cost for the single-currency case; "-" when
- * the bucket is empty or mixed-currency (the per-currency JSON carries the
- * detail; a mixed cell is never a sum).
- */
-function peakCell(bucket: PeakBucket, share: number | undefined): string {
-  const entries = Object.entries(bucket.costs);
-  if (entries.length === 0) return "-";
-  if (entries.length > 1) return "-";
-  const cost = formatCost(entries[0]![1], entries[0]![0]);
-  return share === undefined ? cost : `${share.toFixed(1)}% (${cost})`;
-}
-
-function renderPeak(split: PeakSplit | undefined): void {
-  if (!split || split.models.length === 0) {
-    out(style.dim("No matching requests."));
-    return;
-  }
-  const rows = split.models.map((model) => {
-    const share = Object.values(model.shares)[0];
-    const mixed = currencyKeysOf([model.peak, model.offPeak, model.unclassified]).length > 1;
-    return {
-      model: model.model,
-      family: model.family ?? "unclassified",
-      peak: model.family === null || mixed ? "n/a" : peakCell(model.peak, share?.peak),
-      "off-peak": model.family === null || mixed ? "n/a" : peakCell(model.offPeak, share?.offPeak),
-      unclassified: model.family === null ? peakCell(model.unclassified, undefined) : "-",
-      requests: model.peak.requests + model.offPeak.requests + model.unclassified.requests,
-    };
-  });
-  table(rows, [
-    { header: "model", value: (r) => r.model },
-    { header: "family", value: (r) => r.family },
-    { header: "peak", value: (r) => r.peak, align: "right" },
-    { header: "off-peak", value: (r) => r["off-peak"], align: "right" },
-    { header: "unclassified", value: (r) => r.unclassified, align: "right" },
-    { header: "requests", value: (r) => num(r.requests), align: "right" },
-  ]);
-
-  if (split.routed.requests > 0) {
-    const routedCost = peakCell(split.routed, undefined);
-    out(
-      style.dim(
-        `routed (non-first-party) traffic: ${num(split.routed.requests)} requests` +
-          `${routedCost === "-" ? "" : `, ${routedCost}`} — window split not applicable`,
-      ),
-    );
-  }
-  const sources = [...new Set(split.models.map((m) => m.source).filter((s) => s !== null))];
-  if (sources.length > 0) out(style.dim(`window sources: ${sources.join(" · ")}`));
-  const unclassified = split.models.filter((m) => m.family === null).map((m) => m.model);
-  if (unclassified.length > 0) {
-    out(
-      style.dim(
-        `no window-table entry for ${unclassified.join(", ")} — reported unclassified, never guessed.`,
-      ),
-    );
-  }
 }

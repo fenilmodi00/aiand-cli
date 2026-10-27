@@ -445,7 +445,6 @@ test("usage: by-units, sections, filters, sort, formats, and flag errors", async
     ["usage", "--no-sync", "--format", "csv"],
     ["usage", "--no-sync", "--json", "--jq", ".sections.totals"],
     ["usage", "--no-sync", "--audit"],
-    ["usage", "--no-sync", "--show-windows"],
   ]) {
     const out = await runCli(args, base);
     assert.equal(out.code, 0, `${args.join(" ")}\n${out.stdout}${out.stderr}`);

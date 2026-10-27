@@ -4,10 +4,9 @@ import { join } from "node:path";
 import test, { describe } from "node:test";
 import { CLOSED_URL, cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
 
-// Tickets #81 (OBS-P2-5): peak/off-peak split (B9) and the vendor-list-price
-// equivalent comparison (B8). // #81
+// Ticket #81 (OBS-P2-5): the vendor-list-price equivalent comparison (B8). // #81
 
-const box = withTestEnv("aiand-usage-peak-", () => {
+const box = withTestEnv("aiand-usage-vslist-", () => {
   process.env.NO_COLOR = "1";
   process.env.CI = "1";
   delete process.env.AIAND_BASE_URL;
@@ -84,96 +83,6 @@ const withStoreEnv = (dir, fn) =>
     }),
     fn,
   );
-
-// ---------------------------------------------------------------------------
-// B9: the window table + the pure split
-// ---------------------------------------------------------------------------
-
-const { splitPeakOffPeak, wallMinutes, wallWeekday, familyOf, windowsFor } = await import(
-  "../dist/pricing/peak-windows.js"
-);
-const { inWindows } = await import("../dist/pricing/peak-windows.js");
-
-describe("peak windows (B9)", () => {
-  test("GLM 14:00-18:00 SGT == 06:00-10:00 UTC, boundaries exact", () => {
-    // 2026-10-05 is a Monday; 05:59:59Z is 13:59 SGT (one minute before peak).
-    assert.equal(wallMinutes("Asia/Singapore", Date.parse("2026-10-05T05:59:59Z")), 13 * 60 + 59);
-    assert.equal(familyOf("zai-org/glm-5.3"), "glm");
-    const windows = windowsFor("zai-org/glm-5.3");
-    assert.ok(windows);
-    assert.equal(inWindows(Date.parse("2026-10-05T05:59:59Z"), windows), false, "1s before peak");
-    assert.equal(inWindows(Date.parse("2026-10-05T06:00:00Z"), windows), true, "peak start");
-    assert.equal(inWindows(Date.parse("2026-10-05T09:59:59Z"), windows), true, "1s before end");
-    assert.equal(inWindows(Date.parse("2026-10-05T10:00:00Z"), windows), false, "peak end");
-  });
-
-  test("midnight-UTC fixtures stay on the SGT calendar day; weekends never peak", () => {
-    const windows = windowsFor("glm-5.3");
-    // 23:30 UTC Monday = 07:30 SGT Tuesday: off-peak either way.
-    assert.equal(inWindows(Date.parse("2026-10-05T23:30:00Z"), windows), false);
-    // 00:30 UTC Tuesday = 08:30 SGT Tuesday: off-peak.
-    assert.equal(inWindows(Date.parse("2026-10-06T00:30:00Z"), windows), false);
-    // Saturday 2026-10-03 08:00 UTC = 16:00 SGT Saturday: weekday filter excludes.
-    assert.equal(inWindows(Date.parse("2026-10-03T08:00:00Z"), windows), false);
-    assert.equal(wallWeekday("Asia/Singapore", Date.parse("2026-10-03T08:00:00Z")), 6);
-  });
-
-  test("split shares are percentages of cost and sum to exactly 100", () => {
-    const split = splitPeakOffPeak([
-      { model: "glm-5.3", created_at: "2026-10-05T07:00:00Z", cost_value: 1.0, currency: "usd" },
-      { model: "glm-5.3", created_at: "2026-10-05T08:00:00Z", cost_value: 3.0, currency: "usd" },
-      { model: "glm-5.3", created_at: "2026-10-05T12:00:00Z", cost_value: 3.0, currency: "usd" },
-    ]);
-    assert.equal(split.models.length, 1);
-    const model = split.models[0];
-    assert.equal(model.family, "glm");
-    assert.equal(model.peak.requests, 2);
-    assert.equal(model.peak.costs.usd, 4.0);
-    assert.equal(model.offPeak.costs.usd, 3.0);
-    assert.equal(model.shares.usd.peak, 57.1);
-    assert.equal(model.shares.usd.peak + model.shares.usd.offPeak, 100);
-  });
-
-  test("unclassified families land in their own bucket, never guessed", () => {
-    const split = splitPeakOffPeak([
-      {
-        model: "some-vendor/mystery-x",
-        created_at: "2026-10-05T07:00:00Z",
-        cost_value: 2,
-        currency: "usd",
-      },
-    ]);
-    const model = split.models[0];
-    assert.equal(model.family, null);
-    assert.equal(model.unclassified.costs.usd, 2);
-    assert.deepEqual(model.shares, {});
-    assert.equal(split.routed.requests, 0);
-  });
-
-  test("non-first-party rows aggregate into the routed bucket", () => {
-    const split = splitPeakOffPeak([
-      { model: "glm-5.3", created_at: "2026-10-05T07:00:00Z", cost_value: 1, currency: "usd" },
-      {
-        model: "glm-5.3",
-        created_at: "2026-10-05T07:00:00Z",
-        cost_value: 9,
-        currency: "usd",
-        route: "proxy",
-      },
-    ]);
-    assert.equal(split.models[0].peak.costs.usd, 1);
-    assert.equal(split.routed.requests, 1);
-    assert.equal(split.routed.costs.usd, 9);
-  });
-
-  test("rows without a cost still count requests", () => {
-    const split = splitPeakOffPeak([
-      { model: "glm-5.3", created_at: "2026-10-05T07:00:00Z", cost_value: null, currency: null },
-    ]);
-    assert.equal(split.models[0].peak.requests, 1);
-    assert.equal(split.models[0].shares.usd, undefined);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // B8: list-price snapshot, exact-only matching, overrides, savings
@@ -404,59 +313,7 @@ describe("vs-list pricing (B8)", () => {
 // CLI surface
 // ---------------------------------------------------------------------------
 
-describe("usage --show-windows / --sections peak / --vs-list", () => {
-  test("--show-windows prints the table with sources; --json prints the raw data", async () => {
-    const dir = freshDir("peak-windows-cli");
-    await seedStore(dir, []);
-    await withStoreEnv(dir, async () => {
-      const shown = await runCli(["usage", "--show-windows"]);
-      assert.equal(shown.code, 0);
-      assert.match(shown.stdout, /glm/);
-      assert.match(shown.stdout, /14:00-18:00 Asia\/Singapore/);
-      assert.match(shown.stdout, /docs\.z\.ai/);
-      const asJson = await runCli(["usage", "--show-windows", "--json"]);
-      const table = JSON.parse(asJson.stdout);
-      assert.equal(table[0].family, "glm");
-      assert.equal(table[0].windows[0].tz, "Asia/Singapore");
-    });
-  });
-
-  test("--sections peak splits seeded GLM rows and sums shares to 100", async () => {
-    const dir = freshDir("peak-section");
-    // Monday 2026-10-05: 07:00Z is peak SGT, 12:00Z is off-peak.
-    await seedStore(dir, [
-      row("2026-10-05T07:00:00Z", { cost: "1.000000", cost_value: 1 }),
-      row("2026-10-05T12:00:00Z", { cost: "3.000000", cost_value: 3 }),
-      row("2026-10-05T12:30:00Z", {
-        model: "other-vendor/unknown",
-        cost: "2.000000",
-        cost_value: 2,
-      }),
-    ]);
-    await withStoreEnv(dir, async () => {
-      const shown = await runCli(["usage", "--sections", "peak", "--no-totals"]);
-      assert.equal(shown.code, 0);
-      assert.match(shown.stdout, /Peak \/ off-peak/);
-      assert.match(shown.stdout, /glm/);
-      assert.match(shown.stdout, /25\.0% \(\$1\.000000\)/);
-      assert.match(shown.stdout, /75\.0% \(\$3\.000000\)/);
-      assert.match(shown.stdout, /unclassified/);
-      assert.match(shown.stdout, /never guessed/);
-      assert.match(shown.stdout, /estimated\(peak-window table/);
-
-      const asJson = await runCli(["usage", "--sections", "peak", "--json"]);
-      const payload = JSON.parse(asJson.stdout);
-      const peak = payload.sections.peak;
-      const glm = peak.models.find((m) => m.family === "glm");
-      assert.equal(glm.peak.costs.usd, 1);
-      assert.equal(glm.shares.usd.peak + glm.shares.usd.offPeak, 100);
-      assert.equal(
-        payload.meta.provenance.peak,
-        "estimated(peak-window table applied to stored created_at timestamps and gateway costs)",
-      );
-    });
-  });
-
+describe("usage --vs-list", () => {
   test("--vs-list with --prices-file prices, labels the snapshot, and supports --jq", async () => {
     const dir = freshDir("vs-list-cli");
     await seedStore(dir, [

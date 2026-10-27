@@ -7,6 +7,12 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Removed
+- The peak/off-peak cost split (`usage --sections peak` and
+  `usage --show-windows`) along with its window-table module and provenance
+  entries. The aiand gateway does not bill by peak/off-peak windows, so the
+  split was an estimate over a billing model the provider doesn't use.
+
 ### Added
 - The bundled list-price snapshot (`bundled@2026-10-28`) now prices the
   gateway's first-party models — zai-org/glm-5.3, zai-org/glm-5.3-flash,
