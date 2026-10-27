@@ -233,29 +233,6 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "suggestBudget",
     provenance: heuristic("P90 of monthly totals"),
   },
-  // ccusage import (ticket #73) — EXTERNAL rows, default-excluded from
-  // gateway totals; ccusage cost is price-table-derived, never billed.
-  {
-    report: "usage",
-    field: "imported.requests, tokens",
-    provenance: estimated(
-      "imported ccusage report values; ccusage derives them from local harness logs",
-    ),
-  },
-  {
-    report: "usage",
-    field: "imported.cost",
-    provenance: estimated(
-      "imported ccusage <import-date>; ccusage price-table-derived, never gateway-billed",
-    ),
-  },
-  {
-    report: "usage",
-    field: "grand-total.cost (--include-imported)",
-    provenance: estimated(
-      "sum of gateway-billed cost and ccusage-estimated imported cost; mixed provenance",
-    ),
-  },
   // efficiency (adapter-envelope metrics, ticket #78)
   {
     report: "efficiency",

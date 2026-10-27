@@ -273,13 +273,6 @@ function argStringList(args: Record<string, unknown>, name: string): string[] {
   throw new RpcParamError(`Parameter "${name}" must be a string or an array of strings.`);
 }
 
-function argBoolean(args: Record<string, unknown>, name: string): boolean | undefined {
-  const value = args[name];
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "boolean") throw new RpcParamError(`Parameter "${name}" must be a boolean.`);
-  return value;
-}
-
 function argEnum<T extends string>(
   args: Record<string, unknown>,
   name: string,
@@ -413,10 +406,6 @@ const usageStatsTool: ToolDefinition = {
         items: { type: "string" },
         description: "Model glob filter (* and ? wildcards).",
       },
-      include_imported: {
-        type: "boolean",
-        description: "Fold imported ccusage rows into a combined grand-total section.",
-      },
     },
   },
   call: async (args, context) => {
@@ -451,7 +440,6 @@ const usageStatsTool: ToolDefinition = {
       sort: argEnum(args, "sort", SORT_COLUMNS) ?? "period",
       order: argEnum(args, "order", ["asc", "desc"] as const) ?? "asc",
       sync,
-      includeImported: argBoolean(args, "include_imported") ?? false,
     });
     const payload = { meta: report.meta, sections: report.sections };
     const label = projectLabel(realNamesEnabled());

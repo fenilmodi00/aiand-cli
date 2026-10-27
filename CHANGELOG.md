@@ -8,6 +8,14 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Removed
+- The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
+  `--include-imported` combined grand total, the import adapter module, the
+  imported-usage report section, the migration 0003 store tables
+  (`ccusage_imports` + `imported_usage`, left in place on existing stores and
+  no longer read or written), and the `usage_stats` MCP `include_imported`
+  parameter). It imported a competitor tool's price-table-derived cost
+  estimates as a parallel cost lane — the gateway's own logs are the single
+  cost source.
 - The vendor list-price comparison (`usage --vs-list`, the bundled vendor
   list-price snapshot module, the list-prices comparison module, the
   `--prices-file` flag, and the `config set prices.<model>.input|output|cacheRead`

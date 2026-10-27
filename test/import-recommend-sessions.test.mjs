@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
 
 /**
- * Branch coverage for ccusage-import's pure parse edges (direct imports —
- * the CLI suite covers the happy paths), recommend's edge inputs, and the
- * sessions command's flag-error branches.
+ * Branch coverage for recommend's edge inputs and the sessions command's
+ * flag-error branches.
  */
 
 const env = withTestEnv("import-rec-sess", () => {});
@@ -17,84 +16,6 @@ function cfgDir(name) {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
-
-const NOW = new Date("2026-10-26T00:00:00.000Z");
-
-const dailyRow = (over = {}) => ({
-  date: "2026-10-20",
-  inputTokens: 1000,
-  outputTokens: 100,
-  cacheCreationTokens: 50,
-  cacheReadTokens: 500,
-  costUSD: 0.01,
-  ...over,
-});
-
-// ---------------------------------------------------------------------------
-// parseCcusagePayload: every refusal branch, directly
-// ---------------------------------------------------------------------------
-
-test("parse: not JSON, non-object, unknown/ambiguous keys, non-array rows", async () => {
-  const { parseCcusagePayload } = await import("../dist/obs/ccusage-import.js");
-  assert.throws(() => parseCcusagePayload("{not json", NOW), /not valid JSON/);
-  assert.throws(() => parseCcusagePayload("[1,2]", NOW), /expected a ccusage --json report object/);
-  assert.throws(() => parseCcusagePayload("null", NOW), /expected a ccusage --json report object/);
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ hello: 1 }), NOW),
-    /no supported ccusage report/,
-  );
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: [], sessions: [] }), NOW),
-    /ambiguous payload/,
-  );
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: "nope" }), NOW),
-    /must be an array/,
-  );
-});
-
-test("parse: malformed rows refuse loudly with the index and field", async () => {
-  const { parseCcusagePayload } = await import("../dist/obs/ccusage-import.js");
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: ["nope"] }), NOW),
-    /daily\[0\] is not a report row/,
-  );
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: [{ date: "2026-10-20" }] }), NOW),
-    /inputTokens/,
-  );
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: [{ ...dailyRow(), inputTokens: -1 }] }), NOW),
-    /inputTokens/,
-  );
-  assert.throws(
-    () => parseCcusagePayload(JSON.stringify({ daily: [{ ...dailyRow(), costUSD: "x" }] }), NOW),
-    /costUSD/,
-  );
-  // Older reports carrying totalCost instead of costUSD parse fine.
-  const legacy = parseCcusagePayload(
-    JSON.stringify({ daily: [dailyRow({ costUSD: undefined, totalCost: 0.02 })] }),
-    NOW,
-  );
-  assert.equal(legacy.rows.length, 1);
-  // Unknown extra fields are dropped, not guessed.
-  const noisy = parseCcusagePayload(
-    JSON.stringify({ daily: [{ ...dailyRow(), mystery: "x" }] }),
-    NOW,
-  );
-  assert.ok(!JSON.stringify(noisy.rows).includes("mystery"));
-});
-
-test("readImportPayload: missing file is a clean error", async () => {
-  const { readImportPayload } = await import("../dist/obs/ccusage-import.js");
-  assert.throws(
-    () => readImportPayload(join(env.dir, "absent.json")),
-    /Could not read ccusage JSON file/,
-  );
-  const good = join(env.dir, "payload.json");
-  writeFileSync(good, JSON.stringify({ daily: [dailyRow()] }));
-  assert.ok(readImportPayload(good).includes("daily"));
-});
 
 // ---------------------------------------------------------------------------
 // recommend: edge inputs

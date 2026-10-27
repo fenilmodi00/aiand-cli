@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test, { after, before, describe } from "node:test";
 import { cliEnv, runCli, withTestEnv } from "./helpers.mjs";
 
 // #95 (OBS-BF-10): `aiand store reset` — cheap self-heal without deleting
-// store.db. Reset clears request/session rows, keeps schema + migrations + the
-// ccusage import dedupe ledger + locally captured envelopes (opt-in, not
-// re-pullable), and the next `store sync` full re-pulls (the watermark is
-// derived from the newest request row).
+// store.db. Reset clears request/session rows, keeps schema + migrations +
+// locally captured envelopes (opt-in, not re-pullable), and the next
+// `store sync` full re-pulls (the watermark is derived from the newest
+// request row).
 
 const box = withTestEnv("aiand-store-reset-", (dir) => {
   process.env.AIAND_CONFIG_DIR = dir;
@@ -101,35 +101,15 @@ async function openDb(dir) {
   return new DatabaseSync(join(dir, "store.db"));
 }
 
-/** Seed the ccusage dedupe ledger by importing a payload through the CLI. */
-async function importCcusage(dir) {
-  const payload = JSON.stringify({
-    daily: [
-      {
-        date: "2026-10-20",
-        inputTokens: 1000,
-        outputTokens: 200,
-        cacheCreationTokens: 50,
-        cacheReadTokens: 150,
-        totalTokens: 1400,
-        costUSD: 0.123,
-      },
-    ],
-  });
-  const file = join(dir, "ccusage.json");
-  writeFileSync(file, payload);
-  return runCli(["usage", "--import-ccusage", file, "--json"], { env: resetEnv(dir) });
-}
-
 // -- tests ---------------------------------------------------------------------
 
 describe("store reset", () => {
-  test("--force clears rows, keeps schema + ledger; next sync full re-pulls", async () => {
+  test("--force clears rows, keeps schema; next sync full re-pulls", async () => {
     const dir = freshDir("force");
     const rows = [entry(1), entry(2), entry(3)];
     serveLogs = forwardPager(rows);
 
-    // Populate: sync + import (ledger seed) + session rebuild.
+    // Populate: sync + session rebuild.
     const syncEnv = cliEnv({
       AIAND_CONFIG_DIR: dir,
       AIAND_API_KEY: "sk-test",
@@ -139,8 +119,6 @@ describe("store reset", () => {
     });
     const synced = await runCli(["store", "sync", "--json"], { env: syncEnv });
     assert.equal(synced.code, 0, synced.stderr);
-    const imported = await importCcusage(dir);
-    assert.equal(imported.code, 0, imported.stderr);
 
     // The sessions table is materialized lazily by listSessions() (#66) —
     // reached through `aiand status`; materialize so reset has rows to clear.
@@ -177,25 +155,17 @@ describe("store reset", () => {
     assert.equal(result.requests, rows.length);
     assert.equal(result.sessions, beforeSessions);
     assert.equal(result.envelopesKept, 1);
-    assert.equal(result.importedUsageKept, 1);
     assert.equal(typeof result.storeVersion, "number");
     assert.ok(result.storeVersion >= 4);
 
-    // Ledger survives; data rows are gone; envelopes survive (#95).
+    // Data rows are gone; envelopes survive (#95).
     const after = await openDb(dir);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM requests").get().n, 0);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 0);
     assert.equal(after.prepare("SELECT COUNT(*) AS n FROM envelopes").get().n, 1);
-    assert.equal(after.prepare("SELECT COUNT(*) AS n FROM imported_usage").get().n, 1);
     const version = after.prepare("SELECT MAX(version) AS v FROM schema_migrations").get().v;
     after.close();
     assert.equal(version, result.storeVersion);
-
-    // Re-importing the same fixture still dedupes: the ledger survived.
-    const again = await importCcusage(dir);
-    assert.equal(again.code, 0, again.stderr);
-    const dedupe = JSON.parse(again.stdout);
-    assert.equal(dedupe.deduped, true, `expected dedupe, got ${again.stdout}`);
 
     // The next sync is a full re-pull: all rows come back.
     const resync = await runCli(["store", "sync", "--json"], { env: syncEnv });

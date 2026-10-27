@@ -5,11 +5,6 @@ import {
   version as sessionsVersion,
 } from "./0002-sessions.js";
 import {
-  name as ccusageName,
-  sql as ccusageSql,
-  version as ccusageVersion,
-} from "./0003-ccusage-import.js";
-import {
   name as envelopesName,
   sql as envelopesSql,
   version as envelopesVersion,
@@ -28,9 +23,12 @@ export type Migration = {
   sql: string;
 };
 
+// Migration 0003 (imported usage, #73) was removed with the ccusage import
+// lane (#118). It stays unregistered: fresh stores skip straight to 0004,
+// and existing stores that already applied 0003 keep their legacy tables —
+// the runner only consults schema_migrations, so nothing re-runs or drops.
 export const MIGRATIONS: readonly Migration[] = [
   { version: initVersion, name: initName, sql: initSql },
   { version: sessionsVersion, name: sessionsName, sql: sessionsSql },
-  { version: ccusageVersion, name: ccusageName, sql: ccusageSql },
   { version: envelopesVersion, name: envelopesName, sql: envelopesSql },
 ];

@@ -8,8 +8,7 @@ import { cliEnv, FAKE_API_KEY, runCli, withEnv, withTestEnv } from "./helpers.mj
 /**
  * Branch-coverage push for `dist/commands/usage-report.js` and
  * `dist/commands/usage.js`. All offline: seeded local stores
- * (test/branch-hardening.test.mjs pattern) and ccusage imports
- * (test/usage-ccusage-import.test.mjs pattern); the legacy gateway view
+ * (test/branch-hardening.test.mjs pattern); the legacy gateway view
  * (usage --range / --metrics) runs against a loopback HTTP stub with an env
  * key, never the network and never the real keychain.
  */
@@ -88,15 +87,6 @@ async function seedStore(dir, rows) {
     }
     opened.db.close();
   });
-}
-
-/** Write a ccusage payload file and import it (file form, no stdin). */
-async function importCcusage(dir, payload) {
-  const file = join(dir, `ccusage-${Math.random().toString(36).slice(2)}.json`);
-  writeFileSync(file, JSON.stringify(payload));
-  const run = await runCli(["usage", "--import-ccusage", file], { env: reportEnv(dir) });
-  assert.equal(run.code, 0, run.stderr);
-  return run;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,23 +206,14 @@ describe("usage report: filters, currency, breakdown", () => {
       row("2026-10-20T10:00:00.000Z", { id: "m1" }),
       row("2026-10-20T11:00:00.000Z", { id: "m2", cost: 2.0, currency: "eur" }),
     ]);
-    const run = await runCli(
-      [
-        "usage",
-        "--sections",
-        "daily,totals,by-model,by-agent,imported,grand-total",
-        "--include-imported",
-        "--json",
-      ],
-      { env: reportEnv(dir) },
-    );
+    const run = await runCli(["usage", "--sections", "daily,totals,by-model,by-agent", "--json"], {
+      env: reportEnv(dir),
+    });
     assert.equal(run.code, 0, run.stderr);
     const sections = JSON.parse(run.stdout).sections;
-    for (const name of ["daily", "totals", "by-model", "by-agent", "grand-total"]) {
+    for (const name of ["daily", "totals", "by-model", "by-agent"]) {
       assert.ok(sections[name] !== undefined, `section ${name} present`);
     }
-    // imported absent: nothing was imported
-    assert.equal(sections.imported, undefined);
   });
 
   test("--by week with --sections weekly passes the matching-unit guard", async () => {
@@ -257,93 +238,10 @@ describe("usage report: filters, currency, breakdown", () => {
 });
 
 // ---------------------------------------------------------------------------
-// usage-report.js: imported lane, grand total, mixed-currency grand total
+// usage-report.js: session rendering, CSV currencies
 // ---------------------------------------------------------------------------
 
-describe("usage report: imported ccusage lane branches", () => {
-  const DAILY = {
-    daily: [{ date: "2026-10-20", inputTokens: 1000, outputTokens: 200, costUSD: 0.5 }],
-  };
-
-  test("--include-imported with a mixed-currency store sums per currency, never across", async () => {
-    const dir = freshDir("grand-mixed");
-    await seedStore(dir, [
-      row("2026-10-20T10:00:00.000Z", { id: "g1", cost: 1.0, currency: "usd" }),
-      row("2026-10-20T12:00:00.000Z", { id: "g2", cost: 2.0, currency: "eur" }),
-    ]);
-    await importCcusage(dir, DAILY);
-    const run = await runCli(["usage", "--by", "day", "--json", "--include-imported"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    const payload = JSON.parse(run.stdout);
-    assert.equal(payload.meta.currencyHandling, "mixed");
-    const grand = payload.sections["grand-total"];
-    assert.ok(grand);
-    assert.deepEqual(grand.gateway.costs, { usd: 1, eur: 2 });
-    assert.deepEqual(grand.imported.costs, { usd: 0.5 });
-    // #89 casefold: gateway "usd" and ccusage-imported "USD" merge into one lane.
-    assert.deepEqual(grand.costs, { usd: 1.5, eur: 2 });
-    assert.equal(grand.requests, 3);
-    assert.equal(payload.meta.currencyHandling, "mixed");
-  });
-
-  test("--include-imported with nothing imported: grand total is gateway-only", async () => {
-    const dir = freshDir("grand-empty");
-    await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "g1" })]);
-    const run = await runCli(["usage", "--by", "day", "--json", "--include-imported"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    const grand = JSON.parse(run.stdout).sections["grand-total"];
-    assert.ok(grand);
-    assert.equal(grand.imported, null);
-    assert.equal(grand.requests, 1);
-    assert.deepEqual(grand.costs, { usd: 0.0042 });
-  });
-
-  test("table render shows the grand-total block and the mixed-currency per-currency table", async () => {
-    const dir = freshDir("grand-render");
-    await seedStore(dir, [
-      row("2026-10-20T10:00:00.000Z", { id: "g1", cost: 1.0, currency: "usd" }),
-      row("2026-10-20T12:00:00.000Z", { id: "g2", cost: 2.0, currency: "eur" }),
-    ]);
-    await importCcusage(dir, DAILY);
-    const run = await runCli(["usage", "--by", "day", "--include-imported"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /mixed currencies/);
-    assert.match(run.stdout, /Costs per currency/);
-    assert.match(run.stdout, /Grand total \(gateway \+ imported\)/);
-    assert.match(run.stdout, /gateway/);
-    assert.match(run.stdout, /imported/);
-    assert.match(run.stdout, /combined/);
-  });
-
-  test("imported rows render their own table with the hint when no grand total is asked", async () => {
-    const dir = freshDir("imported-render");
-    await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "g1" })]);
-    await importCcusage(dir, DAILY);
-    const run = await runCli(["usage", "--by", "day"], { env: reportEnv(dir) });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /Imported \(ccusage\) — excluded from gateway totals/);
-    assert.match(run.stdout, /Run with --include-imported for a combined grand total\./);
-    assert.doesNotMatch(run.stdout, /Grand total/);
-  });
-
-  test("--include-imported --compact renders the compact group columns for the grand total", async () => {
-    const dir = freshDir("grand-compact");
-    await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "g1" })]);
-    await importCcusage(dir, DAILY);
-    const run = await runCli(["usage", "--by", "day", "--include-imported", "--compact"], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 0, run.stderr);
-    assert.match(run.stdout, /TOKENS/);
-    assert.match(run.stdout, /Grand total/);
-  });
-
+describe("usage report: session rendering and CSV", () => {
   test("--by session renders the session block table with started/turns columns", async () => {
     const dir = freshDir("session-render");
     await seedStore(dir, [
@@ -654,64 +552,6 @@ describe("usage --verify: unverifiable human-output lines", () => {
     assert.match(run.stdout, /UNVERIFIABLE/);
     assert.match(run.stdout, /Everything comparable reconciles; some rows are UNVERIFIABLE/);
     assert.match(run.stdout, /unverifiable \(\w+\): /, "the per-row detail lines");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// usage.js: --import-ccusage non-json table output and flag guards
-// ---------------------------------------------------------------------------
-
-describe("usage --import-ccusage: table output and flag guards", () => {
-  const PAYLOAD = {
-    daily: [{ date: "2026-10-20", inputTokens: 10, outputTokens: 5, costUSD: 0.01 }],
-  };
-
-  test("non-json import prints the source/report table and the anti-double-count notes", async () => {
-    const dir = freshDir("import-table");
-    const run = await importCcusage(dir, PAYLOAD);
-    assert.match(run.stdout, /ccusage import/);
-    assert.match(run.stdout, /imported\(ccusage@\d{4}-\d{2}-\d{2}\)/);
-    assert.match(run.stdout, /daily/);
-    assert.match(run.stdout, /EXCLUDED from gateway totals/);
-    assert.match(run.stdout, /Run aiand usage --include-imported/);
-  });
-
-  test("re-import prints the deduped rows-written cell", async () => {
-    const dir = freshDir("import-deduped");
-    await importCcusage(dir, PAYLOAD);
-    const run = await importCcusage(dir, PAYLOAD);
-    assert.match(run.stdout, /0 \(already imported\)/);
-  });
-
-  test("--import-ccusage with --include-imported refuses (report flag on the import)", async () => {
-    const dir = freshDir("import-guard-include");
-    const run = await runCli(["usage", "--import-ccusage", "-", "--include-imported"], {
-      env: reportEnv(dir),
-      input: JSON.stringify(PAYLOAD),
-    });
-    assert.equal(run.code, 1);
-    assert.match(run.stderr, /--include-imported is a report flag/);
-  });
-
-  test("--import-ccusage with --metrics / --range refuses (view flags on the import)", async () => {
-    const dir = freshDir("import-guard-views");
-    for (const extra of [["--metrics"], ["--range", "7days"]]) {
-      const run = await runCli(["usage", "--import-ccusage", "-", ...extra], {
-        env: reportEnv(dir),
-        input: JSON.stringify(PAYLOAD),
-      });
-      assert.equal(run.code, 1, `--import-ccusage ${extra.join(" ")} must refuse`);
-      assert.match(run.stderr, /only imports data/);
-    }
-  });
-
-  test("a missing payload file refuses with the file-read error", async () => {
-    const dir = freshDir("import-missing");
-    const run = await runCli(["usage", "--import-ccusage", join(dir, "nope.json")], {
-      env: reportEnv(dir),
-    });
-    assert.equal(run.code, 1);
-    assert.match(run.stderr, /Could not read ccusage JSON file/);
   });
 });
 

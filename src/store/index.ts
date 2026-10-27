@@ -58,19 +58,16 @@ export type ResetResult = {
   sessions: number;
   /** Locally captured envelopes survive a reset (opt-in, not re-pullable). */
   envelopesKept: number;
-  /** Row kept on purpose: the ccusage import dedupe ledger survives a reset. */
-  importedUsageKept: number;
   storeVersion: number;
 };
 
 /**
  * #95 (OBS-BF-10) — Self-heal: delete the request/session data rows and the
- * sync bookkeeping that describes them, keep the schema, migrations, and the
- * ccusage import dedupe ledger (ccusage_imports + imported_usage). Locally
- * captured envelopes survive: they are opt-in local captures the gateway does
- * not serve (#95 scope is request/session rows only). The sync watermark is
- * derived from the newest request row, so an empty `requests` table makes the
- * next `store sync` a full re-pull. Never throws
+ * sync bookkeeping that describes them, keep the schema and migrations.
+ * Locally captured envelopes survive: they are opt-in local captures the
+ * gateway does not serve (#95 scope is request/session rows only). The sync
+ * watermark is derived from the newest request row, so an empty `requests`
+ * table makes the next `store sync` a full re-pull. Never throws
  * for expected states (no store file yet → nothing to clear).
  */
 export function resetStore(): ResetResult | { ok: false; error: string } {
@@ -84,12 +81,10 @@ export function resetStore(): ResetResult | { ok: false; error: string } {
   try {
     const count = (table: string): number =>
       Number((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as Record<string, unknown>).n);
-    const importedUsageKept = count("imported_usage");
     const result: ResetResult = {
       requests: count("requests"),
       sessions: count("sessions"),
       envelopesKept: count("envelopes"),
-      importedUsageKept,
       storeVersion: STORE_VERSION,
     };
     db.exec("BEGIN");

@@ -547,17 +547,6 @@ test("usage: legacy gateway views via loopback stub; report/legacy flag conflict
   }
 });
 
-test("usage: --import-ccusage flag-guards reject bad combinations", async () => {
-  const cfg = cfgDir("usage-import");
-  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
-  // --include-imported alongside the import itself is a flag error.
-  const both = await runCli(["usage", "--import-ccusage", "-", "--include-imported"], base);
-  assert.notEqual(both.code, 0);
-  // --metrics / --range with the import is a flag error.
-  const mixed = await runCli(["usage", "--import-ccusage", "-", "--metrics"], base);
-  assert.notEqual(mixed.code, 0);
-});
-
 test("usage: --by session renders the sessionization annotation; mixed currencies stay apart", async () => {
   const cfg = cfgDir("usage-session");
   await seedStore(cfg, rows());
