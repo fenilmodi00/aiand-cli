@@ -37,11 +37,23 @@ test("parsePairs: minimum count, bad specs, and good pairs", async () => {
   // Malformed specs name the offending value.
   assert.throws(() => parsePairs(["nonsense"], MODELS, 1), /Invalid --pair value "nonsense"/);
   assert.throws(() => parsePairs(["harness=claude-code"], MODELS, 1), /Invalid --pair value/);
-  assert.throws(() => parsePairs(["model=zai-org/glm-5.3"], MODELS, 1), /Invalid --pair value/);
-  // Unknown layout is rejected with the valid list.
+  // Unknown layout is rejected with the valid list and the omit-harness hint.
   assert.throws(
     () => parsePairs(["harness=ghost,model=zai-org/glm-5.3"], MODELS, 1),
-    /Unknown harness layout "ghost"/,
+    (error) => {
+      assert.match(error.message, /Unknown harness layout "ghost"/);
+      assert.match(error.hint, /claude-code.*omp/s);
+      assert.match(error.hint, /omit harness=/);
+      return true;
+    },
+  );
+  // Omitting harness= uses the default layout; harness=default is NOT one.
+  assert.deepEqual(parsePairs(["model=zai-org/glm-5.3"], MODELS, 1), [
+    { harness: "omp", model: "zai-org/glm-5.3" },
+  ]);
+  assert.throws(
+    () => parsePairs(["harness=default,model=zai-org/glm-5.3"], MODELS, 1),
+    /Unknown harness layout "default"/,
   );
   // Unknown model (against the known list) is rejected but overridable.
   assert.throws(
@@ -93,21 +105,23 @@ test("duel CLI: shape-source, turns-cap, format, and pair-count errors", async (
   const neither = await runCli(["harness", "duel", "--yes"], base);
   assert.notEqual(neither.code, 0);
   assert.match(neither.stderr, /exactly one shape source/i);
+  // ALL unmet requirements are reported at once, not one at a time.
+  assert.match(neither.stderr, /at least 2 --pair values are required/);
 
   const both = await runCli(
     ["harness", "duel", "--session", "abc", "--scenario", "multi-turn-refactor", "--yes"],
     base,
   );
   assert.notEqual(both.code, 0);
-  assert.match(both.stderr, /exactly one shape source/i);
+  assert.match(both.stderr, /mutually exclusive/i);
 
-  // --turns-cap must be positive.
+  // --turns-cap must be positive (reported in the combined requirements message).
   const cap = await runCli(
     ["harness", "duel", "--scenario", "multi-turn-refactor", "--turns-cap", "0", "--yes"],
     base,
   );
   assert.notEqual(cap.code, 0);
-  assert.match(cap.stderr, /--turns-cap/);
+  assert.match(cap.stderr, /--turns-cap must be a positive number/);
 
   // --format must be one of the three.
   const format = await runCli(
@@ -118,19 +132,11 @@ test("duel CLI: shape-source, turns-cap, format, and pair-count errors", async (
 
   // --pair count enforced before any request leaves (needs a shape source).
   const pairs = await runCli(
-    [
-      "harness",
-      "duel",
-      "--scenario",
-      "multi-turn-refactor",
-      "--pair",
-      "harness=a,model=x",
-      "--yes",
-    ],
+    ["harness", "duel", "--scenario", "multi-turn-refactor", "--yes"],
     base,
   );
   assert.notEqual(pairs.code, 0);
-  assert.match(pairs.stderr, /At least 2 --pair/);
+  assert.match(pairs.stderr, /at least 2 --pair values are required/);
 
   // Unknown session id (with valid pairs) is a clean error, never a hang.
   const missing = await runCli(
@@ -151,10 +157,72 @@ test("duel CLI: shape-source, turns-cap, format, and pair-count errors", async (
   assert.notEqual(missing.code, 0);
   assert.match(missing.stderr, /No session with id/);
 
-  // Help renders both verbs.
+  // An unknown layout name is rejected with the valid list + omit-harness hint,
+  // before any request leaves.
+  const badLayout = await runCli(
+    [
+      "harness",
+      "duel",
+      "--scenario",
+      "multi-turn-refactor",
+      "--pair",
+      "harness=default,model=zai-org/glm-5.3",
+      "--pair",
+      "harness=omp,model=zai-org/glm-5.3",
+      "--yes",
+    ],
+    base,
+  );
+  assert.notEqual(badLayout.code, 0);
+  assert.match(badLayout.stderr, /Unknown harness layout "default"/);
+  assert.match(badLayout.stderr, /omit harness=/);
+
+  // Help renders both verbs, every valid layout, and the turn-limiting flag.
   const help = await runCli(["harness", "duel", "--help"], base);
   assert.equal(help.code, 0);
   assert.ok(help.stdout.includes("harness duel"));
+  for (const layout of [
+    "claude-code",
+    "omp",
+    "rebuilt-system",
+    "compacting",
+    "reordered",
+    "reordered-stable",
+  ]) {
+    assert.ok(help.stdout.includes(layout), `help names layout ${layout}`);
+  }
+  assert.match(help.stdout, /--turns-cap/);
+});
+
+// ---------------------------------------------------------------------------
+// harness latency: layout errors and help through the CLI
+// ---------------------------------------------------------------------------
+
+test("latency CLI: unknown layout names the valid layouts and the default hint; help lists them", async () => {
+  const cfg = cfgDir("latency-flags");
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+
+  const badLayout = await runCli(
+    ["harness", "latency", "--pair", "harness=default,model=zai-org/glm-5.3", "--no-sync"],
+    base,
+  );
+  assert.notEqual(badLayout.code, 0);
+  assert.match(badLayout.stderr, /Unknown harness layout "default"/);
+  assert.match(badLayout.stderr, /Valid layouts:/);
+  assert.match(badLayout.stderr, /omit harness=/);
+
+  const help = await runCli(["harness", "latency", "--help"], base);
+  assert.equal(help.code, 0);
+  for (const layout of [
+    "claude-code",
+    "omp",
+    "rebuilt-system",
+    "compacting",
+    "reordered",
+    "reordered-stable",
+  ]) {
+    assert.ok(help.stdout.includes(layout), `help names layout ${layout}`);
+  }
 });
 
 // ---------------------------------------------------------------------------

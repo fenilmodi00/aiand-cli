@@ -1,8 +1,9 @@
 import type { Session } from "../api/client.js";
+import { CliError } from "../cli/errors.js";
 import { percentile } from "../obs/harness-stats.js";
-import { type DuelPair, measureTransport } from "./duel.js";
+import { DEFAULT_PAIR_LAYOUT, type DuelPair, measureTransport } from "./duel.js";
 import { type BenchScenario, type RunBenchOptions, runHarnessBenchmark } from "./harness-bench.js";
-import { findHarnessLayout } from "./harness-layouts.js";
+import { findHarnessLayout, HARNESS_LAYOUTS } from "./harness-layouts.js";
 
 /**
  * The latency/TTFT A/B (feature catalog D3, ticket #82).
@@ -85,7 +86,11 @@ export async function runLatency(options: RunLatencyOptions): Promise<LatencyPai
   for (const pair of options.pairs) {
     const layout = findHarnessLayout(pair.harness);
     if (!layout) {
-      throw new Error(`Unknown harness layout "${pair.harness}".`);
+      throw new CliError(`Unknown harness layout "${pair.harness}".`, {
+        hint:
+          `Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}. ` +
+          `Or omit harness= (--pair model=<model>) to use the default layout "${DEFAULT_PAIR_LAYOUT}".`,
+      });
     }
     const transport = measureTransport(options.fetchImpl ?? fetch, {
       now: options.now,

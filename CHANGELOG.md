@@ -9,6 +9,15 @@ breaking changes while the command surface settles.
 
 
 ### Fixed
+- `harness latency` / `harness duel` flag UX: an unknown layout in
+  `--pair harness=...` (the natural first guess `harness=default` included)
+  now names every valid layout AND suggests omitting `harness=`
+  (`--pair model=<model>`) to use the default layout `omp` — which is now a
+  supported shorthand. Both commands' `--help` list every valid layout, and
+  `harness duel --help` names `--turns-cap` as the flag that limits replayed
+  turns (there is no `--turns`). `harness duel` reports ALL unmet argument
+  requirements (shape source conflict, pair count) in one error instead of
+  one at a time.
 - Live-gateway sandbox testing of every command on this branch surfaced three
   defects, now fixed and regression-tested. `config get
   mcp.realProjectNames` was rejected as "not a gettable key" even though

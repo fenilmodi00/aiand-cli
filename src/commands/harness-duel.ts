@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
 import {
+  DEFAULT_PAIR_LAYOUT,
   type DuelMetricRow,
   type DuelPair,
   type DuelPairResult,
@@ -14,6 +15,7 @@ import {
   mulberry32,
   pairLabel,
   parsePairs,
+  parsePairsChecked,
   resolveBaseline,
   runDuel,
   shapeSourceFooter,
@@ -21,6 +23,7 @@ import {
   truncationNote,
 } from "../benchmark/duel.js";
 import type { BenchScenario } from "../benchmark/harness-bench.js";
+import { HARNESS_LAYOUTS } from "../benchmark/harness-layouts.js";
 import { HARNESS_AGENT_ALIASES, historicalTtft, runLatency } from "../benchmark/latency-ab.js";
 import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { loadSavedSweep } from "../benchmark/sweep-store.js";
@@ -95,21 +98,31 @@ export async function runHarnessDuel(argv: string[]): Promise<void> {
 
   const sessionId = str(parsed, "session");
   const scenarioId = str(parsed, "scenario");
-  if (Boolean(sessionId) === Boolean(scenarioId)) {
-    throw new CliError("Pick exactly one shape source: --session <id> or --scenario <id>.", {
-      hint: "Session ids come from `aiand sessions --json`; scenario ids from `aiand harness --list-scenarios`.",
+  const problems: string[] = [];
+  if (sessionId && scenarioId) {
+    problems.push("--session and --scenario are mutually exclusive (pick one shape source)");
+  } else if (!sessionId && !scenarioId) {
+    problems.push(
+      "pick exactly one shape source: --session <id> (store sessions) or --scenario <id> (`aiand harness --list-scenarios`)",
+    );
+  }
+  const pairs = parsePairsChecked(list(parsed, "pair"), await knownModels());
+  if (pairs.length < 2) {
+    problems.push(`at least 2 --pair values are required — got ${pairs.length}`);
+  }
+  const turnsCapRaw = int(parsed, "turns-cap");
+  if (turnsCapRaw !== undefined && turnsCapRaw < 1) {
+    problems.push(`--turns-cap must be a positive number — got ${turnsCapRaw}`);
+  }
+  if (problems.length > 0) {
+    throw new CliError(`Invalid arguments:\n${problems.map((p) => `  - ${p}`).join("\n")}`, {
+      hint: "Example: aiand harness duel --session <id> --pair harness=claude-code,model=M --pair harness=omp,model=M",
     });
   }
   const seed = int(parsed, "seed") ?? 0;
-  const turnsCap = int(parsed, "turns-cap") ?? DEFAULT_TURNS_CAP;
-  if (turnsCap < 1) {
-    throw new CliError(`Invalid --turns-cap value: ${turnsCap}.`, {
-      hint: "Use a positive number.",
-    });
-  }
+  const turnsCap = turnsCapRaw ?? DEFAULT_TURNS_CAP;
   const format = oneOf(parsed, "format", ["table", "json", "markdown"], "table");
 
-  const pairs = parsePairs(list(parsed, "pair"), await knownModels());
   const baselineIndex = resolveBaseline(str(parsed, "baseline"), pairs);
 
   // -- shape source ----------------------------------------------------------
@@ -503,10 +516,14 @@ Usage
 Options
   --session <id>      replay this store session's SHAPE (turns + token growth curve)
   --scenario <id>     replay a synthetic scenario instead (exactly one of the two)
-  --pair <spec>       harness=<layout>,model=<model>; repeatable, 2+ required
+  --pair <spec>       harness=<layout>,model=<model>; repeatable, 2+ required.
+                      Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}.
+                      Omit harness= (--pair model=<model>) to use the default
+                      layout "${DEFAULT_PAIR_LAYOUT}".
   --baseline <i|spec> 1-based pair index or harness=X,model=Y (default: the first pair)
   --seed <n>          filler PRNG seed (default 0; printed with the output)
-  --turns-cap <n>     cap on replayed turns for huge sessions (default ${DEFAULT_TURNS_CAP})
+  --turns-cap <n>     cap on replayed turns for huge sessions (default ${DEFAULT_TURNS_CAP});
+                      this is the flag that limits replayed turns (there is no --turns)
   --format <fmt>      table (default) | json | markdown
   --save <path>       write the comparison (markdown, or json with --format json)
   --yes               skip the billed-request confirmation (scripts)
@@ -528,7 +545,10 @@ Usage
   aiand harness latency --pair ... --last 30d --json
 
 Options
-  --pair <spec>       harness=<layout>,model=<model>; repeatable
+  --pair <spec>       harness=<layout>,model=<model>; repeatable.
+                      Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}.
+                      Omit harness= (--pair model=<model>) to use the default
+                      layout "${DEFAULT_PAIR_LAYOUT}".
   --turns <n>         turns per pair (default 10)
   --since <iso>       historical window start (interpreted in --timezone)
   --until <iso>       historical window end

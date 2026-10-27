@@ -139,9 +139,14 @@ describe("pair parsing", () => {
         assert.match(error.message, /bogus/);
         assert.match(error.hint, /claude-code/);
         assert.match(error.hint, /known\/model/);
+        assert.match(error.hint, /omit harness=/);
         return true;
       },
     );
+  });
+
+  test("a --pair without harness= falls back to the default layout", () => {
+    assert.deepEqual(parsePair("model=test/model", []), { harness: "omp", model: "test/model" });
   });
 
   test("an unknown model with a known catalog lists the models", () => {

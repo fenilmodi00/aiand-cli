@@ -35,22 +35,27 @@ import { findHarnessLayout, HARNESS_LAYOUTS } from "./harness-layouts.js";
 /** One (harness layout, model) configuration under comparison. */
 export type DuelPair = { harness: string; model: string };
 
-/** A `--pair harness=X,model=Y` value parsed and validated. */
+/** The layout used when a --pair omits `harness=`. */
+export const DEFAULT_PAIR_LAYOUT = "omp";
+
 export function parsePair(value: string, knownModels: readonly string[]): DuelPair {
-  const harness = /^harness=([^,]+),/.exec(value)?.[1];
-  const model = /,model=(.+)$/.exec(value)?.[1];
-  if (!harness || !model) {
+  const harness = /^harness=([^,]+),/.exec(value)?.[1] ?? DEFAULT_PAIR_LAYOUT;
+  const model = /(?:^|,)model=(.+)$/.exec(value)?.[1];
+  if (!model) {
     throw new CliError(`Invalid --pair value "${value}".`, {
-      hint: "Use --pair harness=<layout>,model=<model>, e.g. --pair harness=claude-code,model=zai-org/glm-5.3.",
+      hint: "Use --pair harness=<layout>,model=<model> (or --pair model=<model> for the default layout), e.g. --pair harness=claude-code,model=zai-org/glm-5.3.",
     });
   }
   if (!findHarnessLayout(harness)) {
     throw new CliError(`Unknown harness layout "${harness}" in --pair.`, {
-      hint: `Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}. Known models: ${
-        knownModels.length > 0
-          ? knownModels.join(", ")
-          : "(none known yet — sync the store or run a sweep)"
-      }.`,
+      hint:
+        `Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}. ` +
+        `Or omit harness= (--pair model=<model>) to use the default layout "${DEFAULT_PAIR_LAYOUT}". ` +
+        `Known models: ${
+          knownModels.length > 0
+            ? knownModels.join(", ")
+            : "(none known yet — sync the store or run a sweep)"
+        }.`,
     });
   }
   if (knownModels.length > 0 && !knownModels.includes(model)) {
@@ -73,6 +78,14 @@ export function parsePairs(
       hint: "Example: --pair harness=claude-code,model=A --pair harness=omp,model=A",
     });
   }
+  return values.map((value) => parsePair(value, knownModels));
+}
+
+/** Like parsePairs but without the count requirement (duel counts pairs itself, so it can report every unmet requirement at once). */
+export function parsePairsChecked(
+  values: readonly string[],
+  knownModels: readonly string[],
+): DuelPair[] {
   return values.map((value) => parsePair(value, knownModels));
 }
 
@@ -361,7 +374,9 @@ export async function runDuel(options: RunDuelOptions): Promise<DuelRun> {
     const layout = findHarnessLayout(pair.harness);
     if (!layout) {
       throw new CliError(`Unknown harness layout "${pair.harness}".`, {
-        hint: `Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}.`,
+        hint:
+          `Valid layouts: ${HARNESS_LAYOUTS.map((l) => l.id).join(", ")}. ` +
+          `Or omit harness= (--pair model=<model>) to use the default layout "${DEFAULT_PAIR_LAYOUT}".`,
       });
     }
     const transport = measureTransport(options.fetchImpl ?? fetch, {
