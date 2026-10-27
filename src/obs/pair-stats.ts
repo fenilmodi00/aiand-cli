@@ -1,9 +1,9 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { sessionizeRows } from "../store/sessions.js";
 import {
+  type ExcludedMixedAggregate,
   errorCount,
   excludedMixedAggregate,
-  type ExcludedMixedAggregate,
   type HarnessRequestRow,
   type HarnessStatsOptions,
   percentile,

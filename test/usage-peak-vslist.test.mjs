@@ -499,9 +499,7 @@ describe("usage --show-windows / --sections peak / --vs-list", () => {
 
   test("--vs-list never guesses: models the bundled snapshot lacks stay unpriced", async () => {
     const dir = freshDir("vs-list-unpriced");
-    await seedStore(dir, [
-      row("2026-10-05T07:00:00Z", { model: "some-vendor/mystery-x" }),
-    ]);
+    await seedStore(dir, [row("2026-10-05T07:00:00Z", { model: "some-vendor/mystery-x" })]);
     await withStoreEnv(dir, async () => {
       const shown = await runCli(["usage", "--vs-list"]);
       assert.equal(shown.code, 0);

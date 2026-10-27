@@ -93,7 +93,10 @@ test("own-key traffic on a fresh store shows as aiand-cli, not unknown", async (
   // The mapping persisted into agent-keys.json for every later read.
   const { listAgentKeys, agentForMaskedKey } = await import("../dist/api/agent-keys.js");
   await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
-    assert.deepEqual(listAgentKeys().map((k) => k.agent), ["aiand-cli"]);
+    assert.deepEqual(
+      listAgentKeys().map((k) => k.agent),
+      ["aiand-cli"],
+    );
     assert.equal(agentForMaskedKey(maskKey(CLI_KEY)), "aiand-cli");
   });
 });

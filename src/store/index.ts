@@ -522,9 +522,7 @@ export async function sweepNativeAgentKeys(session?: Session): Promise<void> {
     // here would close a store→agents→store cycle (same pattern as
     // src/api/client.ts's rebake import).
     const { AGENTS } = await import("../agents/registry.js");
-    const { recordNativeAgentKeys, recordSelfAgentKey } = await import(
-      "../api/agent-keys.js"
-    );
+    const { recordNativeAgentKeys, recordSelfAgentKey } = await import("../api/agent-keys.js");
     // OBS-LT-1 (#106): the CLI's own traffic must attribute even with an
     // empty agent map — the key this session authenticates with is known
     // locally, so self-record it alongside the adapter sweep. Agents wired

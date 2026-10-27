@@ -193,10 +193,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
  * provenance as the pair costs, never folded into them. One definition,
  * shared by stats, compare, and matrix. Empty when nothing was excluded.
  */
-export function excludedMixedLine(
-  agg: ExcludedMixedAggregate,
-  noCost: boolean,
-): string | null {
+export function excludedMixedLine(agg: ExcludedMixedAggregate, noCost: boolean): string | null {
   if (agg.sessions === 0) return null;
   const cost =
     noCost || agg.cost === null
