@@ -77,6 +77,18 @@ breaking changes while the command surface settles.
   built on them) are the only envelope path and are unchanged.
 
 ### Fixed
+- Session-launched agents (`aiand <agent> --session`, `aiand run-agent`)
+  now record their key→agent mapping at launch, so the gateway's request
+  rows land under the agent's harness in `dashboard`, `usage`, and
+  `harness stats`. Before, a session launch ran on the CLI's own session
+  key without recording a mapping; the sync sweep labeled that key
+  `aiand-cli`, and every request the agent made was attributed to
+  aiand-cli instead of the agent (observed: an omp session's glm-5.3
+  traffic counted under aiand-cli). The persistent `on` path already
+  recorded it; the session path now does too. Existing machines repair
+  themselves at the next session launch, or once per agent with
+  `aiand <agent> on`; past rows re-label instantly because attribution
+  is a read-time key lookup, not a stored column.
 - Picking a command in the interactive menu no longer prints its title
   twice — the `▌` heading owns the command title and the spinner below
   it now shows a generic "Working..." instead of repeating the summary

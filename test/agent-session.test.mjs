@@ -192,6 +192,38 @@ describe("aiand <agent> --session", () => {
     }
   });
 
+  test("a session launch records the agent's key so attribution labels it", async () => {
+    const state = captureDir();
+    try {
+      // The stub exits 42 and runAgentBinary propagates it via
+      // process.exitCode in-process; reset so the test file itself doesn't
+      // exit 42 after passing.
+      let failure;
+      try {
+        await inProcess("claude", ["--session", "--version"], state);
+      } catch (error) {
+        failure = error;
+      } finally {
+        process.exitCode = 0;
+      }
+      assert.equal(failure, undefined, "the session launch threw");
+      // The session ran on the env key; the map must remember claude → that
+      // key, or the sync sweep self-records the same session key as
+      // aiand-cli and every session-launched request is attributed to
+      // aiand-cli. The read sits in a fresh withEnv because inProcess
+      // restored AIAND_CONFIG_DIR on its way out.
+      await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+        const { listAgentKeys, maskKey } = await import("../dist/api/agent-keys.js");
+        const entry = listAgentKeys().find(
+          (k) => k.agent === "claude" && k.masked === maskKey(FAKE_API_KEY),
+        );
+        assert.ok(entry, "claude → session-key mapping missing from agent-keys.json");
+      });
+    } finally {
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
   test("an adapter without sessionLaunch is refused with a clear error", async () => {
     const state = captureDir();
     let thrown;

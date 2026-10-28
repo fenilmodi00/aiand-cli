@@ -257,6 +257,13 @@ export async function agentSession(
   // SessionLaunch with `model` if the JSON report must match exactly.
   const model = opts.model ?? resolveDefault(catalog, profile.model);
 
+  // Remember which key this session launch hands the agent, same as the
+  // persistent `on` path: without it the sync sweep self-records the same
+  // session key as aiand-cli and every request the agent makes is
+  // attributed to aiand-cli instead of the agent. Best-effort: attribution
+  // must never break a launch.
+  await recordAgentKey(adapter.id, session.key).catch(() => {});
+
   // Child env = inherited, plus the adapter's own injection; the adapter's
   // injection carries the key, so the spawn env starts scrubbed.
   const env: NodeJS.ProcessEnv = { ...process.env };
