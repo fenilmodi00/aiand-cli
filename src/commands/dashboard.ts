@@ -219,26 +219,29 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   // One fail-open sync before the first read; the loop itself is offline.
+  // The interactive TUI paints first from the local store and refreshes in
+  // place when the background sync lands; the piped/--no-tui path still waits
+  // so the report's meta carries the sync outcome.
   const skipSync = bool(parsed, "no-sync") || noSyncRequested();
-  let sync: SyncOutcome | null;
-  if (skipSync) {
-    sync = { skipped: true };
-  } else {
+  const syncOutcome = async (): Promise<SyncOutcome> => {
+    if (skipSync) return { skipped: true };
     try {
       const session = await openSession(resolveProfile(str(parsed, "profile")));
       const result = await syncStore(session);
-      sync = result.ok ? { ok: true } : { ok: false, error: result.error };
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
     } catch (error) {
-      sync = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
-  }
+  };
 
   const showCost = !bool(parsed, "no-cost");
   const models = list(parsed, "model");
   const initialHarness = str(parsed, "harness") ?? null;
 
-  // Non-interactive: the plain-text overview, then exit (no hang).
+  // Non-interactive: the plain-text overview, then exit (no hang). This path
+  // waits on the sync before the read so meta can report the outcome.
   if (bool(parsed, "no-tui") || process.stdout.isTTY !== true) {
+    const sync = await syncOutcome();
     const now = new Date();
     const window = resolveWindow(
       {
@@ -278,7 +281,10 @@ export async function run(argv: string[]): Promise<void> {
     initialHarness,
     showCost,
     refreshMs,
-    sync,
+    sync: { skipped: true },
+    // Paint-first: the TUI renders from the local store immediately; this
+    // resolves the real sync in the background and refreshes in place.
+    initialSync: skipSync ? undefined : syncOutcome(),
   });
 }
 
@@ -295,6 +301,12 @@ export type DashboardUiOptions = {
   showCost: boolean;
   refreshMs: number;
   sync: SyncOutcome | null;
+  /**
+   * Paint-first: a pending background gateway sync. When provided, the TUI
+   * draws its first frame from the local store immediately, then awaits this
+   * before the first interval tick and refreshes in place with the outcome.
+   */
+  initialSync?: Promise<SyncOutcome>;
   /** Overrides Date.now() — tests pin time. */
   now?: Date;
   /** Injected report loader (tests); defaults to the real store read. */
@@ -511,6 +523,16 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
         draw();
       }, options.refreshMs);
       timer.unref?.();
+
+      // Paint-first: when the background sync lands, fold the outcome in and
+      // redraw in place. Guarded on the timer so a resolve after quit (timer
+      // cleared by stop()) never paints over a restored terminal.
+      options.initialSync?.then((outcome) => {
+        if (timer === null) return;
+        options.sync = outcome;
+        refresh();
+        draw();
+      });
     });
   } finally {
     stop();

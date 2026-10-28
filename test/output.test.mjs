@@ -12,6 +12,7 @@ const {
   _setColorEnabled,
   clipToWidth,
   spinner,
+  out,
 } = await import("../dist/cli/output.js");
 
 function capture(fn) {
@@ -220,7 +221,57 @@ describe("spinner", () => {
       });
     }
     assert.match(chunks.join(""), /working/);
+    assert.match(chunks.join(""), /\r\x1b\[2K/, "each frame clears the line first");
+    assert.match(chunks.join(""), /\x1b\[\?25l/, "cursor hidden while spinning");
+    assert.match(chunks.join(""), /\x1b\[\?25h/, "stop shows the cursor");
     assert.match(chunks.join(""), /2K/, "stop clears the line");
+  });
+
+  test("payload written during a spinner lands below it, spinner redraws after", async () => {
+    const chunks = [];
+    const originalErr = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    const originalOut = process.stdout.write;
+    const outChunks = [];
+    process.stdout.write = (chunk) => {
+      outChunks.push(String(chunk));
+      return true;
+    };
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    try {
+      const spin = spinner("working");
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      out("payload");
+      spin.stop();
+    } finally {
+      process.stderr.write = originalErr;
+      process.stdout.write = originalOut;
+      Object.defineProperty(process.stderr, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+    const stream = chunks.join("");
+    // A frame ran, then the payload suspended the spinner: clear + newline.
+    assert.match(stream, /\r\x1b\[2K\n/);
+    // After that clear, exactly one frame redraw follows (before stop's clear).
+    const afterPayload = stream.slice(stream.search(/\r\x1b\[2K\n/));
+    const redraws = afterPayload
+      .slice(0, afterPayload.lastIndexOf("\r\x1b[2K"))
+      .match(/⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/g);
+    assert.equal(redraws.length, 1, "spinner redraws exactly once after the payload");
+    // The spec reporter shares stdout, so only the payload's presence and
+    // integrity can be asserted, not exclusive ownership of the stream.
+    // out() terminates with EOL (\r\n on Windows), so match the payload text.
+    assert.ok(
+      outChunks.some((c) => c.startsWith("payload")),
+      "payload printed on stdout, untouched",
+    );
+    assert.match(stream, /\x1b\[\?25h/, "stop shows the cursor");
   });
 });
 

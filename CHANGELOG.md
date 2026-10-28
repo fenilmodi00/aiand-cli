@@ -45,6 +45,13 @@ breaking changes while the command surface settles.
   a command — animates a spinner on stderr while it works, except the
   terminal-owning commands (`dashboard`, `chat`, `mcp`, `run-agent`), and
   the spinner always clears before the agent binary inherits the terminal.
+- The interactive dashboard paints its first frame immediately from the local
+  store and refreshes in place when the background gateway sync lands,
+  instead of blocking on the network before anything shows.
+- Gateway/API requests now time out after 10 seconds instead of hanging until
+  the OS gives up (measured 11s+ on unroutable hosts). Status and other
+  networked commands also skip re-importing the agent adapter graph on every
+  sync call (~100ms per sync back to the caller).
 
 ### Added
 - The bundled list-price snapshot (`bundled@2026-10-28`) now prices the

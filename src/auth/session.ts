@@ -2,7 +2,6 @@ import type { Session } from "../api/client.js";
 import { openSession } from "../api/client.js";
 import { NotLoggedInError } from "../cli/errors.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
-import * as login from "../commands/login.js";
 import { resolveProfile } from "../config.js";
 
 export type ResolvedSession = {
@@ -25,6 +24,10 @@ export async function requireSessionKey(profileOverride?: string): Promise<Resol
     const wantsLogin = await confirm("Not signed in. Run aiand login now?", { default: true });
     if (!wantsLogin) throw error;
 
+    // Lazy: login pulls the menu/menu-items chain (~84ms) that every other
+    // requireSessionKey consumer pays for statically; load it only on the
+    // actual prompt path.
+    const login = await import("../commands/login.js");
     await login.run(profileOverride ? ["--profile", profileOverride] : []);
     return toKey(await openSession(profile));
   }

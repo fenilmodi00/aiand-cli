@@ -1,4 +1,3 @@
-import { AGENTS } from "../agents/registry.js";
 import { type AgentStatusResult, agentStatus } from "../agents/setup.js";
 import { openSession } from "../api/client.js";
 import { authStatus } from "../auth/identity.js";
@@ -120,6 +119,12 @@ export async function run(argv: string[]): Promise<void> {
     return runObservability(parsed, { format, writeState, watch });
   }
 
+  // Lazy: the adapter graph costs ~100ms to load. Dynamic import is the
+  // deliberate point — a static import here would pull the whole adapter
+  // graph into every status run (including --json/statusline paths that
+  // skip the agents section) and re-create the store→agents→store cycle
+  // the rest of this codebase avoids (see src/store/index.ts).
+  const { AGENTS } = await import("../agents/registry.js");
   const [auth, agents] = await Promise.all([
     authStatus({
       profile: str(parsed, "profile"),
@@ -141,14 +146,14 @@ export async function run(argv: string[]): Promise<void> {
     // not false-fail during an outage. The key is unverified, not absent.
     out(style.yellow("Gateway unreachable."));
     err(style.dim("Check your network and retry."));
-    printAgents(agents);
+    await printAgents(agents);
     return;
   }
 
   if (!auth.signed_in) {
     out(style.yellow("Not signed in."));
     err(style.dim("Run `aiand login` first."));
-    printAgents(agents);
+    await printAgents(agents);
     process.exitCode = EXIT.ERROR;
     return;
   }
@@ -163,7 +168,7 @@ export async function run(argv: string[]): Promise<void> {
   ]);
 
   printStatusline();
-  printAgents(agents);
+  await printAgents(agents);
 }
 
 /**
@@ -324,21 +329,31 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function printAgents(agents: AgentStatusResult[]): void {
+async function printAgents(agents: AgentStatusResult[]): Promise<void> {
   if (agents.length === 0) return;
   out("");
+  // Table cell values are sync strings, so resolve any install hints first.
+  const installHints = new Map<string, string>();
+  for (const a of agents) {
+    if (!a.installed) installHints.set(a.agent, await installCmd(a));
+  }
   table(agents, [
     { header: "agent", value: (a) => a.agent },
     { header: "state", value: (a) => stateLabel(a.state) },
     { header: "model", value: (a) => a.model ?? "—" },
     {
       header: "binary",
-      value: (a) => (a.installed ? (a.binary ?? "yes") : style.dim(`install: ${installCmd(a)}`)),
+      value: (a) =>
+        a.installed
+          ? (a.binary ?? "yes")
+          : style.dim(`install: ${installHints.get(a.agent) ?? ""}`),
     },
   ]);
 }
 
-function installCmd(a: AgentStatusResult): string {
+async function installCmd(a: AgentStatusResult): Promise<string> {
+  // Lazy: same adapter-graph deferral as the agents section above.
+  const { AGENTS } = await import("../agents/registry.js");
   const adapter = AGENTS.find((entry) => entry.id === a.agent);
   return adapter?.install.command ?? "";
 }

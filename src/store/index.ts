@@ -8,6 +8,9 @@ import { ApiError } from "../cli/errors.js";
 import { configDir, PRIVATE_DIR_MODE, withFileLock } from "../fsutil.js";
 import { MIGRATIONS } from "./migrations/index.js";
 
+type RegistryModule = typeof import("../agents/registry.js");
+type AgentKeysModule = typeof import("../api/agent-keys.js");
+
 /**
  * Parse a gateway `created_at` into epoch ms. The gateway serves its verbatim
  * wire format (`2026-10-26 05:02:11.844519+00` — space separator, `+00`
@@ -501,6 +504,18 @@ const SYNC_RANGE = "30days";
 /** Re-fetch this far behind the watermark; INSERT OR IGNORE dedupes. */
 const OVERLAP_MS = 5 * 60 * 1000;
 
+/** Memoized dynamic imports for sweepNativeAgentKeys (see cycle comment below). */
+let sweepImports: Promise<[RegistryModule, AgentKeysModule]> | null = null;
+function loadSweepImports(): Promise<[RegistryModule, AgentKeysModule]> {
+  if (sweepImports === null) {
+    sweepImports = Promise.all([
+      import("../agents/registry.js"),
+      import("../api/agent-keys.js"),
+    ]) as Promise<[RegistryModule, AgentKeysModule]>;
+  }
+  return sweepImports;
+}
+
 /**
  * Refresh every adapter's NATIVE key mappings (keys in an agent's own
  * credential store that this CLI never baked) into the local key map, so
@@ -515,9 +530,9 @@ export async function sweepNativeAgentKeys(session?: Session): Promise<void> {
     // Dynamic: agents/registry statically imports store consumers
     // (envelope-capture) and agent-keys imports config — a static import
     // here would close a store→agents→store cycle (same pattern as
-    // src/api/client.ts's rebake import).
-    const { AGENTS } = await import("../agents/registry.js");
-    const { recordNativeAgentKeys, recordSelfAgentKey } = await import("../api/agent-keys.js");
+    // src/api/client.ts's rebake import). Memoized: module resolution is
+    // wasted work on every syncStore call otherwise.
+    const [{ AGENTS }, { recordNativeAgentKeys, recordSelfAgentKey }] = await loadSweepImports();
     // OBS-LT-1 (#106): the CLI's own traffic must attribute even with an
     // empty agent map — the key this session authenticates with is known
     // locally, so self-record it alongside the adapter sweep. Agents wired

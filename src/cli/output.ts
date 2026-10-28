@@ -54,16 +54,36 @@ export function currencySymbol(currency: string | null | undefined): string {
   return (currency && CURRENCY_SYMBOL[currency]) ?? "";
 }
 
+/**
+ * While a spinner runs, every payload write must coordinate with it: clear
+ * the spinner line, print below it, let the spinner redraw underneath —
+ * otherwise frames and output glue into one broken line.
+ */
+let activeSpinner: { suspend(): void; resume(): void } | null = null;
+
+function writeCoordinated(write: () => void): void {
+  if (!activeSpinner) {
+    write();
+    return;
+  }
+  activeSpinner.suspend();
+  try {
+    write();
+  } finally {
+    activeSpinner.resume();
+  }
+}
+
 export function out(line = ""): void {
-  process.stdout.write(line + EOL);
+  writeCoordinated(() => process.stdout.write(line + EOL));
 }
 
 export function err(line = ""): void {
-  process.stderr.write(line + EOL);
+  writeCoordinated(() => process.stderr.write(line + EOL));
 }
 
 export function json(value: unknown): void {
-  process.stdout.write(JSON.stringify(value, null, 2) + EOL);
+  writeCoordinated(() => process.stdout.write(JSON.stringify(value, null, 2) + EOL));
 }
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -245,14 +265,26 @@ export function spinner(text: string): { stop: (final?: string) => void } {
   }
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let i = 0;
+  const frame = () => `${style.cyan(frames[i++ % frames.length]!)} ${text}`;
+  process.stderr.write(`\x1b[?25l`);
   const timer = setInterval(() => {
-    process.stderr.write(`\r${style.cyan(frames[i++ % frames.length]!)} ${text}`);
+    process.stderr.write(`\r${ESC}2K${frame()}`);
   }, SPINNER_FRAME_MS);
   timer.unref();
+  const stop = () => {
+    activeSpinner = null;
+    clearInterval(timer);
+    process.stderr.write(`\r${ESC}2K\x1b[?25h`);
+  };
+  activeSpinner = {
+    // Clear the spinner line and move to a fresh line below for the payload.
+    suspend: () => process.stderr.write(`\r${ESC}2K\n`),
+    // The cursor is already on a fresh line; redraw the spinner beneath the payload.
+    resume: () => process.stderr.write(frame()),
+  };
   return {
     stop: (final?: string) => {
-      clearInterval(timer);
-      process.stderr.write(`\r${ESC}2K`);
+      stop();
       if (final) err(final);
     },
   };

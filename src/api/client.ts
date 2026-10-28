@@ -271,31 +271,41 @@ export async function publicRequest(url: string, init: RequestInit = {}): Promis
   return fetchOrFail(url, { ...rest, headers: merged });
 }
 
+/** Hard cap on gateway round-trips: an unroutable host otherwise hangs ~11s+ (OS TCP give-up). */
+const FETCH_TIMEOUT_MS = 10_000;
+
 async function fetchOrFail(url: string, init: RequestInit): Promise<Response> {
+  // Explicit caller signals win; otherwise apply the module timeout.
+  const signal = init.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS);
   try {
-    return await fetch(url, init);
+    return await fetch(url, { ...init, signal });
   } catch (cause) {
     if (cause instanceof Error && cause.name === "AbortError") {
-      throw cancelled();
+      // A caller-provided signal aborting is a user Esc — propagate as
+      // cancelled(). A timeout abort is indistinguishable by name (same
+      // AbortError, TimeoutError cause), so only init.signal counts.
+      if (init.signal?.aborted) throw cancelled();
+      throw unreachable(url, "timed out after 10s");
     }
-    // Undici interpolates the request URL into its refusal reasons, so a
-    // credential-embedded base URL would echo userinfo here: scrub the
-    // `://user:pass@` run out of the reason. The origin below never
-    // carries userinfo (WHATWG origin is scheme + host + port), so only
-    // the reason needs scrubbing; the replacement names the redaction so
-    // a scrubbed message is recognizable as one.
-    const reason = (cause instanceof Error ? cause.message : String(cause)).replace(
-      /\/\/[^/@\s]+@/g,
-      "//[redacted]@",
-    );
-    throw new ApiError(
-      SYNTHETIC_STATUS.UNREACHABLE,
-      `Could not reach ${new URL(url).origin}: ${reason}`,
-      {
-        hint: "Check your network, or point at another environment with --base-url / AIAND_BASE_URL.",
-      },
-    );
+    throw unreachable(url, cause instanceof Error ? cause.message : String(cause));
   }
+}
+
+function unreachable(url: string, reason: string): ApiError {
+  // Undici interpolates the request URL into its refusal reasons, so a
+  // credential-embedded base URL would echo userinfo here: scrub the
+  // `://user:pass@` run out of the reason. The origin below never
+  // carries userinfo (WHATWG origin is scheme + host + port), so only
+  // the reason needs scrubbing; the replacement names the redaction so
+  // a scrubbed message is recognizable as one.
+  const scrubbed = reason.replace(/\/\/[^/@\s]+@/g, "//[redacted]@");
+  return new ApiError(
+    SYNTHETIC_STATUS.UNREACHABLE,
+    `Could not reach ${new URL(url).origin}: ${scrubbed}`,
+    {
+      hint: "Check your network, or point at another environment with --base-url / AIAND_BASE_URL.",
+    },
+  );
 }
 
 async function toApiError(response: Response, envKey = false): Promise<ApiError> {
