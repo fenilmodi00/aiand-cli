@@ -191,10 +191,12 @@ describe("envelope capture (opt-in, default off)", () => {
 // -- store (migration 0004; renumbered at merge, was 0003 pre-#73) ------------------------------------------------------
 
 describe("envelope store (migration 0004)", () => {
-  test("fresh store is at version 4 with an empty envelopes table", async () => {
+  test("fresh store is at version 6 with an empty envelopes table", async () => {
     const { join } = await import("node:path");
     await withEnv({ AIAND_CONFIG_DIR: join(box.dir, "fresh-store") }, async () => {
-      assert.equal(STORE_VERSION, 4);
+      // 6 = migration 0006 (requests.attributed_agent); 5 = migration 0005
+      // (requests.endpoint); envelopes landed at 4 (#78).
+      assert.equal(STORE_VERSION, 6);
       assert.equal(countEnvelopes(), 0);
     });
   });

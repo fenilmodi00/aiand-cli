@@ -1,6 +1,6 @@
 import process from "node:process";
 import { CliError, cancelled } from "./errors.js";
-import { clipToWidth, style, visibleWidth } from "./output.js";
+import { clipToWidth, style, visibleWidth, withoutSpinner } from "./output.js";
 import { GLYPH } from "./ui/glyphs.js";
 import { createTheme, hexTo256, type Theme } from "./ui/theme.js";
 
@@ -143,121 +143,123 @@ async function runPrompt<T>({
     });
   }
 
-  input.setRawMode(true);
-  input.resume();
-  output.write(HIDE_CURSOR);
+  return await withoutSpinner(async () => {
+    input.setRawMode(true);
+    input.resume();
+    output.write(HIDE_CURSOR);
 
-  let prevLines = 0;
-  let closed = false;
+    let prevLines = 0;
+    let closed = false;
 
-  const draw = () => {
-    if (closed) return;
-    // `||`, not `??`: a PTY can report columns as 0.
-    const width = Math.max(MIN_COLUMNS, output.columns || FALLBACK_COLUMNS);
-    const lines = renderLines().map((line) => clipToWidth(line, width));
-    let frame = prevLines > 0 ? `\x1b[${prevLines}A\r` : "\r";
-    frame += lines.map((line) => `${CLEAR_LINE}${line}`).join("\n");
-    if (lines.length < prevLines) {
-      const extra = prevLines - lines.length;
-      frame += `\n${(`${CLEAR_LINE}\n`).repeat(extra - 1)}${CLEAR_LINE}\x1b[${extra}A`;
-    }
-    output.write(`${frame}\n`);
-    prevLines = lines.length;
-  };
-  const erase = () => {
-    if (prevLines > 0) {
-      output.write(`\x1b[${prevLines}A\r\x1b[J`);
-      prevLines = 0;
-    }
-  };
-  const restoreTerminal = () => {
-    output.write(SHOW_CURSOR);
-    input.setRawMode(false);
-    // Do not pause stdin: a later piped read (login --with-token) or
-    // confirm() would hang on a paused stream. resume() is idempotent.
-  };
+    const draw = () => {
+      if (closed) return;
+      // `||`, not `??`: a PTY can report columns as 0.
+      const width = Math.max(MIN_COLUMNS, output.columns || FALLBACK_COLUMNS);
+      const lines = renderLines().map((line) => clipToWidth(line, width));
+      let frame = prevLines > 0 ? `\x1b[${prevLines}A\r` : "\r";
+      frame += lines.map((line) => `${CLEAR_LINE}${line}`).join("\n");
+      if (lines.length < prevLines) {
+        const extra = prevLines - lines.length;
+        frame += `\n${(`${CLEAR_LINE}\n`).repeat(extra - 1)}${CLEAR_LINE}\x1b[${extra}A`;
+      }
+      output.write(`${frame}\n`);
+      prevLines = lines.length;
+    };
+    const erase = () => {
+      if (prevLines > 0) {
+        output.write(`\x1b[${prevLines}A\r\x1b[J`);
+        prevLines = 0;
+      }
+    };
+    const restoreTerminal = () => {
+      output.write(SHOW_CURSOR);
+      input.setRawMode(false);
+      // Do not pause stdin: a later piped read (login --with-token) or
+      // confirm() would hang on a paused stream. resume() is idempotent.
+    };
 
-  draw();
+    draw();
 
-  try {
-    const parser = createKeyParser();
-    let escFlush: ReturnType<typeof setImmediate> | null = null;
+    try {
+      const parser = createKeyParser();
+      let escFlush: ReturnType<typeof setImmediate> | null = null;
 
-    return await new Promise<T>((resolve, reject) => {
-      const stop = () => {
-        if (escFlush) {
-          clearImmediate(escFlush);
-          escFlush = null;
-        }
-        input.removeListener("data", onData);
-        input.removeListener("end", onEnd);
-      };
-
-      const handleSeq = (seq: string): boolean => {
-        if (seq === KEY.CTRL_C) {
-          closed = true;
-          stop();
-          erase();
-          output.write("^C\n");
-          reject(cancelled());
-          return true;
-        }
-        const result = onKey(seq);
-        if (result?.done) {
-          closed = true;
-          stop();
-          resolve(result.value);
-          return true;
-        }
-        return false;
-      };
-
-      const flushPendingEsc = () => {
-        for (const seq of parser.flush()) {
-          if (handleSeq(seq)) {
-            return;
+      return await new Promise<T>((resolve, reject) => {
+        const stop = () => {
+          if (escFlush) {
+            clearImmediate(escFlush);
+            escFlush = null;
           }
-        }
-        draw();
-      };
+          input.removeListener("data", onData);
+          input.removeListener("end", onEnd);
+        };
 
-      const onData = (chunk: string) => {
-        if (escFlush) {
-          clearImmediate(escFlush);
-          escFlush = null;
-        }
-        for (const seq of parser.push(chunk)) {
-          if (handleSeq(seq)) {
-            return;
+        const handleSeq = (seq: string): boolean => {
+          if (seq === KEY.CTRL_C) {
+            closed = true;
+            stop();
+            erase();
+            output.write("^C\n");
+            reject(cancelled());
+            return true;
           }
-        }
-        if (parser.hasPendingEsc()) {
-          escFlush = setImmediate(flushPendingEsc);
-        } else {
+          const result = onKey(seq);
+          if (result?.done) {
+            closed = true;
+            stop();
+            resolve(result.value);
+            return true;
+          }
+          return false;
+        };
+
+        const flushPendingEsc = () => {
+          for (const seq of parser.flush()) {
+            if (handleSeq(seq)) {
+              return;
+            }
+          }
           draw();
-        }
-      };
+        };
 
-      const onEnd = () => {
-        flushPendingEsc();
-        if (closed) return;
-        closed = true;
-        stop();
-        reject(
-          new CliError("Input ended.", {
-            hint: "This prompt needs an interactive terminal.",
-          }),
-        );
-      };
+        const onData = (chunk: string) => {
+          if (escFlush) {
+            clearImmediate(escFlush);
+            escFlush = null;
+          }
+          for (const seq of parser.push(chunk)) {
+            if (handleSeq(seq)) {
+              return;
+            }
+          }
+          if (parser.hasPendingEsc()) {
+            escFlush = setImmediate(flushPendingEsc);
+          } else {
+            draw();
+          }
+        };
 
-      input.on("data", onData);
-      input.on("end", onEnd);
-    });
-  } finally {
-    closed = true;
-    erase();
-    restoreTerminal();
-  }
+        const onEnd = () => {
+          flushPendingEsc();
+          if (closed) return;
+          closed = true;
+          stop();
+          reject(
+            new CliError("Input ended.", {
+              hint: "This prompt needs an interactive terminal.",
+            }),
+          );
+        };
+
+        input.on("data", onData);
+        input.on("end", onEnd);
+      });
+    } finally {
+      closed = true;
+      erase();
+      restoreTerminal();
+    }
+  });
 }
 
 function isEnter(seq: string): boolean {

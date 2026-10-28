@@ -59,6 +59,15 @@ const FAST_PREFERRED = ["deepseek-ai/deepseek-v4.1-flash", "google/gemma-4-31b-i
 
 export type Env = Record<string, string>;
 
+/**
+ * Newline/comma-separated `Name: value` pairs Claude Code sends on every
+ * request; ours names the agent for the gateway's per-request log. The
+ * user's own pairs ride along through on (withAgentHeader) and come back
+ * whole on off, like every owned env value.
+ */
+export const HEADERS_KEY = "ANTHROPIC_CUSTOM_HEADERS";
+const AGENT_HEADER_NAME = "x-aiand-agent";
+
 /** The two settings that can name the model Claude Code starts on, strongest first. */
 export const MODEL_SETTINGS = [
   { path: ["env", ENV_MODEL_KEY], label: `env.${ENV_MODEL_KEY}`, record: "removedEnvModel" },
@@ -84,6 +93,21 @@ export function fastModel(catalog: Model[], main: string): string {
   return FAST_PREFERRED.find((id) => inCatalog(catalog, id)) ?? main;
 }
 
+/**
+ * Merge our attribution pair into an `ANTHROPIC_CUSTOM_HEADERS` value,
+ * replacing only a pair we wrote before: the user's own pairs survive both
+ * the merge and off byte-identically, whichever separator Claude Code
+ * accepts (`Name: value` pairs on newlines or commas).
+ */
+export function withAgentHeader(current: string | undefined): string {
+  const pair = `${AGENT_HEADER_NAME}: claude`;
+  const kept = (current ?? "")
+    .split(/\r?\n|,/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "" && !entry.toLowerCase().startsWith(`${AGENT_HEADER_NAME}:`));
+  return kept.length > 0 ? `${kept.join("\n")}\n${pair}` : pair;
+}
+
 export function gatewayEnv(apiKey: string, baseUrl: string): Env {
   return {
     [BASE_URL_KEY]: baseUrl,
@@ -91,6 +115,7 @@ export function gatewayEnv(apiKey: string, baseUrl: string): Env {
     [API_KEY_KEY]: "",
     [MARKER_KEY]: ENV_ON,
     [ATTRIBUTION_KEY]: ENV_OFF,
+    [HEADERS_KEY]: withAgentHeader(""),
     [DISABLE_1M_KEY]: ENV_ON,
     // A switch left on in the shell or a lower settings file would route
     // Claude Code to that cloud whatever ANTHROPIC_BASE_URL says.

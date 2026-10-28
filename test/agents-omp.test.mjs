@@ -248,6 +248,7 @@ describe("omp adapter", () => {
       baseUrl: "https://gw.example/v1",
       apiKey: "sk-1",
       managedBy: "aiand",
+      headers: { "x-aiand-agent": "omp" },
     });
     assert.equal(buildOmpProviderBlock({ apiKey: "sk-1" }).baseUrl, "https://api.aiand.com/v1");
   });
@@ -265,11 +266,13 @@ describe("omp adapter", () => {
       baseUrl: "https://api.aiand.com/v1",
       apiKey: "sk-enable-1",
       managedBy: "aiand",
+      headers: { "x-aiand-agent": "omp" },
     });
     assert.deepEqual(models.providers.openai, {
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-user-openai",
     });
+    assert.equal(models.providers.openai.headers, undefined);
     assertLinesKept(modelsText, String(seed.models));
 
     const config = readYamlMapping(readText(configPath()));
@@ -434,6 +437,11 @@ describe("omp adapter", () => {
     assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
     assert.equal(readFileSync(configPath()).equals(seed.config), true);
     assert.equal((await ompAdapter.probe()).active, false);
+    // The header rode inside the stripped block: gone with it, the
+    // user's own provider untouched.
+    const models = readYamlMapping(readText(modelsPath()));
+    assert.equal(models.providers.aiand, undefined);
+    assert.equal(models.providers.openai.baseUrl, "https://api.openai.com/v1");
     // Idempotent: a second off is a no-op.
     assert.equal((await ompAdapter.disable()).stripped, false);
   });
@@ -593,6 +601,8 @@ describe("omp adapter", () => {
     const models = readYamlMapping(after);
     assert.equal(models.providers.aiand.apiKey, "sk-new");
     assert.equal(models.providers.aiand.baseUrl, "https://api.aiand.com/v1");
+    // The rotation rewrites one literal; the header pair rides on.
+    assert.deepEqual(models.providers.aiand.headers, { "x-aiand-agent": "omp" });
     assert.equal(models.providers.openai.apiKey, "sk-user-openai");
     assertLinesKept(after, MODELS_SEED);
   });
@@ -631,6 +641,7 @@ describe("omp adapter", () => {
             baseUrl: "https://api.aiand.com/v1",
             apiKey: "sk-session-1",
             managedBy: "aiand",
+            headers: { "x-aiand-agent": "omp" },
           },
         },
       });
@@ -675,6 +686,7 @@ describe("omp adapter", () => {
             baseUrl: "https://api.aiand.com/v1",
             apiKey: "sk-session-1",
             managedBy: "aiand",
+            headers: { "x-aiand-agent": "omp" },
           },
         },
       });
@@ -777,12 +789,14 @@ describe("omp yaml editors", () => {
       baseUrl: "https://api.aiand.com/v1",
       apiKey: "sk-enable-1",
       managedBy: "aiand",
+      headers: { "x-aiand-agent": "omp" },
     });
     assertLinesKept(after, MODELS_SEED);
     assert.deepEqual(readYamlMapping(after).providers.aiand, {
       baseUrl: "https://api.aiand.com/v1",
       apiKey: "sk-enable-1",
       managedBy: "aiand",
+      headers: { "x-aiand-agent": "omp" },
     });
   });
 

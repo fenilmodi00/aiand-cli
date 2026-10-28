@@ -7,7 +7,15 @@ import { join } from "node:path";
 import test, { after, before, describe } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { cliEnv, hermeticPath, plantStub, runCli, withTestEnv } from "./helpers.mjs";
+import {
+  captureStdio,
+  cliEnv,
+  hermeticPath,
+  plantStub,
+  runCli,
+  withEnv,
+  withTestEnv,
+} from "./helpers.mjs";
 
 // Behaviour coverage for `run` (streaming + empty/error paths), `update`
 // (registry failure, already-up-to-date, installer fallback, re-verify) and
@@ -566,11 +574,20 @@ describe("aiand restore", () => {
     const { code, stdout } = await cli(["restore", "--help"]);
     assert.equal(code, 0);
     assert.match(stdout, /--force/);
+    assert.match(stdout, /interactively/);
   });
 
   test("a missing agent name is a usage error", async () => {
     const { code, stderr } = await cli(["restore"]);
     assert.equal(code, 1);
+    assert.match(stderr, /Missing agent name\./);
+    assert.match(stderr, /Usage: aiand restore <agent> --force/);
+  });
+
+  test("bare --json keeps the usage error and never prompts", async () => {
+    const { code, stdout, stderr } = await cli(["restore", "--json"], {}, { input: "" });
+    assert.equal(code, 1);
+    assert.equal(stdout, "");
     assert.match(stderr, /Missing agent name\./);
     assert.match(stderr, /Usage: aiand restore <agent> --force/);
   });
@@ -622,5 +639,24 @@ describe("aiand restore", () => {
     assert.equal(code, 0);
     assert.deepEqual(JSON.parse(stdout), { agent: "opencode", state: "restored" });
     assert.equal(readFileSync(file, "utf8"), '{"snapshot":"yes"}\n');
+  });
+
+  test("bare interactive restore with no snapshots reports and resolves", async () => {
+    const restore = await import("../dist/commands/restore.js");
+    const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { get: () => true, configurable: true });
+    Object.defineProperty(process.stdin, "isTTY", { get: () => true, configurable: true });
+    const captured = captureStdio();
+    try {
+      await withEnv({ CI: undefined }, () => restore.run([]));
+    } finally {
+      captured.restore();
+      if (stdoutDesc) Object.defineProperty(process.stdout, "isTTY", stdoutDesc);
+      else delete process.stdout.isTTY;
+      if (stdinDesc) Object.defineProperty(process.stdin, "isTTY", stdinDesc);
+      else delete process.stdin.isTTY;
+    }
+    assert.match(captured.log.out.join(""), /No config snapshots found\./);
   });
 });

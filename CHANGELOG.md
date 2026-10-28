@@ -7,6 +7,34 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+- Harness attribution refinement from the agents' own local usage records:
+  a request the key+endpoint rules can only label `shared` (chat-dialect
+  agents sharing one key) is refined to omp, pi, or opencode when that
+  agent's own session history (omp/pi session JSONL, `opencode.db`) holds
+  the unique matching record — same model, same output tokens, input within
+  tolerance, within ±2 minutes. Stored per-request in the new
+  `requests.attributed_agent` column (store schema v6), applied on sync and
+  report reads, and never overriding a specific key/dialect label. Ambiguous
+  matches (two agents' records agree equally) and requests whose agent kept
+  no readable local record stay `shared`; the caveat surfaces in the
+  report/overview notes.
+- Claude Code, Codex, and Hermes now send an `x-aiand-agent` attribution
+  header (`claude` / `codex` / `hermes`) so the gateway can log each request's
+  agent. Claude Code carries it in `env.ANTHROPIC_CUSTOM_HEADERS` (the user's
+  own pairs survive `on` and come back whole on `off`); Codex bakes it into
+  the profile's `[model_providers.aiand]` as `http_headers`; Hermes adds
+  `extra_headers` to the generated `providers.aiand` block, in persistent
+  wiring and launcher sessions alike.
+
+### Fixed
+- Harness attribution now uses the gateway's per-request `endpoint` (the wire
+  dialect: `/v1/messages`, `/v1/responses`, `/v1/chat/completions`), so
+  Claude Code and Codex traffic on a key shared with other agents is
+  attributed precisely instead of collapsing to `shared`. Same-dialect
+  agents sharing one key (e.g. omp and pi) still honestly share, and rows
+  synced before this change keep the old label until re-served.
+
 ### Removed
 - The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
   `--include-imported` combined grand total, the import adapter module, the
@@ -39,6 +67,28 @@ breaking changes while the command surface settles.
   is removed with it.
 
 ### Changed
+- Bare interactive `aiand init` now lists every detected agent pre-checked:
+  Enter alone wires them all; space still unticks the ones you do not want.
+- `aiand restore` with no agent name now opens an interactive picker (mirroring
+  `aiand init`): every agent with a snapshot is listed pre-checked, a single
+  yes/no confirm replaces the --force flag, and scripts and `--json` runs keep
+  the old usage error.
+- `aiand recommend` and `aiand harness matrix` attribute mixed-model
+  sessions per model instead of excluding them: each (model, slice) of a
+  session spanning several models counts as its own session sample for that
+  (harness, model) pair. Previously such sessions were silently dropped,
+  discarding a large share of real spend (e.g. a 697-request / $18.02
+  session interleaving main-agent and subagent models).
+- Harness attribution labels traffic on a key several agents share as
+  `shared` instead of crediting whichever agent was recorded first (or
+  last, depending on the surface). `aiand init` bakes one sign-in key
+  into every harness it wires, so the gateway's per-key logs cannot
+  tell claude from codex from pi — yet the dashboard's session list said
+  `claude` while By harness bucketed the same rows under codex / omp /
+  aiand-cli, making Claude Code usage look inflated (observed: top-5
+  sessions labeled claude with no claude row in By harness). One
+  resolution rule now feeds every surface, and the materialized sessions
+  table relabels when the key map changes.
 - The interactive menu starts fast and shows feedback instead of a blank
   screen. Agent detection no longer spawns `where`/`which` per adapter —
   one memoized PATH scan (re-probed after wiring or launching an agent)
@@ -93,6 +143,14 @@ breaking changes while the command surface settles.
   themselves at the next session launch, or once per agent with
   `aiand <agent> on`; past rows re-label instantly because attribution
   is a read-time key lookup, not a stored column.
+- Interactive prompts no longer vanish under the menu spinner: when the
+  interactive menu runs `login` or `logout` (or any command that asks a
+  question) behind its animated spinner, the question was erased within
+  80ms by the spinner's line redraw and the screen showed a hung
+  "Working..." loader until Enter was pressed blind. The spinner now
+  pauses its frames for the whole lifetime of an interactive read —
+  `confirm`, pasted-key input, and the org picker — clears its line in
+  place, shows the cursor, and resumes animating only after the answer.
 - Picking a command in the interactive menu no longer prints its title
   twice — the `▌` heading owns the command title and the spinner below
   it now shows a generic "Working..." instead of repeating the summary

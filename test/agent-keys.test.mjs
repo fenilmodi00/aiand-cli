@@ -9,11 +9,13 @@ withTestEnv("aiand-agent-keys-test-", (dir) => {
 
 const {
   agentForMaskedKey,
+  buildHarnessIndex,
   collectBakedKeys,
   forgetAgentKeys,
   listAgentKeys,
   maskKey,
   recordAgentKey,
+  resolveHarness,
 } = await import("../dist/api/agent-keys.js");
 
 describe("maskKey", () => {
@@ -64,6 +66,20 @@ describe("recordAgentKey", () => {
     );
     assert.equal(agentForMaskedKey("sk-test...1111"), "claude");
     assert.equal(agentForMaskedKey("sk-test...2222"), "codex");
+  });
+
+  // A key init baked into several agents (one sign-in, many harnesses) is
+  // genuinely ambiguous per request — the gateway identifies only the key.
+  // Attribution must say "shared", not confidently claim the first agent.
+  test("a key held by several agents resolves to shared, not the first agent", async () => {
+    const shared = "sk-test-shared-7777777777777777777777777777777777777777777777";
+    await recordAgentKey("claude", shared);
+    await recordAgentKey("codex", shared);
+    assert.equal(agentForMaskedKey(maskKey(shared)), "shared");
+
+    const solo = "sk-test-solo-8888888888888888888888888888888888888888888888888";
+    await recordAgentKey("omp", solo);
+    assert.equal(agentForMaskedKey(maskKey(solo)), "omp");
   });
 
   test("forgetting an agent drops only its keys", async () => {
@@ -124,5 +140,60 @@ describe("collectBakedKeys", () => {
       records.map((r) => r.agent),
       ["claude"],
     );
+  });
+});
+
+// The gateway's /logs rows carry the wire-dialect endpoint ("/v1/messages",
+// "/v1/responses", "/v1/chat/completions"), which narrows which harness on a
+// shared key can have made the request. Never a guess: an endpoint that
+// matches none of the recorded holders leaves attribution as "shared".
+describe("agentForMaskedKey with endpoint", () => {
+  const CLAUDE_OMP_KEY = "sk-test-7777777777777777777777777777777777777777777777777777777777777";
+  const CODEX_PI_KEY = "sk-test-8888888888888888888888888888888888888888888888888888888888888888";
+  const SELF_OMP_KEY = "sk-test-9999999999999999999999999999999999999999999999999999999999999999";
+
+  test("a dialect narrows a shared key to one harness", async () => {
+    await recordAgentKey("claude", CLAUDE_OMP_KEY);
+    await recordAgentKey("omp", CLAUDE_OMP_KEY);
+    const masked = maskKey(CLAUDE_OMP_KEY);
+    assert.equal(agentForMaskedKey(masked), "shared");
+    assert.equal(agentForMaskedKey(masked, "/v1/messages"), "claude");
+    assert.equal(agentForMaskedKey(masked, "/v1/chat/completions"), "omp");
+  });
+
+  test("an unknown endpoint or null endpoint stays shared", async () => {
+    await recordAgentKey("claude", CLAUDE_OMP_KEY);
+    await recordAgentKey("omp", CLAUDE_OMP_KEY);
+    const masked = maskKey(CLAUDE_OMP_KEY);
+    assert.equal(agentForMaskedKey(masked, "/v9/whatever"), "shared");
+    assert.equal(agentForMaskedKey(masked, null), "shared");
+  });
+
+  test("codex narrows on /v1/responses", async () => {
+    await recordAgentKey("codex", CODEX_PI_KEY);
+    await recordAgentKey("pi", CODEX_PI_KEY);
+    assert.equal(agentForMaskedKey(maskKey(CODEX_PI_KEY), "/v1/responses"), "codex");
+  });
+
+  test("the CLI self-entry still loses to a wired agent on the same dialect", async () => {
+    await recordAgentKey("aiand-cli", SELF_OMP_KEY);
+    await recordAgentKey("omp", SELF_OMP_KEY);
+    assert.equal(agentForMaskedKey(maskKey(SELF_OMP_KEY), "/v1/chat/completions"), "omp");
+  });
+});
+
+describe("buildHarnessIndex / resolveHarness", () => {
+  test("one index answers per-endpoint labels for every request", async () => {
+    const key = "sk-test-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    await recordAgentKey("claude", key);
+    await recordAgentKey("omp", key);
+    const masked = maskKey(key);
+    const index = buildHarnessIndex();
+    assert.equal(resolveHarness(index, masked, "/v1/messages"), "claude");
+    assert.equal(resolveHarness(index, masked, "/v1/chat/completions"), "omp");
+    assert.equal(resolveHarness(index, masked, "/v9/unknown"), "shared");
+    assert.equal(resolveHarness(index, masked, null), "shared");
+    assert.equal(resolveHarness(index, null, "/v1/messages"), "unknown");
+    assert.equal(resolveHarness(index, "sk-test...ffff"), "unknown");
   });
 });

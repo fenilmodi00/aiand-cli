@@ -263,6 +263,7 @@ describe("opencode adapter", () => {
     assert.equal(provider.name, "ai&");
     assert.equal(provider.options.apiKey, "sk-enable-1");
     assert.equal(provider.options.baseURL, "https://api.aiand.com/v1");
+    assert.deepEqual(provider.options.headers, { "x-aiand-agent": "opencode" });
     assert.deepEqual(Object.keys(provider.models).sort(), ["qwen/qwen3.8-27b", "zai-org/glm-5.3"]);
     assert.equal(config.model, "aiand/zai-org/glm-5.3");
     assert.equal(config.enabled_providers, undefined);
@@ -425,6 +426,8 @@ describe("opencode adapter", () => {
     // No added.json record of a model write: an `aiand/…` root value is the
     // user's (models.dev pick or a previous manual edit), not a prefix we own.
     assert.equal(config.model, "aiand/zai-org/glm-5.3");
+    // A provider block we never wrote carries no header pair.
+    assert.equal(config.provider.other.options.headers, undefined);
     assert.equal(config.theme, "system");
     // probe agrees: no key, no routing
     assert.equal((await opencodeAdapter.probe()).active, false);
@@ -666,18 +669,21 @@ describe("opencode adapter", () => {
   });
 
   test("buildOpencodeConfig: persistent shape has no lockdown; session shape opts in", () => {
+    const options = {
+      npm: "@ai-sdk/openai-compatible",
+      name: "ai&",
+      baseURL: "https://api.aiand.com/v1",
+      headers: { "x-aiand-agent": "opencode" },
+    };
     const persistent = buildOpencodeConfig({
       apiKey: "sk-x",
       model: "m-1",
       models: { "m-1": { name: "M1" } },
-      options: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "ai&",
-        baseURL: "https://api.aiand.com/v1",
-      },
+      options,
     });
     assert.equal(persistent.provider.aiand.options.apiKey, "sk-x");
     assert.equal(persistent.provider.aiand.options.baseURL, "https://api.aiand.com/v1");
+    assert.deepEqual(persistent.provider.aiand.options.headers, { "x-aiand-agent": "opencode" });
     assert.equal(persistent.model, "aiand/m-1");
     assert.equal(persistent.enabled_providers, undefined);
     assert.equal(persistent.disabled_providers, undefined);
@@ -688,11 +694,7 @@ describe("opencode adapter", () => {
       apiKey: "sk-x",
       model: "m-1",
       models: { "m-1": { name: "M1" } },
-      options: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "ai&",
-        baseURL: "https://api.aiand.com/v1",
-      },
+      options,
       lockdown: true,
     });
     assert.deepEqual(session.enabled_providers, ["aiand"]);
@@ -1204,6 +1206,7 @@ describe("opencode sessionLaunch", () => {
     await launch.cleanup();
     assert.equal(existsSync(keyFile), false);
     assert.equal(config.provider.aiand.options.baseURL, "https://api.aiand.com/v1");
+    assert.deepEqual(config.provider.aiand.options.headers, { "x-aiand-agent": "opencode" });
     // model resolved from catalog (first tool-capable / default order)
     assert.match(config.model, /^aiand\//);
     assert.ok(config.model.startsWith("aiand/"));

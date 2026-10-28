@@ -30,6 +30,12 @@ export function buildCopilotProvider({
     wireApi: "completions",
     baseUrl,
     apiKey,
+    // Attribution: the gateway logs this per request to identify the agent.
+    // Documented providers[].headers field. Not an ownership marker — the
+    // row shape plus the recorded baseUrl stay the proof — but any CLI
+    // rewrite of the row rebuilds it via this builder, so the pair lives
+    // as long as the row `off` strips.
+    headers: { "x-aiand-agent": "copilot" },
   };
 }
 

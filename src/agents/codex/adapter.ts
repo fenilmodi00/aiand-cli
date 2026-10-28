@@ -218,7 +218,18 @@ function ownedTables(session: Session): [string, TomlTable][] {
         ...HOSTED_OFF,
       },
     ],
-    [PROVIDER_TABLE, { name: "ai&", base_url: codexBaseUrl(session.baseUrl), wire_api: WIRE_API }],
+    [
+      PROVIDER_TABLE,
+      {
+        name: "ai&",
+        base_url: codexBaseUrl(session.baseUrl),
+        wire_api: WIRE_API,
+        // Static headers Codex sends on every request; the gateway logs the
+        // agent. Inside the profile table off deletes, so off needs no
+        // separate strip.
+        http_headers: { "x-aiand-agent": "codex" },
+      },
+    ],
     [AUTH_TABLE, session.auth],
     ["features", FEATURES],
   ];
@@ -235,7 +246,7 @@ const OWNED_KEYS = new Map<string, Set<string>>([
       ...Object.keys(HOSTED_OFF),
     ]),
   ],
-  [PROVIDER_TABLE, new Set(["name", "base_url", "wire_api"])],
+  [PROVIDER_TABLE, new Set(["name", "base_url", "wire_api", "http_headers"])],
   [AUTH_TABLE, new Set(["command", "args"])],
   ["features", new Set(Object.keys(FEATURES))],
 ]);

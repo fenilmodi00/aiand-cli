@@ -46,6 +46,7 @@ import {
   FOREIGN_PROVIDER_KEYS,
   fastModel,
   gatewayEnv,
+  HEADERS_KEY,
   inCatalog,
   isAlias,
   MAIN_SLOTS,
@@ -57,6 +58,7 @@ import {
   slotEnv,
   startupModel,
   TOKEN_KEY,
+  withAgentHeader,
 } from "./settings.js";
 
 const CLAUDE_ID = "claude";
@@ -253,6 +255,11 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   const catalog = input.catalog;
 
   const desired: Env = gatewayEnv(input.apiKey, claudeBaseUrl(input.baseUrl));
+  // The user's own custom-header pairs ride along; ours replaces only a pair
+  // we wrote before (the merge strips and re-adds by header name).
+  desired[HEADERS_KEY] = withAgentHeader(
+    typeof env[HEADERS_KEY] === "string" ? env[HEADERS_KEY] : undefined,
+  );
   const kept: Env = {};
   if (!isNative) {
     const pinned = input.pinModel ? input.model : claudeDefaultModel(catalog, input.profileModel);

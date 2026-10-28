@@ -127,7 +127,7 @@ function readCompareRows(window: { sinceMs: number | null; untilMs: number | nul
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost, cost_value, currency, status_code, ttft_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -810,13 +810,6 @@ function renderCompare(
           `${cache}     ${errRate}  ` +
           cell(ttft, winners.ttftP50),
         width,
-      ),
-    );
-  }
-  if (stats.provenance.excludedMixed > 0) {
-    lines.push(
-      theme.muted(
-        `  ${stats.provenance.excludedMixed} mixed-model session(s) excluded from every row`,
       ),
     );
   }

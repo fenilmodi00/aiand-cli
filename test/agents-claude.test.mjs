@@ -64,6 +64,7 @@ describe("claude on", () => {
     assert.equal(env.ANTHROPIC_API_KEY, "");
     assert.equal(env.AIAND_MANAGED, "1");
     assert.equal(env.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
+    assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, "x-aiand-agent: claude");
     assert.equal(env.CLAUDE_CODE_DISABLE_1M_CONTEXT, "1");
     for (const key of ["BEDROCK", "VERTEX", "FOUNDRY"]) {
       assert.equal(env[`CLAUDE_CODE_USE_${key}`], "0", key);
@@ -298,6 +299,27 @@ describe("claude off", () => {
     assert.deepEqual(readSettings().env, { CLAUDE_CODE_ATTRIBUTION_HEADER: "1" });
   });
 
+  test("a user's own custom headers survive on and come back whole on off", async () => {
+    seed({ env: { ANTHROPIC_CUSTOM_HEADERS: "X-Foo: bar" } });
+    await claudeAdapter.enable(enableInput());
+    assert.equal(
+      readSettings().env.ANTHROPIC_CUSTOM_HEADERS,
+      `X-Foo: bar${"\n"}x-aiand-agent: claude`,
+    );
+    await claudeAdapter.disable();
+    assert.deepEqual(readSettings().env, { ANTHROPIC_CUSTOM_HEADERS: "X-Foo: bar" });
+  });
+
+  test("a re-on replaces only our pair among the user's custom headers", async () => {
+    seed({ env: { ANTHROPIC_CUSTOM_HEADERS: "X-Foo: bar" } });
+    await claudeAdapter.enable(enableInput());
+    await claudeAdapter.enable(enableInput());
+    assert.equal(
+      readSettings().env.ANTHROPIC_CUSTOM_HEADERS,
+      `X-Foo: bar${"\n"}x-aiand-agent: claude`,
+    );
+  });
+
   test("the user's own API key and deny entries come back; WebSearch goes", async () => {
     seed({
       env: { ANTHROPIC_API_KEY: "their-anthropic-key" },
@@ -507,6 +529,7 @@ describe("claude sessionLaunch", () => {
     assert.equal(settings.modelPicker.options.length, CATALOG.length);
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "https://api.aiand.com");
     assert.equal(settings.env.CLAUDE_CODE_ATTRIBUTION_HEADER, "0");
+    assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, "x-aiand-agent: claude");
     assert.equal(settings.env.CLAUDE_CODE_DISABLE_1M_CONTEXT, "1");
     // Beat a switch or ANTHROPIC_MODEL set in the shell or a lower settings file.
     assert.equal(settings.env.CLAUDE_CODE_USE_BEDROCK, "0");

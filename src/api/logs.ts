@@ -23,6 +23,8 @@ export type LogEntry = {
   cost: string | null;
   currency: string | null;
   created_at: string;
+  /** Wire-dialect request path the gateway served ("/v1/chat/completions", "/v1/messages", "/v1/responses"); null when not served. */
+  endpoint: string | null;
 };
 
 export type LogPage = {

@@ -72,6 +72,7 @@ type RequestRow = {
   id: string;
   model: string;
   api_key: string | null;
+  endpoint: string | null;
   created_at: string;
   status_code: number | null;
   input_tokens: number | null;
@@ -172,7 +173,7 @@ function readRequests(window: { sinceMs: number | null; untilMs: number | null }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, status_code, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, endpoint, status_code, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost_value, currency FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -270,8 +271,10 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
-function agentOf(row: Pick<RequestRow, "api_key">): string {
-  return row.api_key === null ? "unknown" : (agentForMaskedKey(row.api_key) ?? "unknown");
+function agentOf(row: Pick<RequestRow, "api_key" | "endpoint">): string {
+  return row.api_key === null
+    ? "unknown"
+    : (agentForMaskedKey(row.api_key, row.endpoint) ?? "unknown");
 }
 
 type ReportFilters = {

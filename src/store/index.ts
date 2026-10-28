@@ -717,8 +717,12 @@ function insertEntries(db: DatabaseSync, entries: readonly LogEntry[]): number {
   const insert = db.prepare(
     "INSERT OR IGNORE INTO requests " +
       "(id, model, api_key, status_code, ttft_ms, latency_ms, input_tokens, " +
-      "output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "output_tokens, cached_tokens, cost, cost_value, currency, created_at, " +
+      "synced_at, endpoint) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  const backfillEndpoint = db.prepare(
+    "UPDATE requests SET endpoint = ? WHERE id = ? AND endpoint IS NULL",
   );
   const syncedAt = new Date().toISOString();
   let inserted = 0;
@@ -742,8 +746,19 @@ function insertEntries(db: DatabaseSync, entries: readonly LogEntry[]): number {
         entry.currency,
         entry.created_at,
         syncedAt,
+        // Older/mocked gateways may omit the field entirely.
+        entry.endpoint ?? null,
       );
       inserted += Number(result.changes);
+      // Backfill: when the row already existed (INSERT OR IGNORE no-op), the
+      // gateway re-serving it during the overlap window is our only chance to
+      // gain an endpoint without a full resync. Ceiling: rows older than the
+      // overlap window are never re-served, so deep history keeps endpoint
+      // NULL and falls back to key-only attribution. Updates never count as
+      // inserts — the stuck-cursor guard relies on that.
+      if (Number(result.changes) === 0 && entry.endpoint != null) {
+        backfillEndpoint.run(entry.endpoint, entry.id);
+      }
     }
     db.exec("COMMIT");
   } catch (error) {

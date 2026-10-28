@@ -227,6 +227,7 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
       `sessions are time-gap groups (${meta.sessionization.gapMinutes} min), not confirmed agent sessions`,
     );
   }
+  if (meta.correlationNote) notes.push(meta.correlationNote);
   if (notes.length > 0) {
     lines.push(style.dim(rule("-")));
     for (const note of notes) lines.push(style.dim(`note: ${note}`));

@@ -34,6 +34,10 @@ export function buildOmpProviderBlock({ baseUrl, apiKey }: { baseUrl?: string; a
     baseUrl: ompBaseUrl(baseUrl),
     apiKey,
     [OMP_MARKER_KEY]: OMP_MARKER,
+    // Attribution: the gateway logs this per request to identify the agent.
+    // Documented provider-level field (values may be literals); it rides
+    // inside the block `off` strips, so it needs no separate removal.
+    headers: { "x-aiand-agent": "omp" },
   };
 }
 

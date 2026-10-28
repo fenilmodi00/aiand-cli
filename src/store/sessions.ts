@@ -1,10 +1,21 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { agentForMaskedKey, agentKeysPath } from "../api/agent-keys.js";
+import {
+  agentKeysPath,
+  buildHarnessIndex,
+  resolveHarness,
+  SHARED_AGENT,
+} from "../api/agent-keys.js";
 import { CliError } from "../cli/errors.js";
 import { configPath } from "../config.js";
 import { openStore, storePath } from "./index.js";
+import {
+  attributedAgents,
+  collectLocalUsageRecords,
+  correlationsPending,
+  refreshCorrelations,
+} from "./local-usage.js";
 
 /**
  * Sessionization (feature catalog A4, ticket #66).
@@ -92,6 +103,8 @@ export function resolveGapMinutes(flagMinutes?: number): number {
 export type SessionRequestRow = {
   id: string;
   api_key: string | null;
+  /** Gateway wire-dialect path (e.g. "/v1/messages"); null on pre-endpoint rows. */
+  endpoint?: string | null;
   created_at: string;
   input_tokens: number | null;
   output_tokens: number | null;
@@ -101,7 +114,11 @@ export type SessionRequestRow = {
   currency: string | null;
 };
 
-/** One derived session. `agent` is `unknown` when the key is unmapped — never guessed. */
+/**
+ * One derived session. `agent` is resolved per member row via the key + wire
+ * dialect (`endpoint`): the sole distinct label wins, "shared" when members
+ * mix dialects, `unknown` for a null or unmapped key — never guessed.
+ */
 export type SessionRow = {
   session_id: string;
   agent: string;
@@ -150,6 +167,33 @@ export type SessionDetail<T extends SessionRequestRow = SessionRequestRow> = Ses
   rows: T[];
 };
 
+/**
+ * The durable correlation refinement for this row set, read from the
+ * `attributed_agent` column (migration 0006). Pure read, fail-open: a
+ * pre-0006 store or locked db contributes no refinements. The refine pass
+ * itself runs in `rebuildSessions` before this is consulted.
+ */
+function sessionRefinements(rows: readonly { id: string }[]): Map<string, string> {
+  try {
+    const db = openStore(storePath());
+    if (!db.ok) return new Map();
+    try {
+      return attributedAgents(
+        db.db,
+        rows.map((row) => row.id),
+      );
+    } finally {
+      try {
+        db.db.close();
+      } catch {
+        // already closed
+      }
+    }
+  } catch {
+    return new Map();
+  }
+}
+
 /** The shared boundary walk: same rule as `sessionize`, members retained. */
 function walkSessions<T extends SessionRequestRow>(
   rows: readonly T[],
@@ -169,6 +213,8 @@ function walkSessions<T extends SessionRequestRow>(
     else groups.set(key, { apiKey: row.api_key, requests: [row] });
   }
 
+  const harnessIndex = buildHarnessIndex();
+  const refinements = sessionRefinements(rows);
   const sessions: SessionDetail<T>[] = [];
   for (const group of groups.values()) {
     let current: T[] = [];
@@ -177,9 +223,19 @@ function walkSessions<T extends SessionRequestRow>(
       const first = current[0];
       if (!first) return;
       const last = current[current.length - 1];
+      const labels = new Set<string>();
+      for (const row of current) {
+        const base = resolveHarness(harnessIndex, row.api_key, row.endpoint);
+        // Correlation precedence: a specific base label is never overridden;
+        // shared/unknown rows take the persisted attributed_agent refinement.
+        labels.add(
+          base === SHARED_AGENT || base === "unknown" ? (refinements.get(row.id) ?? base) : base,
+        );
+      }
+      const agent = labels.size === 1 ? (labels.values().next().value ?? "unknown") : SHARED_AGENT;
       sessions.push({
         session_id: sessionId(group.apiKey, first.created_at),
-        agent: group.apiKey === null ? "unknown" : (agentForMaskedKey(group.apiKey) ?? "unknown"),
+        agent,
         api_key: group.apiKey,
         started_at: first.created_at,
         ended_at: last?.created_at ?? first.created_at,
@@ -308,8 +364,43 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
  * `agent` labels are baked into the materialized rows at rebuild time — a
  * native-key attribution sweep changes attribution without touching the
  * request rows, so the fingerprint must notice (same rows + new map →
- * different labels).
+ * different labels). SESSIONIZE_RULES_VERSION bumps when the resolution rule
+ * itself changes.
+ *
+ * v3: local-usage correlation refinement (`requests.attributed_agent`,
+ * migration 0006) feeds the agent labels, so rows rebuilt under the old
+ * rule are re-baked.
  */
+export const SESSIONIZE_RULES_VERSION = 3;
+
+/**
+ * The correlation pass behind `rebuildSessions`: refine shared-key rows from
+ * the agents' local usage records and persist the labels, before the
+ * materialized table bakes them in. Fail-open (the correlator never throws);
+ * a no-new-rows pass is a cursor no-op.
+ */
+function refreshCorrelationsInStore(
+  db: DatabaseSync,
+  rows: readonly {
+    id: string;
+    model: string;
+    api_key: string | null;
+    endpoint: string | null;
+    created_at: string;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cached_tokens: number | null;
+  }[],
+): void {
+  if (!correlationsPending(db)) return;
+  const records = collectLocalUsageRecords();
+  if (records.length === 0) return;
+  const keyIndex = buildHarnessIndex();
+  refreshCorrelations(db, rows, records, (row) =>
+    resolveHarness(keyIndex, row.api_key, row.endpoint),
+  );
+}
+
 function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
   const count = db.prepare("SELECT COUNT(*) AS n FROM requests").get() as Record<string, unknown>;
   const watermark = db
@@ -323,18 +414,28 @@ function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
     // deterministic — same missing map, same fingerprint.
     mapRev = "none";
   }
-  return `${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${gapMinutes}:${mapRev}`;
+  return `${SESSIONIZE_RULES_VERSION}:${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${gapMinutes}:${mapRev}`;
 }
 
 /**
  * Rebuild the `sessions` table from `requests` with the given gap. Idempotent:
  * same rows + same gap → byte-identical contents, and the fingerprint makes a
- * no-change rebuild a no-op.
+ * no-change rebuild a no-op. New request rows first get their local-usage
+ * correlation pass (migration 0006 refinement), so the materialized `agent`
+ * labels carry it; the fingerprint (rules version 3) then notices and this
+ * rebuild is the one that bakes the refined labels in.
  */
 function rebuildSessions(db: DatabaseSync, gapMinutes: number): void {
+  const correlated = db
+    .prepare(
+      "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, " +
+        "cached_tokens, cost, cost_value, currency FROM requests",
+    )
+    .all() as unknown as (SessionRequestRow & { model: string; endpoint: string | null })[];
+  refreshCorrelationsInStore(db, correlated);
   const rows = db
     .prepare(
-      "SELECT id, api_key, created_at, input_tokens, output_tokens, cached_tokens, " +
+      "SELECT id, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
         "cost, cost_value, currency FROM requests",
     )
     .all() as unknown as SessionRequestRow[];

@@ -329,6 +329,7 @@ ${sections.join("\n")}
 <div>${legend}</div>
 ${coverageNotes.map((note) => `<div class="note">${note}</div>`).join("\n")}
 ${meta.savingsNote === null ? "" : `<div class="note">${esc(meta.savingsNote)}</div>`}
+${meta.correlationNote ? `<div class="note">${esc(meta.correlationNote)}</div>` : ""}
 <div class="note">Offline report — self-contained file, no external resources.</div>
 </footer>
 </body>

@@ -111,7 +111,7 @@ when it is set.
 | `aiand init` | Detect installed agents and wire them in one go |
 | `aiand run-agent <agent>` | Run an agent on ai& for one session only |
 | `aiand <agent> --session` | Run a coding agent on ai& for one session, no config written |
-| `aiand restore <agent> --force` | Put an agent's config back as it was before aiand |
+| `aiand restore` | Pick agents and put their configs back as they were before ai& (interactive; `<agent> --force` for scripts) |
 | `aiand run <prompt>` | One prompt, streamed to stdout |
 | `aiand chat` | Interactive conversation |
 | `aiand models` | The model catalog, with prices in your billing currency |

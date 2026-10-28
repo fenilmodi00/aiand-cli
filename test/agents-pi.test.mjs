@@ -127,8 +127,10 @@ describe("pi adapter", () => {
 
     const models = readJson(modelsPath());
     assert.equal(models.providers.openai.baseUrl, "https://api.openai.com/v1");
+    assert.equal(models.providers.openai.headers, undefined);
     assert.equal(models.providers.aiand.api, "openai-completions");
     assert.equal(models.providers.aiand.baseUrl, "https://api.aiand.com/v1");
+    assert.deepEqual(models.providers.aiand.headers, { "x-aiand-agent": "pi" });
     assert.ok(models.providers.aiand.models.length === CATALOG.length);
     assert.equal(result.model, "zai-org/glm-5.3");
 
@@ -216,6 +218,7 @@ describe("pi adapter", () => {
     const provider = buildPiProvider({ baseUrl: "https://gw.example/v1", catalog: CATALOG });
     assert.equal(provider.name, "ai&");
     assert.equal(provider.api, "openai-completions");
+    assert.deepEqual(provider.headers, { "x-aiand-agent": "pi" });
     assert.equal(provider.compat, undefined);
     assert.equal(provider.models.length, 2);
   });
@@ -228,6 +231,11 @@ describe("pi adapter", () => {
     assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
     assert.equal(readFileSync(authPath()).equals(seed.auth), true);
     assert.equal(readFileSync(settingsPath()).equals(seed.settings), true);
+    // The header rode inside the stripped block: gone with it, the
+    // user's own provider untouched.
+    const models = readJson(modelsPath());
+    assert.equal(models.providers.aiand, undefined);
+    assert.equal(models.providers.openai.baseUrl, "https://api.openai.com/v1");
     // Idempotent: a second off is a no-op.
     const again = await piAdapter.disable();
     assert.equal(again.stripped, false);
@@ -963,6 +971,7 @@ describe("pi sessionLaunch native", () => {
         readFileSync(join(launch.env.PI_CODING_AGENT_DIR, "models.json"), "utf8"),
       );
       assert.equal(models.providers.aiand.api, "openai-completions");
+      assert.deepEqual(models.providers.aiand.headers, { "x-aiand-agent": "pi" });
       assert.equal(models.providers.aiand.baseUrl, "https://api.aiand.com/v1");
     } finally {
       await launch.cleanup();

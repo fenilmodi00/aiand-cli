@@ -292,6 +292,11 @@ export function pinHermesProvider(
     `${indent}  base_url: ${JSON.stringify(baseUrl)}`,
     `${indent}  key_env: ${HERMES_PROVIDER_API_KEY_ENV}`,
     `${indent}  transport: chat_completions`,
+    // Static headers Hermes sends on every request; the gateway logs the
+    // agent. Inside the block off deletes whole, so off needs no separate
+    // strip.
+    `${indent}  extra_headers:`,
+    `${indent}    x-aiand-agent: hermes`,
     ...(model === undefined
       ? []
       : [

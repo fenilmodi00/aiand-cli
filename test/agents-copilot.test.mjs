@@ -151,6 +151,7 @@ describe("copilot adapter", () => {
         wireApi: "completions",
         baseUrl: "https://api.aiand.com/v1",
         apiKey: "sk-x",
+        headers: { "x-aiand-agent": "copilot" },
       },
     );
   });
@@ -188,7 +189,10 @@ describe("copilot adapter", () => {
       wireApi: "completions",
       baseUrl: "https://api.aiand.com/v1",
       apiKey: "sk-enable-1",
+      headers: { "x-aiand-agent": "copilot" },
     });
+    // A foreign row we never wrote carries no header pair.
+    assert.equal(wired.providers[0].headers, undefined);
     assert.equal(wired.models.length, 3);
     assert.equal(wired.models[0].provider, "fireworks");
     assert.equal(wired.models[1].id, "zai-org/glm-5.3");
@@ -345,9 +349,15 @@ describe("copilot adapter", () => {
     assert.equal(result.stripped, true);
     // Byte-identity against the seed pins both halves at once: our rows
     // are gone and the user's rows kept (the pi precedent asserts bytes
-    // only).
+    // only). The header rode inside the stripped row — gone with it.
     assert.equal(readFileSync(copilotProvidersPath()).equals(seed.providers), true);
     assert.equal(readFileSync(copilotSettingsPath()).equals(seed.settings), true);
+    assert.equal(
+      readJson(copilotProvidersPath()).providers.some(
+        (row) => row.name === "aiand" || row.headers !== undefined,
+      ),
+      false,
+    );
   });
 
   test("disable(): a file on created is unlinked when nothing is left", async () => {
@@ -441,6 +451,8 @@ describe("copilot adapter", () => {
 
     const wired = readJson(copilotProvidersPath());
     assert.equal(wired.providers[1].apiKey, "sk-new");
+    // The rotation rewrites one literal; the header pair rides on.
+    assert.deepEqual(wired.providers[1].headers, { "x-aiand-agent": "copilot" });
     assert.deepEqual(wired.providers[0], providersBefore.providers[0]);
     assert.deepEqual(Object.keys(wired.providers[1]), Object.keys(providersBefore.providers[1]));
     assert.equal(readFileSync(copilotSettingsPath()).equals(settingsBefore), true);
@@ -619,6 +631,7 @@ describe("copilot adapter", () => {
 
       const overlayProviders = readJson(join(launch.env.COPILOT_HOME, "providers.json"));
       assert.equal(overlayProviders.providers[0].apiKey, "sk-session-1");
+      assert.deepEqual(overlayProviders.providers[0].headers, { "x-aiand-agent": "copilot" });
       assert.equal(overlayProviders.models.length, CATALOG.length);
       assert.equal(
         readJson(join(launch.env.COPILOT_HOME, "settings.json")).model,

@@ -352,6 +352,9 @@ describe("overview text", () => {
         "--------------------------------------------------------------------------------",
         "note: sync skipped (--no-sync) — showing local data as-is",
         "note: sessions are time-gap groups (10 min), not confirmed agent sessions",
+        // Correlation caveat (v6 refinement): the fixture seeds no local
+        // agent stores, so every row keeps its key/endpoint label.
+        "note: harness refinement also reads the agents' own local usage records",
       ].join("\n"),
     );
     for (const line of text.split("\n")) {
@@ -789,6 +792,45 @@ describe("requested window honored (#97)", () => {
     assert.equal(payload.meta.range.since, "2026-09-25T00:00:00.000Z");
     assert.equal(payload.totals.requests, 3);
     assert.ok(payload.meta.range.since < "2026-10-01");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared-key attribution: `aiand init` bakes one sign-in key into several
+// agents, so one masked key maps to many harnesses. By-harness must label
+// that traffic "shared" — not silently credit whichever agent happened to be
+// recorded first (claude) or last (codex), which is how claude's spend looked
+// inflated while its By-harness row vanished entirely.
+// ---------------------------------------------------------------------------
+describe("shared-key attribution", () => {
+  test("a masked key held by several agents buckets as shared, never claude", async () => {
+    const dir = freshDir("shared-keys");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "s1" }),
+      row("2026-10-20T15:00:00.000Z", { id: "s2", api_key: "sk-effg...5678" }),
+    ]);
+    writeFileSync(
+      join(dir, "agent-keys.json"),
+      JSON.stringify({
+        version: 1,
+        keys: [
+          { agent: "claude", masked: "sk-abcd...1234", fingerprint: "f1", at: 1 },
+          { agent: "codex", masked: "sk-abcd...1234", fingerprint: "f2", at: 2 },
+          { agent: "opencode", masked: "sk-effg...5678", fingerprint: "f3", at: 3 },
+        ],
+      }),
+    );
+    const result = await runCli(
+      ["overview", "--since", "2026-10-19", "--until", "2026-10-22", "--json"],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    const harnesses = payload.byHarness.map((h) => h.harness);
+    assert.ok(harnesses.includes("shared"), `by-harness rows: ${harnesses.join(", ")}`);
+    assert.ok(!harnesses.includes("claude"), "shared-key rows must not credit claude");
+    assert.ok(harnesses.includes("opencode"), "unambiguous keys still resolve");
+    assert.equal(payload.byHarness.find((h) => h.harness === "shared").requests, 1);
   });
 });
 

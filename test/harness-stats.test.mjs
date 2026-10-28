@@ -390,7 +390,8 @@ test("cli: excluded mixed-model spend line renders when present, absent without 
     env: cliEnv({ AIAND_CONFIG_DIR: withCfg }),
   });
   assert.equal(matrix.code, 0);
-  assert.match(matrix.stdout, /excluded mixed-model spend \(1 session\(s\), gateway-billed/);
+  // Matrix attributes mixed sessions per model now — no exclusion line.
+  assert.ok(!matrix.stdout.includes("excluded mixed-model spend"));
 
   // --no-cost hides the cost figure but keeps the line.
   const noCost = await runCli(["harness", "stats", "--no-sync", "--no-cost"], {

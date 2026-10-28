@@ -72,6 +72,11 @@ export function buildPiProvider({
     name: "ai&",
     baseUrl,
     api: "openai-completions",
+    // Attribution: the gateway logs this per request to identify the agent.
+    // Documented provider-level `headers` field in models-configuration.md
+    // (values may be literals); it rides inside the block `off` strips,
+    // so it needs no separate removal.
+    headers: { "x-aiand-agent": "pi" },
     models: catalog.map(piModelEntry),
   };
 }

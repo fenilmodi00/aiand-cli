@@ -145,6 +145,8 @@ type OpencodeProviderOptions = {
   npm: string;
   name: string;
   baseURL: string;
+  /** Attribution: the gateway logs this per request to identify the agent. */
+  headers: { "x-aiand-agent": string };
 };
 
 /**
@@ -173,6 +175,10 @@ export function buildOpencodeConfig({
         options: {
           apiKey,
           baseURL: options.baseURL,
+          // Attribution: the gateway logs this per request to identify
+          // the agent. options is the extra-keys-tolerant object, and
+          // the pair rides inside the block `off` strips.
+          headers: options.headers,
           // Nested: OpenCode's root/provider objects reject unknown keys.
           [OPENCODE_MARKER_KEY]: true,
         },
@@ -232,6 +238,7 @@ const OPENCODE_OPTIONS: OpencodeProviderOptions = {
   npm: "@ai-sdk/openai-compatible",
   name: "ai&",
   baseURL: OPENCODE_BASE_URL,
+  headers: { "x-aiand-agent": "opencode" },
 };
 
 /** `--base-url` + `/v1`, or the production gateway when none is given. */

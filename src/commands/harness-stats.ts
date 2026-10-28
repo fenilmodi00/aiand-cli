@@ -191,9 +191,9 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
  * The OBS-LT-4 reconciliation line: the gateway-billed spend of the
  * mixed-model sessions excluded from every pair/harness row — same
  * provenance as the pair costs, never folded into them. One definition,
- * shared by stats, compare, and matrix. Empty when nothing was excluded.
+ * shared by stats and compare. Empty when nothing was excluded.
  */
-export function excludedMixedLine(agg: ExcludedMixedAggregate, noCost: boolean): string | null {
+function excludedMixedLine(agg: ExcludedMixedAggregate, noCost: boolean): string | null {
   if (agg.sessions === 0) return null;
   const cost =
     noCost || agg.cost === null
@@ -231,7 +231,7 @@ export function readHarnessRows(
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost, cost_value, currency, status_code, ttft_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -243,7 +243,9 @@ export function readHarnessRows(
       if (
         agents &&
         !agents.has(
-          row.api_key === null ? "unknown" : (agentForMaskedKey(row.api_key) ?? "unknown"),
+          row.api_key === null
+            ? "unknown"
+            : (agentForMaskedKey(row.api_key, row.endpoint) ?? "unknown"),
         )
       ) {
         return false;

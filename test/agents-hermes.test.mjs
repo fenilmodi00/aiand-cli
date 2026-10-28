@@ -383,6 +383,8 @@ describe("hermes adapter: persistent on/off", () => {
     assert.ok(configText.includes('base_url: "https://api.aiand.com/v1"'));
     assert.ok(configText.includes("key_env: AIAND_HERMES_API_KEY"));
     assert.ok(configText.includes("transport: chat_completions"));
+    assert.ok(configText.includes("extra_headers:"), "attribution headers block");
+    assert.ok(configText.includes("x-aiand-agent: hermes"));
     assert.ok(configText.includes('default_model: "zai-org/glm-5.3"'));
     assert.ok(configText.includes('models: ["zai-org/glm-5.3"]'));
     assert.ok(configText.includes("discover_models: false"));
@@ -467,6 +469,10 @@ describe("hermes adapter: persistent on/off", () => {
     const seedEnv = readFileSync(envPath());
     const seedConfig = readFileSync(configPath());
     await hermes.hermesAdapter.enable(enableInput());
+    assert.ok(
+      readFileSync(configPath(), "utf8").includes("x-aiand-agent: hermes"),
+      "on wrote the attribution headers",
+    );
     const result = await hermes.hermesAdapter.disable();
     assert.equal(result.stripped, true);
     assert.equal(readFileSync(envPath()).equals(seedEnv), true);
@@ -1595,6 +1601,8 @@ describe("hermes adapter: sessionLaunch overlay", () => {
     assert.match(configText, /default: "zai-org\/glm-5\.3"/);
     assert.ok(configText.includes("key_env: AIAND_HERMES_API_KEY"));
     assert.ok(configText.includes("transport: chat_completions"));
+    assert.ok(configText.includes("extra_headers:"), "attribution headers block");
+    assert.ok(configText.includes("x-aiand-agent: hermes"));
     assert.ok(configText.includes('default_model: "zai-org/glm-5.3"'));
     assert.ok(configText.includes('models: ["zai-org/glm-5.3"]'));
     assert.ok(configText.includes("discover_models: false"));
@@ -1649,6 +1657,7 @@ describe("hermes adapter: sessionLaunch overlay", () => {
       assert.match(configText, /provider: aiand/);
       assert.match(configText, /default: "zai-org\/glm-5\.3"/);
       assert.ok(configText.includes("key_env: AIAND_HERMES_API_KEY"), "the provider still routes");
+      assert.ok(configText.includes("x-aiand-agent: hermes"), "attribution headers ride along");
     } finally {
       await launch.cleanup();
     }

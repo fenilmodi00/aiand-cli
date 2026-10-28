@@ -90,6 +90,7 @@ describe("codex on", () => {
     assert.match(text, /^web_search = "disabled"$/m);
     assert.match(text, /^base_url = "https:\/\/api\.aiand\.com\/v1"$/m);
     assert.match(text, /^wire_api = "responses"$/m);
+    assert.match(text, /^http_headers = \{x-aiand-agent = "codex"\}$/m);
     // win32 records the resolved .cmd path, because Codex spawns the command
     // without a PATHEXT lookup (same assertion as scripts/e2e.mjs:415).
     assert.match(
@@ -412,7 +413,7 @@ describe("codex sessionLaunch", () => {
     assert.ok(overrides.includes('model_provider="aiand"'));
     assert.ok(
       overrides.includes(
-        `model_providers.aiand={name = "ai&", base_url = "https://api.aiand.com/v1", wire_api = "responses", auth = {command = ${JSON.stringify(process.execPath)}, args = ${JSON.stringify([process.argv[1], "key", "export", "--profile", "work"]).replaceAll(",", ", ")}}}`,
+        `model_providers.aiand={name = "ai&", base_url = "https://api.aiand.com/v1", wire_api = "responses", http_headers = {x-aiand-agent = "codex"}, auth = {command = ${JSON.stringify(process.execPath)}, args = ${JSON.stringify([process.argv[1], "key", "export", "--profile", "work"]).replaceAll(",", ", ")}}}`,
       ),
     );
     assert.ok(overrides.includes("features.image_generation=false"));

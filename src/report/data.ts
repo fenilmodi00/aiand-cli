@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { listAgentKeys } from "../api/agent-keys.js";
+import type { DatabaseSync } from "node:sqlite";
+import {
+  buildHarnessIndex,
+  type HarnessIndex,
+  resolveHarness,
+  SHARED_AGENT,
+} from "../api/agent-keys.js";
 import { type CacheGroup, cacheVerdict } from "../api/cache-report.js";
 import { CliError } from "../cli/errors.js";
 import {
@@ -17,6 +23,12 @@ import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provena
 import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
+import {
+  CORRELATION_NOTE,
+  collectLocalUsageRecords,
+  correlationsPending,
+  refreshCorrelations,
+} from "../store/local-usage.js";
 import {
   type SessionizationMeta,
   type SessionRequestRow,
@@ -68,6 +80,7 @@ type ReportRow = {
   id: string;
   model: string;
   api_key: string | null;
+  endpoint: string | null;
   created_at: string;
   latency_ms: number | null;
   input_tokens: number | null;
@@ -75,6 +88,8 @@ type ReportRow = {
   cached_tokens: number | null;
   cost_value: number | null;
   currency: string | null;
+  /** Local-usage correlation refinement (0006); null when uncorrelated. */
+  attributed_agent?: string | null;
 };
 
 /** Currency map key for rows with no `currency` (never a real code). */
@@ -157,6 +172,12 @@ export type ReportData = {
     sessionization: SessionizationMeta | null;
     /** Why the matrix uses the cache-report grouping columns (#64 pending). */
     matrixNote: string;
+    /**
+     * The standing local-usage correlation caveat (harness refinement joins
+     * gateway rows to the agents' own local usage records; unrecorded
+     * requests stay shared).
+     */
+    correlationNote: string;
     /** Present when savings could not be computed (no cached catalog). */
     savingsNote: string | null;
   };
@@ -194,13 +215,14 @@ function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): 
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, created_at, latency_ms, input_tokens, output_tokens, " +
-          "cached_tokens, cost_value, currency FROM requests" +
+        "SELECT id, model, api_key, endpoint, created_at, latency_ms, input_tokens, output_tokens, " +
+          "cached_tokens, cost_value, currency, attributed_agent FROM requests" +
           where +
           " ORDER BY created_at, id",
       )
-      .all(...args);
-    return rows as unknown as ReportRow[];
+      .all(...args) as unknown as (ReportRow & { attributed_agent: string | null })[];
+    correlateInPlace(db, rows as unknown as ReportRow[]);
+    return rows;
   } catch {
     // A store that cannot answer (locked, mid-migration elsewhere) serves an
     // empty report — observability fails open, the CLI keeps working.
@@ -211,6 +233,47 @@ function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): 
     } catch {
       // already closed
     }
+  }
+}
+
+/**
+ * The one correlation pass: refine shared-key rows from the agents' local
+ * usage records and persist any newly resolved labels. Local records are
+ * parsed only when new rows await processing (`correlationsPending`); the
+ * `attributed_agent` column rides along on every row for `harnessOf`.
+ * Fail-open end to end — a read-only or locked store keeps the key+endpoint
+ * labels.
+ */
+function correlateInPlace(db: DatabaseSync, rows: ReportRow[]): void {
+  try {
+    if (!correlationsPending(db)) return;
+    const records = collectLocalUsageRecords();
+    if (records.length === 0) return;
+    const keyIndex = buildHarnessIndex();
+    const { labels } = refreshCorrelations(
+      db,
+      rows.map((row) => ({
+        id: row.id,
+        model: row.model,
+        api_key: row.api_key,
+        endpoint: row.endpoint,
+        created_at: row.created_at,
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cached_tokens: row.cached_tokens,
+      })),
+      records,
+      (row) => resolveHarness(keyIndex, row.api_key, row.endpoint),
+    );
+    // The refinement rides on the rows this build reads: a label different
+    // from the base rule's (i.e. a shared/unknown row refined by a unique
+    // local match) lands in attributed_agent for harnessOf.
+    for (const row of rows) {
+      const refined = labels.get(row.id);
+      if (refined !== undefined) row.attributed_agent = refined;
+    }
+  } catch {
+    // correlation is best-effort; the report never fails on it
   }
 }
 
@@ -313,10 +376,19 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`, "i");
 }
 
-type KeyIndex = Map<string, string>;
+type KeyIndex = HarnessIndex;
 
-function harnessOf(row: Pick<ReportRow, "api_key">, keyIndex: KeyIndex): string {
-  return row.api_key === null ? "unknown" : (keyIndex.get(row.api_key) ?? "unknown");
+/**
+ * Harness precedence, refined by local-usage correlation: the key+endpoint
+ * rule first; a specific label (claude, codex, the CLI itself, …) is never
+ * overridden, while a `shared`/`unknown` row takes its persisted
+ * `attributed_agent` refinement (the agent wrote the local record —
+ * per-request ground truth) when one exists.
+ */
+function harnessOf(row: ReportRow, keyIndex: KeyIndex): string {
+  const base = resolveHarness(keyIndex, row.api_key, row.endpoint);
+  if (base !== SHARED_AGENT && base !== "unknown") return base;
+  return row.attributed_agent ?? base;
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +565,7 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
   const now = options.now ?? new Date();
   const wants = new Set<string>(options.sections);
 
-  const keyIndex: KeyIndex = new Map(listAgentKeys().map((entry) => [entry.masked, entry.agent]));
+  const keyIndex: KeyIndex = buildHarnessIndex();
   const rows = filterRows(
     load({ sinceMs: options.sinceMs, untilMs: options.untilMs }),
     options,
@@ -688,6 +760,7 @@ export function buildReportData(options: BuildDataOptions, load: LoadFn = storeL
       missingDays: coverage.missingDays,
       sessionization,
       matrixNote: MATRIX_NOTE,
+      correlationNote: CORRELATION_NOTE,
       savingsNote:
         prices === null
           ? "savings unavailable — no cached model catalog (model-catalog.json); " +

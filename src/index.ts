@@ -28,11 +28,12 @@ import { hasPlayedWelcome, markWelcomePlayed } from "./housekeeping/welcome.js";
 /** The home screen tagline, shared by the menu and the static screen. */
 const HOME_TAGLINE = "Agents and inference.";
 
-/** Menu commands that own the terminal (TUI/REPL/server); no spinner around them. */
+/** Menu commands that own the terminal (TUI/REPL/server/prompts); no spinner around them. */
 const SPINNER_EXEMPT: Record<string, true> = {
   dashboard: true,
   chat: true,
   "run-agent": true,
+  restore: true, // prompts before overwriting
 };
 
 /** Agents in display order, for the home screen's agent section. */

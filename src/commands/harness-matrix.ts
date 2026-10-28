@@ -17,7 +17,7 @@ import {
 } from "../obs/pair-stats.js";
 import { getStoreInfo, noSyncRequested, syncStore } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { excludedMixedLine, parseWindowFlags, readHarnessRows } from "./harness-stats.js";
+import { parseWindowFlags, readHarnessRows } from "./harness-stats.js";
 import { applyJqPath, isValidTimezone, parseJqPath } from "./usage-report.js";
 
 /**
@@ -63,9 +63,9 @@ Options
   --no-sync           read the local store without syncing (AIAND_NO_SYNC=1)
 
 Reading the numbers: sessions are the #66 time-gap heuristic (${sessionizationNote(10)});
-sessions whose model mix spans models are EXCLUDED and counted in the footer,
-never assigned to a model — the footer also shows their gateway-billed spend
-(in --json under \`excludedMixedSpend\`) so totals reconcile with \`usage\`.
+sessions whose model mix spans models are attributed per model — each model
+slice counts as its own session sample for that (harness, model) pair, so no
+spend is silently dropped.
 Verdicts reuse the cache-report thresholds (warn
 under 5 requests). Costs are gateway-billed store sums; ratios are estimated.
 The error rate counts non-2xx statuses excluding 429 (a rate limit is not the
@@ -158,8 +158,6 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
     const payload = {
       provenance: stats.provenance,
       pairs: pairs.map(annotatedPairRow),
-      excludedMixed: stats.provenance.excludedMixed,
-      excludedMixedSpend: stats.excludedMixed,
       synthetic: syntheticPayload(synthetic),
     };
     const filter = str(parsed, "jq");
@@ -167,18 +165,11 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
   }
 
   const header = describeRange(sinceMs, untilMs);
-  const excludedLine = excludedMixedLine(stats.excludedMixed, false);
   if (format === "markdown") {
-    renderMarkdown(pairs, header, showP90, stats.provenance.excludedMixed, excludedLine);
+    renderMarkdown(pairs, header, showP90);
   } else {
     renderTable(pairs, showP90);
     out();
-    out(
-      style.dim(
-        `${stats.provenance.excludedMixed} mixed-model session(s) excluded — counted, assigned to no model`,
-      ),
-    );
-    if (excludedLine !== null) out(style.dim(excludedLine));
     out(
       style.dim(
         `n = sessions per row · verdicts warn under 5 requests; ` +
@@ -361,19 +352,10 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-function renderMarkdown(
-  pairs: PairStatsRow[],
-  header: string,
-  showP90: boolean,
-  excludedMixed: number,
-  excludedLine: string | null,
-): void {
+function renderMarkdown(pairs: PairStatsRow[], header: string, showP90: boolean): void {
   out(`### harness × model matrix — ${header}`);
   out();
   for (const line of markdownTable(pairs, showP90)) out(line);
-  out();
-  out(`_${excludedMixed} mixed-model session(s) excluded — counted, assigned to no model._`);
-  if (excludedLine !== null) out(`_${excludedLine}_`);
 }
 
 function describeRange(sinceMs: number | null, untilMs: number | null): string {

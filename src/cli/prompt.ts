@@ -1,6 +1,7 @@
 import { stderr, stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { CliError, cancelled, EXIT } from "./errors.js";
+import { withoutSpinner } from "./output.js";
 import { KEY, type PromptInput, type PromptOutput } from "./select.js";
 
 /**
@@ -20,7 +21,7 @@ export async function readLineVisible(
     output: (options.output ?? stderr) as unknown as NodeJS.WritableStream,
   });
   try {
-    return await rl.question(prompt);
+    return await withoutSpinner(() => rl.question(prompt));
   } catch (error) {
     if ((error as Error).name === "AbortError") throw cancelled();
     throw error;
@@ -68,77 +69,80 @@ export async function readSecret(
   let pendingEsc = false;
   let inEscape = false;
   try {
-    value = await new Promise<string>((resolve, reject) => {
-      const stop = () => {
-        input.removeListener("data", onData);
-        input.removeListener("end", onEnd);
-      };
-      const onEnd = () => {
-        stop();
-        reject(
-          new CliError("Input ended.", {
-            hint: "This prompt needs an interactive terminal.",
-          }),
-        );
-      };
-      const onData = (chunk: string) => {
-        for (const char of chunk) {
-          if (char === KEY.CTRL_C) {
+    value = await withoutSpinner(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          const stop = () => {
+            input.removeListener("data", onData);
+            input.removeListener("end", onEnd);
+          };
+          const onEnd = () => {
             stop();
-            output.write("^C\n");
-            reject(cancelled());
-            return;
-          }
-          if (char === KEY.ENTER_CR || char === KEY.ENTER_LF) {
-            stop();
-            resolve(value);
-            return;
-          }
-          if (inEscape) {
-            const code = char.codePointAt(0) ?? 0;
-            if (code >= 0x40 && code <= 0x7e) {
-              inEscape = false;
-              pendingEsc = false;
-              continue;
+            reject(
+              new CliError("Input ended.", {
+                hint: "This prompt needs an interactive terminal.",
+              }),
+            );
+          };
+          const onData = (chunk: string) => {
+            for (const char of chunk) {
+              if (char === KEY.CTRL_C) {
+                stop();
+                output.write("^C\n");
+                reject(cancelled());
+                return;
+              }
+              if (char === KEY.ENTER_CR || char === KEY.ENTER_LF) {
+                stop();
+                resolve(value);
+                return;
+              }
+              if (inEscape) {
+                const code = char.codePointAt(0) ?? 0;
+                if (code >= 0x40 && code <= 0x7e) {
+                  inEscape = false;
+                  pendingEsc = false;
+                  continue;
+                }
+                if (code >= 0x20 && code <= 0x3f) {
+                  continue;
+                }
+                inEscape = false;
+                pendingEsc = false;
+              }
+              if (pendingEsc) {
+                if (char === "[" || char === "O") {
+                  inEscape = true;
+                  continue;
+                }
+                pendingEsc = false;
+                if (char === KEY.ESC) {
+                  pendingEsc = true;
+                  continue;
+                }
+              } else if (char === KEY.ESC) {
+                pendingEsc = true;
+                continue;
+              }
+              if (char === KEY.BACKSPACE_DEL || char === KEY.BACKSPACE_BS) {
+                if (value) {
+                  value = value.slice(0, -1);
+                  output.write(String.fromCharCode(8, 32, 8)); // backspace-space-backspace: erase one mask char
+                }
+                continue;
+              }
+              const code = char.codePointAt(0) ?? 0;
+              if (code < 0x20 || (code >= 0x80 && code <= 0x9f)) {
+                continue; // C0/C1 controls (Tab, Ctrl-D, etc.) are not key material
+              }
+              value += char;
+              output.write("*"); // mask echo: confirms a paste landed without showing the key
             }
-            if (code >= 0x20 && code <= 0x3f) {
-              continue;
-            }
-            inEscape = false;
-            pendingEsc = false;
-          }
-          if (pendingEsc) {
-            if (char === "[" || char === "O") {
-              inEscape = true;
-              continue;
-            }
-            pendingEsc = false;
-            if (char === KEY.ESC) {
-              pendingEsc = true;
-              continue;
-            }
-          } else if (char === KEY.ESC) {
-            pendingEsc = true;
-            continue;
-          }
-          if (char === KEY.BACKSPACE_DEL || char === KEY.BACKSPACE_BS) {
-            if (value) {
-              value = value.slice(0, -1);
-              output.write(String.fromCharCode(8, 32, 8)); // backspace-space-backspace: erase one mask char
-            }
-            continue;
-          }
-          const code = char.codePointAt(0) ?? 0;
-          if (code < 0x20 || (code >= 0x80 && code <= 0x9f)) {
-            continue; // C0/C1 controls (Tab, Ctrl-D, etc.) are not key material
-          }
-          value += char;
-          output.write("*"); // mask echo: confirms a paste landed without showing the key
-        }
-      };
-      input.on("data", onData);
-      input.on("end", onEnd);
-    });
+          };
+          input.on("data", onData);
+          input.on("end", onEnd);
+        }),
+    );
   } finally {
     input.setRawMode(false);
     output.write("\n");

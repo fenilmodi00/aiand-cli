@@ -34,6 +34,8 @@ const FIELD_LIST = [
   "cost",
   "currency",
   "created_at",
+  "endpoint",
+  "attributed_agent",
 ];
 
 /** A gateway LogEntry matching the verified field list, minute-stamped. */
@@ -160,10 +162,12 @@ describe("store module surface", () => {
     const migrations = await import("../dist/store/migrations/index.js");
     assert.equal(typeof mod.STORE_VERSION, "number");
     assert.equal(mod.STORE_VERSION, migrations.MIGRATIONS.at(-1).version);
-    // 4 = migration 0004 (envelopes table, #78). Migration 0003 (imported
-    // usage, #73) was removed with the ccusage import lane (#118) and the
-    // versions stay stable for existing stores.
-    assert.equal(mod.STORE_VERSION, 4);
+    // 6 = migration 0006 (requests.attributed_agent, local-usage
+    // correlation). 5 = migration 0005 (requests.endpoint, harness
+    // attribution); 4 = envelopes (#78); 0003 (imported usage, #73) was
+    // removed with the ccusage import lane (#118) and versions stay stable
+    // for existing stores.
+    assert.equal(mod.STORE_VERSION, 6);
   });
 
   test("storePath() resolves under AIAND_CONFIG_DIR", async () => {

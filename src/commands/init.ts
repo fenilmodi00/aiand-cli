@@ -273,6 +273,8 @@ async function runInteractive(jsonOut: boolean, profile?: string, force?: boolea
       value: adapter.id,
       label: `${adapter.label} (${adapter.id})`,
     })),
+    // Every detected agent starts checked: Enter alone wires them all.
+    initial: detected.map((adapter) => adapter.id),
   });
   // Esc / q: a deliberate cancel, not a mistake.
   if (picked === null) throw cancelled();

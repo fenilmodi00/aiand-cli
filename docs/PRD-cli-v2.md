@@ -83,7 +83,7 @@ Provenance vocabulary is shared (`src/obs/provenance.ts`) and appears everywhere
 
 **Done when:** re-sync of unchanged data inserts 0 rows; post-watermark rows are picked up on the next sync; repeated burst syncs never duplicate; `--no-sync` touches no network; corrupt DB is quarantined and rebuilt without losing locally captured envelopes.
 
-**R2 — Sessionization.** Requests are grouped into sessions per masked key by time gap (default 10 min; `sessionGapMinutes` config, `--session-gap` flag wins over config over default), sorted by `created_at, id`, deterministic ids (SHA-256 key+start, 16 hex), rebuilt idempotently from verbatim rows. Mixed-model sessions are excluded from every model-level aggregate **and counted explicitly**. Every machine payload carries `sessionization: {method: "time-gap", gapMinutes, confidence: "heuristic"}`; human output gets a one-line note. There is no manual session-id override — the `--session` flag selects, it does not assign.
+**R2 — Sessionization.** Requests are grouped into sessions per masked key by time gap (default 10 min; `sessionGapMinutes` config, `--session-gap` flag wins over config over default), sorted by `created_at, id`, deterministic ids (SHA-256 key+start, 16 hex), rebuilt idempotently from verbatim rows. Mixed-model sessions are excluded from every cross-model aggregate (`compare`) **and counted explicitly**; `matrix`/`recommend` attribute them per model — each model-slice is a session sample for its (harness, model) pair. Every machine payload carries `sessionization: {method: "time-gap", gapMinutes, confidence: "heuristic"}`; human output gets a one-line note. There is no manual session-id override — the `--session` flag selects, it does not assign.
 
 **Done when:** a 9m59s gap stays one session and 10m00s splits; different keys never merge; identical rows rebuild byte-identically; unknown session id exits non-zero listing nearest recent sessions.
 
@@ -111,7 +111,7 @@ Provenance vocabulary is shared (`src/obs/provenance.ts`) and appears everywhere
 
 **R8 — Model × harness matrix and recommendation.** `aiand harness matrix`: one row per (harness, model) — sessions, cost/session median, tokens/session, TTFT p50/p95 (`--show p90`), cache hit ratio, error rate, verdict; `--top/--sort cost|ttft|hit|errors/--order/--unpriced/--format table|json|markdown/--jq`; `--synthetic` shows the saved `--sweep-models` result in its own labeled block ("NOT your workload"), never joined into the ranking. `aiand recommend` ranks observed pairs only — cost/session median asc, tie-break hit-ratio desc then ttft p50 asc, no hidden weights; pairs <5 sessions go to an "insufficient data" block with sample counts; output includes the de-facto current pair, a heuristic expected delta, and a one-line wiring suggestion (`aiand <agent> on --model X`) — it never changes wiring. Both share one aggregation (`src/obs/pair-stats.ts`); unpriced rows hidden by default, surfaced via `--unpriced` as `unpriced`, never $0.00.
 
-**Done when:** mixed-model sessions are excluded everywhere and counted; recommend never ranks synthetic data; `--unpriced` rows carry `unpriced` provenance, not zeros.
+**Done when:** `compare` excludes mixed-model sessions and counts them; `matrix`/`recommend` attribute mixed-model sessions per model — each model-slice is a session sample for its (harness, model) pair; recommend never ranks synthetic data; `--unpriced` rows carry `unpriced` provenance, not zeros.
 
 ### Forecasting
 

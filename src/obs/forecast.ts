@@ -60,6 +60,7 @@ const SPEND_PROVENANCE = gatewayBilled("sum of gateway-computed per-request cost
 export type ForecastRow = {
   id: string;
   api_key: string | null;
+  endpoint?: string | null;
   created_at: string;
   latency_ms: number | null;
   cost: string | null;
@@ -366,7 +367,7 @@ export function readForecastRows(options: { now?: Date; harness?: string } = {})
 
     const rows = db
       .prepare(
-        "SELECT id, api_key, created_at, latency_ms, cost, cost_value, currency FROM requests " +
+        "SELECT id, api_key, endpoint, created_at, latency_ms, cost, cost_value, currency FROM requests " +
           `WHERE ${createdSince()} ORDER BY created_at, id`,
       )
       .all(since) as unknown as ForecastRow[];
@@ -374,7 +375,7 @@ export function readForecastRows(options: { now?: Date; harness?: string } = {})
     if (options.harness !== undefined) {
       const keys = new Set(
         rows
-          .filter((row) => agentForMaskedKey(row.api_key ?? "") === options.harness)
+          .filter((row) => agentForMaskedKey(row.api_key ?? "", row.endpoint) === options.harness)
           .map((row) => row.api_key ?? ""),
       );
       const scoped = rows.filter((row) => keys.has(row.api_key ?? ""));

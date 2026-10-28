@@ -102,14 +102,14 @@ async function seedAgentKeys(cfg) {
 // Pure engine
 // ---------------------------------------------------------------------------
 
-test("buildPairStats splits rows per (harness, model) and excludes mixed-model sessions", async () => {
+test("buildPairStats splits rows per (harness, model), attributing mixed-model sessions per model", async () => {
   const masks = await seedAgentKeys(cfgDir("engine-mixed"));
   const rows = [
     // claude / glm-5.3: one 3-request session
     row({ id: "c1", api_key: masks.claude, created_at: iso(0) }),
     row({ id: "c2", api_key: masks.claude, created_at: iso(60_000) }),
     row({ id: "c3", api_key: masks.claude, created_at: iso(120_000) }),
-    // claude session with TWO models → mixed, excluded AND counted
+    // claude session with TWO models → attributed per model slice
     row({ id: "m1", api_key: masks.claude, created_at: iso(20 * HOUR), model: "zai-org/glm-5.3" }),
     row({
       id: "m2",
@@ -144,28 +144,28 @@ test("buildPairStats splits rows per (harness, model) and excludes mixed-model s
     loadEngine().then(({ buildPairStats }) => buildPairStats(rows)),
   );
 
-  assert.equal(stats.provenance.excludedMixed, 1);
-  assert.equal(stats.excluded.length, 1);
+  // No exclusion bookkeeping anymore: mixed sessions contribute both pairs.
+  assert.ok(!("excluded" in stats));
+  assert.ok(!("excludedMixed" in (stats.provenance ?? {})));
 
   const claudeGlm = stats.pairs.find(
     (p) => p.harness === "claude" && p.model === "zai-org/glm-5.3",
   );
+  const claudeGpt = stats.pairs.find((p) => p.harness === "claude" && p.model === "openai/gpt-5.2");
   const openGlm = stats.pairs.find(
     (p) => p.harness === "opencode" && p.model === "zai-org/glm-5.3",
   );
   const openGpt = stats.pairs.find((p) => p.harness === "opencode" && p.model === "openai/gpt-5.2");
-  assert.ok(claudeGlm && openGlm && openGpt, "three observed pairs");
-  // The mixed session's rows belong to no pair.
-  assert.equal(claudeGlm.requests, 3);
-  assert.equal(claudeGlm.sessions, 1);
+  assert.ok(claudeGlm && claudeGpt && openGlm && openGpt, "four observed pairs");
+  // The mixed session splits into one sample per (harness, model) slice.
+  assert.equal(claudeGlm.requests, 4, "3 pure-session rows + 1 mixed-session glm row");
+  assert.equal(claudeGlm.sessions, 2);
+  assert.equal(claudeGpt.requests, 1, "the mixed session's gpt row");
+  assert.equal(claudeGpt.sessions, 1);
   assert.equal(openGlm.requests, 2);
   assert.equal(openGpt.requests, 1);
   // Tokens/session are per-session averages.
   assert.equal(openGlm.tokensPerSession.in, 4000, "session token sum across its 2 requests");
-  // OBS-LT-4: the excluded session's gateway-billed spend rides the result.
-  assert.equal(stats.excludedMixed.sessions, 1);
-  assert.equal(stats.excludedMixed.requests, 2);
-  assert.equal(stats.excludedMixed.cost, 0.02);
   // 429 is not an error; non-2xx (other than 429) is.
   const errRows = [
     row({ id: "e1", api_key: masks.claude, created_at: iso(40 * HOUR), status_code: 429 }),
@@ -273,13 +273,17 @@ async function seededMatrixStore(name) {
         row({ id: `c${s}${i}`, api_key: masks.claude, created_at: iso(s * 2 * HOUR + i * 60_000) }),
       ),
     ).flat(),
-    // claude mixed-model session (excluded, counted)
+    // claude mixed-model session (splits per model: claude/glm + claude/gpt;
+    // the gpt slice is unpriced so it stays hidden without --unpriced)
     row({ id: "mx1", api_key: masks.claude, created_at: iso(30 * HOUR), model: "zai-org/glm-5.3" }),
     row({
       id: "mx2",
       api_key: masks.claude,
       created_at: iso(30 * HOUR + 60_000),
       model: "openai/gpt-5.2",
+      cost_value: null,
+      cost: null,
+      ttft_ms: 900,
     }),
     // claude/gpt-5.2: 6 single-request sessions, no cost rows (unpriced)
     ...Array.from({ length: 6 }, (_, s) =>
@@ -293,8 +297,9 @@ async function seededMatrixStore(name) {
         ttft_ms: 900,
       }),
     ),
-    // opencode/glm-5.3: 7 single-request sessions, pricier per session
-    ...Array.from({ length: 7 }, (_, s) =>
+    // opencode/glm-5.3: 8 single-request sessions — the most sessions, so it
+    // stays the de-facto current pair even after the claude split adds one.
+    ...Array.from({ length: 8 }, (_, s) =>
       row({
         id: `o${s}`,
         api_key: masks.opencode,
@@ -310,7 +315,7 @@ async function seededMatrixStore(name) {
 }
 
 test("cli: harness matrix renders columns, hides unpriced by default, shows with --unpriced", async () => {
-  // #109: the matrix footer carries the excluded mixed-model spend line.
+  // (Mixed sessions no longer produce a footer line.)
   const cfg = await seededMatrixStore("matrix-basic");
 
   const { code, stdout } = await runCli(["harness", "matrix", "--no-sync"], {
@@ -333,12 +338,8 @@ test("cli: harness matrix renders columns, hides unpriced by default, shows with
   assert.ok(!stdout.includes("openai/gpt-5.2"), "unpriced pair hidden without --unpriced");
   // Cheapest pair first (opencode/glm at 0.05/req → sessions ~0.15 vs claude 0.03/sess... just check opencode present).
   assert.ok(stdout.includes("opencode"));
-  // Mixed-model footer counts exactly one, with the OBS-LT-4 spend line.
-  assert.match(stdout, /1 mixed-model session\(s\) excluded/);
-  assert.match(
-    stdout,
-    /excluded mixed-model spend \(1 session\(s\), gateway-billed, not in any row above\): 2 request\(s\).*\$0\.0200/,
-  );
+  // Mixed sessions are attributed per model now — no exclusion footer.
+  assert.ok(!stdout.includes("mixed-model session(s) excluded"));
 
   const priced = await runCli(["harness", "matrix", "--no-sync", "--unpriced"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -371,7 +372,6 @@ test("cli: harness matrix --sort/--top/--format markdown/--show p90", async () =
   assert.ok(md.stdout.includes("| harness | model |"));
   assert.ok(md.stdout.includes("---:"));
   assert.ok(md.stdout.includes("p90"));
-  assert.match(md.stdout, /mixed-model session\(s\) excluded/);
 
   const bad = await runCli(["harness", "matrix", "--no-sync", "--sort", "bogus"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -380,7 +380,6 @@ test("cli: harness matrix --sort/--top/--format markdown/--show p90", async () =
 });
 
 test("cli: matrix --json carries per-row provenance labels and --jq works", async () => {
-  // #109: excludedMixedSpend rides the JSON payload.
   const cfg = await seededMatrixStore("matrix-json");
 
   const { code, stdout } = await runCli(
@@ -392,15 +391,10 @@ test("cli: matrix --json carries per-row provenance labels and --jq works", asyn
   assert.equal(code, 0);
   const payload = JSON.parse(stdout);
   assert.ok(payload.provenance);
-  assert.equal(payload.provenance.excludedMixed, 1);
-  // OBS-LT-4: the excluded sessions' gateway-billed spend rides the payload.
-  assert.deepEqual(payload.excludedMixedSpend, {
-    sessions: 1,
-    requests: 2,
-    tokens: { in: 2000, out: 200, cached: 1000 },
-    cost: 0.02,
-    currency: "usd",
-  });
+  // Mixed-model sessions are attributed per model now — the exclusion
+  // bookkeeping (provenance.excludedMixed / excludedMixedSpend) is gone.
+  assert.ok(!("excludedMixed" in payload.provenance));
+  assert.ok(!("excludedMixedSpend" in payload));
   assert.ok(Array.isArray(payload.pairs) && payload.pairs.length >= 2);
   for (const pair of payload.pairs) {
     assert.equal(pair.labels.cost, "gateway-billed");
@@ -624,4 +618,72 @@ test("cli: recommend fail-open sync warning and unknown-harness apply line", asy
   // One session is below the 5-session guard: the empty-rank branch renders.
   assert.match(warned.stdout, /nothing to rank yet/);
   assert.match(warned.stdout, /insufficient data/);
+});
+
+// User bug: one agent (omp) whose session mixes glm-5.3 with subagent
+// glm-5.3-flash calls used to be excluded entirely, losing the flash spend.
+// Now the session splits per model, so each (agent, model) slice gets its
+// own session sample and the gateway-billed total is fully attributed.
+test("buildPairStats attributes mixed-model sessions per model (user bug: omp session with subagent flash calls)", async () => {
+  const cfg = cfgDir("omp-mixed");
+  const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("omp", "sk-test-omp-super-secret-key-000");
+  });
+  const ompMask = await withEnv({ AIAND_CONFIG_DIR: cfg }, async () =>
+    maskKey("sk-test-omp-super-secret-key-000"),
+  );
+  const rows = [
+    row({
+      id: "z1",
+      api_key: ompMask,
+      created_at: iso(0),
+      cost_value: 1.0,
+      model: "zai-org/glm-5.3",
+    }),
+    row({
+      id: "z2",
+      api_key: ompMask,
+      created_at: iso(60_000),
+      cost_value: 1.0,
+      model: "zai-org/glm-5.3",
+    }),
+    row({
+      id: "z3",
+      api_key: ompMask,
+      created_at: iso(120_000),
+      cost_value: 1.0,
+      model: "zai-org/glm-5.3",
+    }),
+    row({
+      id: "f1",
+      api_key: ompMask,
+      created_at: iso(180_000),
+      cost_value: 0.01,
+      model: "zai-org/glm-5.3-flash",
+    }),
+    row({
+      id: "f2",
+      api_key: ompMask,
+      created_at: iso(240_000),
+      cost_value: 0.01,
+      model: "zai-org/glm-5.3-flash",
+    }),
+  ];
+  const stats = await withEnv({ AIAND_CONFIG_DIR: cfg }, () =>
+    loadEngine().then(({ buildPairStats }) => buildPairStats(rows)),
+  );
+
+  const glm = stats.pairs.find((p) => p.harness === "omp" && p.model === "zai-org/glm-5.3");
+  const flash = stats.pairs.find((p) => p.harness === "omp" && p.model === "zai-org/glm-5.3-flash");
+  assert.ok(glm && flash, "both omp model slices present");
+  assert.equal(glm.sessions, 1);
+  assert.equal(glm.requests, 3);
+  assert.ok(Math.abs(glm.costTotal - 3.0) < 1e-9);
+  assert.equal(flash.sessions, 1);
+  assert.equal(flash.requests, 2);
+  assert.ok(Math.abs(flash.costTotal - 0.02) < 1e-9);
+  // The store's total spend is fully attributed: no cost is dropped.
+  const attributed = stats.pairs.reduce((sum, p) => sum + (p.costTotal ?? 0), 0);
+  assert.ok(Math.abs(attributed - 3.02) < 1e-9, "sum of pair costTotals == 3.02");
 });

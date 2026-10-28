@@ -32,7 +32,19 @@ async function seedRequests(rows) {
   }
   const db = new DatabaseSync(join(box.dir, "store.db"));
   try {
-    for (const migration of MIGRATIONS) db.exec(migration.sql);
+    // Mirror the runner: record applied versions, or openStore's migrate()
+    // re-applies them and the 0005 ALTER fails on the duplicate column.
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS schema_migrations (" +
+        "version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)",
+    );
+    // re-applies them and the 0005 ALTER fails on the duplicate column.
+    for (const migration of MIGRATIONS) {
+      db.exec(migration.sql);
+      db.prepare(
+        "INSERT OR REPLACE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+      ).run(migration.version, migration.name, new Date().toISOString());
+    }
     const insert = db.prepare(
       "INSERT OR IGNORE INTO requests (id, model, api_key, status_code, ttft_ms, " +
         "latency_ms, input_tokens, output_tokens, cached_tokens, cost, cost_value, " +

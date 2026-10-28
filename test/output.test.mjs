@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 import test, { describe } from "node:test";
 
 const {
@@ -271,6 +272,52 @@ describe("spinner", () => {
       outChunks.some((c) => c.startsWith("payload")),
       "payload printed on stdout, untouched",
     );
+    assert.match(stream, /\x1b\[\?25h/, "stop shows the cursor");
+  });
+
+  test("an interactive confirm during a spinner pauses frames until answered", async () => {
+    const chunks = [];
+    const originalErr = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    };
+    const originalIsTTY = process.stderr.isTTY;
+    Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+    const { confirm } = await import("../dist/cli/prompt.js");
+    const input = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {} });
+    // No output seam: the question must land on stderr, where frames can
+    // erase it — that collision is the bug.
+    try {
+      const spin = spinner("working");
+      // Let at least one frame land, then ask a question mid-spinner.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const answer = confirm("Revoke the key?", { input });
+      // Hold the question open past a frame interval: unfixed, the spinner
+      // repaints over it; fixed, pause() holds the line until "y".
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      input.write("y\n");
+      assert.equal(await answer, true);
+      // Let frames restart before stop.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      spin.stop();
+    } finally {
+      process.stderr.write = originalErr;
+      Object.defineProperty(process.stderr, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      });
+    }
+    const stream = chunks.join("");
+    assert.match(stream, /Revoke the key\?/, "the question is rendered");
+    // Frames must not restart while the question waits for input. The
+    // window runs from the question to the answer's echoed newline (the
+    // first \n after the question — the prompt itself has none).
+    const askedAt = stream.indexOf("Revoke the key?");
+    const answeredAt = stream.indexOf("\n", askedAt);
+    const whileAsking = stream.slice(askedAt, answeredAt);
+    assert.doesNotMatch(whileAsking, /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/, "no spinner frames erase the question");
+    assert.match(stream, /\x1b\[\?25l/, "cursor hidden while spinning");
     assert.match(stream, /\x1b\[\?25h/, "stop shows the cursor");
   });
 });

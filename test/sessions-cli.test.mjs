@@ -176,6 +176,26 @@ test("cli: sessions table is a deterministic snapshot over a fixture store", asy
   );
 });
 
+// Shared-key attribution: when a second agent is recorded holding the same
+// key, the session's label must flip to "shared" — and the materialized
+// sessions table must RELABEL on the next read, with no new traffic, because
+// the rebuild fingerprint covers the key map, not just the request rows.
+test("cli: a shared key relabels existing sessions without new traffic", async () => {
+  const cfg = cfgDir("shared-relabel");
+  await seedStore(cfg, [baseRows()[0]]);
+  const before = JSON.parse((await runCli(["sessions", "--json"], { env: ENV(cfg) })).stdout);
+  assert.equal(before.sessions[0].harness, "claude");
+
+  // Same key now recorded under a second agent — nothing else changes.
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("codex", KEY);
+  });
+
+  const after = JSON.parse((await runCli(["sessions", "--json"], { env: ENV(cfg) })).stdout);
+  assert.equal(after.sessions[0].harness, "shared");
+});
+
 test("cli: --json list carries the pinned shape and the sessionization annotation", async () => {
   const cfg = cfgDir("json-list");
   await seedStore(cfg, baseRows());

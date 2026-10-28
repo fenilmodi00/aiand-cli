@@ -9,6 +9,16 @@ import {
   sql as envelopesSql,
   version as envelopesVersion,
 } from "./0004-envelopes.js";
+import {
+  name as requestEndpointName,
+  sql as requestEndpointSql,
+  version as requestEndpointVersion,
+} from "./0005-request-endpoint.js";
+import {
+  name as localUsageName,
+  sql as localUsageSql,
+  version as localUsageVersion,
+} from "./0006-local-usage.js";
 
 /**
  * The store's numbered migrations, in application order. Each entry carries
@@ -31,4 +41,6 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: initVersion, name: initName, sql: initSql },
   { version: sessionsVersion, name: sessionsName, sql: sessionsSql },
   { version: envelopesVersion, name: envelopesName, sql: envelopesSql },
+  { version: requestEndpointVersion, name: requestEndpointName, sql: requestEndpointSql },
+  { version: localUsageVersion, name: localUsageName, sql: localUsageSql },
 ];

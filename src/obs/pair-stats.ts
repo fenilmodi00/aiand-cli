@@ -1,9 +1,7 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { sessionizeRows } from "../store/sessions.js";
 import {
-  type ExcludedMixedAggregate,
   errorCount,
-  excludedMixedAggregate,
   type HarnessRequestRow,
   type HarnessStatsOptions,
   percentile,
@@ -22,8 +20,9 @@ import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.j
  * store rows are gateway-verbatim (cost/token sums are `gateway-billed`),
  * ratios and percentiles are `estimated`, session boundaries are the #66
  * time-gap heuristic, and a session whose model mix spans more than one
- * model is EXCLUDED from every pair and counted explicitly — never assigned
- * to a model. The error rate uses the shared `errorCount` helper (#88): non-2xx
+ * model is attributed per model — each model slice becomes its own session
+ * sample for that (harness, model) pair, so no spend is silently dropped.
+ * The error rate uses the shared `errorCount` helper (#88): non-2xx
  * statuses EXCLUDING 429 (a rate limit is the gateway's pressure, not the
  * pair's quality) — the same definition `harness stats` now uses.
  */
@@ -45,7 +44,7 @@ export type PairStatsRow = {
   cacheHitRatio: number;
   errorRate: number;
   verdict: "good" | "warn" | "bad";
-  /** Every non-mixed session behind the aggregates (inspectable samples). */
+  /** Every session slice behind the aggregates (inspectable samples). */
   samples: SessionSample[];
 };
 
@@ -54,15 +53,10 @@ export type PairStats = {
     range: { since: string | null; until: string | null };
     timezone: string;
     storeWatermark: string | null;
-    excludedMixed: number;
     sessionization: { method: "time-gap"; gapMinutes: number; confidence: "heuristic" };
     labels: Record<string, string>;
   };
   pairs: PairStatsRow[];
-  /** Mixed-model sessions excluded from every pair above. */
-  excluded: SessionSample[];
-  /** Their gateway-billed spend — the reconciliation line (OBS-LT-4). */
-  excludedMixed: ExcludedMixedAggregate;
 };
 
 /** A session is ranked only with enough of them; below this → "insufficient data". */
@@ -93,7 +87,7 @@ export function annotatedPairRow(
  * Aggregate per-(harness, model) pair stats from store rows. Pure and
  * deterministic. The harness dimension is the masked-key agent attribution
  * (the same `session.agent` #64 uses); sessions split across models are
- * excluded and counted, never attributed.
+ * attributed per model — each model slice becomes its own session sample.
  */
 export function buildPairStats(
   rows: readonly HarnessRequestRow[],
@@ -103,32 +97,29 @@ export function buildPairStats(
   const scoped = options.cohort ? rows.filter(options.cohort) : rows;
   const details = sessionizeRows(scoped, gapMinutes);
 
-  const excluded: SessionSample[] = [];
-  const excludedSessions: { rows: HarnessRequestRow[] }[] = [];
   const byPair = new Map<string, { rows: HarnessRequestRow[]; sessions: SessionSample[] }>();
 
   for (const session of details) {
     const models = [...new Set(session.rows.map((row) => row.model))].sort();
-    const sample: SessionSample = {
-      session_id: session.session_id,
-      agent: session.agent,
-      turns: session.turns,
-      cost: session.cost,
-      currency: session.currency,
-      models,
-      started_at: session.started_at,
-    };
-    if (models.length > 1) {
-      excluded.push(sample);
-      excludedSessions.push(session);
-      continue;
+    for (const model of models) {
+      const sliceRows = session.rows.filter((row) => row.model === model);
+      const costRows = sliceRows.filter((row) => typeof row.cost_value === "number");
+      const sample: SessionSample = {
+        session_id: session.session_id,
+        agent: session.agent,
+        turns: sliceRows.length,
+        cost:
+          costRows.length > 0 ? costRows.reduce((sum, r) => sum + (r.cost_value ?? 0), 0) : null,
+        currency: sliceRows[0]?.currency ?? null,
+        models: [model],
+        started_at: session.started_at,
+      };
+      const key = `${session.agent}\n${model}`;
+      const bucket = byPair.get(key) ?? { rows: [], sessions: [] };
+      bucket.rows.push(...sliceRows);
+      bucket.sessions.push(sample);
+      byPair.set(key, bucket);
     }
-    const model = models[0] ?? "";
-    const key = `${session.agent}\n${model}`;
-    const bucket = byPair.get(key) ?? { rows: [], sessions: [] };
-    bucket.rows.push(...session.rows);
-    bucket.sessions.push(sample);
-    byPair.set(key, bucket);
   }
 
   const pairs: PairStatsRow[] = [...byPair.entries()].map(([key, bucket]) => {
@@ -189,7 +180,9 @@ export function buildPairStats(
     ttft: formatLabel(gatewayBilled("gateway ttft_ms")),
     cacheHitRatio: formatLabel(estimated("cached_tokens / input_tokens")),
     errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
-    costPerSession: formatLabel(heuristic("per-session cost over time-gap sessions")),
+    costPerSession: formatLabel(
+      heuristic("per-session cost over time-gap sessions; mixed-model sessions split per model"),
+    ),
     verdict: formatLabel(estimated("cacheVerdict thresholds")),
   };
 
@@ -198,13 +191,10 @@ export function buildPairStats(
       range: options.range ?? { since: null, until: null },
       timezone: options.timezone ?? "UTC",
       storeWatermark: options.storeWatermark ?? null,
-      excludedMixed: excluded.length,
       sessionization: { method: "time-gap", gapMinutes, confidence: "heuristic" },
       labels,
     },
     pairs,
-    excluded,
-    excludedMixed: excludedMixedAggregate(excludedSessions),
   };
 }
 
@@ -268,7 +258,9 @@ export function pairStatsLabels(): Record<string, ProvenanceLabel> {
     "pair-stats.ttft": gatewayBilled("gateway ttft_ms"),
     "pair-stats.cacheHitRatio": estimated("cached_tokens / input_tokens"),
     "pair-stats.errorRate": estimated("non-2xx excluding 429 / requests"),
-    "pair-stats.costPerSession": heuristic("per-session cost over time-gap sessions"),
+    "pair-stats.costPerSession": heuristic(
+      "per-session cost over time-gap sessions; mixed-model sessions split per model",
+    ),
     "pair-stats.verdict": estimated("cacheVerdict thresholds"),
   };
 }

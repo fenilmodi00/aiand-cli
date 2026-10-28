@@ -133,6 +133,7 @@ type HeatRow = {
   cost_value: number | null;
   currency: string | null;
   api_key: string | null;
+  endpoint: string | null;
   model: string;
 };
 
@@ -154,7 +155,7 @@ function readHeatRows(window: { sinceMs: number | null; untilMs: number | null }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT created_at, cost_value, currency, api_key, model FROM requests" +
+        "SELECT created_at, cost_value, currency, api_key, endpoint, model FROM requests" +
           where +
           " ORDER BY created_at",
       )
@@ -190,7 +191,9 @@ function filterRows(
   return rows.filter((row) => {
     if (harnessWanted !== null) {
       const harness =
-        row.api_key === null ? "unknown" : (agentForMaskedKey(row.api_key) ?? "unknown");
+        row.api_key === null
+          ? "unknown"
+          : (agentForMaskedKey(row.api_key, row.endpoint) ?? "unknown");
       if (!harnessWanted.has(harness)) return false;
     }
     if (patterns.length > 0 && !patterns.some((re) => re.test(row.model))) return false;

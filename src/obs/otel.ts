@@ -101,6 +101,7 @@ type RequestRow = {
   id: string;
   model: string;
   api_key: string | null;
+  endpoint: string | null;
   status_code: number;
   ttft_ms: number | null;
   latency_ms: number | null;
@@ -250,7 +251,9 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
     const model = row.model;
     const genBase = attrsOf({
       "aiand.key.masked": row.api_key ?? "unknown",
-      "agent.name": row.api_key ? (agentForMaskedKey(row.api_key) ?? "unknown") : "unknown",
+      "agent.name": row.api_key
+        ? (agentForMaskedKey(row.api_key, row.endpoint) ?? "unknown")
+        : "unknown",
       "app.version": VERSION,
       "error.type": failed ? String(row.status_code) : undefined,
       "gen_ai.operation.name": "chat",
@@ -542,7 +545,7 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
     try {
       rows = db
         .prepare(
-          "SELECT id, model, api_key, status_code, ttft_ms, latency_ms, input_tokens, " +
+          "SELECT id, model, api_key, endpoint, status_code, ttft_ms, latency_ms, input_tokens, " +
             "output_tokens, cached_tokens, cost, cost_value, created_at FROM requests " +
             `WHERE ${createdSince()} AND ${createdUntilIncl()} ORDER BY created_at, id`,
         )

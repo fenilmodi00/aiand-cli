@@ -152,7 +152,7 @@ export function readSessionRows(
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost, cost_value, currency, status_code, ttft_ms, latency_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -164,7 +164,9 @@ export function readSessionRows(
       if (
         agents &&
         !agents.has(
-          row.api_key === null ? "unknown" : (agentForMaskedKey(row.api_key) ?? "unknown"),
+          row.api_key === null
+            ? "unknown"
+            : (agentForMaskedKey(row.api_key, row.endpoint) ?? "unknown"),
         )
       ) {
         return false;

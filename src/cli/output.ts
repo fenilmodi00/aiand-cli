@@ -59,7 +59,12 @@ export function currencySymbol(currency: string | null | undefined): string {
  * the spinner line, print below it, let the spinner redraw underneath —
  * otherwise frames and output glue into one broken line.
  */
-let activeSpinner: { suspend(): void; resume(): void } | null = null;
+let activeSpinner: {
+  suspend(): void;
+  resume(): void;
+  pause(): void;
+  unpause(): void;
+} | null = null;
 
 function writeCoordinated(write: () => void): void {
   if (!activeSpinner) {
@@ -266,21 +271,61 @@ export function spinner(text: string): { stop: (final?: string) => void } {
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let i = 0;
   const frame = () => `${style.cyan(frames[i++ % frames.length]!)} ${text}`;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const startTimer = () => {
+    timer = setInterval(() => {
+      process.stderr.write(`\r${ESC}2K${frame()}`);
+    }, SPINNER_FRAME_MS);
+    timer.unref();
+  };
   process.stderr.write(`\x1b[?25l`);
-  const timer = setInterval(() => {
-    process.stderr.write(`\r${ESC}2K${frame()}`);
-  }, SPINNER_FRAME_MS);
-  timer.unref();
+  startTimer();
+  let stopped = false;
+  let paused = false;
   const stop = () => {
+    stopped = true;
     activeSpinner = null;
-    clearInterval(timer);
+    if (timer) clearInterval(timer);
+    timer = null;
     process.stderr.write(`\r${ESC}2K\x1b[?25h`);
   };
   activeSpinner = {
     // Clear the spinner line and move to a fresh line below for the payload.
-    suspend: () => process.stderr.write(`\r${ESC}2K\n`),
-    // The cursor is already on a fresh line; redraw the spinner beneath the payload.
-    resume: () => process.stderr.write(frame()),
+    suspend: () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        process.stderr.write(`\r${ESC}2K\n`);
+      }
+    },
+    // Redraw the spinner beneath the payload. No-op while a paused prompt
+    // still owns the line (see pause) or the spinner has stopped.
+    resume: () => {
+      if (!stopped && !paused && !timer) {
+        process.stderr.write(frame());
+        startTimer();
+      }
+    },
+    // An interactive prompt takes the line over: stop the frames, clear in
+    // place (no newline — the question owns this line), show the cursor.
+    // Without this, the 80ms redraw erases the question as it is asked and
+    // the prompt reads as a hung spinner (the login/logout "deadlock").
+    pause: () => {
+      if (stopped || paused) return;
+      paused = true;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      process.stderr.write(`\r${ESC}2K\x1b[?25h`);
+    },
+    unpause: () => {
+      if (stopped || !paused) return;
+      paused = false;
+      process.stderr.write(`\x1b[?25l`);
+      process.stderr.write(frame());
+      startTimer();
+    },
   };
   return {
     stop: (final?: string) => {
@@ -288,4 +333,21 @@ export function spinner(text: string): { stop: (final?: string) => void } {
       if (final) err(final);
     },
   };
+}
+
+/**
+ * Run an interactive read with the active spinner (if any) paused, so its
+ * 80ms frame redraw cannot erase the question while the user answers.
+ * No-op when no spinner is running. The spinner object is captured at
+ * entry, so a `stop()` during the read cannot resurrect frames.
+ */
+export async function withoutSpinner<T>(fn: () => Promise<T>): Promise<T> {
+  const spin = activeSpinner;
+  if (!spin) return fn();
+  spin.pause();
+  try {
+    return await fn();
+  } finally {
+    spin.unpause();
+  }
 }

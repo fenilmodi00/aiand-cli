@@ -166,8 +166,9 @@ export async function collectBakedKeys(
  * Every agent sharing a masked key, in recording order. A key the CLI baked
  * into several agents (one sign-in, `aiand init` wiring many) is genuinely
  * ambiguous per request — the gateway identifies only the key — so
- * consumers either label such traffic distinctly or keep first-recording
- * order stable for deterministic output.
+ * consumers label such traffic {@link SHARED_AGENT} via
+ * {@link agentForMaskedKey} / {@link buildHarnessIndex} +
+ * {@link resolveHarness} rather than crediting one of these agents.
  */
 export function agentsForMaskedKey(masked: string): string[] {
   const agents = readFile(agentKeysPath())
@@ -180,15 +181,101 @@ export function agentsForMaskedKey(masked: string): string[] {
   return nonSelf.length > 0 ? nonSelf : agents;
 }
 
+/** Harness label for traffic on a key several agents hold: honest, not guessed. */
+export const SHARED_AGENT = "shared";
+
 /**
- * The agent that owns a masked key, or undefined when the key was never
- * wired by this CLI (an agent wired by hand, or a key from another machine).
- * When several agents share the key, the first in recording order wins —
- * deterministic, and honest consumers surface the sharing via
- * agentsForMaskedKey.
+ * The gateway's /logs `endpoint` is the wire dialect of the request (e.g.
+ * "/v1/messages", "/v1/responses", "/v1/chat/completions"), and only these
+ * dialects are known to map to specific harnesses. An endpoint not listed
+ * here narrows nothing — attribution falls back to the endpoint-less rule.
  */
-export function agentForMaskedKey(masked: string): string | undefined {
-  return agentsForMaskedKey(masked)[0];
+export const ENDPOINT_HARNESSES: Readonly<Record<string, readonly string[]>> = {
+  "/v1/messages": ["claude"],
+  "/v1/responses": ["codex"],
+  "/v1/chat/completions": ["opencode", "pi", "omp", "copilot", "copilot-app", "hermes"],
+};
+
+/**
+ * Every agent sharing a masked key, narrowed to a wire dialect when the
+ * endpoint is a known one. When the endpoint's harness list intersects the
+ * recorded holders, only that intersection is credited; when it does not,
+ * the unfiltered holders stand — known holders are never dropped to claim
+ * "unknown". The CLI's own self-entry still loses to any wired agent
+ * (agentsForMaskedKey already handles that).
+ */
+function holdersForMaskedKey(masked: string, endpoint?: string | null): string[] {
+  const holders = agentsForMaskedKey(masked);
+  const dialect = endpoint == null ? undefined : ENDPOINT_HARNESSES[endpoint];
+  if (dialect === undefined) return holders;
+  const narrowed = holders.filter((agent) => dialect.includes(agent));
+  return narrowed.length > 0 ? narrowed : holders;
+}
+
+/**
+ * Resolve one masked key to the single harness that owns it. A key several
+ * agents hold (init baking one sign-in key into many harnesses) is genuinely
+ * ambiguous per request, so it resolves to {@link SHARED_AGENT} instead of
+ * confidently crediting whichever agent happened to be recorded first —
+ * unless the request's wire dialect (see {@link ENDPOINT_HARNESSES})
+ * narrows the holders to one. Consumers bucketing by harness must use
+ * {@link buildHarnessIndex} + {@link resolveHarness} so every surface
+ * applies this same rule in one pass.
+ */
+export function agentForMaskedKey(masked: string, endpoint?: string | null): string | undefined {
+  const agents = holdersForMaskedKey(masked, endpoint);
+  if (agents.length === 0) return undefined;
+  const distinct = [...new Set(agents)];
+  return distinct.length === 1 ? distinct[0] : SHARED_AGENT;
+}
+
+/** Outer key = masked api_key, inner key = endpoint path ("" = endpoint-less fallback), value = harness label. */
+export type HarnessIndex = Map<string, Map<string, string>>;
+
+/**
+ * Every remembered masked key resolved to one harness label in a single file
+ * read — the bulk counterpart of {@link agentForMaskedKey} for one-pass
+ * aggregations. Under each masked key: the endpoint-less label under "" plus
+ * one narrowed label per known wire dialect whose holder intersection is
+ * non-empty. Same rule per label: sole agent wins, several agents share,
+ * the self entry only when it is the only holder, never a first/last-write
+ * race between the map's duplicates.
+ */
+export function buildHarnessIndex(): HarnessIndex {
+  const byMasked = new Map<string, string[]>();
+  for (const entry of listAgentKeys()) {
+    const agents = byMasked.get(entry.masked) ?? [];
+    agents.push(entry.agent);
+    byMasked.set(entry.masked, agents);
+  }
+  const index: HarnessIndex = new Map();
+  for (const [masked] of byMasked) {
+    const labels = new Map<string, string>();
+    const plain = agentForMaskedKey(masked);
+    if (plain !== undefined) labels.set("", plain);
+    for (const endpoint of Object.keys(ENDPOINT_HARNESSES)) {
+      const narrowed = agentForMaskedKey(masked, endpoint);
+      if (narrowed !== undefined) labels.set(endpoint, narrowed);
+    }
+    index.set(masked, labels);
+  }
+  return index;
+}
+
+/**
+ * Look up a request's harness label in an index built by
+ * {@link buildHarnessIndex}. The request's own dialect wins; a dialect with
+ * no narrowed label (unknown endpoint, or holders not narrowed by it) falls
+ * back to the endpoint-less label; no entry at all is "unknown".
+ */
+export function resolveHarness(
+  index: HarnessIndex,
+  apiKey: string | null,
+  endpoint: string | null | undefined,
+): string {
+  if (apiKey === null) return "unknown";
+  const inner = index.get(apiKey);
+  return inner?.get(endpoint ?? "") ?? inner?.get("") ?? "unknown";
 }
 
 /** Drop a mapping — used when an agent is unwired. */
