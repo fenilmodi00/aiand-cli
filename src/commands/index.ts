@@ -157,11 +157,6 @@ export const COMMANDS: Command[] = [
     ...lazy(() => import("./export.js")),
   },
   {
-    name: "mcp",
-    summary: "Serve usage data to coding agents over MCP stdio",
-    ...lazy(() => import("./mcp.js")),
-  },
-  {
     name: "forecast",
     summary: "Burn-rate projection against your budget",
     ...lazy(() => import("./forecast.js")),

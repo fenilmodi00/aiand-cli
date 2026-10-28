@@ -40,18 +40,6 @@ export type Config = {
    * the store had no currency yet). Absent keys simply mean "unset".
    */
   budget?: BudgetConfig;
-  /**
-   * MCP server settings (ticket #70), stored under the `mcp` key of
-   * config.json. `realProjectNames` (default false) lets the `aiand mcp`
-   * tools expose real harness/project names to callers; the default
-   * pseudonymizes them (`project-a1b2`) — the CodeBurn privacy posture.
-   */
-  mcp?: McpConfig;
-};
-
-/** The `mcp` section of config.json (see Config.mcp). */
-export type McpConfig = {
-  realProjectNames?: boolean;
 };
 
 /** The `budget` section of config.json (see Config.budget). */
@@ -146,26 +134,13 @@ function sanitizeBudget(raw: unknown): BudgetConfig | undefined {
   return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
-/**
- * The stored `mcp` section (ticket #70), sanitized: only a real boolean
- * `realProjectNames` survives — a hand-edited garbage value degrades to the
- * pseudonymizing default rather than leaking names.
- */
-function sanitizeMcp(raw: unknown): McpConfig | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const real = (raw as Record<string, unknown>).realProjectNames;
-  return real === true || real === false ? { realProjectNames: real } : undefined;
-}
-
 export function loadConfig(): Config {
   const raw = readJson<Partial<Config>>(configPath());
   const budget = sanitizeBudget(raw?.budget);
-  const mcp = sanitizeMcp(raw?.mcp);
   return {
     profile: raw?.profile ?? "default",
     profiles: raw?.profiles ?? { default: { ...DEFAULT_PROFILE } },
     ...(budget ? { budget } : {}),
-    ...(mcp ? { mcp } : {}),
   };
 }
 

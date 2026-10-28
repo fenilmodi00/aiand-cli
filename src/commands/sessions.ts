@@ -62,8 +62,8 @@ const UNKNOWN_CURRENCY = "";
 
 type Costs = Record<string, number>;
 
-/** The one session view both output modes build from (shared with MCP, #70). */
-export type SessionView = {
+/** The one session view both output modes build from. */
+type SessionView = {
   id: string;
   harness: string;
   models: { model: string; count: number }[];
@@ -85,7 +85,7 @@ function costAcross(session: SessionView): number {
   return Object.values(session.costs).reduce((sum, value) => sum + value, 0);
 }
 
-/** The list-row and drill-down view of one session (shared with MCP, #70). */
+/** The list-row and drill-down view of one session. */
 export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
   const modelCounts = new Map<string, number>();
   const costs: Costs = {};
@@ -130,7 +130,7 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
 
 type RowFilters = { agents: string[]; models: string[] };
 
-/** The one store read + filter (exported for the MCP session_stats tool, #70). */
+/** The one store read + filter. */
 export function readSessionRows(
   window: { sinceMs: number | null; untilMs: number | null },
   filters: RowFilters,

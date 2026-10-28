@@ -32,7 +32,6 @@ const HOME_TAGLINE = "Agents and inference.";
 const SPINNER_EXEMPT: Record<string, true> = {
   dashboard: true,
   chat: true,
-  mcp: true,
   "run-agent": true,
 };
 
@@ -168,7 +167,7 @@ export async function runMainMenu(
         // `key` takes a verb, so the menu falls back to the one it prints with.
         const argv = process.argv.includes("--json") ? ["--json"] : [];
         // Terminal-owning commands animate nothing: a spinner on stderr would
-        // run for the command's whole lifetime (or forever, for `mcp`).
+        // run for the command's whole lifetime (or forever, for `chat`).
         if (!SPINNER_EXEMPT[picked]) {
           // The heading above already owns the command title; the spinner
           // describes the work, so the title never reads twice.

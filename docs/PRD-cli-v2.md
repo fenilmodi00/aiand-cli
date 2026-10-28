@@ -44,10 +44,6 @@ aiand report                # self-contained offline HTML report
 aiand overview              # ≤80-col pasteable plain-text summary
 aiand efficiency            # one-shot/retry, task mix, branch spend (envelope-derived)
 
-aiand mcp                   # stdio MCP server: usage_stats, session_stats,
-                            # harness_compare, spend_check
-aiand export                # OTel/OTLP JSON or Prometheus text
-aiand doctor                # gateway, auth, adapters, key map, store, lag
 ```
 
 Entry points and naming: bare `aiand` on a TTY opens the menu; a pipe prints the static home screen; `--json` never opens the menu. All observability commands read the local store (auto-syncing first, `--no-sync`/`AIAND_NO_SYNC` to opt out) and share one flag vocabulary (`--since/--until/--last/--timezone/--agent/--harness/--model/--no-cost/--json/--jq/--format csv`).
@@ -143,10 +139,6 @@ Provenance vocabulary is shared (`src/obs/provenance.ts`) and appears everywhere
 
 ### Programmatic surfaces
 
-**R14 — MCP server.** `aiand mcp` runs a stdio MCP server (newline-delimited JSON-RPC, zero deps, no HTTP/daemon) exposing four tools — `usage_stats`, `session_stats`, `harness_compare`, `spend_check` — whose JSON is **byte-identical to the CLI's `--json`** (shared payload builders, one source of truth). Privacy: project names pseudonymized (`project-a1b2`) unless `config set mcp.realProjectNames true`; unknown keys stay `unknown`. Only network is the shared incremental sync (`--no-sync` semantics honored — no fetches). Empty/missing store → empty results, never a crash.
-
-**Done when:** an MCP client connects and calls all four tools; `--no-sync` performs zero network reads; a test asserts CLI/MCP payload equality.
-
 **R15 — OTel/Prometheus export.** `aiand export --format otel|prometheus` emits `gen_ai.*` (the GenAI semconv family) from ONE store read, no OTel SDK (hand-rolled OTLP/HTTP JSON and Prometheus text). Usage counters carry the input verbatim gateway sum — includes cache, the billing convention — plus cost itself (`gen_ai.client.inference.usage.cost`, USD, emitted only where cost exists). Token/duration/TTFT histograms with explicit buckets; `error.type` series for non-2xx with tokens on failed ops still exported. Every series carries `aiand.key.masked` + `agent.name` so counters never collide across processes. `gen_ai.provider.name` mapping by first match (claude→anthropic; gpt/codex/o1/o3/o4→openai; deepseek→deepseek; kimi/moonshot→moonshot_ai; grok→x_ai; glm/zai→zai; else family segment before `/` — never a per-name guess). Flags: `--range {15m|1h|6h|24h|7days|30days}`, `--since/--until`, `--temporality delta|cumulative` (delta default), `--endpoint` (POST instead of stdout), repeatable `--header`, `--file`. Prometheus is push-only (stdout/file/endpoint), not a pull server — the CLI is short-lived; documented deviation. No prompt/completion content in any attribute, ever.
 
 **Done when:** an OTel collector consumes the payload; no series collision; Prometheus parses; same store + flags → identical output modulo timestamps.
@@ -179,7 +171,7 @@ Provenance vocabulary is shared (`src/obs/provenance.ts`) and appears everywhere
 
 ### Automation and failure-mode guarantees
 
-**R21 — Automation contracts.** Every observability surface honors the exit-code contract: `0` ok, `10` near-limit (≥80% of budget), `11` limit-hit (≥100%), `20` indeterminate, `30` no-data; plain `aiand status` keeps its documented auth exit codes (0 signed-in or gateway-unreachable, 1 signed-out). Empty-window commands are honest-empty (exit 0 + explicit empty/insufficient result — `harness compare` once exited 1 while `recommend` exited 0; now uniform). `--json` stdout stays parseable even when warnings hit stderr (`--profile <unknown>` warns once per name naming both requested profile and fallback — including the `AIAND_PROFILE` env form — across `config`, `cache`, `store`, `efficiency`, `mcp`). CLI input hardening: impossible dates (`--month 13`), nonexistent calendar dates (2025-02-29), inverted windows, non-directory `AIAND_CONFIG_DIR` all exit 1 naming the flag + value. No fabricated zeros anywhere: `errorRate: null` on empty windows, `$-0.0000`/`-0.0` clamped at the formatting boundary, `heatmap --json` / `forecast bench --json` / `--suggest-budget --json` all emit structured payloads on degraded paths.
+**R21 — Automation contracts.** Every observability surface honors the exit-code contract: `0` ok, `10` near-limit (≥80% of budget), `11` limit-hit (≥100%), `20` indeterminate, `30` no-data; plain `aiand status` keeps its documented auth exit codes (0 signed-in or gateway-unreachable, 1 signed-out). Empty-window commands are honest-empty (exit 0 + explicit empty/insufficient result — `harness compare` once exited 1 while `recommend` exited 0; now uniform). `--json` stdout stays parseable even when warnings hit stderr (`--profile <unknown>` warns once per name naming both requested profile and fallback — including the `AIAND_PROFILE` env form — across `config`, `cache`, `store`, `efficiency`). CLI input hardening: impossible dates (`--month 13`), nonexistent calendar dates (2025-02-29), inverted windows, non-directory `AIAND_CONFIG_DIR` all exit 1 naming the flag + value. No fabricated zeros anywhere: `errorRate: null` on empty windows, `$-0.0000`/`-0.0` clamped at the formatting boundary, `heatmap --json` / `forecast bench --json` / `--suggest-budget --json` all emit structured payloads on degraded paths.
 
 **Done when:** automation can key on exit codes alone for pacing state; every `--json` surface parses under every degraded path; a regression test sweeps every command's profile-fallback path.
 

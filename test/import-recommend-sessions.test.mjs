@@ -111,7 +111,7 @@ test("sessions: bad --session-gap, --top-cost 0, --since without --until", async
 });
 
 // ---------------------------------------------------------------------------
-// sessions: toView unit branches (shared with the MCP tool, #70)
+// sessions: toView unit branches
 // ---------------------------------------------------------------------------
 
 test("sessions toView: model counts, casefolded costs, ttft percentiles, errors", async () => {

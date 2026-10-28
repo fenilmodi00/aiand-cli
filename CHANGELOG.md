@@ -10,12 +10,16 @@ breaking changes while the command surface settles.
 ### Removed
 - The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
   `--include-imported` combined grand total, the import adapter module, the
-  imported-usage report section, the migration 0003 store tables
+  imported-usage report section, and the migration 0003 store tables
   (`ccusage_imports` + `imported_usage`, left in place on existing stores and
-  no longer read or written), and the `usage_stats` MCP `include_imported`
-  parameter). It imported a competitor tool's price-table-derived cost
+  no longer read or written)). It imported a competitor tool's price-table-derived cost
   estimates as a parallel cost lane — the gateway's own logs are the single
   cost source.
+- The `aiand mcp` stdio MCP server (#70) with its four tools (`usage_stats`,
+  `session_stats`, `harness_compare`, `spend_check`), the `mcp.realProjectNames`
+  config key, and the `src/mcp/` server module. The CLI `--json` commands are
+  the programmatic surface; agents were the only consumer of the MCP layer,
+  and the local store + `--json` output already serve that need directly.
 - The vendor list-price comparison (`usage --vs-list`, the bundled vendor
   list-price snapshot module, the list-prices comparison module, the
   `--prices-file` flag, and the `config set prices.<model>.input|output|cacheRead`
@@ -30,8 +34,8 @@ breaking changes while the command surface settles.
   model was built for a quota-window billing shape ai& doesn't have — it is
   prepaid with a monthly budget, and the question "will I hit my budget?" is
   what the v1 linear burn-rate extrapolation already answers. `aiand forecast`
-  now runs only the v1 burn-rate model; `overview`, `report`, `cache`, and the
-  MCP forecast payload are unchanged. Model docs: `docs/observability/forecast-v2.md`
+  now runs only the v1 burn-rate model; `overview`, `report`, and `cache`
+  are unchanged. Model docs: `docs/observability/forecast-v2.md`
   is removed with it.
 
 ### Changed
@@ -43,7 +47,7 @@ breaking changes while the command surface settles.
   (the eager import cost ~440ms cold before the menu appeared). Every
   heavy menu action — sign-in, wiring agents, opening an agent, running
   a command — animates a spinner on stderr while it works, except the
-  terminal-owning commands (`dashboard`, `chat`, `mcp`, `run-agent`), and
+  terminal-owning commands (`dashboard`, `chat`, `run-agent`), and
   the spinner always clears before the agent binary inherits the terminal.
 - The interactive dashboard paints its first frame immediately from the local
   store and refreshes in place when the background gateway sync lands,
@@ -123,10 +127,8 @@ breaking changes while the command surface settles.
   CLI-own traffic. Agents wired with the same key keep their label (the self
   entry is a fallback, not a claim); a foreign key the CLI never presented
   still stays `unknown`.
-- Live-gateway sandbox testing of every command on this branch surfaced three
-  defects, now fixed and regression-tested. `config get
-  mcp.realProjectNames` was rejected as "not a gettable key" even though
-  `config set`/`unset` accept it — `get` now resolves the sub-key like `mcp`.
+- Live-gateway sandbox testing of every command on this branch surfaced
+  defects, now fixed and regression-tested.
   `usage --vs-list` showed `usd 0.000000` billed for models the bundled
   list-price snapshot does not price: the billed accumulator lived inside the
   priced-row branch, so gateway-billed cost was silently dropped for unpriced

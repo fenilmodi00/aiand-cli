@@ -176,34 +176,7 @@ describe("config", () => {
     assert.match(r.stderr, /"theme" is not a settable key/);
   });
 
-  // #111: `config get` accepts a sub-key, not just a table name.
-  test("mcp.realProjectNames set/unset/get round-trip", async () => {
-    const { env } = fresh();
-    const on = await runCli(["config", "set", "mcp.realProjectNames", "true"], { env });
-    assert.equal(on.code, 0, on.stderr);
-    assert.match(on.stdout, /real harness\/project names/);
-
-    const got = await runCli(["config", "get", "mcp", "--json"], { env });
-    assert.deepEqual(JSON.parse(got.stdout), { real_project_names: true });
-
-    const gotKey = await runCli(["config", "get", "mcp.realProjectNames"], { env });
-    assert.equal(gotKey.code, 0, gotKey.stderr);
-    assert.match(gotKey.stdout, /mcp\.realProjectNames\s+true/);
-
-    const off = await runCli(["config", "set", "mcp.realProjectNames", "false", "--json"], { env });
-    assert.equal(off.code, 0, off.stderr);
-    assert.deepEqual(JSON.parse(off.stdout), { key: "mcp.realProjectNames", value: false });
-
-    const text = await runCli(["config", "get", "mcp"], { env });
-    assert.equal(text.code, 0, text.stderr);
-    assert.match(text.stdout, /mcp\.realProjectNames\s+false/);
-
-    const invalid = await runCli(["config", "set", "mcp.realProjectNames", "yes"], { env });
-    assert.equal(invalid.code, 1, invalid.stderr);
-    assert.match(invalid.stderr, /must be "true" or "false"/);
-  });
-
-  test("get rejects keys other than budget and mcp", async () => {
+  test("get rejects keys other than budget", async () => {
     const { env } = fresh();
     const r = await runCli(["config", "get", "model"], { env });
     assert.equal(r.code, 1, r.stderr);
@@ -277,7 +250,7 @@ describe("config", () => {
     assert.match(notUnsettable.stderr, /not an unsettable key/);
   });
 
-  test("unset removes budget and mcp settings", async () => {
+  test("unset removes budget settings", async () => {
     const { env } = fresh();
     await runCli(["config", "set", "budget.monthly", "100"], { env });
 
@@ -290,16 +263,6 @@ describe("config", () => {
     const removedText = await runCli(["config", "unset", "budget.monthly"], { env });
     assert.equal(removedText.code, 0, removedText.stderr);
     assert.match(removedText.stdout, /Unset budget\.monthly\./);
-
-    await runCli(["config", "set", "mcp.realProjectNames", "true"], { env });
-    const mcp = await runCli(["config", "unset", "mcp.realProjectNames", "--json"], { env });
-    assert.equal(mcp.code, 0, mcp.stderr);
-    assert.deepEqual(JSON.parse(mcp.stdout), { key: "mcp.realProjectNames", removed: true });
-    const mcpText = await runCli(["config", "set", "mcp.realProjectNames", "true"], { env });
-    assert.equal(mcpText.code, 0, mcpText.stderr);
-    const mcpRemoved = await runCli(["config", "unset", "mcp.realProjectNames"], { env });
-    assert.equal(mcpRemoved.code, 0, mcpRemoved.stderr);
-    assert.match(mcpRemoved.stdout, /Unset mcp\.realProjectNames\./);
   });
 
   test("profiles lists every profile with its sign-in state", async () => {

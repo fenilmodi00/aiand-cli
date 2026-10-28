@@ -7,8 +7,7 @@ import { CLOSED_URL, cliEnv, FAKE_API_KEY, runCli, withEnv, withTestEnv } from "
 /**
  * Branch-hardening pass (final consolidation of the observability epic):
  * broad flag/filter/failure sweeps over the command surfaces whose branch
- * coverage lagged — heatmap, wrapped, overview, report, recommend, mcp,
- * store. Behavior-level: exit codes and output presence, not internals.
+ * coverage lagged — heatmap, wrapped, overview, report, recommend, store. Behavior-level: exit codes and output presence, not internals.
  */
 
 const env = withTestEnv("branch-hardening", () => {});
@@ -242,17 +241,8 @@ test("recommend: sort/top/harness/json/insufficient-data branches", async () => 
 });
 
 // ---------------------------------------------------------------------------
-// mcp + store commands: help/sync/json branches
+// store command: help/sync/json branches
 // ---------------------------------------------------------------------------
-
-test("mcp command: help exits clean without starting a server", async () => {
-  const cfg = cfgDir("mcp-help");
-  const { code, stdout } = await runCli(["mcp", "--help"], {
-    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
-  });
-  assert.equal(code, 0);
-  assert.ok(/mcp/i.test(stdout));
-});
 
 test("store command: status/sync/json/no-sync and dead-gateway fail-open", async () => {
   const cfg = cfgDir("store-flags");

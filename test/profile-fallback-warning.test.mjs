@@ -18,10 +18,10 @@ function childEnv(dir, profile) {
   return env;
 }
 
-// #103: store/efficiency/mcp called resolveProfile() bare, so an explicit
+// #103: store/efficiency called resolveProfile() bare, so an explicit
 // unknown --profile (or AIAND_PROFILE) fell back to the default silently —
 // the #100 warning never fired outside `config`/`cache`.
-describe("unknown-profile fallback warning on store/efficiency/mcp (#103)", () => {
+describe("unknown-profile fallback warning on store/efficiency (#103)", () => {
   test("store status warns on --profile and AIAND_PROFILE; --json stdout stays parseable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "aiand-store-warning-"));
     try {
@@ -54,18 +54,6 @@ describe("unknown-profile fallback warning on store/efficiency/mcp (#103)", () =
       const r = await runCli(["efficiency", "--no-sync", "--profile", "does-not-exist"], {
         env: childEnv(dir),
       });
-      assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
-      assert.match(r.stderr, /profile "does-not-exist" is not defined/);
-      assert.match(r.stderr, /falling back to the built-in defaults/);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("mcp server warns on an unknown AIAND_PROFILE at startup", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "aiand-mcp-warning-"));
-    try {
-      const r = await runCli(["mcp"], { env: childEnv(dir, "does-not-exist") });
       assert.equal(r.code, 0, `exit ${r.code}: ${r.stderr}`);
       assert.match(r.stderr, /profile "does-not-exist" is not defined/);
       assert.match(r.stderr, /falling back to the built-in defaults/);

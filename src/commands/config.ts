@@ -41,8 +41,6 @@ Settable keys
   budget.monthly     monthly spend budget, in the account's billing currency
   budget.harness.<n> per-harness budget override (unset falls back to monthly)
   budget.warn-pct    budget warning threshold percent (default 80)
-  mcp.realProjectNames  let \`aiand mcp\` tools show real harness/project names
-                     (default false: names are pseudonymized, project-a1b2)
 
 Other commands
   aiand config get budget       print every budget key
@@ -142,27 +140,10 @@ async function set(args: string[], parsed: Parsed): Promise<void> {
       await updateProfile(name, { model: value });
       break;
     default:
-      if (key === "mcp.realProjectNames") {
-        const real = value === "true" ? true : value === "false" ? false : null;
-        if (real === null) {
-          throw new CliError(`${key} must be "true" or "false" (got "${value}").`);
-        }
-        const config = loadConfig();
-        await saveConfig({ ...config, mcp: { ...(config.mcp ?? {}), realProjectNames: real } });
-        if (bool(parsed, "json")) return json({ key, value: real });
-        out(
-          style.green(
-            real
-              ? "MCP tools will show real harness/project names."
-              : "MCP tools will pseudonymize harness/project names (project-a1b2).",
-          ),
-        );
-        return;
-      }
       throw new CliError(`"${key}" is not a settable key.`, {
         hint:
           "Settable keys: api-url, auth-url, model, budget.monthly, budget.harness.<name>, " +
-          "budget.warn-pct, mcp.realProjectNames.",
+          "budget.warn-pct.",
       });
   }
 
@@ -219,21 +200,10 @@ async function setBudget(field: string, value: string, key: string, parsed: Pars
  */
 function get(args: string[], parsed: Parsed): void {
   const [key] = args;
-  if (key !== undefined && key !== "budget" && key !== "mcp" && key !== "mcp.realProjectNames") {
+  if (key !== undefined && key !== "budget") {
     throw new CliError(`"${key}" is not a gettable key.`, {
-      hint: "Gettable keys: budget, mcp, mcp.realProjectNames.",
+      hint: "Gettable keys: budget.",
     });
-  }
-
-  if (key === "mcp" || key === "mcp.realProjectNames") {
-    const config = loadConfig();
-    const real = config.mcp?.realProjectNames === true;
-    if (bool(parsed, "json")) {
-      json({ real_project_names: real });
-      return;
-    }
-    fields([["mcp.realProjectNames", String(real)]]);
-    return;
   }
 
   const budget = loadBudget();
@@ -269,16 +239,9 @@ async function unset(args: string[], parsed: Parsed): Promise<void> {
       hint: "For example: aiand config unset budget.monthly",
     });
   }
-  if (key === "mcp.realProjectNames") {
-    const config = loadConfig();
-    await saveConfig({ ...config, mcp: { ...(config.mcp ?? {}), realProjectNames: undefined } });
-    if (bool(parsed, "json")) return json({ key, removed: true });
-    out(style.green(`Unset ${key}.`));
-    return;
-  }
   if (!key.startsWith("budget.")) {
     throw new CliError(`"${key}" is not an unsettable key.`, {
-      hint: "Unsettable keys: budget.monthly, budget.warn-pct, budget.harness.<name>, mcp.realProjectNames.",
+      hint: "Unsettable keys: budget.monthly, budget.warn-pct, budget.harness.<name>.",
     });
   }
   await removeBudgetKey(key);

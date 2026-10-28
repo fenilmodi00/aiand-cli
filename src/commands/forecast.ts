@@ -200,11 +200,8 @@ function suggest(parsed: ReturnType<typeof parse>, now: Date): void {
   out(style.dim(`Run: aiand config set budget.monthly ${suggestion.value.value}`));
 }
 
-/**
- * The `--json` payload shape, exported so the MCP `spend_check` tool (ticket
- * #70) emits the exact same document — one source of truth for the shape.
- */
-export function buildForecastPayload(result: ForecastResult, harness: string | undefined): unknown {
+/** The `--json` payload shape — one source of truth for the shape. */
+function buildForecastPayload(result: ForecastResult, harness: string | undefined): unknown {
   return {
     harness: harness ?? null,
     verdict: result.verdict,
