@@ -170,7 +170,9 @@ export async function runMainMenu(
         // Terminal-owning commands animate nothing: a spinner on stderr would
         // run for the command's whole lifetime (or forever, for `mcp`).
         if (!SPINNER_EXEMPT[picked]) {
-          const spin = spinner(`${command.summary}...`);
+          // The heading above already owns the command title; the spinner
+          // describes the work, so the title never reads twice.
+          const spin = spinner("Working...");
           try {
             await command.run([...(picked === "key" ? ["export"] : argv)]);
           } finally {

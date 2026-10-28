@@ -244,6 +244,48 @@ test("key pick falls back to the export verb and prints the env key", async () =
   }
 });
 
+test("a non-exempt command's title is not printed twice (heading vs spinner)", async () => {
+  await signIn();
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  // The spinner writes process.stderr directly (a real TTY shows it in place);
+  // capture it so the heading (stdout) and the spinner (stderr) can be
+  // compared for duplicated summary text.
+  const stderrChunks = [];
+  const realErrWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => {
+    stderrChunks.push(String(chunk));
+    return true;
+  };
+  const originalIsTTY = process.stderr.isTTY;
+  Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+  try {
+    await withEnv(signedInEnv, async () => {
+      const running = runMainMenu({ input, output });
+      // status runs ~700ms offline, so the spinner renders frames.
+      await pick(input, null, { query: "status" });
+      // The command arm loops: Esc quits for good.
+      await waitFor(() => input.listenerCount("data") > 0);
+      input.send(KEY.ESC);
+      await bounded(running);
+    });
+    const SUMMARY = "Show auth and agent wiring";
+    const headingOnStdout = output.text.includes(SUMMARY) && output.text.includes("\u258c");
+    const spinnerOnStderr = stderrChunks.join("").includes(`${SUMMARY}...`);
+    assert.ok(
+      !(headingOnStdout && spinnerOnStderr),
+      "command summary printed twice: heading on stdout AND spinner text on stderr",
+    );
+  } finally {
+    process.stderr.write = realErrWrite;
+    Object.defineProperty(process.stderr, "isTTY", {
+      value: originalIsTTY,
+      configurable: true,
+    });
+    await signOut();
+  }
+});
+
 // SKIPPED (documented): the menu's "unknown pick" return is unreachable from
 // promptMenu — Enter only resolves a visible row, and every row value is
 // __quit, a sign-in action, INIT_ALL_ACTION, an agent id, or a command name.

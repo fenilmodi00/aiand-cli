@@ -77,6 +77,10 @@ breaking changes while the command surface settles.
   built on them) are the only envelope path and are unchanged.
 
 ### Fixed
+- Picking a command in the interactive menu no longer prints its title
+  twice — the `▌` heading owns the command title and the spinner below
+  it now shows a generic "Working..." instead of repeating the summary
+  text.
 - bare `aiand key` now says what the command is for and gives a
   copy-pasteable example (`aiand key export`) instead of a bare verb list
 - `harness stats`, `harness compare`, and `harness matrix` made the cost of
