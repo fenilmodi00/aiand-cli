@@ -95,6 +95,8 @@ function rowToEnvelope(row: Record<string, unknown>): EnvelopeRow {
       ? { terminal: asStringOrNull(row.terminal) as EnvelopeV1["terminal"] }
       : {}),
   };
+  // #127 (T2): v2 outcome columns are not in this table yet (T1 owns the
+  // migration); rows read as v1 (outcome info null downstream).
   return {
     id: String(row.id),
     schema_version: asStringOrNull(row.schema_version) ?? ENVELOPE_SCHEMA_VERSION,

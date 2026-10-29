@@ -209,6 +209,10 @@ function isEnvelopeV1(value: unknown): value is EnvelopeV1 {
   );
 }
 
+// #127 (T2): parseEnvelope keeps v1 records key-for-key v1: the pinned v2
+// outcome fields are omitted (not undefined) when absent, so downstream
+// deep-equality on v1 rows holds. Cleaning is handled by T1's guards above.
+
 /**
  * Parse a stored envelope JSON string; null when not recognizable.
  * Unknown fields are DROPPED on read (the v1 forward-compatibility contract),
