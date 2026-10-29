@@ -256,6 +256,23 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "coverage",
     provenance: estimated("captured envelope rows / stored request rows in the window"),
   },
+  // harness compare behavioral columns (ticket #130, the T2 envelope walk)
+  {
+    report: "harness compare",
+    field: "tool-err, one-shot, retry, missed-catch, turns/success, outcome",
+    provenance: heuristic("one-shot/retry envelope rule (T2 walk)"),
+  },
+  {
+    report: "harness compare",
+    field: "behavioralCoverage",
+    provenance: estimated("covered envelope turns / in-scope request rows"),
+  },
+  // recommend behavioral ranking (ticket #130)
+  {
+    report: "recommend",
+    field: "rankedOn (behavioral columns)",
+    provenance: heuristic("one-shot/retry envelope rule (T2 walk)"),
+  },
 ];
 
 /** The audit list `aiand usage --audit --json` prints: label as string + source. */

@@ -5,15 +5,19 @@ import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import { MISSED_CATCH_RULE } from "../model-efficiency.js";
+import { classifyEnvelope, TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
 import {
   buildHarnessStats,
   compareWinners,
   type ExcludedMixedAggregate,
   type HarnessRequestRow,
+  type HarnessStatsOptions,
   type HarnessStatsRow,
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
+import { listEnvelopesFromDb } from "../store/envelopes.js";
 import {
   createdSince,
   createdUntilIncl,
@@ -39,6 +43,75 @@ import {
  * the store (auto-sync fail-open, `--no-sync` honored) and never run requests.
  */
 
+// ---------------------------------------------------------------------------
+// Behavioral envelope read + cohort classification (#130)
+// ---------------------------------------------------------------------------
+
+/** The envelope-row shape `HarnessStatsOptions.envelopes` accepts. */
+type EnvelopeOptionRow = HarnessStatsOptions["envelopes"] extends readonly (infer Row)[] | undefined
+  ? Row
+  : never;
+
+/** Stored envelope rows inside the window, mapped to the options shape. */
+export function windowEnvelopes(
+  sinceMs: number | null,
+  untilMs: number | null,
+): EnvelopeOptionRow[] {
+  const opened = openStore(storePath());
+  if (!opened.ok) return [];
+  try {
+    return listEnvelopesFromDb(opened.db, {
+      since: sinceMs === null ? undefined : new Date(sinceMs).toISOString(),
+      until: untilMs === null ? undefined : new Date(untilMs).toISOString(),
+    }).map((row) => ({ agent: row.agent, model: row.model, envelope: row.envelope }));
+  } catch {
+    return [];
+  } finally {
+    try {
+      opened.db.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+/**
+ * Classify each in-scope request row's session once (C6, deterministic
+ * classifier over its envelope turns) and return the id set matching the
+ * cohort. A row in an unclassified session is simply not in the set —
+ * excluded, never folded.
+ */
+function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
+  const opened = openStore(storePath());
+  const matching = new Set<string>();
+  if (!opened.ok) return matching;
+  try {
+    const envelopes = listEnvelopesFromDb(opened.db);
+    for (const row of rows) {
+      // The row's session turns: envelopes attributed to this row's masked
+      // key within the turn window (the same join branch-spend uses).
+      const at = Date.parse(row.created_at);
+      const turn = envelopes.find((e) => {
+        if (e.api_key !== row.api_key) return false;
+        const ts = Date.parse(e.created_at);
+        return !Number.isNaN(ts) && ts <= at && at - ts <= 10 * 60_000;
+      });
+      if (turn?.envelope && classifyEnvelope(turn.envelope) === category) {
+        matching.add(row.id);
+      }
+    }
+  } catch {
+    // fail-open: no classification → empty cohort
+  } finally {
+    try {
+      opened.db.close();
+    } catch {
+      // already closed
+    }
+  }
+  return matching;
+}
+
 export async function runHarnessWorkload(mode: "stats" | "compare", argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     since: { type: "string" },
@@ -49,6 +122,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     model: { type: "string", multiple: true },
     timezone: { type: "string" },
     "session-gap": { type: "string" },
+    cohort: { type: "string" },
     samples: { type: "boolean", default: false },
     "include-mixed": { type: "boolean", default: false },
     "no-cost": { type: "boolean", default: false },
@@ -95,6 +169,16 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
   });
   const storeInfo = getStoreInfo();
 
+  // #130: cohort seam (C6) — a named classifier category narrows the rows to
+  // "same kind of work" before sessionization. Excluded rows are counted in
+  // the coverage line, never folded silently.
+  const cohortCategory = str(parsed, "cohort") as TaskCategory | undefined;
+  if (cohortCategory !== undefined && !TASK_CATEGORIES.includes(cohortCategory)) {
+    throw new CliError(`Unknown cohort "${cohortCategory}".`, {
+      hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
+    });
+  }
+
   const stats = buildHarnessStats(rows, {
     gapMinutes,
     timezone,
@@ -103,6 +187,11 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
       since: sinceMs === null ? null : new Date(sinceMs).toISOString(),
       until: untilMs === null ? null : new Date(untilMs).toISOString(),
     },
+    cohort:
+      cohortCategory === undefined
+        ? undefined
+        : (row) => cohortOf(rows, cohortCategory).has(row.id),
+    envelopes: windowEnvelopes(sinceMs, untilMs),
   });
 
   // #100: an empty (or entirely filtered-out) window is a clean empty answer,
@@ -166,6 +255,16 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 
   if (mode === "compare") {
     renderCompare(harnesses, noCost);
+    out(style.dim(behavioralCoverageLine(stats.behavioralCoverage)));
+    if (cohortCategory !== undefined) {
+      const cohortRequests = stats.harnesses.reduce((s, h) => s + h.requests, 0);
+      out(
+        style.yellow(
+          `cohort ${cohortCategory}: ${cohortRequests} of ${rows.length} request(s) match — ` +
+            "excluded, not folded (C6)",
+        ),
+      );
+    }
   } else {
     renderStats(harnesses, noCost);
   }
@@ -302,9 +401,13 @@ function payload(
 ): unknown {
   return {
     provenance: stats.provenance,
-    harnesses: harnesses.map((row) => ({ ...row })),
+    harnesses: harnesses.map((row) => ({
+      ...row,
+      labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+    })),
     excluded: stats.excluded,
     excludedMixedSpend: stats.excludedMixed,
+    behavioralCoverage: stats.behavioralCoverage,
   };
 }
 
@@ -370,6 +473,62 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
 
 function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
   const w = compareWinners(rows);
+  const covered = rows.some((r) => r.behavioral.oneShotRate !== null);
+  const rate = (value: number | null, n: number): string =>
+    value === null ? "—" : `${(value * 100).toFixed(1)}% (n=${n})`;
+  const outcome = (b: HarnessStatsRow["behavioral"]): string => {
+    if (b.sessions === null) return "—";
+    // A v1 sequence has no terminal info (all-zero split, no success marker)
+    // — that's missing data, rendered as — not 0/0/0.
+    const s = b.sessions;
+    if (s.clean + s.aborted + s.errored === 0 && b.turnsToSuccess === null) return "—";
+    return `${s.clean}/${s.aborted}/${s.errored}`;
+  };
+  const behavioralColumns: Column<HarnessStatsRow>[] = covered
+    ? [
+        {
+          header: "tool-err",
+          value: (r) =>
+            maybeMark(
+              w.toolErrorRate === r.harness,
+              rate(r.behavioral.toolErrorRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "one-shot",
+          value: (r) =>
+            maybeMark(
+              w.oneShotRate === r.harness,
+              rate(r.behavioral.oneShotRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "missed-catch",
+          value: (r) =>
+            maybeMark(
+              w.missedCatchRate === r.harness,
+              rate(r.behavioral.missedCatchRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "turns/success",
+          value: (r) =>
+            maybeMark(
+              w.turnsToSuccess === r.harness,
+              r.behavioral.turnsToSuccess === null ? "—" : String(r.behavioral.turnsToSuccess),
+            ),
+          align: "right",
+        },
+        {
+          header: "outcome",
+          value: (r) => outcome(r.behavioral),
+          align: "right",
+        },
+      ]
+    : [];
   const costColumn: Column<HarnessStatsRow>[] = [
     {
       header: "cost/session p50",
@@ -404,15 +563,39 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
       value: (r) => maybeMark(w.errorRate === r.harness, `${(r.errorRate * 100).toFixed(1)}%`),
       align: "right",
     },
+    ...behavioralColumns,
     { header: "requests", value: (r) => num(r.requests), align: "right" },
     { header: "sessions", value: (r) => num(r.sessions), align: "right" },
   ]);
   out(
     style.dim(
-      `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft)`,
+      `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft` +
+        (covered
+          ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
+          : "") +
+        ")",
+    ),
+  );
+  out(
+    style.dim(
+      `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule)`,
     ),
   );
   out();
+}
+
+/**
+ * The #130 coverage line: covered envelope turns / total in-scope requests —
+ * honest math, uncovered cells render `—`, never a zero.
+ */
+function behavioralCoverageLine(coverage: {
+  covered: number;
+  total: number;
+  ratio: number | null;
+}): string {
+  const pct =
+    coverage.total > 0 && coverage.ratio !== null ? `${Math.round(coverage.ratio * 100)}%` : "n/a";
+  return `behavioral columns: envelopes ${pct} of turns (${coverage.covered}/${coverage.total}), uncovered → —`;
 }
 
 function maybeMark(isWinner: boolean, cell: string): string {
@@ -475,6 +658,8 @@ Options
   --agent <name>      repeatable; masked-key attribution filter
   --model <glob>      repeatable model filter (* wildcards)
   --timezone <tz>     IANA timezone for --since/--until interpretation
+  --cohort <category> rank same-kind-of-work rows only (classifier category:
+                      Coding, Debugging, Testing, …) — excluded, not folded
   --session-gap <min> session gap override (default 10, or sessionGapMinutes)
   --samples           print the contributing sessions per harness
   --include-mixed     also print the excluded mixed-model sessions
