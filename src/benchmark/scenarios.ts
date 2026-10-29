@@ -43,8 +43,8 @@ const CHECKLIST_RESULTS = Array.from({ length: 8 }, (_, i) => `step ${i + 1}: ok
  * it reads. They cover the shapes that matter for cache behavior — a single
  * read, several reads, a test run, an edit, a quote, and multi-turn work
  * where the conversation grows — plus the agent-shaped families: a long
- * refactor with a large stable context, a single very large read, and many
- * short tool exchanges.
+ * refactor with a large stable context, a single very large read, many
+ * short tool exchanges, and a scripted tool error followed by its retry.
  */
 export const BENCH_SCENARIOS: BenchScenario[] = [
   {
@@ -218,6 +218,26 @@ export const CACHE_FLOOR_TOKENS = 1024;`,
     // eight in total, alternating call and result, the shape a terminal
     // harness produces most of the time.
     toolResults: CHECKLIST_RESULTS,
+  },
+  {
+    id: "tool-error-retry",
+    title: "Tool error followed by a retry",
+    turns: [
+      "Read src/cache-policy.ts and summarize the TTL behavior in two sentences.",
+      "Read src/pruner.ts and check whether it respects the cache floor.",
+      "The read failed. Try the same read again.",
+      "Now summarize what the pruner does.",
+    ],
+    file: {
+      path: "src/cache-policy.ts",
+      content: CACHE_POLICY_FILE,
+    },
+    // One extra read exchange after the initial file read. The scripted
+    // outcome marks that read's call as failed: turn 2 carries the error,
+    // turn 3 re-issues it (the retry), turn 4 confirms the result sticks.
+    toolResults: ["step 1: read src/pruner.ts"],
+    // call_2 is the extra read (call_1 is the initial file read, always ok).
+    scriptedOutcomes: [{ toolId: "call_2", ok: false }],
   },
 ];
 

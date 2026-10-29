@@ -20,11 +20,12 @@
  * thing. `aiand usage --audit` prints the catalog below.
  */
 
-/** The three-tier taxonomy, discriminated so a label always names its source. */
+/** The provenance taxonomy, discriminated so a label always names its source. */
 export type ProvenanceLabel =
   | { kind: "gateway-billed"; source: string }
   | { kind: "estimated"; source: string }
-  | { kind: "heuristic"; source: string };
+  | { kind: "heuristic"; source: string }
+  | { kind: "simulated"; source: string };
 
 /** A value wrapped with its provenance at construction time. */
 export type Labeled<T> = { value: T; provenance: ProvenanceLabel };
@@ -42,6 +43,15 @@ export function estimated(source: string): ProvenanceLabel {
 /** `heuristic(<name>)`: depends on a named heuristic (e.g. "time-gap sessions"). */
 export function heuristic(name: string): ProvenanceLabel {
   return { kind: "heuristic", source: name };
+}
+
+/**
+ * `simulated(<source>)`: produced by a fixture-pinned offline simulation
+ * (e.g. the recorded benchmark's scripted tool outcomes) — never an
+ * observation, never joined into observed rankings.
+ */
+export function simulated(source: string): ProvenanceLabel {
+  return { kind: "simulated", source };
 }
 
 /** Wrap a value with its label — one call at the point the number is built. */
@@ -255,6 +265,17 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     report: "efficiency",
     field: "coverage",
     provenance: estimated("captured envelope rows / stored request rows in the window"),
+  },
+  // benchmark, recorded variant (simulated lane, ticket #128)
+  {
+    report: "benchmark",
+    field: "rows[].toolErrors",
+    provenance: simulated("scripted tool outcomes (recorded replay)"),
+  },
+  {
+    report: "benchmark",
+    field: "rows[].retries",
+    provenance: simulated("scripted tool outcomes (recorded replay)"),
   },
 ];
 
