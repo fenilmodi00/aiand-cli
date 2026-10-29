@@ -31,6 +31,7 @@ import {
   storePath,
   syncStore,
 } from "../store/index.js";
+import { collectLocalUsageRecordsBatched } from "../store/local-usage.js";
 
 /**
  * `aiand dashboard` (feature catalog F2, ticket #75): the interactive
@@ -351,7 +352,7 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
     });
   }
 
-  const state: DashboardState = {
+  const state: DashboardState & { correlated: boolean } = {
     periodIndex: 0,
     scope: options.initialHarness ?? "all",
     compare: false,
@@ -360,6 +361,7 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
     harnesses: [],
     compareStats: null,
     lastRefreshAt: 0,
+    correlated: false,
   };
 
   const refresh = (): void => {
@@ -377,7 +379,16 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
       sync: options.sync,
       now,
       load: options.load,
+      // Key path: no local-usage correlation — parsing the whole agent
+      // history synchronously was the multi-second keypress hang. The
+      // pass runs once in the background (below); this build reads the
+      // labels it has already persisted, for free.
+      correlate: state.correlated,
     });
+    // One correlated build only (the background fold-in): later key/timer
+    // refreshes stay off the correlation path; its persisted labels ride
+    // along via attributed_agent without re-parsing anything.
+    state.correlated = false;
     state.harnesses = state.data.byHarness.map((row) => row.harness);
     if (state.scope !== "all" && !state.harnesses.includes(state.scope)) state.scope = "all";
     const loadCompare = options.loadCompare ?? readCompareRows;
@@ -536,6 +547,18 @@ export async function runDashboardUi(options: DashboardUiOptions): Promise<void>
       options.initialSync?.then((outcome) => {
         if (timer === null) return;
         options.sync = outcome;
+        refresh();
+        draw();
+      });
+
+      // Paint-first correlation: refresh() builds without the local-usage
+      // pass (parsing every agent session JSONL can take seconds on a real
+      // history), so the pass runs once in the background — batched so the
+      // event loop stays live for keys — then one correlated build folds
+      // the persisted labels in and redraws in place.
+      collectLocalUsageRecordsBatched().then(() => {
+        if (timer === null) return;
+        state.correlated = true;
         refresh();
         draw();
       });

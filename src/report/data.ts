@@ -197,7 +197,15 @@ export type LoadFn = (window: { sinceMs: number | null; untilMs: number | null }
 // Store read — the ONE loader every section shares
 // ---------------------------------------------------------------------------
 
-function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): ReportRow[] {
+/**
+ * The real store read behind the LoadFn seam: `correlate: false` skips the
+ * local-usage correlation pass (the dashboard's paint-first refresh path —
+ * see {@link BuildDataOptions.correlate}).
+ */
+function storeLoadWith(
+  window: { sinceMs: number | null; untilMs: number | null },
+  opts: { correlate: boolean },
+): ReportRow[] {
   const opened = openStore(storePath());
   if (!opened.ok) return [];
   const db = opened.db;
@@ -221,7 +229,7 @@ function storeLoad(window: { sinceMs: number | null; untilMs: number | null }): 
           " ORDER BY created_at, id",
       )
       .all(...args) as unknown as (ReportRow & { attributed_agent: string | null })[];
-    correlateInPlace(db, rows as unknown as ReportRow[]);
+    if (opts.correlate) correlateInPlace(db, rows as unknown as ReportRow[]);
     return rows;
   } catch {
     // A store that cannot answer (locked, mid-migration elsewhere) serves an
@@ -265,9 +273,9 @@ function correlateInPlace(db: DatabaseSync, rows: ReportRow[]): void {
       records,
       (row) => resolveHarness(keyIndex, row.api_key, row.endpoint),
     );
-    // The refinement rides on the rows this build reads: a label different
-    // from the base rule's (i.e. a shared/unknown row refined by a unique
-    // local match) lands in attributed_agent for harnessOf.
+    // Only genuine refinements ride on the rows this build reads: the map
+    // is refinement-only (no base labels), so a row the pass could not
+    // resolve keeps its persisted attributed_agent for harnessOf.
     for (const row of rows) {
       const refined = labels.get(row.id);
       if (refined !== undefined) row.attributed_agent = refined;
@@ -554,6 +562,14 @@ export type BuildDataOptions = {
   now?: Date;
   /** Injected store loader (tests); defaults to the real single read. */
   load?: LoadFn;
+  /**
+   * Skip the local-usage correlation pass. The default loader runs it
+   * (parsing every agent session JSONL while any row is unresolved), which
+   * is right for one-shot commands but wrong per dashboard keypress: the
+   * TUI paints first and folds a `correlate: true` build in when the pass
+   * lands.
+   */
+  correlate?: boolean;
 };
 
 /**
@@ -561,7 +577,10 @@ export type BuildDataOptions = {
  * (#97) — no silent month-start widening; `usage` honors the same flags
  * verbatim and the three surfaces must agree.
  */
-export function buildReportData(options: BuildDataOptions, load: LoadFn = storeLoad): ReportData {
+export function buildReportData(
+  options: BuildDataOptions,
+  load: LoadFn = (window) => storeLoadWith(window, { correlate: options.correlate ?? true }),
+): ReportData {
   const now = options.now ?? new Date();
   const wants = new Set<string>(options.sections);
 

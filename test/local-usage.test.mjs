@@ -428,6 +428,90 @@ describe("local-usage correlation", () => {
     assert.equal(listed.sessions[0].agent, "omp");
   });
 
+  test("refreshCorrelations returns labels ONLY for refined rows (no base pre-seed)", async () => {
+    // The regression: the map used to carry baseLabel(row) for EVERY row, so
+    // a caller applying it (correlateInPlace) overwrote a persisted `omp`
+    // refinement with `shared` on every build while any row stayed pending.
+    const dir = join(box.dir, "refined-only");
+    const home = join(box.dir, "home-refined-only");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    // row-omp matches the record; row-stuck has no record (unique output
+    // tokens) and stays NULL (permanently pending, the live-store condition).
+    await insertRows(dir, [
+      storeRow({ id: "row-omp" }),
+      storeRow({ id: "row-stuck", output_tokens: 777 }),
+    ]);
+    const { refreshCorrelations, collectLocalUsageRecords } = await import(
+      "../dist/store/local-usage.js"
+    );
+    await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, async () => {
+      const store = await import("../dist/store/index.js");
+      const opened = store.openStore(store.storePath());
+      try {
+        const rows = opened.db
+          .prepare(
+            "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, " +
+              "cached_tokens FROM requests",
+          )
+          .all();
+        const records = collectLocalUsageRecords();
+        const baseLabel = (row) => (row.id === "row-omp" ? "shared" : "shared");
+        const { labels } = refreshCorrelations(opened.db, rows, records, baseLabel);
+        assert.equal(labels.get("row-omp"), "omp");
+        assert.equal(
+          labels.get("row-stuck"),
+          undefined,
+          "an unresolved row must be absent from the labels map, not carry its base label",
+        );
+        assert.equal(labels.size, 1);
+      } finally {
+        opened.db.close();
+      }
+    });
+  });
+
+  test("a persisted refinement survives a report build while a row stays pending", async () => {
+    // The live-store scenario: row-omp already refined and persisted, but
+    // correlationsPending stays true (row-stuck NULL forever). The build must
+    // not regress row-omp's by-harness label to `shared`.
+    const dir = join(box.dir, "persisted-survives");
+    const home = join(box.dir, "home-persisted");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await insertRows(dir, [
+      storeRow({ id: "row-omp", created_at: "2026-10-20T10:00:10.000Z" }),
+      // never matches: output tokens nothing records
+      storeRow({ id: "row-stuck", output_tokens: 777, created_at: "2026-10-20T11:00:10.000Z" }),
+    ]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const report = () =>
+      withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+        buildReportData({
+          timezone: "UTC",
+          sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+          untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+          harnesses: [],
+          models: [],
+          sections: ["by-harness"],
+          top: 20,
+          sync: { skipped: true },
+          now: PINNED_NOW,
+        }),
+      );
+    // First build refines row-omp; row-stuck stays pending.
+    await report();
+    // Second build: pending gate still true, but row-omp must stay omp.
+    const data = await report();
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.shared, 1); // only row-stuck; row-omp must not regress here
+  });
+
   test("a windowed first pass does not strand older rows behind the cursor", async () => {
     const dir = join(box.dir, "windowed");
     const home = join(box.dir, "home-windowed");
@@ -710,5 +794,133 @@ describe("local-usage correlation", () => {
     assert.equal(matchRequest(far, [record]).kind, "none");
     // time outside ±2 min — none
     assert.equal(matchRequest({ ...row, at: at + TIME_TOLERANCE_MS + 1 }, [record]).kind, "none");
+  });
+
+  // pi-mono `model_usage` side-lines (background subagent traffic): flat
+  // object, provider/model/usage/timestamp at TOP level, no `message` key.
+  function modelUsageLine({
+    provider = "aiand",
+    ts = "2026-10-20T10:00:03.000Z",
+    input,
+    output,
+    cacheRead = 0,
+  } = {}) {
+    return JSON.stringify({
+      type: "model_usage",
+      id: "73e99bde",
+      parentId: "964e4ba2",
+      timestamp: ts,
+      runtime: { version: "18.12.6" },
+      purpose: "job-widget",
+      api: "openai-completions",
+      provider,
+      model: "zai-org/glm-5.3",
+      usage: {
+        input,
+        output,
+        cacheRead,
+        cacheWrite: 0,
+        totalTokens: input + output + cacheRead,
+        reasoningTokens: 170,
+        cost: { total: 0.0042 },
+      },
+      stopReason: "stop",
+    });
+  }
+
+  test("model_usage side-lines parse at the line seam", async () => {
+    const { collectLocalUsageRecords } = await import("../dist/store/local-usage.js");
+    const home = join(box.dir, "home-model-usage-seam");
+    const sessions = join(home, ".omp", "agent", "sessions", "--D--proj--");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "s1.jsonl"),
+      [
+        modelUsageLine({ input: 4112, output: 302, cacheRead: 0 }),
+        modelUsageLine({ provider: "kilo", input: 4112, output: 500 }),
+        modelUsageLine({ input: 4112, output: null }), // missing output — no record
+        ompLine({ ts: "2026-10-20T10:05:03.000Z", input: 100, output: 50 }),
+      ].join("\n"),
+    );
+    const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
+    // one model_usage record + one message record; kilo and missing-output yield none
+    assert.equal(records.length, 2);
+    const mu = records.find((r) => r.inputTokens === 4112);
+    assert.ok(mu, "aiand model_usage line must yield a record");
+    assert.deepEqual(
+      {
+        agent: mu.agent,
+        model: mu.model,
+        outputTokens: mu.outputTokens,
+        cachedTokens: mu.cachedTokens,
+        at: mu.at,
+      },
+      {
+        agent: "omp",
+        model: "zai-org/glm-5.3",
+        outputTokens: 302,
+        cachedTokens: 0,
+        at: Date.parse("2026-10-20T10:00:03.000Z"),
+      },
+    );
+  });
+
+  test("a model_usage record alone refines its gateway row (subagent traffic)", async () => {
+    // The live-store condition: the ONLY local evidence for these gateway
+    // rows is a model_usage side-line (the subagent never wrote a message
+    // line) — the parser discarded it by shape and the row stayed NULL.
+    const dir = join(box.dir, "model-usage-e2e");
+    const home = join(box.dir, "home-model-usage-e2e");
+    mkdirSync(dir, { recursive: true });
+    seedSharedKey(dir);
+    writeOmpSession(home, "--D--proj--", [
+      modelUsageLine({ input: 1200, output: 302, cacheRead: 200 }),
+    ]);
+    await insertRows(dir, [storeRow({ id: "row-mu", output_tokens: 302 })]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.shared, undefined);
+    const db = await openStoreFor(dir);
+    const stored = db.prepare("SELECT attributed_agent FROM requests WHERE id = 'row-mu'").get();
+    db.close();
+    assert.equal(stored.attributed_agent, "omp");
+  });
+  test("unchanged session files are not re-parsed; a changed file is", async () => {
+    // The dashboard re-runs the correlation pass on every refresh while any
+    // row is still NULL (a permanently ambiguous row keeps the gate true
+    // forever). Re-parsing the whole agent history on every keypress was the
+    // multi-second dashboard hang: records are cached per file by mtime, so
+    // an unchanged file costs one statSync and a changed file re-parses.
+    const { collectLocalUsageRecords } = await import("../dist/store/local-usage.js");
+    const home = join(box.dir, "home-parse-cache");
+    const sessions = join(home, ".omp", "agent", "sessions", "--D--proj--");
+    mkdirSync(sessions, { recursive: true });
+    const file = join(sessions, "s1.jsonl");
+    const line = (output) => ompLine({ ts: "2026-10-20T10:00:03.000Z", input: 100, output });
+    writeFileSync(file, line(50));
+    const read = () => withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
+
+    const first = await read();
+    assert.equal(first.length, 1, "one record from one file");
+    const second = await read();
+    assert.deepEqual(second, first, "unchanged file: same records, from cache");
+
+    writeFileSync(file, `${line(50)}\n${line(51)}`);
+    const third = await read();
+    assert.equal(third.length, 2, "changed mtime: file re-parsed with new content");
   });
 });

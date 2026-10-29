@@ -260,7 +260,7 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
       const output = new FakeOutput();
       const captured = captureOutput();
       try {
-        await assert.rejects(
+        const pasting = assert.rejects(
           authLogin.pasteLogin({ profile: "default", interactive: true, input, output }),
           (error) => {
             assert.equal(error.exitCode, 1);
@@ -269,6 +269,10 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
             return true;
           },
         );
+        // Enter only once the prompt is listening: keys sent earlier are lost.
+        await waitForListener(input);
+        input.send(KEY.ENTER_CR);
+        await pasting;
         assert.equal(await config.loadCredential("default"), null);
       } finally {
         captured.restore();

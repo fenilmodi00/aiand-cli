@@ -7,6 +7,23 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Fixed
+- `aiand dashboard` no longer hangs for seconds at launch and on every
+  period/scope keypress: the local-usage correlation pass re-parsed every
+  omp/pi session file (hundreds of MB on a real history) synchronously on
+  each refresh whenever any gateway row was still unresolved. The TUI now
+  paints immediately, runs that pass once in the background (batched, so
+  keys stay live), and folds the refined harness labels in when it lands;
+  unchanged session files are cached by mtime and never re-parsed.
+- `aiand dashboard`/`overview` no longer render shared harness rows as 100%
+  when the store has already refined them: the correlation pass returns
+  refinement labels only, so a persisted `attributed_agent` is never
+  overwritten with the weaker base label while other rows stay pending.
+- Subagent traffic now correlates: pi-mono session `model_usage` side-lines
+  (provider/model/usage/timestamp at the top level, no `message` key) are
+  parsed as local usage records for aiand, refining the gateway rows that
+  previously stayed NULL forever.
+
 ### Added
 - `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across
   harnesses and models. `compare add` scaffolds a task pack

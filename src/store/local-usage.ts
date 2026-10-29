@@ -141,24 +141,51 @@ function opencodeDbPath(): string | null {
  * JSONL whose message lines carry
  * `{"type":"message","timestamp":…,"message":{"role":"assistant",
  * "provider":…,"model":…,"usage":{"input","output","cacheRead",…}}}`.
+ * Flat `type:"model_usage"` side-lines (background subagent traffic) carry
+ * the same fields at the TOP level (no `message` key) and parse too; both
+ * shapes require `provider === "aiand"`.
  * Both flat `<dir>/<uuid>.jsonl` files and per-cwd subdirectories are
  * accepted; files are read newest-first so freshest evidence iterates first.
+ *
+ * Parsed records are cached per file, keyed by path+mtime: an unchanged file
+ * is never re-read or re-parsed. The correlator runs on every dashboard
+ * refresh while any row is still unresolved (a permanently ambiguous row
+ * keeps the gate true forever), and re-parsing the whole agent history —
+ * hundreds of MB — on every keypress is the dashboard hang. The walk that
+ * finds files (one statSync each) still runs, so new and updated files are
+ * always picked up; only unchanged files are served from memory.
+ * ponytail: unbounded Map — the TUI process is short-lived and the cache
+ * is one entry per session file; evict by mtime if a daemon ever reuses it.
  */
+const chatRecordsCache = new Map<string, { mtime: number; records: LocalUsageRecord[] }>();
+
+/** Parse one session file into the mtime cache; returns its records. */
+function parseChatFile(file: string, agent: string): LocalUsageRecord[] {
+  let mtime: number;
+  let text: string;
+  try {
+    mtime = statSync(file).mtimeMs;
+    const cached = chatRecordsCache.get(file);
+    if (cached !== undefined && cached.mtime === mtime) return cached.records;
+    text = readFileSync(file, "utf8");
+  } catch {
+    chatRecordsCache.delete(file);
+    return [];
+  }
+  const parsed: LocalUsageRecord[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes('"provider":"aiand"')) continue;
+    const record = parseChatLine(line, agent) ?? parseModelUsageLine(line, agent);
+    if (record !== null) parsed.push(record);
+  }
+  chatRecordsCache.set(file, { mtime, records: parsed });
+  return parsed;
+}
+
 function chatJsonlRecords(sessionsDir: string, agent: string): LocalUsageRecord[] {
-  const files = chatSessionFiles(sessionsDir);
   const records: LocalUsageRecord[] = [];
-  for (const file of files) {
-    let text: string;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch {
-      continue;
-    }
-    for (const line of text.split("\n")) {
-      if (!line.includes('"provider":"aiand"')) continue;
-      const record = parseChatLine(line, agent);
-      if (record !== null) records.push(record);
-    }
+  for (const file of chatSessionFiles(sessionsDir)) {
+    records.push(...parseChatFile(file, agent));
   }
   return records;
 }
@@ -231,6 +258,54 @@ function parseChatLine(line: string, agent: string): LocalUsageRecord | null {
     at,
     inputTokens: input,
     outputTokens: output,
+    cachedTokens: cached,
+  };
+}
+
+/**
+ * A pi-mono `model_usage` side-line (background subagent traffic): a flat
+ * object with NO `message` key — `provider`/`model`/`usage`/`timestamp` sit
+ * at the top level. Same aiand-only gate as message lines.
+ */
+type ModelUsageLine = {
+  timestamp?: unknown;
+  type?: unknown;
+  provider?: unknown;
+  model?: unknown;
+  usage?: { input?: unknown; output?: unknown; cacheRead?: unknown };
+};
+
+function parseModelUsageLine(line: string, agent: string): LocalUsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const { type, timestamp, provider, model, usage } = parsed as ModelUsageLine;
+  if (
+    type !== "model_usage" ||
+    provider !== "aiand" ||
+    typeof model !== "string" ||
+    typeof timestamp !== "string" ||
+    typeof usage !== "object" ||
+    usage === null ||
+    typeof usage.output !== "number" ||
+    !Number.isFinite(usage.output)
+  ) {
+    return null;
+  }
+  const at = Date.parse(timestamp);
+  if (Number.isNaN(at)) return null;
+  const input = typeof usage.input === "number" && Number.isFinite(usage.input) ? usage.input : 0;
+  const cached =
+    typeof usage.cacheRead === "number" && Number.isFinite(usage.cacheRead) ? usage.cacheRead : 0;
+  return {
+    agent,
+    model,
+    at,
+    inputTokens: input,
+    outputTokens: usage.output,
     cachedTokens: cached,
   };
 }
@@ -342,6 +417,31 @@ export function collectLocalUsageRecords(): LocalUsageRecord[] {
   ];
 }
 
+/**
+ * The same records, parsed one file per event-loop turn so an interactive
+ * surface (the dashboard's paint-first refresh) stays responsive while a
+ * multi-hundred-MB agent history is read. Results land in the same mtime
+ * cache {@link collectLocalUsageRecords} uses, so the synchronous collector
+ * serves them for free afterwards.
+ */
+export async function collectLocalUsageRecordsBatched(): Promise<void> {
+  for (const [sessionsDir, agent] of [
+    [ompSessionsRoot(), "omp"],
+    [piSessionsRoot(), "pi"],
+  ] as const) {
+    const files = chatSessionFiles(sessionsDir);
+    for (let i = 0; i < files.length; i++) {
+      parseChatFile(files[i]!, agent);
+      // Yield after every file: one slice is one read+parse (tens of ms on
+      // a real session file), so keys stay live while hundreds of MB read.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      await promise;
+    }
+  }
+  opencodeRecords();
+}
+
 // ---------------------------------------------------------------------------
 // Matching + refinement
 // ---------------------------------------------------------------------------
@@ -383,9 +483,12 @@ function inputWithin(localInput: number, gatewayInput: number): boolean {
 
 /**
  * Correlate every row and persist the refinement into
- * `requests.attributed_agent` (migration 0006), returning the per-row labels
- * plus what changed. Idempotent: a row is written only when its persisted
- * value differs, so repeated passes are no-ops.
+ * `requests.attributed_agent` (migration 0006), returning refinement labels
+ * plus what changed — `labels` holds ONLY rows the pass actually refined via
+ * a unique local match (shared/unknown base); base labels never enter it,
+ * so a caller that applies `labels` cannot overwrite a persisted refinement
+ * with the weaker base rule. Idempotent: a row is written only when its
+ * persisted value differs, so repeated passes are no-ops.
  *
  * Cost gate: the pass settles a row the moment it RESOLVES — a unique local
  * match writes the matched agent, a specific base label writes itself (these
@@ -413,8 +516,11 @@ export function refreshCorrelations(
   records: readonly LocalUsageRecord[],
   baseLabel: (row: UsageRequestRow) => string,
 ): { labels: Map<string, string>; changed: number; ambiguous: number } {
+  // Refinement-only: base labels are NOT pre-seeded — a caller applying
+  // this map must leave untouched rows on their persisted/base label, or an
+  // unresolved row would regress to `shared` on every pass (the
+  // correlationsPending overwrite bug).
   const labels = new Map<string, string>();
-  for (const row of requests) labels.set(row.id, baseLabel(row));
   let changed = 0;
   let ambiguous = 0;
 
@@ -463,7 +569,7 @@ export function refreshCorrelations(
     for (const row of fresh) {
       const at = Date.parse(row.created_at);
       if (!Number.isNaN(at) && at > maxAt) maxAt = at;
-      const base = labels.get(row.id) ?? "";
+      const base = baseLabel(row);
       if (base !== SHARED_AGENT && base !== "unknown") {
         // Settle a specific-base row by recording its base label: these rows
         // never need a local record and are never heal-eligible, so writing
