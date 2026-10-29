@@ -1,4 +1,4 @@
-import type { CompareRunRow } from "./run-rows.js";
+import { type CompareRunRow, isRecordedRow } from "./run-rows.js";
 
 /**
  * `compare table` aggregation (ticket #132, plan §1 lane B): group run rows
@@ -22,7 +22,8 @@ export function wilson95(successes: number, trials: number): { lo: number; hi: n
   return { lo: Math.max(0, center - half), hi: Math.min(1, center + half) };
 }
 
-const FAILURE_MODES = [
+/** The failure-mode taxonomy: the single source for every histogram surface. */
+export const FAILURE_MODES = [
   "agent_timeout",
   "verify_timeout",
   "parse_error",
@@ -30,7 +31,7 @@ const FAILURE_MODES = [
   "integrity_violation",
 ] as const;
 
-type FailureMode = (typeof FAILURE_MODES)[number];
+export type FailureMode = (typeof FAILURE_MODES)[number];
 
 export type CellStats = {
   harness: string;
@@ -80,10 +81,18 @@ function num(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
-/** Group run rows per (harness, model) cell. Rows may span tasks. */
+/**
+ * Group run rows per (harness, model) cell. Rows may span tasks.
+ *
+ * Synthetic-never-joins (spec §3): rows from the recorded simulated lane
+ * (`cost_basis: "recorded"`) are excluded — they replay a fixed bench
+ * scenario, not the user's workload, so they never enter an observed
+ * ranking. `compare table` renders them separately.
+ */
 export function aggregateCells(rows: readonly CompareRunRow[]): CellStats[] {
   const groups = new Map<string, CompareRunRow[]>();
   for (const row of rows) {
+    if (isRecordedRow(row)) continue;
     if (typeof row.harness !== "string" || typeof row.model !== "string") continue;
     const k = key(row.harness, row.model);
     const bucket = groups.get(k);

@@ -39,6 +39,11 @@ export const TASK_CATEGORIES = [
 
 export type TaskCategory = (typeof TASK_CATEGORIES)[number];
 
+/** The taxonomy member `value` names, or null when it is not a category. */
+export function assertCategory(value: string): TaskCategory | null {
+  return (TASK_CATEGORIES as readonly string[]).includes(value) ? (value as TaskCategory) : null;
+}
+
 /** One classified turn: the shape classification actually reads. */
 export type ClassifiedTurn = {
   tools: readonly string[];

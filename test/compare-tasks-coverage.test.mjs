@@ -204,8 +204,9 @@ describe("validateTask verdicts (tasks.ts)", () => {
     assert.equal(v2.golden, null);
     assert.equal(v2.valid, null); // golden replay decides full validation
     assert.ok(v2.problems.some((p) => /--golden/.test(p)));
-    // verdict persisted so taskStatus reports it
-    assert.equal(taskStatus("opaque").status, "unvalidated");
+    // verdict persisted so taskStatus reports it — golden replay missing is
+    // golden-missing, never validated (spec §2.2)
+    assert.equal(taskStatus("opaque").status, "golden-missing");
   });
 
   test("trivially solvable task (verify passes untouched) → invalid with score in problem", async () => {
@@ -381,9 +382,10 @@ describe("compare add/tasks/validate (CLI)", () => {
     assert.notEqual(res.code, 0);
     assert.match(res.stdout, /fail-before:\s+✓ verify fails on untouched workspace/);
     assert.match(res.stdout, /null-harness:\s+✓ scores 0/);
-    assert.match(res.stdout, /golden:\s+not run/);
+    assert.match(res.stdout, /golden:\s+not run — task is NOT validated until a golden replay passes/);
     assert.match(res.stdout, /fail-before:\s+✗ verify passed — task is trivially solvable/);
     assert.match(res.stdout, /null-harness:\s+✗ did not score 0/);
+    // Spec §2.2: golden replay missing counts as not validated — both tasks fail.
     assert.match(res.stderr, /2 of 2 task\(s\) failed validation/);
 
     // json: invalidCount>0 after the json body → CliError with a count
@@ -394,15 +396,21 @@ describe("compare add/tasks/validate (CLI)", () => {
     const parsed = JSON.parse(asJson.stdout);
     assert.equal(parsed.ok, false);
     assert.equal(parsed.results.length, 2);
+  });
 
-    // only the passing task: valid=null but ok=true (nothing invalid)
-    const dir2 = newCfg("cli-validate-ok");
-    writeTask(dir2, "only-ok", { verify: "#!/bin/sh\nexit 1\n" });
+  test("validate: golden replay is required — a fail-before-only run is golden-missing and fails", async () => {
+    const dir = newCfg("cli-validate-golden-required");
+    writeTask(dir, "only-ok", { verify: "#!/bin/sh\nexit 1\n" });
     const okJson = await runCli(["compare", "validate", "--json"], {
-      env: cliEnv({ AIAND_CONFIG_DIR: dir2 }),
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
     });
-    assert.equal(okJson.code, 0, okJson.stderr);
-    assert.equal(JSON.parse(okJson.stdout).ok, true);
+    // Without --golden the task is golden-missing, not valid: exit 1.
+    assert.equal(okJson.code, 1, okJson.stderr);
+    const parsed = JSON.parse(okJson.stdout);
+    assert.equal(parsed.ok, false);
+    assert.equal(parsed.results[0].valid, null);
+    assert.equal(parsed.results[0].golden, null);
+    assert.ok(parsed.results[0].problems.some((p) => /--golden/.test(p)));
   });
 });
 
@@ -617,6 +625,42 @@ describe("compare table (CLI)", () => {
     assert.equal(parsed.note, undefined);
   });
 
+  test("recorded (simulated) rows never join the observed table (synthetic-never-joins)", async () => {
+    const dir = newCfg("cli-table-recorded");
+    writeTask(dir, "t1");
+    writeRows(dir, "t1", [
+      row({ task: "t1", run_id: "live1", harness: "agentA", model: "m1", success: true, cost_usd: 0.1 }),
+      // recorded rows carry cost_basis "recorded" — the observed table must ignore them
+      row({
+        task: "t1",
+        run_id: "rec1",
+        harness: "bench",
+        model: "pinned/bench-model",
+        success: true,
+        cost_usd: 99,
+        token_basis: "recorded",
+        cost_basis: "recorded",
+      }),
+      row({
+        task: "t1",
+        run_id: "rec2",
+        harness: "bench",
+        model: "pinned/bench-model",
+        success: true,
+        cost_usd: 99,
+        token_basis: "recorded",
+        cost_basis: "recorded",
+      }),
+    ]);
+    const res = await runCli(["compare", "table", "--task", "t1"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
+    assert.equal(res.code, 0, res.stderr);
+    assert.doesNotMatch(res.stdout, /bench/, "recorded lane cells never appear in the observed table");
+    assert.doesNotMatch(res.stdout, /99/);
+    assert.match(res.stdout, /recorded \(simulated\) — not your workload: 2 dry-run row\(s\)/);
+  });
+
   test("table --task filter with no rows: honest empty human + json note", async () => {
     const dir = newCfg("cli-table-empty");
     writeTask(dir, "t1"); // no run rows written
@@ -723,7 +767,7 @@ describe("compare audit (CLI)", () => {
     assert.match(res.stdout, /deterministic rubric/);
     assert.match(res.stdout, /FAIL\s+bad-run/);
     assert.match(res.stdout, /integrity:FAIL/);
-    assert.match(res.stdout, /verify script tampering/);
+    assert.match(res.stdout, /verify\.sh hash changed/);
     assert.match(res.stdout, /t1/);
 
     const asJson = await runCli(["compare", "audit", "--json"], {

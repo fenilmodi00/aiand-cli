@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../fsutil.js";
-import { TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
+import { assertCategory, type TaskCategory } from "../obs/classifier.js";
 import { taskPath } from "./tasks.js";
 
 /**
@@ -58,6 +58,16 @@ function taskRunsPath(id: string): string {
   return join(runsPath(), `${id}.jsonl`);
 }
 
+/** A task's recorded-lane (dry-run) run-row JSONL — kept apart from live rows. */
+function taskRecordedRunsPath(id: string): string {
+  return join(runsPath(), `${id}.recorded.jsonl`);
+}
+
+/** True when a row came from the recorded simulated lane, not a live run. */
+export function isRecordedRow(row: CompareRunRow): boolean {
+  return row.cost_basis === "recorded";
+}
+
 /** Does any run-row file exist for this task? Guard for the absent run surface. */
 export function hasRuns(id: string): boolean {
   return existsSync(taskRunsPath(id));
@@ -85,6 +95,15 @@ export function parseRunRows(content: string): CompareRunRow[] {
 export function readTaskRuns(id: string): CompareRunRow[] {
   try {
     return parseRunRows(readFileSync(taskRunsPath(id), "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+/** Read a task's recorded-lane rows (dry-run output); [] when absent. */
+export function readTaskRecordedRuns(id: string): CompareRunRow[] {
+  try {
+    return parseRunRows(readFileSync(taskRecordedRunsPath(id), "utf8"));
   } catch {
     return [];
   }
@@ -130,7 +149,7 @@ function writeMetaFile(path: string, meta: TaskMeta): void {
 /** Validate a tags list against the classifier taxonomy; error message on bad. */
 export function validateTags(tags: readonly string[]): string | null {
   for (const tag of tags) {
-    if (!TASK_CATEGORIES.includes(tag as TaskCategory)) {
+    if (assertCategory(tag) === null) {
       return `Unknown tag "${tag}".`;
     }
   }
@@ -141,5 +160,5 @@ export function validateTags(tags: readonly string[]): string | null {
 export function taskTags(id: string): TaskCategory[] {
   const tags = readTaskMeta(id).tags;
   if (!Array.isArray(tags)) return [];
-  return tags.filter((t): t is TaskCategory => TASK_CATEGORIES.includes(t)).sort();
+  return tags.filter((t): t is TaskCategory => assertCategory(t) !== null).sort();
 }

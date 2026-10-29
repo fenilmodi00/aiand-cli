@@ -128,6 +128,13 @@ const readRows = (cfgDir, task) =>
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line));
 
+/** Recorded-lane (dry-run) rows live in their own JSONL, apart from live rows. */
+const readRecordedRows = (cfgDir, task) =>
+  readFileSync(join(cfgDir, "compare-runs", `${task}.recorded.jsonl`), "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+
 const RUN_SHAPE = [
   "run_id",
   "ts",
@@ -363,7 +370,10 @@ test("--dry-run: recorded lane, zero gateway spend, recorded basis", async () =>
     assert.ok(row.turns > 0);
     assert.equal(row.request_ids.length, 0, "no gateway requests were made");
   }
-  assert.deepEqual(readRows(dir, "dry-task"), parsed.rows);
+  assert.deepEqual(readRecordedRows(dir, "dry-task"), parsed.rows);
+  // Synthetic-never-joins: the recorded lane never writes into the live rows
+  // file that `compare table` / `compare cohorts` aggregate.
+  assert.throws(() => readRows(dir, "dry-task"), /ENOENT/);
 });
 
 test("parse_error: harness exits cleanly with no output => never graded as success", async () => {

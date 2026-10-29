@@ -6,12 +6,20 @@ import { auditTask } from "../compare/audit.js";
 import { runCompareRun } from "../compare/run.js";
 import {
   hasRuns,
+  isRecordedRow,
+  readTaskRecordedRuns,
   readTaskRuns,
   taskTags,
   validateTags,
   writeTaskMeta,
 } from "../compare/run-rows.js";
-import { aggregateCells, type CellStats, tableWinners } from "../compare/table.js";
+import {
+  aggregateCells,
+  type CellStats,
+  type FailureMode,
+  histogramText,
+  tableWinners,
+} from "../compare/table.js";
 import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
 import type { TaskVerdict } from "../compare/tasks.js";
 import {
@@ -22,7 +30,7 @@ import {
   tasksPath,
   validateTask,
 } from "../compare/tasks.js";
-import { TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
+import { assertCategory, TASK_CATEGORIES } from "../obs/classifier.js";
 import { WINNER_MARKER } from "../obs/harness-stats.js";
 
 export const help = `${style.bold("aiand compare")} -- replay your own tasks across harnesses
@@ -30,7 +38,7 @@ export const help = `${style.bold("aiand compare")} -- replay your own tasks acr
 Usage
   aiand compare add <id> --verify "<cmd>"   scaffold tasks/<id>/ with a verify wrapper
   aiand compare tasks                       list task packs and their validation status
-  aiand compare validate [--golden <dir>]   fail-before check + optional golden replay
+  aiand compare validate [--golden <dir>]   fail-before + golden replay (both required to validate)
   aiand compare run  --task <id>            replay across harnesses (--dry-run = free)
   aiand compare audit [--task <id>]         rubric audit of suspicious successes (advisory)
   aiand compare table [--task <id>] [--json] [--out <file>] [--format md|csv|json]
@@ -47,8 +55,10 @@ Options
 A task pack is tasks/<id>/{instruction.md, workspace/, verify.sh} under the
 config dir. Verify discipline: on an untouched workspace verify must FAIL
 (fail-before — also the built-in null-harness control, scoring 0); after a
-golden replay it must PASS. A checker may print \`SCORE: <0..1>\` for
-partial credit. Instructions must not mention the verify script.`;
+golden replay it must PASS. A task is validated ONLY when both passed —
+without --golden the verdict is golden-missing (never valid). A checker may
+print \`SCORE: <0..1>\` for partial credit. Instructions must not mention the
+verify script.`;
 
 export async function run(argv: string[]): Promise<void> {
   const subcommand = argv[0];
@@ -90,7 +100,7 @@ async function runAdd(argv: string[]): Promise<void> {
     });
   }
   const dir = await scaffoldTask(id, verifyCommand);
-  if (tags.length > 0) writeTaskMeta(id, { tags: tags as TaskCategory[] });
+  if (tags.length > 0) writeTaskMeta(id, { tags: tags.map((t) => assertCategory(t)!) });
   if (bool(parsed, "json")) {
     json({ added: id, path: dir, tags: tags.length > 0 ? tags : undefined });
     return;
@@ -149,7 +159,9 @@ async function runValidate(argv: string[]): Promise<void> {
     results.push({ id, verdict: await validateTask(id, goldenDir) });
   }
 
-  const invalidCount = results.filter(({ verdict }) => verdict.valid === false).length;
+  // Spec §2.2: valid=false is invalid; valid=null is golden-missing — also
+  // not validated, so the command fails loudly for it too.
+  const invalidCount = results.filter(({ verdict }) => verdict.valid !== true).length;
   if (bool(parsed, "json")) {
     json({
       ok: invalidCount === 0,
@@ -164,7 +176,9 @@ async function runValidate(argv: string[]): Promise<void> {
       })),
     });
     if (invalidCount > 0) {
-      throw new CliError(`${invalidCount} of ${results.length} task(s) failed validation.`);
+      throw new CliError(
+        `${invalidCount} of ${results.length} task(s) failed validation (golden replay missing counts as not validated).`,
+      );
     }
     return;
   }
@@ -189,7 +203,9 @@ async function runValidate(argv: string[]): Promise<void> {
       );
     } else {
       out(
-        style.dim("  golden:       not run (pass --golden <dir> to replay the recorded solution)"),
+        style.dim(
+          "  golden:       not run — task is NOT validated until a golden replay passes (pass --golden <dir>)",
+        ),
       );
     }
     if (verdict.problems.length > 0) {
@@ -199,7 +215,7 @@ async function runValidate(argv: string[]): Promise<void> {
   }
   if (invalid > 0) {
     throw new CliError(`${invalid} of ${results.length} task(s) failed validation.`, {
-      hint: "An unvalidated or invalid task must not be used for harness runs.",
+      hint: "A task without a passing golden replay is not validated and must not be used for harness runs.",
     });
   }
 }
@@ -220,9 +236,10 @@ type TaskRollup = {
   meanWallMs: number | null;
 };
 
-/** Roll one task's run rows up: solves exclude infra; nulls stay null. */
+/** Roll one task's run rows up: solves exclude infra; nulls stay null.
+ * Recorded (simulated) rows never join — they are not the user's workload. */
 function rollupTask(id: string, tags: readonly string[]): TaskRollup {
-  const rows = readTaskRuns(id);
+  const rows = readTaskRuns(id).filter((r) => !isRecordedRow(r));
   const trials = rows.filter((r) => r.failure_mode !== "infra");
   const solves = trials.filter((r) => r.success === true).length;
   const costs = rows.map((r) => r.cost_usd).filter((c): c is number => typeof c === "number");
@@ -243,7 +260,7 @@ async function runCohorts(argv: string[]): Promise<void> {
   const parsed = parse(argv, { cohort: { type: "string" } });
   if (bool(parsed, "help")) return out(help);
   const cohort = str(parsed, "cohort");
-  if (cohort !== undefined && !TASK_CATEGORIES.includes(cohort as TaskCategory)) {
+  if (cohort !== undefined && assertCategory(cohort) === null) {
     throw new CliError(`Unknown cohort "${cohort}".`, {
       hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
     });
@@ -251,7 +268,7 @@ async function runCohorts(argv: string[]): Promise<void> {
 
   const ids = listTaskIds();
   const selected = ids.filter(
-    (id) => cohort === undefined || taskTags(id).includes(cohort as TaskCategory),
+    (id) => cohort === undefined || taskTags(id).includes(assertCategory(cohort!)!),
   );
   const rollups = selected.map((id) => rollupTask(id, taskTags(id)));
   const runsAvailable = selected.some((id) => hasRuns(id));
@@ -316,7 +333,7 @@ async function runAudit(argv: string[]): Promise<void> {
   if (bool(parsed, "json")) {
     json({
       // Deterministic-only v1: no gateway LLM call, no cost rows.
-      note: "deterministic rubric (integrity flags, suspicious-success median heuristic, instruction sufficiency) — advisory only, never part of solve rate",
+      note: "deterministic rubric (integrity flags — run rows carry the verify-hash verdict from `compare run`, suspicious-success median heuristic, instruction sufficiency) — advisory only, never part of solve rate",
       tasks: audited,
     });
     return;
@@ -329,7 +346,11 @@ async function runAudit(argv: string[]): Promise<void> {
     );
     return;
   }
-  out(style.dim("  deterministic rubric — advisory only, never part of solve rate or rankings"));
+  out(
+    style.dim(
+      "  deterministic rubric — advisory only, never part of solve rate or rankings; integrity reads the verify-hash verdict `compare run` recorded per row",
+    ),
+  );
   for (const { id, runs } of audited) {
     out(`  ${id}`);
     for (const r of runs) {
@@ -350,16 +371,6 @@ async function runAudit(argv: string[]): Promise<void> {
 
 // ---------------------------------------------------------------------------
 
-const FAILURE_MODE_ORDER = [
-  "agent_timeout",
-  "verify_timeout",
-  "parse_error",
-  "context_exceeded",
-  "integrity_violation",
-] as const;
-
-type FailureMode = (typeof FAILURE_MODE_ORDER)[number];
-
 const pct = (p: number | null): string => (p === null ? "—" : `${(p * 100).toFixed(0)}%`);
 
 const num2 = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
@@ -368,14 +379,18 @@ const num2 = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
 const mark = (cell: string, isWinner: boolean): string =>
   isWinner ? `${WINNER_MARKER} ${cell}` : cell;
 
-/** Render one histogram cell: every mode counted individually, never collapsed. */
-function histogramCell(c: CellStats): string {
-  const modes = FAILURE_MODE_ORDER.filter((m) => (c.failures[m] ?? 0) > 0).map(
-    (m) => `${m} ${c.failures[m]}`,
-  );
-  if (modes.length === 0) return c.infra > 0 ? `infra ${c.infra}` : "—";
-  return c.infra > 0 ? `${modes.join(" · ")} · infra ${c.infra}` : modes.join(" · ");
-}
+/** Per-column cell strings, shared by the terminal table and every export. */
+const cellKey = (c: CellStats) => `${c.harness} / ${c.model}`;
+const solveCell = (c: CellStats) =>
+  `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`;
+const costCell = (c: CellStats) =>
+  c.costPerSolve === null ? "—" : `${currencySymbol("usd")}${c.costPerSolve.toFixed(4)}`;
+const wallCell = (c: CellStats) => (c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`);
+/** Histogram cell: failure modes counted individually, infra separate. */
+const histogramCell = (c: CellStats): string => {
+  const modes = histogramText(c);
+  return c.infra > 0 ? (modes === "" ? `infra ${c.infra}` : `${modes} · infra ${c.infra}`) : modes === "" ? "—" : modes;
+};
 
 type TableJsonCell = {
   harness: string;
@@ -436,6 +451,13 @@ async function runTable(argv: string[]): Promise<void> {
   const rows = ids.flatMap((id) => readTaskRuns(id));
   const cells = aggregateCells(rows);
   const { winners, solveTied, tieNote } = tableWinners(cells);
+  // Recorded-lane rows: their own <task>.recorded.jsonl (new layout) plus any
+  // recorded-basis rows still mixed into the live JSONL (legacy) — separated,
+  // never aggregated.
+  const recorded = [
+    ...rows.filter(isRecordedRow),
+    ...ids.flatMap((id) => readTaskRecordedRuns(id)),
+  ];
 
   if (bool(parsed, "json")) {
     json({
@@ -444,6 +466,8 @@ async function runTable(argv: string[]): Promise<void> {
       solveTied,
       tieNote,
       winners,
+      // Recorded (simulated) rows are reported separately, never aggregated.
+      recordedRows: recorded.length,
       note:
         rows.length === 0
           ? "no run rows yet — run `aiand compare run --task <id>` first"
@@ -455,36 +479,30 @@ async function runTable(argv: string[]): Promise<void> {
   heading("compare · table");
   if (cells.length === 0) {
     out(style.dim("no run rows yet — run `aiand compare run --task <id>` first"));
+    if (recorded.length > 0) {
+      out(
+        style.dim(
+          `recorded (simulated) rows exist (${recorded.length}) — NOT your workload; never ranked (use --json to inspect counts)`,
+        ),
+      );
+    }
     return;
   }
 
-  const cellKey = (c: CellStats) => `${c.harness} / ${c.model}`;
   const w = winners;
   table<CellStats>(cells, [
-    { header: "harness / model", value: (c) => cellKey(c) },
+    { header: "harness / model", value: (c) => mark(cellKey(c), false) },
     {
       header: "solve",
-      value: (c) =>
-        mark(
-          `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`,
-          w.solve === cellKey(c),
-        ),
+      value: (c) => mark(solveCell(c), w.solve === cellKey(c)),
     },
     {
       header: "cost/solve",
-      value: (c) =>
-        mark(
-          c.costPerSolve === null ? "—" : `${currencySymbol("usd")}${c.costPerSolve.toFixed(4)}`,
-          w.costPerSolve === cellKey(c),
-        ),
+      value: (c) => mark(costCell(c), w.costPerSolve === cellKey(c)),
     },
     {
       header: "wall",
-      value: (c) =>
-        mark(
-          c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`,
-          w.meanWallMs === cellKey(c),
-        ),
+      value: (c) => mark(wallCell(c), w.meanWallMs === cellKey(c)),
     },
     {
       header: "turns/solve",
@@ -499,6 +517,13 @@ async function runTable(argv: string[]): Promise<void> {
   if (tieNote !== null) out(style.dim(tieNote));
   const infraTotal = cells.reduce((s, c) => s + c.infra, 0);
   if (infraTotal > 0) out(style.dim(`infra runs excluded from solve rate: ${infraTotal}`));
+  if (recorded.length > 0) {
+    out(
+      style.dim(
+        `recorded (simulated) — not your workload: ${recorded.length} dry-run row(s) excluded from this table`,
+      ),
+    );
+  }
   out(style.dim("▸ marks the per-column winner; — = not metered; CIs are Wilson 95%."));
 
   // Export reuses the shared serializers, preserving winners, n=, CIs, ties.
@@ -517,9 +542,9 @@ async function runTable(argv: string[]): Promise<void> {
     ];
     const body = cells.map((c) => [
       cellKey(c),
-      `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`,
-      c.costPerSolve === null ? "—" : c.costPerSolve.toFixed(4),
-      c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`,
+      solveCell(c),
+      costCell(c),
+      wallCell(c),
       num2(c.turnsPerSolve),
       num2(c.retryRate),
       histogramCell(c),

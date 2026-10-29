@@ -208,9 +208,11 @@ export type TaskVerdict = {
 /**
  * `compare validate` for one task: fail-before (verify must FAIL on the
  * untouched workspace — this is also the built-in null-harness control, a
- * no-op run scoring 0), then optionally the golden replay (recorded
- * solution's files copied onto a fresh workspace copy; verify must PASS).
- * Persists the verdict to validation.json so `compare tasks` can report it.
+ * no-op run scoring 0), then the golden replay (recorded solution's files
+ * copied onto a fresh workspace copy; verify must PASS). Spec §2.2: a task
+ * is validated ONLY when fail-before AND the golden replay passed; without
+ * --golden the verdict is golden-missing, never valid. Persists the verdict
+ * to validation.json so `compare tasks` can report it.
  */
 export async function validateTask(id: string, goldenDir?: string): Promise<TaskVerdict> {
   const dir = taskPath(id);
@@ -266,7 +268,7 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
     },
   };
 
-  if (controlOk && goldenDir !== undefined) {
+  if (goldenDir !== undefined) {
     if (!existsSync(goldenDir)) {
       throw new CliError(`Golden dir not found: ${goldenDir}`, {
         hint: "Pass a directory holding the recorded solution's file changes.",
@@ -284,11 +286,13 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
   }
 
   if (verdict.valid === null && controlOk) {
-    verdict.valid = verdict.golden ? true : null; // golden replay decides full validation
+    // Spec §2.2: validation = fail-before AND golden pass-after. Without a
+    // golden replay the verdict stays golden-missing — never valid.
+    verdict.valid = verdict.golden?.ok === true ? true : null;
   }
   if (verdict.valid === null && verdict.golden === null) {
     verdict.problems.push(
-      "not fully validated — re-run with --golden <dir> to replay the recorded solution",
+      "not validated — golden replay missing: re-run with --golden <dir> to replay the recorded solution",
     );
   }
   await writeValidation(dir, validation);
@@ -310,7 +314,9 @@ function replayGolden(taskDir: string, goldenDir: string): VerifyResult {
   }
 }
 
-/** Validation status for `compare tasks`, from the persisted verdict. */
+/** Validation status for `compare tasks`, from the persisted verdict.
+ * Spec §2.2: fail-before AND golden pass-after are both required — a
+ * fail-before-only verdict reads golden-missing, never validated. */
 export function taskStatus(id: string): { status: string; missing: string[] } {
   const dir = taskPath(id);
   const missing = missingTaskFiles(dir);
@@ -319,9 +325,10 @@ export function taskStatus(id: string): { status: string; missing: string[] } {
   if (!validation) return { status: "unvalidated", missing: [] };
   if (validation.golden && !validation.golden.ok) return { status: "invalid", missing: [] };
   if (!validation.failBefore?.ok) return { status: "invalid", missing: [] };
-  if (validation.golden) {
+  if (validation.golden?.ok) {
     if (!existsSync(validation.golden.path)) return { status: "golden-missing", missing: [] };
     return { status: "validated", missing: [] };
   }
-  return { status: "unvalidated", missing: [] };
+  // fail-before recorded but no golden replay yet: golden-missing, not valid.
+  return { status: "golden-missing", missing: [] };
 }

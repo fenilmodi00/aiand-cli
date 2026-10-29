@@ -13,19 +13,26 @@ breaking changes while the command surface settles.
   (`instruction.md` + `workspace/` + `verify.sh`) with verifier discipline —
   verify must FAIL on the untouched workspace (the built-in null-harness
   control, scoring 0) and PASS after a `--golden` solution replay; `compare
-  validate` enforces both loudly. `compare run` drives each harness headless
-  (claude/codex/opencode; adapters that cannot run headless fail loudly),
-  pins one model across harnesses, meters cost+tokens from gateway rows
-  (masked-key + time-window join; missing usage is `null`, never 0), and
-  classifies failures (agent/verify timeout, parse_error, context_exceeded,
-  integrity_violation via verify-script hashing, infra — reported separately,
-  never folded into solve rate). `--dry-run` replays the recorded simulated
-  lane with zero gateway spend. `compare table` aggregates per (harness,
+  validate` enforces both loudly — a task is validated only when the golden
+  replay passed too (without `--golden` the verdict is golden-missing, never
+  valid, and `compare run` refuses it). `compare run` drives each harness
+  headless (claude/codex/opencode; adapters that cannot run headless fail
+  loudly), pins one model across harnesses, meters cost+tokens from gateway
+  rows (masked-key + time-window join; missing usage is `null`, never 0),
+  and classifies failures (agent/verify timeout, parse_error,
+  context_exceeded, integrity_violation via verify-script hashing, infra —
+  reported separately, never folded into solve rate). `--dry-run` replays
+  the recorded simulated lane with zero gateway spend; its rows go to
+  `compare-runs/<task>.recorded.jsonl`, kept apart from live rows.
+  `compare table` aggregates per (harness,
   model): solve x/n with Wilson 95% CI, cost/solve, wall, turns/solve,
-  retry rate, and the failure histogram; overlapping CIs say "tied — not
+  retry rate, and the failure histogram; recorded (simulated) rows are
+  excluded and reported on a separate line, never ranked with your workload;
+  overlapping CIs say "tied — not
   distinguishable yet" instead of crowning a winner, cells under 3 trials
   are flagged, and every rate carries `n=`. `compare audit` applies a fixed
-  deterministic rubric (integrity flags, suspicious-success median
+  deterministic rubric (integrity — the verify-hash verdict `compare run`
+  recorded per row, suspicious-success median
   heuristic, instruction sufficiency) — advisory only, never part of solve
   rate or rankings.
 - Envelope capture v2 (#126): envelopes now record per-tool-call outcomes

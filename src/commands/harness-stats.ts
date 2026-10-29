@@ -8,7 +8,12 @@ import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-
 import { resolveProfile } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import { MISSED_CATCH_RULE } from "../model-efficiency.js";
-import { classifyEnvelope, TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
+import {
+  assertCategory,
+  classifyEnvelope,
+  TASK_CATEGORIES,
+  type TaskCategory,
+} from "../obs/classifier.js";
 import {
   buildHarnessStats,
   compareWinners,
@@ -125,14 +130,15 @@ export function cohortFromFlags(
   parsed: Parsed,
   rows: readonly HarnessRequestRow[],
 ): ((row: HarnessRequestRow) => boolean) | undefined {
-  const category = str(parsed, "cohort") as TaskCategory | undefined;
+  const category = str(parsed, "cohort");
   if (category === undefined) return undefined;
-  if (!TASK_CATEGORIES.includes(category)) {
+  const validated = assertCategory(category);
+  if (validated === null) {
     throw new CliError(`Unknown cohort "${category}".`, {
       hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
     });
   }
-  const matching = cohortOf(rows, category);
+  const matching = cohortOf(rows, validated);
   return (row) => matching.has(row.id);
 }
 
@@ -218,11 +224,16 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
   // "same kind of work" before sessionization. Excluded rows are counted in
   // the coverage line, never folded silently. Validation rides the shared
   // cohortFromFlags helper (same rules for matrix/recommend).
-  const cohortCategory = str(parsed, "cohort") as TaskCategory | undefined;
-  if (cohortCategory !== undefined && !TASK_CATEGORIES.includes(cohortCategory)) {
-    throw new CliError(`Unknown cohort "${cohortCategory}".`, {
-      hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
-    });
+  const cohortRaw = str(parsed, "cohort");
+  let cohortCategory: TaskCategory | undefined;
+  if (cohortRaw !== undefined) {
+    const validated = assertCategory(cohortRaw);
+    if (validated === null) {
+      throw new CliError(`Unknown cohort "${cohortRaw}".`, {
+        hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
+      });
+    }
+    cohortCategory = validated;
   }
 
   const stats = buildHarnessStats(rows, {

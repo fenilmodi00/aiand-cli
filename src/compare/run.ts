@@ -28,14 +28,15 @@ import { configDir, type ResolvedProfile, resolveProfile } from "../config.js";
 import { oneShotRetry } from "../model-efficiency.js";
 import { listEnvelopes } from "../store/envelopes.js";
 import { openStore, storePath, syncStore } from "../store/index.js";
-import type { CompareRunRow } from "./run-rows.js";
+import { type CompareRunRow, isRecordedRow, runsPath } from "./run-rows.js";
 import { runVerify, taskPath, taskStatus } from "./tasks.js";
 
 /**
  * `aiand compare run` (ticket #131, plan §2.2/§5 P2): drive each requested
  * harness headless on a task pack's instruction with one pinned model, verify
  * the workspace with the task's own script, and append one JSONL run row per
- * (harness, model, task, trial) under `<config dir>/compare-runs/<task>.jsonl`.
+ * (harness, model, task, trial) under `<config dir>/compare-runs/<task>.jsonl`
+ * (dry-run rows land in `<task>.recorded.jsonl`, kept apart from live rows).
  *
  * Success is the verify script's exit code — never the harness's own claim.
  * `completed` records whether the harness binary exited cleanly and is kept
@@ -86,7 +87,9 @@ Options
   --timeout <seconds> per-run harness cap (default ${DEFAULT_AGENT_TIMEOUT_S})
   --dry-run           replay the recorded simulated lane instead of live
                       drivers — zero gateway spend; rows carry the
-                      "recorded" basis labels and the pinned bench model
+                      "recorded" basis labels, the pinned bench model, and
+                      land in <task>.recorded.jsonl (kept apart from live
+                      rows and never ranked with them)
   --force             run even when the task is not validated
   --json              machine-readable output
 
@@ -96,14 +99,16 @@ its hash is checked before/after each run so an agent that edits the grader
 is flagged integrity_violation instead of scored. Cost and tokens join the
 gateway's /logs by masked key + time window; missing usage stays null.`;
 
-/** The compare-runs root, next to config.json in the config dir. */
-function runsPath(): string {
-  return join(configDir(), "compare-runs");
-}
-
+/**
+ * Append one run row to its lane's JSONL: recorded (dry-run) rows go to
+ * `<task>.recorded.jsonl`, live rows to `<task>.jsonl` — the recorded
+ * simulated lane never mixes into the observed run rows that `compare
+ * table` and `compare cohorts` aggregate.
+ */
 function appendRow(task: string, row: CompareRunRow): void {
   mkdirSync(runsPath(), { recursive: true, mode: 0o700 });
-  appendFileSync(join(runsPath(), `${task}.jsonl`), `${JSON.stringify(row)}\n`);
+  const file = isRecordedRow(row) ? `${task}.recorded.jsonl` : `${task}.jsonl`;
+  appendFileSync(join(runsPath(), file), `${JSON.stringify(row)}\n`);
 }
 
 function sha256File(path: string): string {
@@ -546,7 +551,9 @@ function reportResults(
       `${solved}/${graded.length} solved` +
         (rows.length > graded.length ? ` · ${rows.length - graded.length} infra (excluded)` : "") +
         ` · total $${totalCost.toFixed(4)}` +
-        style.dim(` · rows: ${join(runsPath(), `${task}.jsonl`)}`),
+        style.dim(
+          ` · rows: ${join(runsPath(), dryRun ? `${task}.recorded.jsonl` : `${task}.jsonl`)}`,
+        ),
     );
   }
   // Infra failures are reported (never folded into the solve rate) but still
