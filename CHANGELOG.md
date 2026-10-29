@@ -16,6 +16,24 @@ breaking changes while the command surface settles.
   The goldens pin the new fields; every behavioral number is labeled
   `simulated(scripted tool outcomes)` via the new fourth provenance tier
   and never joins observed rankings — the live gateway path is unchanged.
+- `harness compare` behavioral columns (#130): per-harness tool-error rate,
+  one-shot/retry rate, missed-catch rate, turns-to-success, and the clean/
+  aborted/errored outcome split — sourced from locally captured adapter
+  envelopes (v2 outcome fields) via the same walk as `aiand efficiency`.
+  Every rate carries `n=`; envelope-derived numbers are labeled
+  `heuristic(one-shot/retry envelope rule)`. Columns render only when
+  envelope data covers a harness; uncovered cells show `—` (never zeros) and
+  the table prints an honest coverage line (`behavioral columns: envelopes
+  N% of turns, uncovered → —`). Per-column winners (`▸`) extend to the
+  behavioral metrics — only covered cells compete.
+- `recommend` ranks on the behavioral columns when coverage exists
+  (`--sort tool-err|one-shot`; uncovered pairs sink, as unpriced rows do)
+  and states its basis — `ranking basis: behavioral+request` or
+  `request-only` — in text and `--json` (`provenance.rankedOn`).
+- `harness stats|compare --cohort <category>` (C6): narrows the rows to one
+  deterministic classifier category (Coding, Debugging, …) before
+  sessionization; non-matching requests are excluded AND counted
+  ("excluded, not folded"), never silently dropped.
 - Harness attribution refinement from the agents' own local usage records:
   a request the key+endpoint rules can only label `shared` (chat-dialect
   agents sharing one key) is refined to omp, pi, or opencode when that

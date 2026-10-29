@@ -1,4 +1,5 @@
 import { cacheVerdict } from "../api/cache-report.js";
+import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
 import type { ProvenanceLabel } from "./provenance.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
@@ -36,6 +37,42 @@ export type SessionSample = {
   started_at: string;
 };
 
+/**
+ * Behavioral per-harness columns (T3, #130), sourced from T2's envelope walk
+ * (`oneShotRetry` over the harness's envelope turns — the same join
+ * `src/commands/efficiency.ts` uses: per masked api_key, most recent
+ * envelope at-or-before the request within the turn window). All nullable:
+ * v1 envelopes or no envelope data → null, rendered as `—`, never a zero.
+ */
+export type BehavioralStats = {
+  toolErrorRate: number | null;
+  oneShotRate: number | null;
+  retryRate: number | null;
+  missedCatchRate: number | null;
+  turnsToSuccess: number | null;
+  sessions: { clean: number; aborted: number; errored: number } | null;
+  /** Envelope turns behind the rates (the cell's n for coverage gating). */
+  envelopeTurns: number;
+};
+
+/** The uncovered cell: nulls and a zero count — never fake zeros in rates. */
+export const EMPTY_BEHAVIORAL: BehavioralStats = {
+  toolErrorRate: null,
+  oneShotRate: null,
+  retryRate: null,
+  missedCatchRate: null,
+  turnsToSuccess: null,
+  sessions: null,
+  envelopeTurns: 0,
+};
+
+/**
+ * Behavioral columns are only shown for a harness with at least this many
+ * envelope turns behind them — the MIN_SAMPLE_SESSIONS discipline applied to
+ * envelope data (below it, the rates are a guess).
+ */
+export const MIN_BEHAVIORAL_TURNS = 5;
+
 /** One harness row of `aiand harness stats` / `compare`. */
 export type HarnessStatsRow = {
   harness: string;
@@ -49,6 +86,8 @@ export type HarnessStatsRow = {
   cacheHitRatio: number;
   errorRate: number;
   verdict: "good" | "warn" | "bad";
+  /** Behavioral columns (#130): null when envelope data doesn't cover the harness. */
+  behavioral: BehavioralStats;
   /** Every non-mixed session that fed the aggregates (the --samples list). */
   samples: SessionSample[];
 };
@@ -98,6 +137,22 @@ export type HarnessStatsOptions = {
    * aggregation. Unused today — reserved by ticket #64.
    */
   cohort?: (row: HarnessRequestRow) => boolean;
+  /**
+   * Envelope rows in the window (#130): the behavioral-column source. Each
+   * entry is one captured turn with its harness id (`agent`) — the same
+   * stored-row shape `efficiencyByHarness` reads. Absent/empty → behavioral
+   * columns uncovered (all null).
+   */
+  envelopes?: readonly {
+    agent: string;
+    model?: string | null;
+    envelope: {
+      tools: string[];
+      edit_targets: string[];
+      toolOutcomes?: { name: string; ok: boolean }[] | null;
+      terminal?: string | null;
+    } | null;
+  }[];
 };
 
 export type HarnessStats = {
@@ -114,6 +169,12 @@ export type HarnessStats = {
   excluded: SessionSample[];
   /** Their gateway-billed spend — the reconciliation line (OBS-LT-4). */
   excludedMixed: ExcludedMixedAggregate;
+  /**
+   * #130 behavioral coverage: covered envelope turns / total requests in
+   * scope (the honest "envelopes N% of turns" denominator), null when there
+   * are no requests. Zero turns → 0 coverage, columns all uncovered.
+   */
+  behavioralCoverage: { covered: number; total: number; ratio: number | null };
 };
 
 /**
@@ -144,6 +205,30 @@ export function errorCount(rows: readonly { status_code: number | null }[]): num
     if (status === null) return false;
     return (status < 200 || status >= 300) && status !== 429;
   }).length;
+}
+
+/**
+ * Convert one harness's stored envelope rows to T2's EfficiencyTurn shape —
+ * the exact mapping `src/commands/efficiency.ts` uses for its walk (v2
+ * outcome fields absent on v1 envelopes → null, never zero).
+ */
+function buildEfficiencyTurns(
+  rows: HarnessStatsOptions["envelopes"],
+  harness: string,
+): EfficiencyTurn[] {
+  const turns: EfficiencyTurn[] = [];
+  for (const row of rows ?? []) {
+    if (row.agent !== harness) continue;
+    const e = row.envelope;
+    if (!e) continue;
+    turns.push({
+      tools: e.tools,
+      editTargets: e.edit_targets,
+      toolOutcomes: Array.isArray(e.toolOutcomes) ? e.toolOutcomes : null,
+      terminal: (e.terminal ?? null) as EfficiencyTurn["terminal"],
+    });
+  }
+  return turns;
 }
 
 /**
@@ -207,6 +292,23 @@ export function buildHarnessStats(
         .map((row) => row.ttft_ms)
         .filter((value): value is number => value !== null);
       const errors = errorCount(bucket.rows);
+      // #130: behavioral columns ride T2's walk over this harness's envelope
+      // turns (same join as efficiency.ts). Gated on MIN_BEHAVIORAL_TURNS —
+      // below it the cell is uncovered (nulls), never a small-n guess.
+      const harnessTurns = buildEfficiencyTurns(options.envelopes, harness);
+      const behavioral: BehavioralStats =
+        harnessTurns.length >= MIN_BEHAVIORAL_TURNS
+          ? (() => {
+              const walked = oneShotRetry(harnessTurns).stats.value;
+              return {
+                ...walked,
+                // retryRate = retries / (oneShots + retries) — the complement
+                // of oneShotRate over the same event set.
+                retryRate: walked.oneShotRate === null ? null : 1 - walked.oneShotRate,
+                envelopeTurns: harnessTurns.length,
+              };
+            })()
+          : EMPTY_BEHAVIORAL;
       // The verdict rides the EXISTING cacheVerdict thresholds — never re-derived.
       const verdictGroup: VerdictGroup = {
         key: harness,
@@ -231,10 +333,24 @@ export function buildHarnessStats(
         cacheHitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
         errorRate: requests > 0 ? errors / requests : 0,
         verdict: cacheVerdict(verdictGroup),
+        behavioral,
         samples: bucket.sessions,
       };
     })
     .sort((a, b) => a.harness.localeCompare(b.harness));
+
+  // #130 coverage math: how many of the in-scope requests an envelope turn
+  // can plausibly explain (harness matches + turn window). Honest ratio —
+  // covered / total, not the share among covered harnesses.
+  const totalRequests = scoped.length;
+  const covered = options.envelopes
+    ? harnesses.reduce((sum, h) => sum + h.behavioral.envelopeTurns, 0)
+    : 0;
+  const behavioralCoverage = {
+    covered,
+    total: totalRequests,
+    ratio: totalRequests > 0 ? covered / totalRequests : null,
+  };
 
   const labels: Record<string, string> = {
     cost: formatLabel(gatewayBilled("store cost_value sums")),
@@ -244,6 +360,7 @@ export function buildHarnessStats(
     errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
     costPerSession: formatLabel(heuristic("per-session cost over time-gap sessions")),
     verdict: formatLabel(estimated("cacheVerdict thresholds")),
+    behavioral: formatLabel(heuristic("one-shot/retry envelope rule (T2 walk)")),
   };
 
   return {
@@ -258,6 +375,7 @@ export function buildHarnessStats(
     harnesses,
     excluded,
     excludedMixed: excludedMixedAggregate(excludedSessions),
+    behavioralCoverage,
   };
 }
 
@@ -267,6 +385,11 @@ export type CompareWinners = {
   errorRate: string | null;
   cacheHitRatio: string | null;
   ttftP50: string | null;
+  /** #130 behavioral winners: only harnesses with covered cells compete. */
+  toolErrorRate: string | null;
+  oneShotRate: string | null;
+  missedCatchRate: string | null;
+  turnsToSuccess: string | null;
 };
 
 /** The winner marker used in the compare table — deterministic, works without color. */
@@ -312,6 +435,28 @@ export function compareWinners(rows: readonly HarnessStatsRow[]): CompareWinners
       (r) => r.ttft.p50,
       (a, b) => a < b,
     ),
+    // #130 behavioral winners: a harness competes only when its cell has
+    // coverage (rate non-null ⇒ envelope turns ≥ MIN_BEHAVIORAL_TURNS).
+    toolErrorRate: best(
+      rows,
+      (r) => r.behavioral?.toolErrorRate ?? null,
+      (a, b) => a < b,
+    ),
+    oneShotRate: best(
+      rows,
+      (r) => r.behavioral?.oneShotRate ?? null,
+      (a, b) => a > b,
+    ),
+    missedCatchRate: best(
+      rows,
+      (r) => r.behavioral?.missedCatchRate ?? null,
+      (a, b) => a < b,
+    ),
+    turnsToSuccess: best(
+      rows,
+      (r) => r.behavioral?.turnsToSuccess ?? null,
+      (a, b) => a < b,
+    ),
   };
 }
 
@@ -325,5 +470,6 @@ export function harnessStatsLabels(): Record<string, ProvenanceLabel> {
     "harness-stats.errorRate": estimated("non-2xx excluding 429 / requests"),
     "harness-stats.costPerSession": heuristic("per-session cost over time-gap sessions"),
     "harness-stats.verdict": estimated("cacheVerdict thresholds"),
+    "harness-stats.behavioral": heuristic("one-shot/retry envelope rule (T2 walk)"),
   };
 }

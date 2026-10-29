@@ -687,3 +687,107 @@ test("buildPairStats attributes mixed-model sessions per model (user bug: omp se
   const attributed = stats.pairs.reduce((sum, p) => sum + (p.costTotal ?? 0), 0);
   assert.ok(Math.abs(attributed - 3.02) < 1e-9, "sum of pair costTotals == 3.02");
 });
+
+// ---------------------------------------------------------------------------
+// #130 (T3): recommend ranks on behavioral columns when coverage exists and
+// states its basis; without coverage it says request-only.
+// ---------------------------------------------------------------------------
+
+import { normalizeEnvelope } from "../dist/agents/envelope.js";
+import { insertEnvelope } from "../dist/store/envelopes.js";
+
+test("cli: recommend states its basis and ranks on behavioral columns with coverage", async () => {
+  const cfg = cfgDir("recommend-behavioral");
+  const masks = await seedAgentKeys(cfg);
+  await seedStore(cfg, [
+    // claude/glm: 6 sessions (cheapest) with 5 v2 envelopes, some tool errors
+    // (spread ≥ 1h apart so each request is its own time-gap session)
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({ id: `rc${i}`, api_key: masks.claude, created_at: iso(i * HOUR) }),
+    ),
+    // opencode/glm: 6 sessions, pricier but cleaner tools
+    ...Array.from({ length: 6 }, (_, i) =>
+      row({
+        id: `ro${i}`,
+        api_key: masks.opencode,
+        created_at: iso(i * HOUR),
+        cost_value: 0.05,
+      }),
+    ),
+  ]);
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = (await import("../dist/store/index.js")).openStore(
+      (await import("../dist/store/index.js")).storePath(),
+    );
+    assert.ok(opened.ok);
+    const v2 = (toolOk) =>
+      normalizeEnvelope({
+        tools: ["Bash", "Edit"],
+        toolOutcomes: [
+          { name: "Bash", ok: toolOk },
+          { name: "Edit", ok: true },
+        ],
+        terminal: toolOk ? "clean" : "errored",
+        editTargets: ["/repo/src/a.ts"],
+        projectRoot: "/repo",
+      });
+    for (let i = 0; i < 5; i += 1) {
+      insertEnvelope(opened.db, {
+        agent: "claude",
+        model: "zai-org/glm-5.3",
+        apiKey: masks.claude,
+        createdAt: iso(i * HOUR + 30_000),
+        envelope: v2(i % 2 === 0), // 3 of 5 tool calls ok
+      });
+      insertEnvelope(opened.db, {
+        agent: "opencode",
+        model: "zai-org/glm-5.3",
+        apiKey: masks.opencode,
+        createdAt: iso(i * HOUR + 30_000),
+        envelope: v2(true), // clean
+      });
+    }
+    opened.db.close();
+  });
+
+  const run = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  // Coverage exists → the basis names it, though default --sort cost stays
+  // a request ranking; behavioral keys make it behavioral+request.
+  assert.match(payload.provenance.rankedOn, /request \(behavioral columns available\)/);
+  const claudeRow = payload.ranked.find((r) => r.harness === "claude");
+  const opencodeRow = payload.ranked.find((r) => r.harness === "opencode");
+  assert.ok(claudeRow?.behavioral && opencodeRow?.behavioral, "behavioral attached");
+  assert.equal(claudeRow.behavioral.envelopeTurns, 5);
+  assert.equal(opencodeRow.labels.behavioral, "heuristic(one-shot/retry envelope rule)");
+  // Behavioral sort works: one-shot sorts desc — both 100% here, cost tie-break.
+  const byOneShot = await runCli(["recommend", "--no-sync", "--sort", "one-shot"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(byOneShot.code, 0, byOneShot.stderr);
+  assert.match(byOneShot.stdout, /ranking basis: behavioral\+request/);
+  const byToolErr = await runCli(["recommend", "--no-sync", "--sort", "tool-err"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(byToolErr.code, 0, byToolErr.stderr);
+  assert.match(byToolErr.stdout, /ranking basis: behavioral\+request/);
+});
+
+test("cli: recommend without envelope coverage says request-only and carries no behavioral", async () => {
+  const cfg = await seededMatrixStore("recommend-no-behavioral");
+  const run = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  assert.match(payload.provenance.rankedOn, /request-only/);
+  assert.ok(payload.ranked.every((r) => !("behavioral" in r) || r.behavioral === undefined));
+  const text = await runCli(["recommend", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /ranking basis: request-only/);
+});

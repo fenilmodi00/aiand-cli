@@ -1,9 +1,11 @@
 import { cacheVerdict } from "../api/cache-report.js";
+import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { sessionizeRows } from "../store/sessions.js";
 import {
   errorCount,
   type HarnessRequestRow,
   type HarnessStatsOptions,
+  MIN_BEHAVIORAL_TURNS,
   percentile,
   type SessionSample,
 } from "./harness-stats.js";
@@ -44,6 +46,20 @@ export type PairStatsRow = {
   cacheHitRatio: number;
   errorRate: number;
   verdict: "good" | "warn" | "bad";
+  /**
+   * #130 behavioral columns (T3): present only when the pair's cell has
+   * envelope coverage (≥ MIN_BEHAVIORAL_TURNS turns); undefined otherwise —
+   * rank on them only when coverage exists.
+   */
+  behavioral?: {
+    toolErrorRate: number | null;
+    oneShotRate: number | null;
+    retryRate: number | null;
+    missedCatchRate: number | null;
+    turnsToSuccess: number | null;
+    sessions: { clean: number; aborted: number; errored: number } | null;
+    envelopeTurns: number;
+  };
   /** Every session slice behind the aggregates (inspectable samples). */
   samples: SessionSample[];
 };
@@ -79,7 +95,35 @@ export function annotatedPairRow(
       errorRate: "estimated",
       costPerSession: "heuristic",
       verdict: "estimated",
+      ...(row.behavioral ? { behavioral: "heuristic(one-shot/retry envelope rule)" } : {}),
     },
+  };
+}
+
+/** Envelope turns attributed to one (harness, model) cell, as T2 turns. */
+function pairBehavioral(
+  rows: HarnessStatsOptions["envelopes"],
+  harness: string,
+  model: string,
+): PairStatsRow["behavioral"] {
+  const turns: EfficiencyTurn[] = [];
+  for (const row of rows ?? []) {
+    if (row.agent !== harness || (row.model ?? "") !== model) continue;
+    const e = row.envelope;
+    if (!e) continue;
+    turns.push({
+      tools: e.tools,
+      editTargets: e.edit_targets,
+      toolOutcomes: Array.isArray(e.toolOutcomes) ? e.toolOutcomes : null,
+      terminal: (e.terminal ?? null) as EfficiencyTurn["terminal"],
+    });
+  }
+  if (turns.length < MIN_BEHAVIORAL_TURNS) return undefined;
+  const walked = oneShotRetry(turns).stats.value;
+  return {
+    ...walked,
+    retryRate: walked.oneShotRate === null ? null : 1 - walked.oneShotRate,
+    envelopeTurns: turns.length,
   };
 }
 
@@ -170,6 +214,9 @@ export function buildPairStats(
       cacheHitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
       errorRate: requests > 0 ? errorCount(bucket.rows) / requests : 0,
       verdict: cacheVerdict(verdictGroup),
+      // #130: behavioral per (harness, model) cell — envelope turns attributed
+      // to this pair (agent + model), gated on MIN_BEHAVIORAL_TURNS.
+      behavioral: pairBehavioral(options.envelopes, harness ?? "unknown", model ?? ""),
       samples: bucket.sessions,
     };
   });
@@ -199,7 +246,7 @@ export function buildPairStats(
 }
 
 /** The sort keys `--sort` accepts on both matrix and recommend. */
-export type PairSortKey = "cost" | "ttft" | "hit" | "errors";
+export type PairSortKey = "cost" | "ttft" | "hit" | "errors" | "tool-err" | "one-shot";
 
 export function pairSortValue(row: PairStatsRow, key: PairSortKey): number | null {
   switch (key) {
@@ -211,6 +258,10 @@ export function pairSortValue(row: PairStatsRow, key: PairSortKey): number | nul
       return row.cacheHitRatio;
     case "errors":
       return row.errorRate;
+    case "tool-err":
+      return row.behavioral?.toolErrorRate ?? null;
+    case "one-shot":
+      return row.behavioral?.oneShotRate ?? null;
   }
 }
 
@@ -225,9 +276,10 @@ export function sortPairs(
   key: PairSortKey,
   order?: "asc" | "desc",
 ): PairStatsRow[] {
-  const better = key === "hit" ? 1 : -1; // hit: higher better; others: lower better
-  const preferred = order ?? (key === "hit" ? "desc" : "asc");
-  const dir = preferred === (key === "hit" ? "desc" : "asc") ? better : -better;
+  const better = key === "hit" || key === "one-shot" ? 1 : -1; // hit/one-shot: higher better; others: lower better
+  const preferred = order ?? (key === "hit" || key === "one-shot" ? "desc" : "asc");
+  const dir =
+    preferred === (key === "hit" || key === "one-shot" ? "desc" : "asc") ? better : -better;
   return [...pairs].sort((a, b) => {
     const av = pairSortValue(a, key);
     const bv = pairSortValue(b, key);
@@ -262,5 +314,6 @@ export function pairStatsLabels(): Record<string, ProvenanceLabel> {
       "per-session cost over time-gap sessions; mixed-model sessions split per model",
     ),
     "pair-stats.verdict": estimated("cacheVerdict thresholds"),
+    "pair-stats.behavioral": heuristic("one-shot/retry envelope rule (T2 walk)"),
   };
 }
