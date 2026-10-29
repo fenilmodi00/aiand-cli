@@ -144,7 +144,14 @@ exit $status
   return dir;
 }
 
-export type VerifyResult = { ok: boolean; exitCode: number | null; output: string; score: number };
+export type VerifyResult = {
+  ok: boolean;
+  exitCode: number | null;
+  output: string;
+  score: number;
+  /** Non-null when the timeout killed the script: a kill is not a grade. */
+  signal: NodeJS.Signals | null;
+};
 
 /** First valid SCORE line in the output, clamped to [0, 1]; 0 otherwise. */
 export function extractScore(output: string): number {
@@ -159,11 +166,12 @@ export function extractScore(output: string): number {
 }
 
 /** Run a task's verify script in `cwd` (the workspace root under test). */
-export function runVerify(dir: string, cwd?: string): VerifyResult {
+export function runVerify(dir: string, cwd?: string, timeoutMs?: number): VerifyResult {
   const script = join(dir, VERIFY_FILE);
   const proc = spawnSync("sh", [script], {
     cwd: cwd ?? dir,
     encoding: "utf8",
+    timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
   });
   if (proc.error) {
@@ -181,6 +189,7 @@ export function runVerify(dir: string, cwd?: string): VerifyResult {
     exitCode: proc.status,
     output,
     score: extractScore(output),
+    signal: proc.signal,
   };
 }
 

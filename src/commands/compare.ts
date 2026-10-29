@@ -10,6 +10,7 @@ import {
   tasksPath,
   validateTask,
 } from "../compare/tasks.js";
+import { runCompareRun } from "../compare/run.js";
 import type { TaskVerdict } from "../compare/tasks.js";
 
 export const help = `${style.bold("aiand compare")} -- replay your own tasks across harnesses
@@ -18,7 +19,7 @@ Usage
   aiand compare add <id> --verify "<cmd>"   scaffold tasks/<id>/ with a verify wrapper
   aiand compare tasks                       list task packs and their validation status
   aiand compare validate [--golden <dir>]   fail-before check + optional golden replay
-  aiand compare run  --task <id>            (coming soon)
+  aiand compare run  --task <id>            replay across harnesses (--dry-run = free)
   aiand compare table [--task <id>]         (coming soon)
 
 Options
@@ -37,9 +38,10 @@ export async function run(argv: string[]): Promise<void> {
   if (subcommand === "add") return runAdd(argv.slice(1));
   if (subcommand === "tasks") return runTasks(argv.slice(1));
   if (subcommand === "validate") return runValidate(argv.slice(1));
-  if (subcommand === "run" || subcommand === "table") {
-    throw new CliError(`\`aiand compare ${subcommand}\` is not implemented yet.`, {
-      hint: "Scaffold and validate task packs with `aiand compare add` / `validate`.",
+  if (subcommand === "run") return runCompareRun(argv.slice(1));
+  if (subcommand === "table") {
+    throw new CliError("`aiand compare table` is not implemented yet.", {
+      hint: "Run rows land under compare-runs/; the table reads them (coming soon).",
     });
   }
   if (subcommand === undefined || bool(parse(argv, {}), "help")) return out(help);
