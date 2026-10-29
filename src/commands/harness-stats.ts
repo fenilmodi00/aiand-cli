@@ -1,10 +1,12 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
-import { bool, int, list, parse, str } from "../cli/args.js";
+import { bool, int, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
 import { resolveProfile } from "../config.js";
+import { writeFileAtomic } from "../fsutil.js";
 import { MISSED_CATCH_RULE } from "../model-efficiency.js";
 import { classifyEnvelope, TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
 import {
@@ -79,9 +81,10 @@ export function windowEnvelopes(
  * Classify each in-scope request row's session once (C6, deterministic
  * classifier over its envelope turns) and return the id set matching the
  * cohort. A row in an unclassified session is simply not in the set —
- * excluded, never folded.
+ * excluded, never folded. Shared by every --cohort consumer (compare,
+ * matrix, recommend) so one classification pass feeds all of them.
  */
-function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
+export function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
   const opened = openStore(storePath());
   const matching = new Set<string>();
   if (!opened.ok) return matching;
@@ -112,6 +115,27 @@ function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): S
   return matching;
 }
 
+/**
+ * Parse the shared `--cohort <category>` flag and narrow the rows through
+ * the classifier. Returns undefined when no flag was given; throws for an
+ * unknown category. One definition for stats/compare, matrix, and recommend
+ * — the same excluded-not-folded semantics everywhere (C6).
+ */
+export function cohortFromFlags(
+  parsed: Parsed,
+  rows: readonly HarnessRequestRow[],
+): ((row: HarnessRequestRow) => boolean) | undefined {
+  const category = str(parsed, "cohort") as TaskCategory | undefined;
+  if (category === undefined) return undefined;
+  if (!TASK_CATEGORIES.includes(category)) {
+    throw new CliError(`Unknown cohort "${category}".`, {
+      hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
+    });
+  }
+  const matching = cohortOf(rows, category);
+  return (row) => matching.has(row.id);
+}
+
 export async function runHarnessWorkload(mode: "stats" | "compare", argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     since: { type: "string" },
@@ -123,12 +147,33 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     timezone: { type: "string" },
     "session-gap": { type: "string" },
     cohort: { type: "string" },
+    out: { type: "string" },
+    format: { type: "string" },
     samples: { type: "boolean", default: false },
     "include-mixed": { type: "boolean", default: false },
     "no-cost": { type: "boolean", default: false },
     "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(workloadHelp(mode));
+
+  // #135: --out exports the compare table (--format markdown|csv|json, default
+  // from the file extension). Only compare mode exports; stats stays stdout.
+  const outPath = str(parsed, "out");
+  const formatFlag = str(parsed, "format");
+  if (outPath === undefined && formatFlag !== undefined) {
+    throw new CliError("--format needs --out.", {
+      hint: "Usage: aiand harness compare --out table.md [--format csv]",
+    });
+  }
+  const exportFormat =
+    outPath === undefined
+      ? undefined
+      : oneOf(
+          parsed,
+          "format",
+          ["markdown", "csv", "json"],
+          inferExportFormat(outPath, formatFlag),
+        );
 
   const timezone = str(parsed, "timezone") ?? "UTC";
   if (!isValidTimezone(timezone)) {
@@ -171,7 +216,8 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 
   // #130: cohort seam (C6) — a named classifier category narrows the rows to
   // "same kind of work" before sessionization. Excluded rows are counted in
-  // the coverage line, never folded silently.
+  // the coverage line, never folded silently. Validation rides the shared
+  // cohortFromFlags helper (same rules for matrix/recommend).
   const cohortCategory = str(parsed, "cohort") as TaskCategory | undefined;
   if (cohortCategory !== undefined && !TASK_CATEGORIES.includes(cohortCategory)) {
     throw new CliError(`Unknown cohort "${cohortCategory}".`, {
@@ -238,9 +284,25 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     );
   }
 
+  // #135: --out exports the compare table (markdown/csv/json) and returns —
+  // an explicit file target wins over terminal rendering, --json included.
+  const noCost = bool(parsed, "no-cost");
+  if (mode === "compare" && outPath !== undefined) {
+    exportCompareTable({
+      rows: harnesses,
+      noCost,
+      coverage: stats.behavioralCoverage,
+      cohort: cohortCategory,
+      range: describeRange(sinceMs, untilMs),
+      timezone,
+      path: outPath,
+      format: exportFormat!,
+    });
+    return;
+  }
+
   if (bool(parsed, "json")) return json(payload(stats, harnesses));
 
-  const noCost = bool(parsed, "no-cost");
   out(
     style.bold(
       mode === "compare" ? "harness compare · your workload" : "harness stats · your workload",
@@ -471,7 +533,15 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
   out();
 }
 
-function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
+/**
+ * The compare-table columns, pure: the terminal renderer and every export
+ * format build from this one definition so winners (▸), n= counts, em-dash
+ * uncovered cells, and provenance survive into markdown/csv/json unchanged.
+ */
+function compareColumns(
+  rows: readonly HarnessStatsRow[],
+  noCost: boolean,
+): Column<HarnessStatsRow>[] {
   const w = compareWinners(rows);
   const covered = rows.some((r) => r.behavioral.oneShotRate !== null);
   const rate = (value: number | null, n: number): string =>
@@ -540,7 +610,7 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
       align: "right",
     },
   ];
-  table<HarnessStatsRow>(rows, [
+  return [
     { header: "harness", value: (r) => r.harness },
     ...(noCost ? [] : costColumn),
     {
@@ -566,22 +636,102 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
     ...behavioralColumns,
     { header: "requests", value: (r) => num(r.requests), align: "right" },
     { header: "sessions", value: (r) => num(r.sessions), align: "right" },
-  ]);
-  out(
-    style.dim(
-      `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft` +
-        (covered
-          ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
-          : "") +
-        ")",
-    ),
-  );
-  out(
-    style.dim(
-      `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule)`,
-    ),
-  );
+  ];
+}
+
+/** The footer lines under the compare table (marker legend + provenance). */
+function compareFooterLines(covered: boolean): string[] {
+  return [
+    `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft` +
+      (covered
+        ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
+        : "") +
+      ")",
+    `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule)`,
+  ];
+}
+
+function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
+  const columns = compareColumns(rows, noCost);
+  table<HarnessStatsRow>(rows, columns);
+  for (const line of compareFooterLines(rows.some((r) => r.behavioral.oneShotRate !== null))) {
+    out(style.dim(line));
+  }
   out();
+}
+
+/**
+ * #135: write the compare table to a file. Markdown/csv carry the exact
+ * rendered columns (winners, n=, provenance in the footer lines); the JSON
+ * export is the same payload `--json` prints, plus the coverage/cohort
+ * context lines. The synthetic sweep block never joins this table — it is
+ * display-only in `harness matrix --synthetic` and has no export here.
+ */
+function exportCompareTable(args: {
+  rows: HarnessStatsRow[];
+  noCost: boolean;
+  coverage: { covered: number; total: number; ratio: number | null };
+  cohort: TaskCategory | undefined;
+  range: string;
+  timezone: string;
+  path: string;
+  format: "markdown" | "csv" | "json";
+}): void {
+  const columns = compareColumns(args.rows, args.noCost);
+  const covered = args.rows.some((r) => r.behavioral.oneShotRate !== null);
+  const footers = compareFooterLines(covered).concat(
+    behavioralCoverageLine(args.coverage),
+    args.cohort === undefined
+      ? []
+      : [
+          `cohort ${args.cohort}: ${args.rows.reduce((s, h) => s + h.requests, 0)} request(s) match — excluded, not folded (C6)`,
+        ],
+  );
+  const headers = columns.map((c) => c.header);
+  const aligns = columns.map((c) => c.align ?? "left");
+  const cellRows = args.rows.map((row) => columns.map((c) => c.value(row)));
+
+  let body: string;
+  if (args.format === "json") {
+    body = `${JSON.stringify(
+      {
+        provenance: {
+          range: args.range,
+          timezone: args.timezone,
+          behavioralCoverage: args.coverage,
+          cohort: args.cohort ?? null,
+          missedCatchRule: MISSED_CATCH_RULE,
+          labels: "heuristic(one-shot/retry envelope rule)",
+        },
+        harnesses: args.rows.map((row) => ({
+          ...row,
+          labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+        })),
+        notes: footers,
+      },
+      null,
+      2,
+    )}\n`;
+  } else {
+    const lines =
+      args.format === "markdown"
+        ? [
+            `### harness compare — ${args.range} (${args.timezone})`,
+            "",
+            ...toMarkdownTable(headers, aligns, cellRows),
+            "",
+            ...footers.map((f) => `> ${f}`),
+          ]
+        : toCsvRows(headers, cellRows);
+    body = `${lines.join("\n")}\n`;
+  }
+  void writeFileAtomic(args.path, body).then(() => {
+    err(
+      style.green(
+        `Wrote compare table (${args.format}, ${args.rows.length} row(s)) to ${args.path}.`,
+      ),
+    );
+  });
 }
 
 /**
