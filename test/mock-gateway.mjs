@@ -229,7 +229,7 @@ const server = createServer((req, res) => {
       // with concurrent run children don't share one rows file.
       const envName =
         scenario === "logs-pinned-file"
-          ? process.env.AIAND_MOCK_LOG_FILE_VAR ?? "AIAND_MOCK_LOG_FILE"
+          ? (process.env.AIAND_MOCK_LOG_FILE_VAR ?? "AIAND_MOCK_LOG_FILE")
           : "AIAND_MOCK_LOG_FILE";
       let rows = [];
       try {

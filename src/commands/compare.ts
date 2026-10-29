@@ -389,7 +389,13 @@ const wallCell = (c: CellStats) => (c.meanWallMs === null ? "—" : `${Math.roun
 /** Histogram cell: failure modes counted individually, infra separate. */
 const histogramCell = (c: CellStats): string => {
   const modes = histogramText(c);
-  return c.infra > 0 ? (modes === "" ? `infra ${c.infra}` : `${modes} · infra ${c.infra}`) : modes === "" ? "—" : modes;
+  return c.infra > 0
+    ? modes === ""
+      ? `infra ${c.infra}`
+      : `${modes} · infra ${c.infra}`
+    : modes === ""
+      ? "—"
+      : modes;
 };
 
 type TableJsonCell = {

@@ -23,7 +23,7 @@ export function wilson95(successes: number, trials: number): { lo: number; hi: n
 }
 
 /** The failure-mode taxonomy: the single source for every histogram surface. */
-export const FAILURE_MODES = [
+const FAILURE_MODES = [
   "agent_timeout",
   "verify_timeout",
   "parse_error",

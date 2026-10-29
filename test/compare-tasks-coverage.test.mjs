@@ -382,7 +382,10 @@ describe("compare add/tasks/validate (CLI)", () => {
     assert.notEqual(res.code, 0);
     assert.match(res.stdout, /fail-before:\s+✓ verify fails on untouched workspace/);
     assert.match(res.stdout, /null-harness:\s+✓ scores 0/);
-    assert.match(res.stdout, /golden:\s+not run — task is NOT validated until a golden replay passes/);
+    assert.match(
+      res.stdout,
+      /golden:\s+not run — task is NOT validated until a golden replay passes/,
+    );
     assert.match(res.stdout, /fail-before:\s+✗ verify passed — task is trivially solvable/);
     assert.match(res.stdout, /null-harness:\s+✗ did not score 0/);
     // Spec §2.2: golden replay missing counts as not validated — both tasks fail.
@@ -629,7 +632,14 @@ describe("compare table (CLI)", () => {
     const dir = newCfg("cli-table-recorded");
     writeTask(dir, "t1");
     writeRows(dir, "t1", [
-      row({ task: "t1", run_id: "live1", harness: "agentA", model: "m1", success: true, cost_usd: 0.1 }),
+      row({
+        task: "t1",
+        run_id: "live1",
+        harness: "agentA",
+        model: "m1",
+        success: true,
+        cost_usd: 0.1,
+      }),
       // recorded rows carry cost_basis "recorded" — the observed table must ignore them
       row({
         task: "t1",
@@ -656,7 +666,11 @@ describe("compare table (CLI)", () => {
       env: cliEnv({ AIAND_CONFIG_DIR: dir }),
     });
     assert.equal(res.code, 0, res.stderr);
-    assert.doesNotMatch(res.stdout, /bench/, "recorded lane cells never appear in the observed table");
+    assert.doesNotMatch(
+      res.stdout,
+      /bench/,
+      "recorded lane cells never appear in the observed table",
+    );
     assert.doesNotMatch(res.stdout, /99/);
     assert.match(res.stdout, /recorded \(simulated\) — not your workload: 2 dry-run row\(s\)/);
   });
