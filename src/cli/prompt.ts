@@ -1,6 +1,6 @@
 import { stderr, stdin, stdout } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { CliError, cancelled, EXIT } from "./errors.js";
+import { CliError, cancelled } from "./errors.js";
 import { withoutSpinner } from "./output.js";
 import { KEY, type PromptInput, type PromptOutput } from "./select.js";
 
@@ -54,7 +54,9 @@ export async function readSecret(
     }
     const line = (await readLineVisible(prompt, { input, output })).trim();
     if (!allowEmpty && !line)
-      throw new CliError("Input required.", { exitCode: EXIT.NOT_SIGNED_IN });
+      throw new CliError("Input required.", {
+        hint: "Paste a key, or set AIAND_API_KEY to skip prompts.",
+      });
     return line;
   }
 
@@ -80,7 +82,7 @@ export async function readSecret(
             stop();
             reject(
               new CliError("Input ended.", {
-                hint: "This prompt needs an interactive terminal.",
+                hint: "This prompt needs an interactive terminal, or set AIAND_API_KEY to skip prompts.",
               }),
             );
           };
@@ -150,7 +152,9 @@ export async function readSecret(
 
   const trimmed = value.trim();
   if (!allowEmpty && !trimmed)
-    throw new CliError("Input required.", { exitCode: EXIT.NOT_SIGNED_IN });
+    throw new CliError("Input required.", {
+      hint: "Paste a key, or set AIAND_API_KEY to skip prompts.",
+    });
   return trimmed;
 }
 

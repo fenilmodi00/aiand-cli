@@ -250,6 +250,46 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
       }
       assert.equal(await config.loadCredential("default"), null);
     });
+
+    // #141: pressing Enter on an empty prompt is a user-input mistake, not a
+    // missing credential — it must exit 1 with the env-key hint, not 2.
+    test("an empty paste on a TTY exits 1 with the env-key hint, not 2", async () => {
+      delete process.env.AIAND_API_KEY;
+      const restoreTTY = stubTTY();
+      const input = new FakeInput();
+      const output = new FakeOutput();
+      const captured = captureOutput();
+      try {
+        await assert.rejects(
+          authLogin.pasteLogin({ profile: "default", interactive: true, input, output }),
+          (error) => {
+            assert.equal(error.exitCode, 1);
+            assert.match(error.message, /Input required/);
+            assert.match(error.hint, /AIAND_API_KEY/);
+            return true;
+          },
+        );
+        assert.equal(await config.loadCredential("default"), null);
+      } finally {
+        captured.restore();
+        restoreTTY();
+      }
+    });
+
+    test("a genuinely missing credential still exits not-signed-in (2)", async () => {
+      delete process.env.AIAND_API_KEY;
+      const { NotLoggedInError } = await import("../dist/cli/errors.js");
+      await assert.rejects(
+        (await import("../dist/api/client.js")).openSession(
+          (await import("../dist/config.js")).resolveProfile("default"),
+        ),
+        (error) => {
+          assert.ok(error instanceof NotLoggedInError);
+          assert.equal(error.exitCode, 2);
+          return true;
+        },
+      );
+    });
   });
 
   describe("org selection on sign-in (real modules, stub server)", () => {

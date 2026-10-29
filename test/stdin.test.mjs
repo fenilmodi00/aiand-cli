@@ -207,14 +207,15 @@ describe("readSecret raw mode", { skip: process.platform === "win32" }, () => {
     assert.match(output.text, /\^C\n/);
   });
 
-  test("empty Enter rejects CliError with exit 2, not a generic Error", async () => {
+  test("empty Enter rejects CliError with exit 1 and the env-key hint (#141)", async () => {
     const input = new FakeSecretInput();
     const output = new FakeSecretOutput();
     const promise = readSecret("key: ", { input, output });
     input.send(KEY.ENTER_CR);
     await assert.rejects(promise, (error) => {
       assert.ok(error instanceof CliError);
-      assert.equal(error.exitCode, 2);
+      assert.equal(error.exitCode, 1);
+      assert.match(error.hint ?? "", /AIAND_API_KEY/);
       return true;
     });
     assert.equal(input.raw, false);
@@ -236,13 +237,14 @@ describe("readSecret raw mode", { skip: process.platform === "win32" }, () => {
 });
 
 describe("readSecret non-TTY", () => {
-  test("empty line rejects CliError with exit 2", async () => {
+  test("empty line rejects CliError with exit 1 and the env-key hint (#141)", async () => {
     const input = new PassThrough();
     input.write("\n");
     const output = new FakeSecretOutput();
     await assert.rejects(readSecret("key: ", { input, output }), (error) => {
       assert.ok(error instanceof CliError);
-      assert.equal(error.exitCode, 2);
+      assert.equal(error.exitCode, 1);
+      assert.match(error.hint ?? "", /AIAND_API_KEY/);
       return true;
     });
   });
