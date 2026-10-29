@@ -28,6 +28,11 @@ function parseHarnesses(argv: string[]): ImportHarness[] {
     harness: { type: "string", multiple: true },
   });
   if (bool(parsed, "help")) return [];
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand harness import --help` to see the subcommands and flags.",
+    });
+  }
   const requested = parsed.values.harness;
   const names =
     typeof requested === "string"

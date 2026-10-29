@@ -107,6 +107,13 @@ export async function run(argv: string[]): Promise<void> {
     profile: { type: "string" },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand efficiency --help` to see the subcommands and flags.",
+    });
+  }
+
   // #103: resolve up front so the warning fires even on --no-sync.
   resolveProfile(str(parsed, "profile"));
   const window = resolveWindow(parsed, new Date());

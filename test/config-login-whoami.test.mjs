@@ -447,6 +447,13 @@ describe("whoami", () => {
     assert.match(r.stdout, /aiand whoami/);
   });
 
+  test("a stray positional is a usage error", async () => {
+    const { env } = fresh();
+    const r = await runCli(["whoami", "nope"], { env });
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /Unknown argument "nope"/);
+  });
+
   test("signed out exits 2 with the login hint", async () => {
     const { env } = fresh();
     const r = await runCli(["whoami"], { env });

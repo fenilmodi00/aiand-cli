@@ -25,6 +25,9 @@ before(async () => {
   const r = await cli([]);
   assert.equal(r.code, 0, r.stderr);
   table = r.stdout;
+  const stray = await cli(["nope"]);
+  assert.equal(stray.code, 1);
+  assert.match(stray.stderr, /Unknown argument "nope"/);
 });
 after(() => gateway?.stop());
 

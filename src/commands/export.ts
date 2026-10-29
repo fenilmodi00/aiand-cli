@@ -75,6 +75,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand export --help` to see the subcommands and flags.",
+    });
+  }
+
   const format = oneOf(parsed, "format", FORMAT_ONE_OF, "otel");
   const range = oneOf(parsed, "range", EXPORT_RANGES, "30days");
   const temporality = oneOf<Temporality>(parsed, "temporality", TEMPORALITY_ONE_OF, "delta");

@@ -153,6 +153,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand usage --help` to see the subcommands and flags.",
+    });
+  }
+
   if (bool(parsed, "audit")) {
     // Offline by design: the audit describes how numbers are made, it does
     // not fetch any.

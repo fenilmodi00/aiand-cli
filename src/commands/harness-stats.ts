@@ -162,6 +162,12 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
   });
   if (bool(parsed, "help")) return out(workloadHelp(mode));
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: `Run \`aiand harness ${mode} --help\` to see the subcommands and flags.`,
+    });
+  }
+
   // #135: --out exports the compare table (--format markdown|csv|json, default
   // from the file extension). Only compare mode exports; stats stays stdout.
   const outPath = str(parsed, "out");

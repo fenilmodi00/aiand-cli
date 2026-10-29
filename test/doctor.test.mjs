@@ -40,6 +40,12 @@ test("help documents the checks and the exit-code contract", async () => {
   assert.ok(stdout.includes("NOTHING FOUND"));
 });
 
+test("a stray positional is a usage error", async () => {
+  const { code, stderr } = await runCli(["doctor", "nope"]);
+  assert.equal(code, 1);
+  assert.match(stderr, /Unknown argument "nope"/);
+});
+
 test("signed out: clear verdicts, every check still runs, exit 0", async () => {
   const { code, stdout, stderr } = await runCli(["doctor", "--json"], {
     env: cliEnv({ AIAND_BASE_URL: CLOSED_URL, AIAND_API_KEY: undefined }),

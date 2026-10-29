@@ -1,4 +1,5 @@
 import { bool, list, parse, str } from "../cli/args.js";
+import { CliError } from "../cli/errors.js";
 import { err, json, out, style } from "../cli/output.js";
 import { assertSafeProfileName } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
@@ -56,6 +57,12 @@ export async function run(argv: string[]): Promise<void> {
     "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand overview --help` to see the subcommands and flags.",
+    });
+  }
 
   const timezone = str(parsed, "timezone") ?? "UTC";
   assertTimezone(timezone);

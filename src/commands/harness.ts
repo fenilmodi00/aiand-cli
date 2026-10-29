@@ -3,7 +3,8 @@ import { type BenchResult, loadPrices, runHarnessBenchmark } from "../benchmark/
 import { findHarnessLayout, HARNESS_LAYOUTS } from "../benchmark/harness-layouts.js";
 import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
-import { bool, list, parse, str } from "../cli/args.js";
+import { bool, list, nearestMatch, parse, str } from "../cli/args.js";
+import { CliError, EXIT } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import * as importCmd from "./harness-import.js";
@@ -74,6 +75,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand harness --help` to see the subcommands and flags.",
+    });
+  }
+
   if (bool(parsed, "list-scenarios")) {
     if (bool(parsed, "json")) {
       return json(BENCH_SCENARIOS.map((s) => ({ id: s.id, description: s.title })));
@@ -85,9 +92,14 @@ export async function run(argv: string[]): Promise<void> {
   const scenarioId = str(parsed, "scenario") ?? "multi-turn-refactor";
   const scenario = findBenchScenario(scenarioId);
   if (!scenario) {
-    throw new Error(
-      `Unknown scenario "${scenarioId}". Known: ${BENCH_SCENARIOS.map((s) => s.id).join(", ")}.`,
-    );
+    const known = BENCH_SCENARIOS.map((s) => s.id);
+    const suggestion = nearestMatch(scenarioId, known);
+    throw new CliError(`Unknown scenario "${scenarioId}". Known: ${known.join(", ")}.`, {
+      exitCode: EXIT.ERROR,
+      hint: suggestion
+        ? `Did you mean --scenario ${suggestion}?`
+        : "Run `aiand harness --list-scenarios` or `aiand harness --help` to see the ids.",
+    });
   }
 
   const harnessIds = list(parsed, "harness");
@@ -95,9 +107,15 @@ export async function run(argv: string[]): Promise<void> {
     ? harnessIds.map((id) => findHarnessLayout(id)).filter((layout) => layout !== undefined)
     : HARNESS_LAYOUTS;
   if (layouts.length === 0) {
-    const known = HARNESS_LAYOUTS.map((l) => l.id).join(", ");
-    const wanted = harnessIds.join(", ");
-    throw new Error(`Unknown harness "${wanted}". Known: ${known}.`);
+    const known = HARNESS_LAYOUTS.map((l) => l.id);
+    const wanted = harnessIds.find((id) => findHarnessLayout(id) === undefined) ?? "";
+    const suggestion = wanted ? nearestMatch(wanted, known) : undefined;
+    throw new CliError(`Unknown harness "${wanted}". Known: ${known.join(", ")}.`, {
+      exitCode: EXIT.ERROR,
+      hint: suggestion
+        ? `Did you mean --harness ${suggestion}?`
+        : "Run `aiand harness --help` to see the harness ids.",
+    });
   }
 
   const session = await openSession(resolveProfile(str(parsed, "profile")));

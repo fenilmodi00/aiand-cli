@@ -177,6 +177,19 @@ test("models/orgs: dead gateway errors cleanly; --json parses", async () => {
   assert.ok(!/at file:/.test(deadOrgs.stderr), "no stack trace leak");
 });
 
+test("login/logout: a stray positional is a usage error", async () => {
+  const cfg = cfgDir("auth-stray");
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+  for (const args of [
+    ["login", "nope"],
+    ["logout", "nope"],
+  ]) {
+    const run = await runCli(args, base);
+    assert.equal(run.code, 1, `${args.join(" ")}\n${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /Unknown argument "nope"/);
+  }
+});
+
 test("efficiency: empty and seeded stores both exit clean with json", async () => {
   const empty = cfgDir("eff-empty");
   const none = await runCli(["efficiency", "--no-sync", "--json"], {

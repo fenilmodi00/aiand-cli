@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, test } from "node:test";
+import { cliEnv, FAKE_API_KEY, runCli, withMockGateway, withTestEnv } from "./helpers.mjs";
 
 const { HARNESS_LAYOUTS, findHarnessLayout } = await import("../dist/benchmark/harness-layouts.js");
 const { runHarnessBenchmark } = await import("../dist/benchmark/harness-bench.js");
@@ -356,5 +359,106 @@ describe("scenarios", () => {
   test("a scenario can be found by id", () => {
     assert.equal(findBenchScenario("multi-turn-refactor")?.id, "multi-turn-refactor");
     assert.equal(findBenchScenario("nope"), undefined);
+  });
+});
+
+describe("harness unknown positional", () => {
+  const env = withTestEnv("harness-bench", () => {});
+
+  test("a stray word after `harness` is a usage error before any request", async () => {
+    await withMockGateway(async ({ url }) => {
+      const cfg = join(env.dir, "unknown-positional");
+      mkdirSync(cfg, { recursive: true });
+      const { code, stdout, stderr } = await runCli(["harness", "benchn"], {
+        env: cliEnv({
+          CI: "1",
+          NO_COLOR: "1",
+          AIAND_CONFIG_DIR: cfg,
+          AIAND_HOME: join(cfg, "home"),
+          AIAND_API_KEY: FAKE_API_KEY,
+          AIAND_BASE_URL: url,
+        }),
+        stdin: "ignore",
+      });
+      assert.equal(code, 1, stderr);
+      assert.equal(stdout, "");
+      assert.match(stderr, /Unknown argument "benchn"/);
+      assert.match(stderr, /aiand harness --help/);
+    });
+  });
+});
+
+describe("harness unknown ids are usage errors", () => {
+  const env = withTestEnv("harness-bench-ids", () => {});
+
+  const cliArgs = (cfg) =>
+    cliEnv({
+      CI: "1",
+      NO_COLOR: "1",
+      AIAND_CONFIG_DIR: cfg,
+      AIAND_HOME: join(cfg, "home"),
+      AIAND_API_KEY: FAKE_API_KEY,
+    });
+
+  test("typo'd --scenario near a real id exits 1 with a Did you mean suggestion", async () => {
+    await withMockGateway(async ({ url }) => {
+      const cfg = join(env.dir, "bad-scenario");
+      mkdirSync(cfg, { recursive: true });
+      const { code, stdout, stderr } = await runCli(
+        ["harness", "--scenario", "multi-turn-refactr", "--base-url", url],
+        { env: cliArgs(cfg), stdin: "ignore" },
+      );
+      assert.equal(code, 1, stderr);
+      assert.equal(stdout, "");
+      assert.match(stderr, /Unknown scenario "multi-turn-refactr"/);
+      assert.match(stderr, new RegExp(`Known:.*${BENCH_SCENARIOS[0].id}`));
+      assert.match(stderr, /Did you mean --scenario multi-turn-refactor\?/);
+      assert.ok(!stderr.includes("Unexpected error"), stderr);
+      assert.ok(!stderr.includes("    at "), "no stack trace");
+    });
+  });
+
+  test("typo'd --scenario with no close match hints at --list-scenarios", async () => {
+    await withMockGateway(async ({ url }) => {
+      const cfg = join(env.dir, "bad-scenario-2");
+      mkdirSync(cfg, { recursive: true });
+      const { code, stderr } = await runCli(
+        ["harness", "--scenario", "zzzznope", "--base-url", url],
+        { env: cliArgs(cfg), stdin: "ignore" },
+      );
+      assert.equal(code, 1, stderr);
+      assert.match(stderr, /--list-scenarios/);
+      assert.doesNotMatch(stderr, /Did you mean/);
+    });
+  });
+
+  test("typo'd --harness near a real id exits 1 with a Did you mean suggestion", async () => {
+    await withMockGateway(async ({ url }) => {
+      const cfg = join(env.dir, "bad-harness");
+      mkdirSync(cfg, { recursive: true });
+      const { code, stdout, stderr } = await runCli(
+        ["harness", "--harness", "claude-cod", "--base-url", url],
+        { env: cliArgs(cfg), stdin: "ignore" },
+      );
+      assert.equal(code, 1, stderr);
+      assert.equal(stdout, "");
+      assert.match(stderr, /Unknown harness "claude-cod"/);
+      assert.match(stderr, /Did you mean --harness claude-code\?/);
+      assert.ok(!stderr.includes("Unexpected error"), stderr);
+      assert.ok(!stderr.includes("    at "), "no stack trace");
+    });
+  });
+
+  test("valid scenario and harness ids still start a run", async () => {
+    await withMockGateway(async ({ url }) => {
+      const cfg = join(env.dir, "good-ids");
+      mkdirSync(cfg, { recursive: true });
+      const harnessId = "omp";
+      const { code, stderr } = await runCli(
+        ["harness", "--scenario", BENCH_SCENARIOS[0].id, "--harness", harnessId, "--base-url", url],
+        { env: cliArgs(cfg), stdin: "ignore" },
+      );
+      assert.equal(code, 0, stderr);
+    });
   });
 });

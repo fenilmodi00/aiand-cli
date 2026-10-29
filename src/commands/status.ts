@@ -110,6 +110,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand status --help` to see the subcommands and flags.",
+    });
+  }
+
   // The observability surface is explicitly requested; it never calls the
   // gateway (except --sync-first) and never changes the auth exit codes.
   const format = str(parsed, "format");

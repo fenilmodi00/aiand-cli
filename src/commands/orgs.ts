@@ -1,6 +1,7 @@
 import { type AccountOrg, listOrgs } from "../api/account.js";
 import { openSession } from "../api/client.js";
 import { bool, parse, str } from "../cli/args.js";
+import { CliError } from "../cli/errors.js";
 import { json, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 
@@ -19,6 +20,11 @@ To work in a different org, change your default org in the console and run
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv);
   if (bool(parsed, "help")) return out(help);
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand orgs --help` to see the flags.",
+    });
+  }
 
   const profile = resolveProfile(str(parsed, "profile"));
   const session = await openSession(profile);

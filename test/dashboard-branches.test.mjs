@@ -93,6 +93,12 @@ test("dashboard: bad timezone is rejected; --no-tui matches the piped path", asy
   });
   assert.notEqual(bad.code, 0);
 
+  const stray = await runCli(["dashboard", "nope", "--no-tui", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(stray.code, 1);
+  assert.match(stray.stderr, /Unknown argument "nope"/);
+
   await seedStore(cfg);
   const text = await runCli(["dashboard", "--no-tui", "--no-sync", "--last", "7d"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),

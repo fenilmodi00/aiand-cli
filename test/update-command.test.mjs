@@ -186,4 +186,12 @@ describe("aiand update --help", () => {
     assert.match(stdout, /--yes/);
     assert.match(stdout, /--json/);
   });
+
+  test("a stray positional is a usage error", async () => {
+    const entry = realFile(join(mkdtempSync(join(tmpdir(), "aiand-src-")), "dist/index.js"));
+    const { code, error, hint } = await runUpdate(["nope"], { entry });
+    assert.equal(code, 1);
+    assert.match(error ?? "", /Unknown argument "nope"/);
+    assert.match(hint ?? "", /aiand update --help/);
+  });
 });

@@ -3,7 +3,7 @@ import { listAgentKeys } from "../api/agent-keys.js";
 import { openSession, type Session } from "../api/client.js";
 import { getLogs } from "../api/logs.js";
 import { bool, parse, str } from "../cli/args.js";
-import { ApiError, EXIT, NotLoggedInError, SYNTHETIC_STATUS } from "../cli/errors.js";
+import { ApiError, CliError, EXIT, NotLoggedInError, SYNTHETIC_STATUS } from "../cli/errors.js";
 import { json, out, relativeTime, style } from "../cli/output.js";
 import { type ResolvedProfile, resolveProfile } from "../config.js";
 
@@ -81,6 +81,12 @@ type GatewayProbe =
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {});
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand doctor --help` to see the subcommands and flags.",
+    });
+  }
 
   const profile = resolveProfile(str(parsed, "profile"));
   const probe = await probeGateway(profile);

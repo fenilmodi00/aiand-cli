@@ -221,6 +221,13 @@ test("status: --help documents itself", async () => {
   assert.ok(help.stdout.includes("aiand status"));
 });
 
+test("status: a stray positional is a usage error", async () => {
+  const cfg = cfgDir("status-stray");
+  const run = await runCli(["status", "nope"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+  assert.equal(run.code, 1);
+  assert.match(run.stderr, /Unknown argument "nope"/);
+});
+
 // ---------------------------------------------------------------------------
 // aiand doctor: store-less, seeded, corrupt-store, --json
 // ---------------------------------------------------------------------------

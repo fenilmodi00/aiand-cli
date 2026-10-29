@@ -1,5 +1,6 @@
 import { logout as logoutFlow } from "../auth/logout.js";
 import { bool, parse, str } from "../cli/args.js";
+import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
 
 export const help = `${style.bold("aiand logout")} -- end this machine's session
@@ -26,6 +27,12 @@ export async function run(argv: string[]): Promise<void> {
     revoke: { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand logout --help` to see the subcommands and flags.",
+    });
+  }
 
   await logoutFlow({
     profile: str(parsed, "profile"),

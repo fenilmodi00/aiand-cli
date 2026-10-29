@@ -76,6 +76,12 @@ describe("orgs under an Env-key Session", () => {
     assert.match(stdout, /unknown under AIAND_API_KEY/);
     assert.doesNotMatch(stdout, /\*/);
   });
+
+  test("a stray positional is a usage error", async () => {
+    const { code, stderr } = await cli(["orgs", "nope"], { AIAND_API_KEY: "sk-env-key" });
+    assert.equal(code, 1);
+    assert.match(stderr, /Unknown argument "nope"/);
+  });
 });
 
 describe("orgs under a stored Credential Session", () => {

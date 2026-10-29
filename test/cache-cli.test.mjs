@@ -103,6 +103,12 @@ const cli = (args) =>
   });
 
 describe("aiand cache", () => {
+  test("a stray positional is a usage error", async () => {
+    const { code, stderr } = await cli(["cache", "nope"]);
+    assert.equal(code, 1);
+    assert.match(stderr, /Unknown argument "nope"/);
+  });
+
   test("reports the hit rate and what the cache saved", async () => {
     logHandler = () => ({
       data: [logEntry()],

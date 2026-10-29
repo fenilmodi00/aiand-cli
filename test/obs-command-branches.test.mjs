@@ -419,6 +419,28 @@ test("auto-sync branch: no credentials still renders every store-backed report",
   }
 });
 
+// Flag-only commands reject a stray positional as a usage error instead of
+// silently running with it ignored.
+test("a stray positional on a flag-only command is a usage error", async () => {
+  const cfg = cfgDir("stray-positional");
+  await seedStore(cfg, rows());
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+  for (const args of [
+    ["dashboard", "nope", "--no-tui", "--no-sync"],
+    ["heatmap", "nope", "--no-sync"],
+    ["logs", "nope"],
+    ["overview", "nope", "--no-sync"],
+    ["report", "nope", "--no-sync"],
+    ["usage", "nope", "--no-sync"],
+    ["export", "nope", "--no-sync"],
+    ["wrapped", "nope", "--no-sync"],
+  ]) {
+    const out = await runCli(args, base);
+    assert.equal(out.code, 1, `${args.join(" ")}\n${out.stdout}${out.stderr}`);
+    assert.match(out.stderr, /Unknown argument "nope"/);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // usage command: by/sections/filters/sort/format branches
 // ---------------------------------------------------------------------------
@@ -582,7 +604,9 @@ test("usage/sessions/heatmap/wrapped/overview/export flag-guard sweep (#91)", as
   // --top validation on report; wrapped has no --top, so its format list
   // guard is exercised instead.
   const badTop = await runCli(["report", "--no-sync", "--top", "0"], base);
-  assert.notEqual(badTop.code, 0);
+  assert.equal(badTop.code, 1, badTop.stderr);
+  assert.match(badTop.stderr, /--top must be a positive number/);
+  assert.ok(!badTop.stderr.includes("Unexpected error"), badTop.stderr);
   const badFormatW = await runCli(["wrapped", "--no-sync", "--format", "pdf"], base);
   assert.notEqual(badFormatW.code, 0);
 

@@ -1,6 +1,6 @@
 import { classifySource, probeIdentity, sourceLabel, storageLabel } from "../auth/identity.js";
 import { bool, parse, str } from "../cli/args.js";
-import { NotLoggedInError } from "../cli/errors.js";
+import { CliError, NotLoggedInError } from "../cli/errors.js";
 import { fields, json, out, style } from "../cli/output.js";
 import { CREDENTIAL_ORIGIN, maskKey } from "../config.js";
 import { SECOND_MS } from "../time.js";
@@ -18,6 +18,12 @@ Options
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, { local: { type: "boolean", default: false } });
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand whoami --help` to see the subcommands and flags.",
+    });
+  }
 
   const { profile, session, user, org, orgs, cached, reachable, probeError } = await probeIdentity(
     str(parsed, "profile"),

@@ -467,6 +467,12 @@ test("cli: --synthetic renders the saved sweep in a labeled block, separate from
 test("cli: recommend ranks observed pairs, guards min samples, prints the apply line", async () => {
   const cfg = await seededMatrixStore("recommend-basic");
 
+  const stray = await runCli(["recommend", "nope", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(stray.code, 1);
+  assert.match(stray.stderr, /Unknown argument "nope"/);
+
   const { code, stdout } = await runCli(["recommend", "--no-sync"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });

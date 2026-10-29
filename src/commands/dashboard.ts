@@ -202,6 +202,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand dashboard --help` to see the subcommands and flags.",
+    });
+  }
+
   const timezone = str(parsed, "timezone") ?? "UTC";
   assertTimezone(timezone);
 

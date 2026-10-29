@@ -1,6 +1,7 @@
 import { openSession, type Session } from "../api/client.js";
 import { getLogs, getLogsPaged, LOG_PAGE_MAX, LOG_RANGES, type LogEntry } from "../api/logs.js";
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
+import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, json, num, out, relativeTime, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
@@ -35,6 +36,12 @@ export async function run(argv: string[]): Promise<void> {
     "no-warn": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
+
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand logs --help` to see the subcommands and flags.",
+    });
+  }
 
   const session = await openSession(resolveProfile(str(parsed, "profile")));
   const range = oneOf(parsed, "range", LOG_RANGES, "24h");

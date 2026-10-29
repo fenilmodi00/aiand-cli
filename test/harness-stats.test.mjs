@@ -515,6 +515,20 @@ test("cli: the synthetic benchmark path still dispatches", async () => {
   assert.ok(statsHelp.stdout.includes("harness stats"));
 });
 
+test("cli: a stray positional on harness subcommands is a usage error", async () => {
+  const cfg = cfgDir("stray-positional");
+  for (const args of [
+    ["harness", "stats", "nope"],
+    ["harness", "compare", "nope"],
+    ["harness", "matrix", "nope"],
+    ["harness", "import", "nope"],
+  ]) {
+    const run = await runCli(args, { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+    assert.equal(run.code, 1, `${args.join(" ")}\n${run.stdout}${run.stderr}`);
+    assert.match(run.stderr, /Unknown argument "nope"/);
+  }
+});
+
 // #88: crafted data (1×429, 1×500, 113×200) must yield the IDENTICAL
 // errorRate from `harness stats` and `harness matrix` — one shared
 // error-count definition (non-2xx minus 429) on every harness surface.

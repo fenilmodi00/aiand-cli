@@ -171,6 +171,12 @@ describe("aiand efficiency", () => {
     assert.equal(code, 0);
     assert.match(stdout, /aiand efficiency/);
   });
+
+  test("a stray positional is a usage error", async () => {
+    const { code, stderr } = await runCli(["efficiency", "nope"], { env: cliEnvFor(box.dir) });
+    assert.equal(code, 1);
+    assert.match(stderr, /Unknown argument "nope"/);
+  });
 });
 
 // #91: the --last window path and the fail-open sync warning arm.
