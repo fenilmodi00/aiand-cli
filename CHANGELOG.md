@@ -8,6 +8,10 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Fixed
+- The installer's post-install check and login offer address the launcher by
+  its install name: a side-by-side preview install (`aiand-v2`) exited 1 after
+  successfully installing because `install.sh` verified a hardcoded `aiand`
+  launcher that did not exist.
 - `aiand dashboard` no longer hangs for seconds at launch and on every
   period/scope keypress: the local-usage correlation pass re-parsed every
   omp/pi session file (hundreds of MB on a real history) synchronously on

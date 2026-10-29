@@ -1045,8 +1045,8 @@ main() {
   install_cli_launcher "${final_dir}"
 
   print_install_notes
-  show_installed_version "${HOME}/.local/bin/aiand"
-  offer_login "${HOME}/.local/bin/aiand"
+  show_installed_version "${HOME}/.local/bin/${INSTALL_NAME}"
+  offer_login "${HOME}/.local/bin/${INSTALL_NAME}"
 }
 
 main "$@"
