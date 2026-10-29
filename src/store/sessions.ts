@@ -408,8 +408,10 @@ function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
   const watermark = db
     .prepare("SELECT id, created_at FROM requests ORDER BY created_at DESC, id DESC LIMIT 1")
     .get() as Record<string, unknown> | undefined;
-  // Refined-row count: healing changes labels without touching count or
-  // watermark, so it must invalidate on its own.
+  // Resolved-row count: the column carries both match refinements and the
+  // base/settled labels a pass records; healing or settling either kind
+  // changes it without touching count or watermark, so it must invalidate
+  // on its own.
   const refined = db
     .prepare("SELECT COUNT(*) AS n FROM requests WHERE attributed_agent IS NOT NULL")
     .get() as Record<string, unknown>;

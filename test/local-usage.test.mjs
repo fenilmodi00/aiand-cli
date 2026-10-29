@@ -241,13 +241,16 @@ describe("local-usage correlation", () => {
     const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
     assert.equal(byHarness.claude, 1);
     assert.equal(byHarness.omp, undefined);
-    // and nothing was persisted for it either
+    // Nothing was persisted for it but its own base label — never the omp
+    // record that token-matches it. (Settling the base label into the
+    // column is what retires the row from the pending set; render ignores
+    // the column on a specific-base row.)
     const db = await openStoreFor(dir);
     const stored = db
       .prepare("SELECT attributed_agent FROM requests WHERE id = 'row-claude'")
       .get();
     db.close();
-    assert.equal(stored.attributed_agent, null);
+    assert.equal(stored.attributed_agent, "claude");
   });
 
   test("missing agent stores fail open (label stays shared)", async () => {
@@ -283,8 +286,9 @@ describe("local-usage correlation", () => {
     seedSharedKey(dir);
     // First pass: omp's record for this row is still buffered in the agent
     // process — only an OLDER session's record is on disk (the live shape:
-    // 10k records existed, the newest rows' did not). The row is
-    // attempted, misses, and the cursor settles past it, sealing it.
+    // 10k records existed, the newest rows' did not). The row is attempted,
+    // misses, and stays NULL: the cursor settles past it, but the NULL row
+    // keeps the gate true and re-attempts on the next pass.
     writeOmpSession(home, "--D--old--", [
       ompLine({ ts: "2026-10-20T09:00:03.000Z", input: 999, output: 999 }),
     ]);
@@ -316,7 +320,7 @@ describe("local-usage correlation", () => {
     assert.ok(cursor, "first pass must settle the cursor past the row");
 
     // omp flushes its session JSONL seconds later. A later report run must
-    // re-attempt the unrefined row and heal it — never leave it shared
+    // re-attempt the still-NULL row and heal it — never leave it shared
     // behind the cursor.
     writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
     const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
@@ -517,6 +521,163 @@ describe("local-usage correlation", () => {
       }),
     );
     assert.match(data.meta.correlationNote, /local usage records/);
+  });
+
+  test("base-label rows settle into the column, so the gate reaches false", async () => {
+    const dir = join(box.dir, "gate-base");
+    const home = join(box.dir, "home-gate-base");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    // claude + omp hold the key: the /v1/messages rows resolve to claude by
+    // the base rule alone and never need a local record.
+    seedSharedKey(dir, ["claude", "omp"]);
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await insertRows(dir, [
+      storeRow({ id: "row-claude", endpoint: "/v1/messages" }),
+      // A NULL-token row the base rule still labels specifically.
+      storeRow({
+        id: "row-claude-empty",
+        endpoint: "/v1/messages",
+        input_tokens: null,
+        output_tokens: null,
+        cached_tokens: null,
+      }),
+      storeRow({ id: "row-omp" }),
+    ]);
+    const { correlationsPending } = await import("../dist/store/local-usage.js");
+    // Before any pass the cursor has not moved: gate is true.
+    const dbBefore = await openStoreFor(dir);
+    assert.equal(correlationsPending(dbBefore), true);
+    dbBefore.close();
+
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    // Render is unchanged: the specific base label wins whether or not the
+    // column carries it.
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.claude, 2);
+    assert.equal(byHarness.omp, 1);
+    // The pass settled every row: base labels and the omp match are durable.
+    const db = await openStoreFor(dir);
+    const stored = db
+      .prepare("SELECT id, attributed_agent FROM requests ORDER BY id")
+      .all()
+      .reduce((acc, r) => acc.set(r.id, r.attributed_agent), new Map());
+    const pending = correlationsPending(db);
+    db.close();
+    assert.equal(stored.get("row-claude"), "claude");
+    assert.equal(stored.get("row-claude-empty"), "claude");
+    assert.equal(stored.get("row-omp"), "omp");
+    // Nothing unresolved remains: a later build must not re-parse the
+    // agents' session files at all (the gate is the parse guard).
+    assert.equal(pending, false);
+  });
+
+  test("a genuinely unresolved row keeps the gate true until late evidence heals it", async () => {
+    const dir = join(box.dir, "gate-heal");
+    const home = join(box.dir, "home-gate-heal");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    // First pass: the row's record is still buffered — only an OLDER
+    // session's record is on disk, so the row is attempted and missed.
+    writeOmpSession(home, "--D--old--", [
+      ompLine({ ts: "2026-10-20T09:00:03.000Z", input: 999, output: 999 }),
+    ]);
+    await insertRows(dir, [storeRow()]);
+    const { correlationsPending } = await import("../dist/store/local-usage.js");
+    const { buildReportData } = await import("../dist/report/data.js");
+    const report = () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      });
+    const pendingUnder = async () =>
+      withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, async () => {
+        const { openStore } = await import("../dist/store/index.js");
+        const opened = openStore(join(dir, "store.db"));
+        try {
+          return correlationsPending(opened.db);
+        } finally {
+          opened.db.close();
+        }
+      });
+
+    await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => report());
+    // The pass missed the row (NULL column, tokens present): gate stays true
+    // — the row must keep counting as pending, not be sealed shared.
+    assert.equal(await pendingUnder(), true);
+
+    // The record lands. The gate is still true (nothing consumed it yet),
+    // and the next pass heals the row, after which the gate reaches false.
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    assert.equal(await pendingUnder(), true);
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => report());
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.shared, undefined);
+    assert.equal(await pendingUnder(), false);
+  });
+
+  test("a heal re-bakes the materialized sessions table (fingerprint seam)", async () => {
+    const dir = join(box.dir, "fingerprint");
+    const home = join(box.dir, "home-fingerprint");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeOmpSession(home, "--D--old--", [
+      ompLine({ ts: "2026-10-20T09:00:03.000Z", input: 999, output: 999 }),
+    ]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const report = () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: [],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      });
+    const { listSessions } = await import("../dist/store/sessions.js");
+    const list = async () =>
+      withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => listSessions());
+
+    // First pass misses the row: the table bakes with zero refined rows and
+    // the agent stays shared.
+    await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => report());
+    assert.equal((await list()).sessions[0].agent, "shared");
+
+    // Evidence lands and a report build heals the row — the refined-row
+    // count changes, which must invalidate the fingerprint so the next
+    // listSessions re-bakes the table instead of serving the stale bake.
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => report());
+    const listed = await list();
+    assert.equal(listed.sessions.length, 1);
+    assert.equal(listed.sessions[0].agent, "omp");
   });
 
   test("pure matcher: same-agent double record still refines; ratio guard holds", async () => {

@@ -387,18 +387,21 @@ function inputWithin(localInput: number, gatewayInput: number): boolean {
  * plus what changed. Idempotent: a row is written only when its persisted
  * value differs, so repeated passes are no-ops.
  *
- * Cost gate: the cursor still bounds REFINED rows — a row that matched (or
- * was never eligible: specific base label, null tokens) keeps its durable
- * label and is not re-attempted. But a row the pass ATTEMPTED and could not
- * resolve (no record yet, or ambiguous) stays re-eligible forever: agents
- * buffer their session writes, so the record for a request often lands on
- * disk seconds AFTER the first pass ran (observed live: omp's JSONL flush
- * sealed 1174 rows behind the cursor as "shared" while every one of them
- * had a matching record). A later pass heals such rows when the evidence
- * arrives — ccusage re-reads local records on every run for the same
- * reason; an attempt-once cursor makes attribution one flush-race away
- * from permanently wrong. The cursor still advances: it bounds work per
- * pass, not the lifetime of an unresolved row.
+ * Cost gate: the pass settles a row the moment it RESOLVES — a unique local
+ * match writes the matched agent, a specific base label writes itself (these
+ * never need a local record and are never heal-eligible) — and a settled row
+ * is never re-attempted. A row that matched nothing yet (its agent's record
+ * not flushed to disk) or matched ambiguously stays NULL and re-attempts on
+ * every later pass: agents buffer their session writes, so the record for a
+ * request often lands on disk seconds AFTER the first pass ran (observed
+ * live: omp's JSONL flush sealed 1174 rows behind the cursor as "shared"
+ * while every one of them had a matching record). A later pass heals such
+ * rows when the evidence arrives — ccusage re-reads local records on every
+ * run for the same reason; an attempt-once cursor makes attribution one
+ * flush-race away from permanently wrong. The cursor only records how far
+ * the last pass reached; it bounds neither the unresolved set nor per-pass
+ * cost — the unresolved set is re-attempted in full every pass until each
+ * row resolves, and the (model, output) index keeps that affordable.
  *
  * # ponytail: full-table re-attempt each pass, O(rows × candidates) with the
  * (model, output) index — fine at personal-store scale (10^4 rows). Move
@@ -417,19 +420,24 @@ export function refreshCorrelations(
 
   const cursorRaw = correlationCursor(db);
   const cursor = cursorRaw === null ? 0 : Number(cursorRaw);
-  // Re-eligible: fresh rows, plus stale rows that were ATTEMPTED before and
-  // left unresolved. A persisted refinement settles a row for good; a
-  // specific base label never needed one.
+  // The durable per-row state, read once: the pass settles a row by writing
+  // its resolved label into attributed_agent (the matching agent, or the
+  // row's specific base label), so NULL means "not settled yet".
+  const existing = attributedAgents(
+    db,
+    requests.map((row) => row.id),
+  );
+  // Re-eligible: fresh rows (past the cursor), plus any behind it still
+  // NULL — a row the pass has not resolved yet (its record hadn't flushed,
+  // or the match was ambiguous) re-attempts until it heals, and a legacy
+  // specific-base row settles to its base label on first sight. A row with
+  // a persisted label — matched agent or its own base label — never
+  // re-attempts.
   const fresh = requests.filter((row) => {
     const at = Date.parse(row.created_at);
     if (Number.isNaN(at)) return true;
     if (at > cursor) return true;
-    const base = labels.get(row.id) ?? "";
-    return (
-      (base === SHARED_AGENT || base === "unknown") &&
-      row.output_tokens !== null &&
-      row.input_tokens !== null
-    );
+    return existing.get(row.id) === undefined;
   });
   if (fresh.length === 0 || records.length === 0) return { labels, changed, ambiguous };
 
@@ -446,10 +454,6 @@ export function refreshCorrelations(
 
   try {
     const update = db.prepare("UPDATE requests SET attributed_agent = ? WHERE id = ?");
-    const existing = attributedAgents(
-      db,
-      fresh.map((row) => row.id),
-    );
     db.exec("BEGIN");
     let maxAt = cursor;
     const batchNewest = fresh.reduce((max, row) => {
@@ -460,7 +464,20 @@ export function refreshCorrelations(
       const at = Date.parse(row.created_at);
       if (!Number.isNaN(at) && at > maxAt) maxAt = at;
       const base = labels.get(row.id) ?? "";
-      if (base !== SHARED_AGENT && base !== "unknown") continue;
+      if (base !== SHARED_AGENT && base !== "unknown") {
+        // Settle a specific-base row by recording its base label: these rows
+        // never need a local record and are never heal-eligible, so writing
+        // the label takes them out of the pending set
+        // (correlationsPending counts NULL attributed_agent rows) and out of
+        // every later pass, permanently. Render never reads the column on a
+        // specific-base row (the dialect/key label always wins), so this
+        // write cannot change any report.
+        if (existing.get(row.id) !== base) {
+          update.run(base, row.id);
+          changed += 1;
+        }
+        continue;
+      }
       if (row.output_tokens === null || row.input_tokens === null || Number.isNaN(at)) {
         continue;
       }
@@ -475,6 +492,9 @@ export function refreshCorrelations(
         bucket,
       );
       if (match.kind === "ambiguous") {
+        // Stays NULL: an ambiguous row is still re-attemptable (more
+        // evidence may disambiguate it later) and must keep counting as
+        // pending until it heals.
         ambiguous += 1;
         continue;
       }
@@ -485,10 +505,11 @@ export function refreshCorrelations(
         changed += 1;
       }
     }
-    // Cursor safety (unchanged): advance only when the batch leaves no
+    // Cursor safety (kept): advance only when the batch leaves no
     // UNATTEMPTED row at or below its newest one — a windowed pass must not
-    // strand rows it never saw behind the gate. Unresolved rows stay
-    // re-eligible by construction, so they cost the cursor nothing.
+    // strand rows it never saw. The hazard is now belt-and-braces: any row
+    // the pass left NULL re-attempts on the next pass regardless of the
+    // cursor, so a settled cursor can no longer seal a miss.
     const allCreatedAt = db.prepare("SELECT created_at FROM requests").all() as unknown as {
       created_at?: unknown;
     }[];
@@ -534,10 +555,12 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
 /**
  * Whether a correlation pass can do work — the cheap gate callers check
  * before parsing local records at all. True when any row postdates the
- * cursor (new traffic), or when any shared/unknown row with token data sits
- * at-or-below it still unresolved: agents buffer their session writes, so
- * a row the last pass missed is healed by a later pass once its record
- * lands (see refreshCorrelations). Fail-open false.
+ * cursor (new traffic), or when any attemptable row still carries NULL
+ * attributed_agent: the pass settles a row only once it RESOLVES — a unique
+ * local match writes the agent, a specific base label writes itself — while
+ * a row that matched nothing yet (its agent's record not flushed to disk)
+ * or matched ambiguously stays NULL and keeps the gate true until a later
+ * pass heals it (see refreshCorrelations). Fail-open false.
  */
 export function correlationsPending(db: DatabaseSync): boolean {
   try {
