@@ -8,6 +8,22 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `harness compare --out <file>` table export (#135): writes the compare
+  table to a file as markdown, csv, or json (`--format`, default inferred
+  from the extension). Exports preserve everything the terminal table
+  carries — per-column winners (`▸`), `n=` counts, uncovered-cell em-dashes,
+  the coverage line, and the cohort/provenance footers; the synthetic sweep
+  block stays display-only and never joins an export.
+- Cohort seam end-to-end (C6, #135): `--cohort <category>` now also narrows
+  `harness matrix` and `recommend` through the same classifier predicate as
+  `harness stats|compare` — one shared flag parser, identical
+  excluded-not-folded semantics and error text on every surface.
+- `compare cohorts` (lane B, #135): per-category task breakdown. Task packs
+  gain optional `tags:` (classifier categories, via `compare add --tags` or
+  a hand-edited `task.json`); when `compare run` rows exist
+  (`compare-runs/<task>.jsonl`) the breakdown rolls up solves (infra rows
+  excluded), cost, and mean wall-clock per task; without run rows it
+  degrades honestly (tags only, stated in text and `--json`).
 - Scripted tool outcomes in the recorded benchmark (#128): scenarios can
   pin per-call results (`scriptedOutcomes`, reusing the `call_N` ids), the
   offline replay turns them into per-turn `toolErrors` and `retries`
