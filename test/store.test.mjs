@@ -162,12 +162,13 @@ describe("store module surface", () => {
     const migrations = await import("../dist/store/migrations/index.js");
     assert.equal(typeof mod.STORE_VERSION, "number");
     assert.equal(mod.STORE_VERSION, migrations.MIGRATIONS.at(-1).version);
-    // 6 = migration 0006 (requests.attributed_agent, local-usage
+    // 7 = migration 0007 (envelopes.tool_outcomes/terminal, #126). 6 =
+    // migration 0006 (requests.attributed_agent, local-usage
     // correlation). 5 = migration 0005 (requests.endpoint, harness
     // attribution); 4 = envelopes (#78); 0003 (imported usage, #73) was
     // removed with the ccusage import lane (#118) and versions stay stable
     // for existing stores.
-    assert.equal(mod.STORE_VERSION, 6);
+    assert.equal(mod.STORE_VERSION, 7);
   });
 
   test("storePath() resolves under AIAND_CONFIG_DIR", async () => {

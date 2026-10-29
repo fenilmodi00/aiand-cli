@@ -27,7 +27,10 @@ export const ENVELOPE_SCHEMA_VERSION = "aiand-envelope/v1";
 
 /** Deterministic truncation caps that keep the serialized envelope ≤ 2 KiB. */
 const ENVELOPE_MAX_TOOLS = 32;
+export const ENVELOPE_MAX_TOOL_OUTCOMES = 32;
 const ENVELOPE_MAX_EDIT_TARGETS = 16;
+export const ENVELOPE_TERMINAL_STATES = ["clean", "aborted", "errored"] as const;
+export type EnvelopeTerminalState = (typeof ENVELOPE_TERMINAL_STATES)[number];
 export const ENVELOPE_MAX_BYTES = 2048;
 
 /** A normalized `aiand-envelope/v1` record. Unknown input fields are dropped. */
@@ -41,6 +44,10 @@ export type EnvelopeV1 = {
   project_root_id: string | null;
   /** Current git branch, null on detached HEAD / outside a repo / unknown. */
   git_branch: string | null;
+  /** Per-tool-call outcome, same order/caps as `tools`. Optional (v1 rows lack it). */
+  toolOutcomes?: Array<{ name: string; ok: boolean }>;
+  /** How the turn ended; null/undefined = unknown (old rows). */
+  terminal?: EnvelopeTerminalState | null;
 };
 
 /**
@@ -54,6 +61,9 @@ export type TurnObservation = {
   editTargets?: readonly string[];
   projectRoot?: string | null;
   gitBranch?: string | null;
+  /** Per-tool-call outcomes; ok is a boolean — error text is never accepted. */
+  toolOutcomes?: ReadonlyArray<{ name?: unknown; ok?: unknown }>;
+  terminal?: string | null;
 };
 
 /** sha256 hex, first 16 chars — the pseudonymous id shape for paths. */
@@ -105,6 +115,31 @@ function cleanBranch(branch: string | null | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+function cleanToolOutcomes(
+  outcomes: TurnObservation["toolOutcomes"],
+): EnvelopeV1["toolOutcomes"] {
+  if (!Array.isArray(outcomes)) return undefined;
+  const seen = new Set<string>();
+  const out: NonNullable<EnvelopeV1["toolOutcomes"]> = [];
+  for (const entry of outcomes) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    if (name === "" || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, ok: entry.ok === true });
+    if (out.length >= ENVELOPE_MAX_TOOL_OUTCOMES) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+function cleanTerminal(terminal: string | null | undefined): EnvelopeTerminalState | null {
+  if (typeof terminal !== "string") return null;
+  const trimmed = terminal.trim();
+  return (ENVELOPE_TERMINAL_STATES as readonly string[]).includes(trimmed)
+    ? (trimmed as EnvelopeTerminalState)
+    : null;
+}
+
 /**
  * Normalize a turn observation into the versioned schema: dedupe (order
  * preserved), hash edit targets and the project root, drop unknown fields,
@@ -125,7 +160,10 @@ export function normalizeEnvelope(observation: TurnObservation): EnvelopeV1 {
         : null,
     git_branch: cleanBranch(observation.gitBranch),
   };
-  return shrinkToFit(raw);
+  const outcomes = cleanToolOutcomes(observation.toolOutcomes);
+  const terminal = cleanTerminal(observation.terminal);
+  const raw2: EnvelopeV1 = outcomes ? { ...raw, toolOutcomes: outcomes } : raw;
+  return shrinkToFit(terminal || outcomes ? { ...raw2, terminal: terminal ?? null } : raw2);
 }
 
 /**
@@ -189,6 +227,12 @@ export function parseEnvelope(json: string): EnvelopeV1 | null {
       ),
       project_root_id: typeof record.project_root_id === "string" ? record.project_root_id : null,
       git_branch: typeof record.git_branch === "string" ? record.git_branch : null,
+      ...(Array.isArray(record.toolOutcomes)
+        ? { toolOutcomes: cleanToolOutcomes(record.toolOutcomes as TurnObservation["toolOutcomes"]) }
+        : {}),
+      ...(record.toolOutcomes === undefined && record.terminal === undefined
+        ? {}
+        : { terminal: cleanTerminal(record.terminal as string | null) }),
     };
   } catch {
     return null;

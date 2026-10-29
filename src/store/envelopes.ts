@@ -50,8 +50,9 @@ export function insertEnvelope(db: DatabaseSync, input: InsertEnvelopeInput): st
   db.prepare(
     "INSERT INTO envelopes " +
       "(id, schema_version, agent, model, api_key, session_id, request_id, " +
-      "created_at, tools, edit_targets, project_root_id, git_branch, captured_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "created_at, tools, edit_targets, project_root_id, git_branch, captured_at, " +
+      "tool_outcomes, terminal) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     id,
     input.envelope.schema_version,
@@ -66,6 +67,8 @@ export function insertEnvelope(db: DatabaseSync, input: InsertEnvelopeInput): st
     input.envelope.project_root_id,
     input.envelope.git_branch,
     new Date().toISOString(),
+    input.envelope.toolOutcomes ? JSON.stringify(input.envelope.toolOutcomes) : null,
+    input.envelope.terminal ?? null,
   );
   return id;
 }
@@ -76,13 +79,21 @@ function rowToEnvelope(row: Record<string, unknown>): EnvelopeRow {
   // Reassemble the envelope from the columns: tools/edit_targets JSON plus
   // the identity fields. A row written by a future schema version that adds
   // unknown fields still round-trips here (unknown fields are dropped — the
-  // v1 contract), which keeps readers forward-compatible.
+  // v1 contract), which keeps readers forward-compatible. Rows from before
+  // migration 0007 have NULL tool_outcomes/terminal — absent on the parsed
+  // envelope, i.e. "unknown", never counted as ok or error.
   const envelope: EnvelopeV1 = {
     schema_version: ENVELOPE_SCHEMA_VERSION,
     tools: safeParseArray(toolsJson),
     edit_targets: safeParseArray(targetsJson),
     project_root_id: asStringOrNull(row.project_root_id),
     git_branch: asStringOrNull(row.git_branch),
+    ...(typeof row.tool_outcomes === "string"
+      ? { toolOutcomes: safeParseToolOutcomes(row.tool_outcomes) }
+      : {}),
+    ...(row.terminal !== null && row.terminal !== undefined
+      ? { terminal: asStringOrNull(row.terminal) as EnvelopeV1["terminal"] }
+      : {}),
   };
   return {
     id: String(row.id),
@@ -106,6 +117,24 @@ function safeParseArray(json: string): string[] {
     return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
   } catch {
     return [];
+  }
+}
+
+/** Parse a stored tool_outcomes JSON column; only {name, ok} pairs survive. */
+function safeParseToolOutcomes(json: string): EnvelopeV1["toolOutcomes"] {
+  try {
+    const value: unknown = JSON.parse(json);
+    if (!Array.isArray(value)) return undefined;
+    const out: NonNullable<EnvelopeV1["toolOutcomes"]> = [];
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const record = entry as Record<string, unknown>;
+      if (typeof record.name !== "string" || record.name === "") continue;
+      out.push({ name: record.name, ok: record.ok === true });
+    }
+    return out.length > 0 ? out : undefined;
+  } catch {
+    return undefined;
   }
 }
 
