@@ -14,9 +14,63 @@ const MENU_GROUPS = {
   start: "Get started",
   agents: "Agents",
   moreAgents: "More agents",
-  commands: "Commands",
+  askRun: "Ask & run",
+  spendReports: "Spend & reports",
+  harnessCompare: "Harness & compare",
+  setupHealth: "Setup & health",
+  account: "Account",
   menu: "Menu",
 } as const;
+
+type Group = (typeof MENU_GROUPS)[keyof typeof MENU_GROUPS];
+
+/** Command-group headings, in the order the command rows render. */
+const COMMAND_GROUP_ORDER: Group[] = [
+  MENU_GROUPS.askRun,
+  MENU_GROUPS.spendReports,
+  MENU_GROUPS.harnessCompare,
+  MENU_GROUPS.setupHealth,
+  MENU_GROUPS.account,
+];
+
+/**
+ * Which heading each command renders under. Every command in COMMANDS must
+ * appear here; a missing one fails loudly in mainMenuItems() instead of
+ * silently dropping off the menu.
+ */
+const COMMAND_GROUPS: Record<string, Group> = {
+  run: MENU_GROUPS.askRun,
+  chat: MENU_GROUPS.askRun,
+  "run-agent": MENU_GROUPS.askRun,
+  models: MENU_GROUPS.askRun,
+  usage: MENU_GROUPS.spendReports,
+  sessions: MENU_GROUPS.spendReports,
+  overview: MENU_GROUPS.spendReports,
+  report: MENU_GROUPS.spendReports,
+  wrapped: MENU_GROUPS.spendReports,
+  efficiency: MENU_GROUPS.spendReports,
+  cache: MENU_GROUPS.spendReports,
+  logs: MENU_GROUPS.spendReports,
+  heatmap: MENU_GROUPS.spendReports,
+  dashboard: MENU_GROUPS.spendReports,
+  forecast: MENU_GROUPS.spendReports,
+  harness: MENU_GROUPS.harnessCompare,
+  compare: MENU_GROUPS.harnessCompare,
+  recommend: MENU_GROUPS.harnessCompare,
+  init: MENU_GROUPS.setupHealth,
+  status: MENU_GROUPS.setupHealth,
+  doctor: MENU_GROUPS.setupHealth,
+  store: MENU_GROUPS.setupHealth,
+  restore: MENU_GROUPS.setupHealth,
+  update: MENU_GROUPS.setupHealth,
+  export: MENU_GROUPS.setupHealth,
+  login: MENU_GROUPS.account,
+  logout: MENU_GROUPS.account,
+  whoami: MENU_GROUPS.account,
+  orgs: MENU_GROUPS.account,
+  key: MENU_GROUPS.account,
+  config: MENU_GROUPS.account,
+};
 
 /** Menu rows that run one of the two sign-in flows. */
 const SIGN_IN_ACTIONS: Record<string, "browser" | "paste"> = {
@@ -112,18 +166,26 @@ export function mainMenuItems(): MenuItem[] {
     });
   }
 
-  for (const command of COMMANDS) {
-    rows.push({
-      value: command.name,
-      label: command.name,
-      group: MENU_GROUPS.commands,
-      hint: command.summary,
-      keywords: [command.name, ...(command.aliases ?? [])],
-      detail: command.summary,
-      ...(command.name === "config"
-        ? { state: { text: "signed in", tone: "success" as const } }
-        : {}),
-    });
+  for (const group of COMMAND_GROUP_ORDER) {
+    for (const command of COMMANDS.filter((c) => COMMAND_GROUPS[c.name] === group)) {
+      rows.push({
+        value: command.name,
+        label: command.name,
+        group,
+        hint: command.summary,
+        keywords: [command.name, ...(command.aliases ?? [])],
+        detail: command.summary,
+        ...(command.name === "config"
+          ? { state: { text: "signed in", tone: "success" as const } }
+          : {}),
+      });
+    }
+  }
+  const ungrouped = COMMANDS.filter((command) => COMMAND_GROUPS[command.name] === undefined);
+  if (ungrouped.length > 0) {
+    throw new Error(
+      `commands missing from COMMAND_GROUPS in menu-items.ts: ${ungrouped.map((c) => c.name).join(", ")}`,
+    );
   }
 
   rows.push({

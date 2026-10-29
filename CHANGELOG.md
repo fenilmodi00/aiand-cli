@@ -113,6 +113,34 @@ breaking changes while the command surface settles.
   `extra_headers` to the generated `providers.aiand` block, in persistent
   wiring and launcher sessions alike.
 
+### Changed (UX)
+- The interactive menu no longer flattens all 31 commands into one
+  undifferentiated section: rows are grouped by activity — Ask & run, Spend &
+  reports, Harness & compare, Setup & health, Account — between the agent
+  sections and Quit, with search still matching group names, command names,
+  and aliases. Pure metadata: no command module loads at menu draw.
+- Flag-only commands (the whole read-only report/diagnostics surface:
+  `usage`, `sessions`, `overview`, `report`, `wrapped`, `efficiency`,
+  `cache`, `logs`, `heatmap`, `dashboard`, `forecast`, `recommend`,
+  `status`, `doctor`, `whoami`, `orgs`, `models`, `login`, `logout`,
+  `update`, and the harness stats/compare/matrix/import subcommands) now
+  reject a stray positional word as a usage error instead of silently
+  ignoring it. `aiand harness bogus` used to swallow the word and start a
+  multi-minute benchmark.
+- A typo in `aiand harness --scenario <id>` or `--harness <id>` now reports
+  as a usage error with the known ids and a "Did you mean …?" suggestion,
+  instead of the "please report this bug" banner with a stack trace and exit
+  code 70. Same for a non-positive `report --top`.
+- An unknown help topic now gets the same nearest-match suggestion as an
+  unknown command: `aiand help usgae` points at `aiand help usage`.
+- Pressing Enter on an empty required prompt (the pasted-key sign-in flow)
+  is now a usage error naming the `AIAND_API_KEY` alternative, instead of
+  exiting with the not-signed-in code — a CI script can no longer mistake
+  "you typed nothing" for "logged out". The non-TTY end-of-input message
+  names the env key too.
+- The `compare` summary no longer advertises verbs the dispatcher rejects:
+  it now reads "add tasks, list, validate".
+
 ### Fixed
 - Harness attribution now uses the gateway's per-request `endpoint` (the wire
   dialect: `/v1/messages`, `/v1/responses`, `/v1/chat/completions`), so
@@ -130,6 +158,15 @@ breaking changes while the command surface settles.
   Unresolved rows are now re-attempted on every pass and healed as soon as
   their record appears; the cursor bounds per-pass work, not a row's
   lifetime.
+
+- `correlationsPending` can actually reach false now: it counted every row
+  with a NULL `attributed_agent`, but rows resolved to a specific base
+  label (claude, codex, …) never get a local record and so kept the gate
+  open forever — every report build re-parsed all agent session files for
+  no new information. A row now settles into the column the moment it
+  resolves (unique local match or specific base label); only genuinely
+  unresolved rows keep counting, so the heal-on-late-evidence path is
+  unchanged and the sessions fingerprint re-bakes on settle.
 
 ### Removed
 - The adapter-side envelope capture API (`src/agents/envelope-capture.ts`,
