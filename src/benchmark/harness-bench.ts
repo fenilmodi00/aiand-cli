@@ -32,6 +32,16 @@ type BenchTurn = {
   outputTokens: number;
   costUsd: number;
   hit: boolean;
+  /**
+   * Scripted tool calls that FAILED this turn (simulated only; 0 on the
+   * live path, where outcomes are never claimed).
+   */
+  toolErrors: number;
+  /**
+   * Error-then-retry chains this turn: a scripted error on call N followed
+   * by the repeat/continue turn that re-issues it (simulated only).
+   */
+  retries: number;
 };
 
 export type BenchScenario = {
@@ -48,6 +58,13 @@ export type BenchScenario = {
    * deterministic.
    */
   toolResults?: string[];
+  /**
+   * Scripted tool outcomes per call id (`call_N`, the same scheme
+   * `toolResults` uses): `false` marks the call as failed. Consumed only by
+   * the recorded transport (simulated provenance) — the live gateway path
+   * never reads it, so live turns never claim behavioral numbers.
+   */
+  scriptedOutcomes?: Array<{ toolId: string; ok: boolean }>;
 };
 
 export type BenchResult = {
@@ -67,6 +84,10 @@ export type BenchResult = {
   /** What the same traffic would cost with no cache, at the model's rates. */
   costIfUncached: number;
   savedUsd: number;
+  /** Total scripted tool errors across turns (simulated only; live path: 0). */
+  toolErrors: number;
+  /** Total error→retry chains across turns (simulated only; live path: 0). */
+  retries: number;
 };
 
 export type RunBenchOptions = {
@@ -274,6 +295,17 @@ async function runLayout(
   let cachedTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
+  // Scripted outcomes, keyed by call id. `pendingError` holds the previous
+  // turn's failed call: the next turn carrying the same id again is the
+  // retry. Only scenarios WITH scriptedOutcomes participate; without them
+  // both counters stay 0 (the live path and every existing scenario).
+  const outcomes = new Map(
+    (options.scenario.scriptedOutcomes ?? []).map((outcome) => [outcome.toolId, outcome]),
+  );
+  let pendingError: string | null = null;
+  let toolErrors = 0;
+  let retries = 0;
+  const erroredOnce = new Set<string>();
 
   for (let index = 0; index < options.scenario.turns.length; index++) {
     // The FIRST user block is always the first turn's prompt: a harness
@@ -298,6 +330,27 @@ async function runLayout(
     });
     const encoded = encode(messages, layout.dialect, options.model, options.session.profile.apiUrl);
     const result = await send(options.session, encoded, fetchImpl);
+    // Which scripted calls does this turn carry? Turn n carries the file
+    // read plus the first n-1 extra results — the same ids the request
+    // building above gives them.
+    const turnCallIds = (options.scenario.toolResults ?? [])
+      .slice(0, index)
+      .map((_, extra) => `call_${extra + 2}`);
+    turnCallIds.unshift("call_1");
+    // Did this turn RE-ISSUE the call that errored last turn? That is the
+    // retry — counted once, on the turn that repeats it. A scripted
+    // failure applies to the call's FIRST execution only: the repeat is
+    // the retry, and it succeeds.
+    const retried = pendingError !== null && turnCallIds.includes(pendingError);
+    if (retried) retries += 1;
+    const failedIds = turnCallIds.filter(
+      (id) => outcomes.get(id)?.ok === false && !erroredOnce.has(id),
+    );
+    for (const id of failedIds) erroredOnce.add(id);
+    toolErrors += failedIds.length;
+    // A turn that still carries a failed call keeps it pending; a clean
+    // turn clears it.
+    pendingError = failedIds.length > 0 ? failedIds[failedIds.length - 1]! : null;
     turns.push({
       turn: index + 1,
       promptTokens: result.promptTokens,
@@ -305,6 +358,8 @@ async function runLayout(
       outputTokens: result.outputTokens,
       costUsd: result.costUsd,
       hit: result.cachedTokens > 0,
+      toolErrors: failedIds.length,
+      retries: retried ? 1 : 0,
     });
     inputTokens += result.promptTokens;
     cachedTokens += result.cachedTokens;
@@ -334,6 +389,8 @@ async function runLayout(
     hitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
     costIfUncached,
     savedUsd: costIfUncached - costUsd,
+    toolErrors,
+    retries,
   };
 }
 

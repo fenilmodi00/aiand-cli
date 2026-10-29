@@ -45,6 +45,32 @@ describe("benchmark recorded gate", () => {
     }
   });
 
+  test("behavioral fields are present per row and simulated-labeled", () => {
+    // Every row carries the scripted counters; only the error-retry
+    // scenario's are nonzero.
+    for (const row of golden.rows) {
+      assert.ok(Number.isInteger(row.toolErrors), `${row.scenario} x ${row.layout}.toolErrors`);
+      assert.ok(Number.isInteger(row.retries), `${row.scenario} x ${row.layout}.retries`);
+    }
+    assert.equal(golden.provenance.toolOutcomes, "simulated(scripted tool outcomes)");
+    const plain = golden.rows.filter((row) => row.scenario !== "tool-error-retry");
+    assert.ok(plain.length > 0);
+    for (const row of plain) {
+      assert.equal(row.toolErrors, 0, `${row.scenario} x ${row.layout} has no scripted errors`);
+      assert.equal(row.retries, 0, `${row.scenario} x ${row.layout} has no scripted retries`);
+    }
+  });
+
+  test("the error-retry scenario walks error, then retry, then success", async () => {
+    const report = await runRecordedBenchmark({ scenarios: ["tool-error-retry"] });
+    assert.equal(report.rows.length, HARNESS_LAYOUTS.length);
+    for (const row of report.rows) {
+      // call_2 fails exactly once; every layout re-issues it once.
+      assert.equal(row.toolErrors, 1, `${row.layout}: one scripted tool error`);
+      assert.equal(row.retries, 1, `${row.layout}: one error-then-retry chain`);
+    }
+  });
+
   test("two consecutive replays are byte-identical", async () => {
     const first = JSON.stringify(await runRecordedBenchmark());
     const second = JSON.stringify(await runRecordedBenchmark());

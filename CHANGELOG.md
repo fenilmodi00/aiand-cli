@@ -8,6 +8,14 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- Scripted tool outcomes in the recorded benchmark (#128): scenarios can
+  pin per-call results (`scriptedOutcomes`, reusing the `call_N` ids), the
+  offline replay turns them into per-turn `toolErrors` and `retries`
+  (error followed by a repeat) and per-row totals, and a new
+  `tool-error-retry` scenario exercises the error → retry → success chain.
+  The goldens pin the new fields; every behavioral number is labeled
+  `simulated(scripted tool outcomes)` via the new fourth provenance tier
+  and never joins observed rankings — the live gateway path is unchanged.
 - Harness attribution refinement from the agents' own local usage records:
   a request the key+endpoint rules can only label `shared` (chat-dialect
   agents sharing one key) is refined to omp, pi, or opencode when that

@@ -2,6 +2,10 @@ import type { Session } from "../api/client.js";
 import { type ModelPrice, runHarnessBenchmark } from "./harness-bench.js";
 import { HARNESS_LAYOUTS } from "./harness-layouts.js";
 import { BENCH_SCENARIOS } from "./scenarios.js";
+import { formatLabel, simulated } from "../obs/provenance.js";
+
+/** The provenance label for every scripted behavioral number in the report. */
+export const TOOL_OUTCOMES_PROVENANCE = simulated("scripted tool outcomes");
 
 /**
  * The recorded benchmark: an OFFLINE replay of the scenario pack through a
@@ -52,6 +56,10 @@ export type RecordedRow = {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
+  /** Scripted tool calls that failed, per the scenario's scriptedOutcomes. */
+  toolErrors: number;
+  /** Error-then-retry chains the scripted outcomes produced. */
+  retries: number;
   baseline_cost_units: number;
   effective_cost_units: number;
   cache_hit_ratio: number;
@@ -63,6 +71,8 @@ export type RecordedReport = {
   version: 1;
   model: string;
   prices: ModelPrice;
+  /** Every row is a simulation: fixture-pinned, never an observation. */
+  provenance: { toolOutcomes: string };
   rows: RecordedRow[];
 };
 
@@ -211,6 +221,8 @@ export async function runRecordedBenchmark(
         inputTokens: result.inputTokens,
         cachedTokens: result.cachedTokens,
         outputTokens,
+        toolErrors: result.toolErrors,
+        retries: result.retries,
         baseline_cost_units: fixed(baseline),
         effective_cost_units: fixed(effective),
         cache_hit_ratio: fixed(result.cachedTokens / result.inputTokens),
@@ -219,7 +231,13 @@ export async function runRecordedBenchmark(
     }
   }
 
-  return { version: 1, model, prices: { ...price }, rows };
+  return {
+    version: 1,
+    model,
+    prices: { ...price },
+    provenance: { toolOutcomes: formatLabel(TOOL_OUTCOMES_PROVENANCE) },
+    rows,
+  };
 }
 
 /**
@@ -234,6 +252,11 @@ export function diffReports(actual: RecordedReport, golden: RecordedReport): str
   if (JSON.stringify(actual.prices) !== JSON.stringify(golden.prices)) {
     diffs.push(
       `prices: golden ${JSON.stringify(golden.prices)} vs actual ${JSON.stringify(actual.prices)}`,
+    );
+  }
+  if (JSON.stringify(actual.provenance) !== JSON.stringify(golden.provenance)) {
+    diffs.push(
+      `provenance: golden ${JSON.stringify(golden.provenance)} vs actual ${JSON.stringify(actual.provenance)}`,
     );
   }
   const key = (row: { scenario: string; layout: string }) => `${row.scenario} x ${row.layout}`;
