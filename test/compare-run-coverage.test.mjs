@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import {
@@ -93,14 +93,11 @@ async function withPinnedGateway(fn) {
 async function withFileGateway(rowsFile, fn) {
   const varName = `AIAND_MOCK_LOG_FILE_${Math.random().toString(36).slice(2, 8)}`;
   writeFileSync(rowsFile, "[]");
-  await withEnv(
-    { AIAND_MOCK_LOG_FILE_VAR: varName, [varName]: rowsFile },
-    async () => {
-      await withMockGateway(async ({ url }) =>
-        fn({ url: `${url}/stub/logs-pinned-file`, rowsFile, envVar: varName }),
-      );
-    },
-  );
+  await withEnv({ AIAND_MOCK_LOG_FILE_VAR: varName, [varName]: rowsFile }, async () => {
+    await withMockGateway(async ({ url }) =>
+      fn({ url: `${url}/stub/logs-pinned-file`, rowsFile, envVar: varName }),
+    );
+  });
 }
 
 /** One gateway /logs row (wire created_at, masked key) inside the join window. */
@@ -340,7 +337,10 @@ test("rows only outside the window: request_ids empty, usage null, never 0", asy
     writeFileSync(
       rowsFile,
       JSON.stringify([
-        { ...logRow("req-old", MASKED_KEY), created_at: new Date(Date.now() - 3_600_000).toISOString() },
+        {
+          ...logRow("req-old", MASKED_KEY),
+          created_at: new Date(Date.now() - 3_600_000).toISOString(),
+        },
       ]),
     );
     const res = await runCli(
@@ -380,13 +380,21 @@ test("envelope rows in window: turns counted, retries derived; absent rows stay 
         agent: "codex",
         model: "zai-org/glm-5.3",
         apiKey: MASKED_KEY,
-        envelope: normalizeEnvelope({ tools: ["Edit"], editTargets: ["src/a.ts"], projectRoot: "/repo" }),
+        envelope: normalizeEnvelope({
+          tools: ["Edit"],
+          editTargets: ["src/a.ts"],
+          projectRoot: "/repo",
+        }),
       });
       insertEnvelope(opened.db, {
         agent: "codex",
         model: "zai-org/glm-5.3",
         apiKey: `${FAKE_API_KEY.slice(0, 7)}...other`,
-        envelope: normalizeEnvelope({ tools: ["Edit"], editTargets: ["src/b.ts"], projectRoot: "/repo" }),
+        envelope: normalizeEnvelope({
+          tools: ["Edit"],
+          editTargets: ["src/b.ts"],
+          projectRoot: "/repo",
+        }),
       });
       opened.db.close();
     } finally {
@@ -597,7 +605,19 @@ test("corrupt store.db: usage degrades to nulls, run still grades and records", 
     // the envelope walk both degrade to nulls instead of crashing.
     writeFileSync(join(dir, "store.db"), "definitely not sqlite");
     const res = await runCli(
-      ["compare", "run", "--task", "badstore-task", "--harness", "codex", "--trials", "1", "--model", "zai-org/glm-5.3", "--json"],
+      [
+        "compare",
+        "run",
+        "--task",
+        "badstore-task",
+        "--harness",
+        "codex",
+        "--trials",
+        "1",
+        "--model",
+        "zai-org/glm-5.3",
+        "--json",
+      ],
       { env: runEnv(dir, `${url}/stub/logs-pinned`, { AIAND_SOLVE: "1" }) },
     );
     assert.equal(res.code, 0, res.stderr);
@@ -652,8 +672,18 @@ test("ledger join: mixed rows (one metered, one unpriced) sum the present values
     writeFileSync(
       rowsFile,
       JSON.stringify([
-        logRow("req-1", MASKED_KEY, { input_tokens: null, output_tokens: null, cached_tokens: null, cost: null }),
-        logRow("req-2", MASKED_KEY, { input_tokens: 700, output_tokens: 200, cached_tokens: 0, cost: "0.0030" }),
+        logRow("req-1", MASKED_KEY, {
+          input_tokens: null,
+          output_tokens: null,
+          cached_tokens: null,
+          cost: null,
+        }),
+        logRow("req-2", MASKED_KEY, {
+          input_tokens: 700,
+          output_tokens: 200,
+          cached_tokens: 0,
+          cost: "0.0030",
+        }),
       ]),
     );
     const res = await runCli(
@@ -673,7 +703,17 @@ test("dry-run rows render with the dry-run heading and recorded cost basis", asy
   const dir = cfg("dry-render");
   await addValidatedTask(dir, "dryrender");
   const res = await runCli(
-    ["compare", "run", "--task", "dryrender", "--dry-run", "--harness", "claude-code", "--trials", "1"],
+    [
+      "compare",
+      "run",
+      "--task",
+      "dryrender",
+      "--dry-run",
+      "--harness",
+      "claude-code",
+      "--trials",
+      "1",
+    ],
     { env: runEnv(dir, "http://127.0.0.1:9") },
   );
   assert.equal(res.code, 0, res.stderr);

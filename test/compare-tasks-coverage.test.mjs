@@ -15,7 +15,7 @@ import { cliEnv, runCli } from "./helpers.mjs";
 const { runVerify, scaffoldTask, taskPath, tasksPath, validateTask, taskStatus, listTaskIds } =
   await import("../dist/compare/tasks.js");
 
-let baseDir = null;
+const _baseDir = null;
 
 function newCfg(name) {
   const dir = mkdtempSync(join(tmpdir(), `cov-compare-${name}-`));
@@ -35,7 +35,10 @@ function writeTask(dir, id, { verify = "#!/bin/sh\nexit 1\n", instruction = "# T
 /** Write a run-row JSONL for a task (lane-B rows for cohorts/table). */
 function writeRows(dir, id, rows) {
   mkdirSync(join(dir, "compare-runs"), { recursive: true });
-  writeFileSync(join(dir, "compare-runs", `${id}.jsonl`), rows.map((r) => JSON.stringify(r)).join("\n"));
+  writeFileSync(
+    join(dir, "compare-runs", `${id}.jsonl`),
+    rows.map((r) => JSON.stringify(r)).join("\n"),
+  );
 }
 
 function row(overrides = {}) {
@@ -94,7 +97,10 @@ describe("taskStatus / readValidation (tasks.ts)", () => {
     writeTask(dir, "bad");
     writeFileSync(
       join(taskPath("bad"), "validation.json"),
-      JSON.stringify({ failBefore: { ok: true, at: "x" }, golden: { ok: false, path: "g", at: "x" } }),
+      JSON.stringify({
+        failBefore: { ok: true, at: "x" },
+        golden: { ok: false, path: "g", at: "x" },
+      }),
     );
     assert.equal(taskStatus("bad").status, "invalid");
 
@@ -159,13 +165,16 @@ describe("taskStatus / readValidation (tasks.ts)", () => {
 
 describe("scaffoldTask (tasks.ts)", () => {
   test("rejects invalid ids, existing ids; fresh scaffold creates files", async () => {
-    const dir = newCfg("scaffold-edge");
+    const _dir = newCfg("scaffold-edge");
     await assert.rejects(
       () => scaffoldTask("../escape", "true"),
       (e) => /Invalid task id/.test(e.message) && /directory name/.test(e.hint),
     );
     await scaffoldTask("dupe", "true");
-    await assert.rejects(() => scaffoldTask("dupe", "true"), (e) => /already exists/.test(e.message));
+    await assert.rejects(
+      () => scaffoldTask("dupe", "true"),
+      (e) => /already exists/.test(e.message),
+    );
     // untouched scaffold is missing nothing → taskStatus sees a complete pack
     assert.deepEqual(taskStatus("dupe"), { status: "unvalidated", missing: [] });
     assert.ok(existsSync(join(taskPath("dupe"), "workspace")));
@@ -228,7 +237,10 @@ describe("validateTask verdicts (tasks.ts)", () => {
     writeFileSync(join(golden, "solved.txt"), "done\n");
 
     const badDir = join(dir, "no-such-golden");
-    await assert.rejects(() => validateTask("real", badDir), (e) => /Golden dir not found/.test(e.message));
+    await assert.rejects(
+      () => validateTask("real", badDir),
+      (e) => /Golden dir not found/.test(e.message),
+    );
 
     const ok = await validateTask("real", golden);
     assert.equal(ok.valid, true);
@@ -298,7 +310,9 @@ describe("compare add/tasks/validate (CLI)", () => {
     assert.notEqual(noId.code, 0);
     assert.match(noId.stderr, /Task id required/);
 
-    const noVerify = await runCli(["compare", "add", "x"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+    const noVerify = await runCli(["compare", "add", "x"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
     assert.notEqual(noVerify.code, 0);
     assert.match(noVerify.stderr, /--verify is required/);
 
@@ -309,7 +323,9 @@ describe("compare add/tasks/validate (CLI)", () => {
     assert.match(badTag.stderr, /Categories:/);
 
     // a task dir already exists → scaffold error (covers command-level error passthrough)
-    await runCli(["compare", "add", "x", "--verify", "true"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+    await runCli(["compare", "add", "x", "--verify", "true"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
     const dupe = await runCli(["compare", "add", "x", "--verify", "true"], {
       env: cliEnv({ AIAND_CONFIG_DIR: dir }),
     });
@@ -403,7 +419,9 @@ describe("compare cohorts (CLI)", () => {
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /Unknown cohort "Nonsense"/);
 
-    const noTasks = await runCli(["compare", "cohorts"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+    const noTasks = await runCli(["compare", "cohorts"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
     assert.equal(noTasks.code, 0);
     assert.match(noTasks.stdout, /No task packs yet/);
 
@@ -421,7 +439,18 @@ describe("compare cohorts (CLI)", () => {
     const parsed = JSON.parse(asJson.stdout);
     assert.equal(parsed.cohort, null);
     assert.match(parsed.note, /no run rows yet/);
-    assert.deepEqual(parsed.tasks, [{ id: "t1", tags: [], runs: 0, solves: 0, trials: 0, infra: 0, costUsd: null, meanWallMs: null }]);
+    assert.deepEqual(parsed.tasks, [
+      {
+        id: "t1",
+        tags: [],
+        runs: 0,
+        solves: 0,
+        trials: 0,
+        infra: 0,
+        costUsd: null,
+        meanWallMs: null,
+      },
+    ]);
   });
 
   test("cohorts renders run stats: runs=0 dim line, solve/cost/wall, infra suffix, runs-available footer", async () => {
@@ -430,13 +459,19 @@ describe("compare cohorts (CLI)", () => {
     writeTask(dir, "b", { verify: "#!/bin/sh\nexit 1\n" });
     writeTask(dir, "c", { verify: "#!/bin/sh\nexit 1\n" });
     writeFileSync(join(taskPath("b"), "task.json"), JSON.stringify({ tags: ["Debugging"] }));
-    writeRows(dir, "a", [row({ task: "a" }), row({ task: "a", success: null, failure_mode: "infra", cost_usd: null })]);
+    writeRows(dir, "a", [
+      row({ task: "a" }),
+      row({ task: "a", success: null, failure_mode: "infra", cost_usd: null }),
+    ]);
     // task b has a task.json but no run rows → runs=0 branch
 
     const res = await runCli(["compare", "cohorts"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
     assert.equal(res.code, 0, res.stderr);
     assert.match(res.stdout, /runs 2 · solve 1\/1 · cost \$0\.1000 · wall 1000ms · infra 1/);
-    assert.match(res.stdout, /no run rows yet — solve\/cost\/wall appear once `compare run` exists/);
+    assert.match(
+      res.stdout,
+      /no run rows yet — solve\/cost\/wall appear once `compare run` exists/,
+    );
     assert.match(res.stdout, /\[Debugging\]/);
     assert.match(res.stdout, /\[untagged\]/);
     assert.doesNotMatch(res.stdout, /run rows: none yet/, "footer only when no task has rows");
@@ -466,14 +501,75 @@ describe("compare table (CLI)", () => {
     writeTask(dir, "t1");
     writeRows(dir, "t1", [
       // agentA / m1: 3/3 solves (n=3), costed, metered → wins most columns
-      row({ task: "t1", run_id: "a1", harness: "agentA", model: "m1", success: true, wall_ms: 1000, turns: 5, retries: 0, cost_usd: 0.1 }),
-      row({ task: "t1", run_id: "a2", harness: "agentA", model: "m1", success: true, wall_ms: 2000, turns: 7, retries: 1, cost_usd: 0.2 }),
-      row({ task: "t1", run_id: "a3", harness: "agentA", model: "m1", success: true, wall_ms: 3000, turns: 6, retries: 0, cost_usd: 0.1 }),
+      row({
+        task: "t1",
+        run_id: "a1",
+        harness: "agentA",
+        model: "m1",
+        success: true,
+        wall_ms: 1000,
+        turns: 5,
+        retries: 0,
+        cost_usd: 0.1,
+      }),
+      row({
+        task: "t1",
+        run_id: "a2",
+        harness: "agentA",
+        model: "m1",
+        success: true,
+        wall_ms: 2000,
+        turns: 7,
+        retries: 1,
+        cost_usd: 0.2,
+      }),
+      row({
+        task: "t1",
+        run_id: "a3",
+        harness: "agentA",
+        model: "m1",
+        success: true,
+        wall_ms: 3000,
+        turns: 6,
+        retries: 0,
+        cost_usd: 0.1,
+      }),
       // infra row → excluded from solve rate, shown in histogram + footer
-      row({ task: "t1", run_id: "a4", harness: "agentA", model: "m1", success: null, failure_mode: "infra", cost_usd: null, wall_ms: 0 }),
+      row({
+        task: "t1",
+        run_id: "a4",
+        harness: "agentA",
+        model: "m1",
+        success: null,
+        failure_mode: "infra",
+        cost_usd: null,
+        wall_ms: 0,
+      }),
       // agentB / m1: 2 failures (agent_timeout), no cost, low n
-      row({ task: "t1", run_id: "b1", harness: "agentB", model: "m1", success: false, failure_mode: "agent_timeout", cost_usd: null, wall_ms: 500, turns: null, retries: null }),
-      row({ task: "t1", run_id: "b2", harness: "agentB", model: "m1", success: false, failure_mode: "verify_timeout", cost_usd: null, wall_ms: 700, turns: null, retries: null }),
+      row({
+        task: "t1",
+        run_id: "b1",
+        harness: "agentB",
+        model: "m1",
+        success: false,
+        failure_mode: "agent_timeout",
+        cost_usd: null,
+        wall_ms: 500,
+        turns: null,
+        retries: null,
+      }),
+      row({
+        task: "t1",
+        run_id: "b2",
+        harness: "agentB",
+        model: "m1",
+        success: false,
+        failure_mode: "verify_timeout",
+        cost_usd: null,
+        wall_ms: 700,
+        turns: null,
+        retries: null,
+      }),
     ]);
     return dir;
   }
@@ -496,7 +592,9 @@ describe("compare table (CLI)", () => {
 
   test("table --json: cell shape, solveTied, tieNote, winners, note absent when rows exist", async () => {
     const dir = tableCfg("cli-table-json");
-    const res = await runCli(["compare", "table", "--json"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+    const res = await runCli(["compare", "table", "--json"], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
     assert.equal(res.code, 0, res.stderr);
     const parsed = JSON.parse(res.stdout);
     assert.equal(parsed.task, null);
@@ -530,13 +628,18 @@ describe("compare table (CLI)", () => {
     const asJson = await runCli(["compare", "table", "--task", "t1", "--json"], {
       env: cliEnv({ AIAND_CONFIG_DIR: dir }),
     });
-    assert.equal(JSON.parse(asJson.stdout).note, "no run rows yet — run `aiand compare run --task <id>` first");
+    assert.equal(
+      JSON.parse(asJson.stdout).note,
+      "no run rows yet — run `aiand compare run --task <id>` first",
+    );
   });
 
   test("table export: markdown default, csv by extension, json by explicit --format", async () => {
     const dir = tableCfg("cli-table-export");
     const outMd = join(dir, "table.md");
-    const res = await runCli(["compare", "table", "--out", outMd], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+    const res = await runCli(["compare", "table", "--out", outMd], {
+      env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+    });
     assert.equal(res.code, 0, res.stderr);
     const md = readFileSync(outMd, "utf8");
     assert.match(md, /\| harness \/ model \| solve \|/);
@@ -604,7 +707,14 @@ describe("compare audit (CLI)", () => {
         tokens_in: 100,
         tokens_out: 50,
       }),
-      row({ task: "t1", run_id: "ok-run", success: true, turns: 4, tokens_in: 200, tokens_out: 100 }),
+      row({
+        task: "t1",
+        run_id: "ok-run",
+        success: true,
+        turns: 4,
+        tokens_in: 200,
+        tokens_out: 100,
+      }),
     ]);
 
     const res = await runCli(["compare", "audit"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });

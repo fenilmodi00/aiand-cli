@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, test } from "node:test";
+import { after, describe, test } from "node:test";
 import { cliEnv, runCli, withTestEnv } from "./helpers.mjs";
 
 /**
@@ -160,10 +160,7 @@ describe("harness-stats degenerate windows (#cov-obs)", () => {
     const stats = buildHarnessStats(rows);
     assert.equal(stats.excluded.length, 1);
     assert.equal(stats.provenance.excludedMixed, 1);
-    assert.deepEqual(
-      stats.excluded[0].models.sort(),
-      ["a", "b"],
-    );
+    assert.deepEqual(stats.excluded[0].models.sort(), ["a", "b"]);
     assert.equal(stats.excludedMixed.requests, 3);
     // Only priced rows sum; token sums include cached in input.
     assert.equal(stats.excludedMixed.cost, 0.02);
@@ -172,9 +169,7 @@ describe("harness-stats degenerate windows (#cov-obs)", () => {
   });
 
   test("single-session degenerate path: no ttft, no cache, all-error row", () => {
-    const stats = buildHarnessStats([
-      row({ cached_tokens: 0, status_code: 500, ttft_ms: null }),
-    ]);
+    const stats = buildHarnessStats([row({ cached_tokens: 0, status_code: 500, ttft_ms: null })]);
     const harness = stats.harnesses[0];
     assert.equal(harness.requests, 1);
     assert.equal(harness.cacheHitRatio, 0);
@@ -247,15 +242,21 @@ describe("pair-stats coverage gating and sort order (#cov-obs)", () => {
   });
 
   test("mixed-model sessions split per model into separate pair rows", () => {
-    const pair = buildPairStats([row({ id: "1", model: "a" }), row({ id: "2", model: "b", created_at: iso(60_000) })]);
-    assert.deepEqual(
-      pair.pairs.map((p) => `${p.harness}:${p.model}`).sort(),
-      ["unknown:a", "unknown:b"],
-    );
+    const pair = buildPairStats([
+      row({ id: "1", model: "a" }),
+      row({ id: "2", model: "b", created_at: iso(60_000) }),
+    ]);
+    assert.deepEqual(pair.pairs.map((p) => `${p.harness}:${p.model}`).sort(), [
+      "unknown:a",
+      "unknown:b",
+    ]);
     for (const p of pair.pairs) {
       assert.equal(p.sessions, 1);
       assert.equal(p.costTotal, 0.01);
-      assert.deepEqual(p.samples[0].models, [p.model === "unknown:a" ? "a" : "b"].map(() => p.model.slice(-1)));
+      assert.deepEqual(
+        p.samples[0].models,
+        [p.model === "unknown:a" ? "a" : "b"].map(() => p.model.slice(-1)),
+      );
     }
   });
 
@@ -302,10 +303,22 @@ describe("pair-stats coverage gating and sort order (#cov-obs)", () => {
     });
     const a = mk("a", 0.5, 100, 0.4);
     const b = mk("b", 0.1, 200, 0.9);
-    assert.deepEqual(sortPairs([a, b], "cost").map((r) => r.harness), ["b", "a"]);
-    assert.deepEqual(sortPairs([a, b], "cost", "desc").map((r) => r.harness), ["a", "b"]);
-    assert.deepEqual(sortPairs([a, b], "ttft").map((r) => r.harness), ["a", "b"]);
-    assert.deepEqual(sortPairs([a, b], "hit").map((r) => r.harness), ["b", "a"]);
+    assert.deepEqual(
+      sortPairs([a, b], "cost").map((r) => r.harness),
+      ["b", "a"],
+    );
+    assert.deepEqual(
+      sortPairs([a, b], "cost", "desc").map((r) => r.harness),
+      ["a", "b"],
+    );
+    assert.deepEqual(
+      sortPairs([a, b], "ttft").map((r) => r.harness),
+      ["a", "b"],
+    );
+    assert.deepEqual(
+      sortPairs([a, b], "hit").map((r) => r.harness),
+      ["b", "a"],
+    );
   });
 
   test("sortPairs: errors key, all-null ties break by model/sessions, labels self-describe", async () => {
@@ -321,13 +334,19 @@ describe("pair-stats coverage gating and sort order (#cov-obs)", () => {
     });
     const a = mk("a", "m1", 2, 0.1);
     const b = mk("b", "m2", 1, 0.2);
-    assert.deepEqual(sortPairs([a, b], "errors").map((r) => r.harness), ["a", "b"]);
+    assert.deepEqual(
+      sortPairs([a, b], "errors").map((r) => r.harness),
+      ["a", "b"],
+    );
     // Both rows null for the key → deterministic tie by harness, model, sessions.
     const n1 = mk("x", "m2", 2, undefined);
     const n2 = mk("x", "m1", 1, undefined);
     n1.errorRate = null;
     n2.errorRate = null;
-    assert.deepEqual(sortPairs([n1, n2], "one-shot").map((r) => r.model), ["m1", "m2"]);
+    assert.deepEqual(
+      sortPairs([n1, n2], "one-shot").map((r) => r.model),
+      ["m1", "m2"],
+    );
     const labels = pairStatsLabels();
     assert.equal(labels["pair-stats.cost"].kind, "gateway-billed");
     assert.equal(labels["pair-stats.behavioral"].kind, "heuristic");
@@ -387,8 +406,10 @@ describe("envelopes store edge rows (#cov-obs)", () => {
     db.prepare(raw).run("broken-outcomes", iso(90_000), "[]", iso(90_000), "{broken");
     // terminal column set to a non-string: the terminal branch still runs,
     // but parseEnvelope normalizes it to null ("unknown"), never a guessed state.
-    db.prepare(raw).run("terminal-junk", iso(150_000), "[]", 'null');
-    db.prepare("UPDATE envelopes SET tool_outcomes = NULL, terminal = '123' WHERE id = 'terminal-junk'").run();
+    db.prepare(raw).run("terminal-junk", iso(150_000), "[]", "null");
+    db.prepare(
+      "UPDATE envelopes SET tool_outcomes = NULL, terminal = '123' WHERE id = 'terminal-junk'",
+    ).run();
     const rows = listEnvelopesFromDb(db);
     assert.equal(rows.length, 4);
     assert.deepEqual(rows[1].envelope.tools, []);
@@ -507,13 +528,16 @@ describe("artifact-import reader edges (#cov-obs)", () => {
           .map((r) => r.outcome);
         assert.deepEqual(outcomes, ["aborted", "error"]);
         const stats = sessionStats(
-          db.prepare("SELECT * FROM imported_artifacts").all().map((r) => ({
-            harness: r.harness,
-            session_id: r.session_id,
-            kind: r.kind,
-            tool_name: r.tool_name,
-            outcome: r.outcome,
-          })),
+          db
+            .prepare("SELECT * FROM imported_artifacts")
+            .all()
+            .map((r) => ({
+              harness: r.harness,
+              session_id: r.session_id,
+              kind: r.kind,
+              tool_name: r.tool_name,
+              outcome: r.outcome,
+            })),
         );
         assert.equal(stats[0].terminal, "aborted");
         assert.equal(stats[0].toolErrors, 1);
@@ -605,7 +629,7 @@ describe("artifact-import reader edges (#cov-obs)", () => {
         AIAND_OPENCODE_DB: "",
       },
       async () => {
-                const db = openStore(join(cfgDir("missing-dirs"), "store.db")).db;
+        const db = openStore(join(cfgDir("missing-dirs"), "store.db")).db;
         const result = await importArtifacts(db, ["claude", "codex", "opencode"]);
         // claudeFileCount/codexFileCount are cached at module scope, so only
         // assert the fail-open marker behavior, not the cached file count.
@@ -671,12 +695,16 @@ describe("artifact-import reader edges (#cov-obs)", () => {
     mkdirSync(join(root, "2026", "10"), { recursive: true });
     writeFileSync(
       join(root, "2026", "10", "roll.jsonl"),
-      [
+      `${[
         JSON.stringify({ type: "turn_foo" }),
         JSON.stringify({ timestamp: "2026-10-29T11:00:00.000Z", type: "compacted" }),
-        JSON.stringify({ timestamp: "2026-10-29T11:01:00.000Z", type: "TurnComplete", payload: { error: "boom" } }),
+        JSON.stringify({
+          timestamp: "2026-10-29T11:01:00.000Z",
+          type: "TurnComplete",
+          payload: { error: "boom" },
+        }),
         "not json",
-      ].join("\n") + "\n",
+      ].join("\n")}\n`,
     );
     return withEnv(
       {
@@ -700,13 +728,16 @@ describe("artifact-import reader edges (#cov-obs)", () => {
           ],
         );
         const stats = sessionStats(
-          db.prepare("SELECT * FROM imported_artifacts").all().map((r) => ({
-            harness: r.harness,
-            session_id: r.session_id,
-            kind: r.kind,
-            tool_name: r.tool_name,
-            outcome: r.outcome,
-          })),
+          db
+            .prepare("SELECT * FROM imported_artifacts")
+            .all()
+            .map((r) => ({
+              harness: r.harness,
+              session_id: r.session_id,
+              kind: r.kind,
+              tool_name: r.tool_name,
+              outcome: r.outcome,
+            })),
         );
         assert.equal(stats[0].compacted, 1);
         assert.equal(stats[0].terminal, "errored");
