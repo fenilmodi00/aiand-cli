@@ -66,6 +66,10 @@ export type EnvelopeRecorder = {
   tool(name: string): void;
   /** A file was edited this turn; full paths are hashed at flush time. */
   edit(target: string): void;
+  /** A tool call finished; only the boolean outcome is kept — never error text. */
+  toolOutcome(name: string, ok: boolean): void;
+  /** Mark how the turn ended ("clean" | "aborted" | "errored"). */
+  terminal(state: "clean" | "aborted" | "errored"): void;
   /** Build the normalized envelope without writing anything. */
   build(observation?: { projectRoot?: string | null; gitBranch?: string | null }): EnvelopeV1;
   /** Write the envelope to the local store (no-op when disabled or empty). */
@@ -75,6 +79,8 @@ export type EnvelopeRecorder = {
 export function createEnvelopeRecorder(options: EnvelopeRecorderOptions): EnvelopeRecorder {
   const tools: string[] = [];
   const editTargets: string[] = [];
+  const toolOutcomes: Array<{ name: string; ok: boolean }> = [];
+  let terminal: "clean" | "aborted" | "errored" | null = null;
   const enabled = envelopeCaptureEnabled();
 
   return {
@@ -89,12 +95,29 @@ export function createEnvelopeRecorder(options: EnvelopeRecorderOptions): Envelo
       const trimmed = target.trim();
       if (trimmed !== "" && !editTargets.includes(trimmed)) editTargets.push(trimmed);
     },
+    toolOutcome(name, ok) {
+      if (!enabled) return;
+      const trimmed = name.trim();
+      if (trimmed === "") return;
+      const existing = toolOutcomes.find((o) => o.name === trimmed);
+      if (existing) {
+        existing.ok = existing.ok && ok;
+        return;
+      }
+      if (toolOutcomes.length < 32) toolOutcomes.push({ name: trimmed, ok });
+    },
+    terminal(state) {
+      if (!enabled) return;
+      terminal = state;
+    },
     build(observation) {
       return normalizeEnvelope({
         tools,
         editTargets,
         projectRoot: observation?.projectRoot ?? null,
         gitBranch: observation?.gitBranch ?? null,
+        toolOutcomes,
+        terminal,
       });
     },
     flush(observation) {

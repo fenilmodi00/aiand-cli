@@ -191,12 +191,13 @@ describe("envelope capture (opt-in, default off)", () => {
 // -- store (migration 0004; renumbered at merge, was 0003 pre-#73) ------------------------------------------------------
 
 describe("envelope store (migration 0004)", () => {
-  test("fresh store is at version 6 with an empty envelopes table", async () => {
+  test("fresh store is at version 7 with an empty envelopes table", async () => {
     const { join } = await import("node:path");
     await withEnv({ AIAND_CONFIG_DIR: join(box.dir, "fresh-store") }, async () => {
-      // 6 = migration 0006 (requests.attributed_agent); 5 = migration 0005
+      // 7 = migration 0007 (envelopes.tool_outcomes/terminal, #126); 6 =
+      // migration 0006 (requests.attributed_agent); 5 = migration 0005
       // (requests.endpoint); envelopes landed at 4 (#78).
-      assert.equal(STORE_VERSION, 6);
+      assert.equal(STORE_VERSION, 7);
       assert.equal(countEnvelopes(), 0);
     });
   });
@@ -250,6 +251,127 @@ describe("envelope store (migration 0004)", () => {
       for (const forbidden of ["prompt", "completion", "content", "path_text", "file_path"]) {
         assert.ok(!sql.includes(forbidden), `envelopes schema must not have a ${forbidden} column`);
       }
+    });
+  });
+});
+
+// -- tool outcomes + terminal (T1, #126) ---------------------------------------
+
+describe("envelope toolOutcomes + terminal (ticket #126)", () => {
+  test("recorder captures per-tool outcomes and a terminal marker; store round-trips them", async () => {
+    const { join } = await import("node:path");
+    await withEnv(
+      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-clean"), AIAND_ENVELOPE_CAPTURE: "1" },
+      async () => {
+        const recorder = createEnvelopeRecorder({ agent: "claude" });
+        recorder.tool("Read");
+        recorder.tool("Bash");
+        recorder.tool("Edit");
+        recorder.edit("/repo/src/a.ts");
+        recorder.toolOutcome("Read", true);
+        recorder.toolOutcome("Bash", true);
+        recorder.toolOutcome("Edit", true);
+        recorder.terminal("clean");
+        const result = recorder.flush({ projectRoot: "/repo", gitBranch: "main" });
+        assert.equal(result.recorded, true);
+        assert.deepEqual(result.envelope.toolOutcomes, [
+          { name: "Read", ok: true },
+          { name: "Bash", ok: true },
+          { name: "Edit", ok: true },
+        ]);
+        assert.equal(result.envelope.terminal, "clean");
+
+        // reload from disk: outcomes + terminal intact
+        const rows = listEnvelopes();
+        assert.equal(rows.length, 1);
+        assert.deepEqual(rows[0].envelope.toolOutcomes, [
+          { name: "Read", ok: true },
+          { name: "Bash", ok: true },
+          { name: "Edit", ok: true },
+        ]);
+        assert.equal(rows[0].envelope.terminal, "clean");
+      },
+    );
+  });
+
+  test("an errored tool records ok=false — and never any error text", async () => {
+    const { join } = await import("node:path");
+    await withEnv(
+      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-errored"), AIAND_ENVELOPE_CAPTURE: "1" },
+      async () => {
+        const recorder = createEnvelopeRecorder({ agent: "claude" });
+        recorder.tool("Bash");
+        recorder.toolOutcome("Bash", false); // the error MESSAGE never enters the API
+        recorder.terminal("errored");
+        const result = recorder.flush();
+        assert.equal(result.recorded, true);
+        assert.deepEqual(result.envelope.toolOutcomes, [{ name: "Bash", ok: false }]);
+        assert.equal(result.envelope.terminal, "errored");
+        assert.equal(
+          envelopeJson(result.envelope).includes("EACCES"),
+          false,
+          "no error text can exist — only the boolean is captured",
+        );
+      },
+    );
+  });
+
+  test("an aborted turn records terminal=aborted", async () => {
+    const { join } = await import("node:path");
+    await withEnv(
+      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-aborted"), AIAND_ENVELOPE_CAPTURE: "1" },
+      async () => {
+        const recorder = createEnvelopeRecorder({ agent: "claude" });
+        recorder.tool("Read");
+        recorder.toolOutcome("Read", true);
+        recorder.terminal("aborted");
+        const result = recorder.flush();
+        assert.equal(result.recorded, true);
+        assert.equal(result.envelope.terminal, "aborted");
+        assert.equal(result.envelope.toolOutcomes?.length, 1);
+      },
+    );
+  });
+
+  test("old-shape v1 rows (no new columns populated) load as unknown, never ok/error", async () => {
+    const { join } = await import("node:path");
+    await withEnv({ AIAND_CONFIG_DIR: join(box.dir, "outcomes-legacy") }, async () => {
+      const opened = openStore(storePath());
+      assert.ok(opened.ok);
+      // hand-write a pre-0007-shaped envelope JSON (no toolOutcomes/terminal)
+      opened.db
+        .prepare(
+          "INSERT INTO envelopes (id, schema_version, agent, model, api_key, session_id, " +
+            "request_id, created_at, tools, edit_targets, project_root_id, git_branch, " +
+            "captured_at, tool_outcomes, terminal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          "env-old",
+          ENVELOPE_SCHEMA_VERSION,
+          "opencode",
+          null,
+          null,
+          null,
+          null,
+          "2026-10-25T10:00:00.000Z",
+          JSON.stringify(["Read"]),
+          JSON.stringify([]),
+          null,
+          "main",
+          "2026-10-25T10:00:00.000Z",
+          null,
+          null,
+        );
+      const rows = listEnvelopesFromDb(opened.db);
+      opened.db.close();
+      assert.equal(rows.length, 1);
+      const env = rows[0].envelope;
+      assert.ok(env);
+      assert.deepEqual(env.tools, ["Read"]);
+      assert.equal(env.toolOutcomes, undefined);
+      assert.equal(env.terminal, undefined);
+      // and it still parses through the v1 path
+      assert.deepEqual(parseEnvelope(envelopeJson(env)), env);
     });
   });
 });
