@@ -409,10 +409,18 @@ describe("help topics", () => {
     assert.ok(help.stdout.includes(flag.stdout.trim()));
   });
 
-  test("help frobnicate exits nonzero", async () => {
+  test("help frobnicate exits 1 with no suggestion", async () => {
     const { code, stderr } = await cli(["help", "frobnicate"]);
-    assert.notEqual(code, 0);
+    assert.equal(code, 1);
     assert.match(stderr, /Unknown help topic/);
+    assert.doesNotMatch(stderr, /Did you mean/);
+  });
+
+  test("unknown help topic near a real one suggests `aiand help <topic>`", async () => {
+    const { code, stderr } = await cli(["help", "usgae"]);
+    assert.equal(code, 1);
+    assert.match(stderr, /Unknown help topic/);
+    assert.match(stderr, /Did you mean `aiand help usage`\?/);
   });
 
   test("help status still works", async () => {

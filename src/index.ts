@@ -327,6 +327,8 @@ async function main(): Promise<number> {
       return 0;
     }
     err(style.red(`Unknown help topic "${topicName}".`));
+    const helpGuess = suggest(topicName);
+    if (helpGuess) err(`Did you mean \`aiand help ${helpGuess}\`?`);
     err("Run `aiand help` to see the commands.");
     return 1;
   }
