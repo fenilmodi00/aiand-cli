@@ -351,9 +351,8 @@ test("unknown harness named explicitly => clear error", async () => {
   assert.match(res.stderr, /Unknown harness/);
 });
 
-test("table stays an honest placeholder", async () => {
+test("table with no run rows is honest-empty with exit 0 (#132)", async () => {
   const dir = cfg("table");
   const res = await runCli(["compare", "table"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
-  assert.notEqual(res.code, 0);
-  assert.match(res.stderr, /not implemented yet/);
+  assert.match(res.stdout, /No task packs yet/);
 });

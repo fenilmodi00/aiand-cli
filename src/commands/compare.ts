@@ -1,7 +1,14 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, err, heading, json, out, style } from "../cli/output.js";
+import { currencySymbol, err, heading, json, out, style, table } from "../cli/output.js";
+import { WINNER_MARKER } from "../obs/harness-stats.js";
+import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
+import {
+  aggregateCells,
+  type CellStats,
+  tableWinners,
+} from "../compare/table.js";
 import {
   hasRuns,
   readTaskRuns,
@@ -31,7 +38,7 @@ Usage
   aiand compare validate [--golden <dir>]   fail-before check + optional golden replay
   aiand compare run  --task <id>            replay across harnesses (--dry-run = free)
   aiand compare audit [--task <id>]         rubric audit of suspicious successes (advisory)
-  aiand compare table [--task <id>]         (coming soon)
+  aiand compare table [--task <id>] [--json] [--out <file>] [--format md|csv|json]
 
 Options
   --verify "<cmd>"    command the verify wrapper runs (scaffolded)
@@ -39,6 +46,8 @@ Options
                       (e.g. "Debugging, Testing"); also editable as task.json
   --golden <dir>      recorded solution's file changes, replayed after fail-before
   --json              machine-readable output
+  --out <file>        export the table to a file (implies --format by extension)
+  --format <fmt>      export format: md (default), csv, json
 
 A task pack is tasks/<id>/{instruction.md, workspace/, verify.sh} under the
 config dir. Verify discipline: on an untouched workspace verify must FAIL
@@ -54,11 +63,7 @@ export async function run(argv: string[]): Promise<void> {
   if (subcommand === "cohorts") return runCohorts(argv.slice(1));
   if (subcommand === "run") return runCompareRun(argv.slice(1));
   if (subcommand === "audit") return runAudit(argv.slice(1));
-  if (subcommand === "table") {
-    throw new CliError("`aiand compare table` is not implemented yet.", {
-      hint: "Run rows land under compare-runs/; the table reads them (coming soon).",
-    });
-  }
+  if (subcommand === "table") return runTable(argv.slice(1));
   if (subcommand === undefined || bool(parse(argv, {}), "help")) return out(help);
   throw new CliError(`Unknown subcommand "${subcommand}".`, {
     hint: "Try add, tasks, validate, or cohorts — or run with --help.",
@@ -336,10 +341,190 @@ async function runAudit(argv: string[]): Promise<void> {
       const color =
         r.verdict === "FAIL" ? (v: string) => style.red(v) : r.verdict === "PASS" ? (v: string) => style.green(v) : (v: string) => v;
       out(
-        `    ${color(r.verdict.padEnd(4))} ${r.run_id.padEnd(20)} ${r.harness.padEnd(12)}` +
+        `        ${color(r.verdict.padEnd(4))} ${r.run_id.padEnd(20)} ${r.harness.padEnd(12)}` +
           ` integrity:${r.criteria.integrity} suspicious:${r.criteria.suspicious} specification:${r.criteria.specification}`,
       );
-      for (const reason of r.reasons) out(style.dim(`        ${reason}`));
+      for (const reason of r.reasons) out(style.dim(`          ${reason}`));
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+const FAILURE_MODE_ORDER = [
+  "agent_timeout",
+  "verify_timeout",
+  "parse_error",
+  "context_exceeded",
+  "integrity_violation",
+] as const;
+
+type FailureMode = (typeof FAILURE_MODE_ORDER)[number];
+
+const pct = (p: number | null): string => (p === null ? "—" : `${(p * 100).toFixed(0)}%`);
+
+const num2 = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
+
+/** The WINNER_MARKER discipline from harness compare — deterministic, works without color. */
+const mark = (cell: string, isWinner: boolean): string =>
+  isWinner ? `${WINNER_MARKER} ${cell}` : cell;
+
+/** Render one histogram cell: every mode counted individually, never collapsed. */
+function histogramCell(c: CellStats): string {
+  const modes = FAILURE_MODE_ORDER.filter((m) => (c.failures[m] ?? 0) > 0).map(
+    (m) => `${m} ${c.failures[m]}`,
+  );
+  if (modes.length === 0) return c.infra > 0 ? `infra ${c.infra}` : "—";
+  return c.infra > 0 ? `${modes.join(" · ")} · infra ${c.infra}` : modes.join(" · ");
+}
+
+type TableJsonCell = {
+  harness: string;
+  model: string;
+  tasks: number;
+  trials: number;
+  solves: number;
+  solveRate: number | null;
+  solveCi95: { lo: number; hi: number } | null;
+  lowN: boolean;
+  costUsd: number | null;
+  costPerSolve: number | null;
+  meanWallMs: number | null;
+  turnsPerSolve: number | null;
+  retryRate: number | null;
+  failures: Partial<Record<FailureMode, number>>;
+  infra: number;
+};
+
+function cellToJson(c: CellStats): TableJsonCell {
+  return {
+    harness: c.harness,
+    model: c.model,
+    tasks: c.tasks,
+    trials: c.trials,
+    solves: c.solves,
+    solveRate: c.trials > 0 ? c.solves / c.trials : null,
+    solveCi95:
+      c.solveLo !== null && c.solveHi !== null ? { lo: c.solveLo, hi: c.solveHi } : null,
+    lowN: c.lowN,
+    costUsd: c.costUsd,
+    costPerSolve: c.costPerSolve,
+    meanWallMs: c.meanWallMs,
+    turnsPerSolve: c.turnsPerSolve,
+    retryRate: c.retryRate,
+    failures: c.failures,
+    infra: c.infra,
+  };
+}
+
+async function runTable(argv: string[]): Promise<void> {
+  const parsed = parse(argv, { task: { type: "string" }, out: { type: "string" }, format: { type: "string" } });
+  if (bool(parsed, "help")) return out(help);
+
+  const ids = str(parsed, "task") ? [str(parsed, "task")!] : listTaskIds();
+  if (ids.length === 0) {
+    out(
+      style.dim(
+        'No task packs yet — add one with `aiand compare add <id> --verify "<cmd>"` and run it with `compare run`.',
+      ),
+    );
+    return;
+  }
+
+  const rows = ids.flatMap((id) => readTaskRuns(id));
+  const cells = aggregateCells(rows);
+  const { winners, solveTied, tieNote } = tableWinners(cells);
+
+  if (bool(parsed, "json")) {
+    json({
+      task: str(parsed, "task") ?? null,
+      cells: cells.map(cellToJson),
+      solveTied,
+      tieNote,
+      winners,
+      note: rows.length === 0 ? "no run rows yet — run `aiand compare run --task <id>` first" : undefined,
+    });
+    return;
+  }
+
+  heading("compare · table");
+  if (cells.length === 0) {
+    out(style.dim("no run rows yet — run `aiand compare run --task <id>` first"));
+    return;
+  }
+
+  const cellKey = (c: CellStats) => `${c.harness} / ${c.model}`;
+  const w = winners;
+  table<CellStats>(cells, [
+    { header: "harness / model", value: (c) => cellKey(c) },
+    {
+      header: "solve",
+      value: (c) =>
+        mark(
+          `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`,
+          w.solve === cellKey(c),
+        ),
+    },
+    {
+      header: "cost/solve",
+      value: (c) =>
+        mark(
+          c.costPerSolve === null ? "—" : `${currencySymbol("usd")}${c.costPerSolve.toFixed(4)}`,
+          w.costPerSolve === cellKey(c),
+        ),
+    },
+    {
+      header: "wall",
+      value: (c) =>
+        mark(c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`, w.meanWallMs === cellKey(c)),
+    },
+    {
+      header: "turns/solve",
+      value: (c) => mark(num2(c.turnsPerSolve), w.turnsPerSolve === cellKey(c)),
+    },
+    {
+      header: "retries/solve",
+      value: (c) => mark(num2(c.retryRate), w.retryRate === cellKey(c)),
+    },
+    { header: "failures", value: histogramCell },
+  ]);
+  if (tieNote !== null) out(style.dim(tieNote));
+  const infraTotal = cells.reduce((s, c) => s + c.infra, 0);
+  if (infraTotal > 0) out(style.dim(`infra runs excluded from solve rate: ${infraTotal}`));
+  out(style.dim("▸ marks the per-column winner; — = not metered; CIs are Wilson 95%."));
+
+  // Export reuses the shared serializers, preserving winners, n=, CIs, ties.
+  const outPath = str(parsed, "out");
+  if (outPath !== undefined) {
+    const format = inferExportFormat(outPath, str(parsed, "format"));
+    const aligns = ["left", "left", "right", "right", "right", "right", "left"] as const;
+    const headers = ["harness / model", "solve", "cost/solve", "wall", "turns/solve", "retries/solve", "failures"];
+    const body = cells.map((c) => [
+      cellKey(c),
+      `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`,
+      c.costPerSolve === null ? "—" : c.costPerSolve.toFixed(4),
+      c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`,
+      num2(c.turnsPerSolve),
+      num2(c.retryRate),
+      histogramCell(c),
+    ]);
+    let payload: string;
+    if (format === "csv") {
+      payload = [toCsvRows(headers, body).join("\n"), solveTied ? tieNote ?? "" : ""].join("\n");
+    } else if (format === "json") {
+      payload = JSON.stringify(
+        { cells: cells.map(cellToJson), solveTied, tieNote, winners },
+        null,
+        2,
+      );
+    } else {
+      const lines = [
+        ...toMarkdownTable(headers, [...aligns], body),
+        ...(tieNote !== null ? ["", tieNote] : []),
+      ];
+      payload = lines.join("\n");
+    }
+    writeFileSync(outPath, `${payload}\n`);
+    out(style.dim(`exported to ${outPath} (${format})`));
   }
 }
