@@ -166,26 +166,26 @@ function chatJsonlRecords(sessionsDir: string, agent: string): LocalUsageRecord[
 function chatSessionFiles(sessionsDir: string): string[] {
   if (!existsSync(sessionsDir)) return [];
   const files: { path: string; mtime: number }[] = [];
-  for (const name of safeReaddir(sessionsDir)) {
-    const full = join(sessionsDir, name);
-    let stat: Stats;
-    try {
-      stat = statSync(full);
-    } catch {
-      continue;
-    }
-    if (stat.isDirectory()) {
-      for (const inner of safeReaddir(full)) {
-        const innerPath = join(full, inner);
-        if (!inner.endsWith(".jsonl")) continue;
-        try {
-          files.push({ path: innerPath, mtime: statSync(innerPath).mtimeMs });
-        } catch {}
+  // omp nests arbitrarily deep: sessions/<cwd>/<session>.jsonl, but also
+  // sessions/<cwd>/<session>/<task>.jsonl (and one level deeper still) —
+  // the per-cwd dir holds one session file per background task. A flat or
+  // single-level walk misses the majority of live records (observed: 8,063
+  // of 8,364 flash records were nested), silently starving the correlator.
+  // Recurse, newest-first; the sessions dir is agent-owned and small.
+  const walk = (dir: string): void => {
+    for (const name of safeReaddir(dir)) {
+      const full = join(dir, name);
+      let stat: Stats;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
       }
-    } else if (name.endsWith(".jsonl")) {
-      files.push({ path: full, mtime: stat.mtimeMs });
+      if (stat.isDirectory()) walk(full);
+      else if (name.endsWith(".jsonl")) files.push({ path: full, mtime: stat.mtimeMs });
     }
-  }
+  };
+  walk(sessionsDir);
   return files.sort((a, b) => b.mtime - a.mtime).map((file) => file.path);
 }
 
@@ -387,17 +387,22 @@ function inputWithin(localInput: number, gatewayInput: number): boolean {
  * plus what changed. Idempotent: a row is written only when its persisted
  * value differs, so repeated passes are no-ops.
  *
- * Cost gate: rows at or before the persisted `correlation_cursor_ms` (their
- * created_at, the earliest instant sync could have served them) keep their
- * durable refinement and are not re-attempted — local records are written
- * by the agent process live, within seconds of the request, so a later pass
- * cannot newly match them. The cursor is the newest PROCESSED row's
- * created_at (refined or not), so an unmatchable row is never re-attempted.
+ * Cost gate: the cursor still bounds REFINED rows — a row that matched (or
+ * was never eligible: specific base label, null tokens) keeps its durable
+ * label and is not re-attempted. But a row the pass ATTEMPTED and could not
+ * resolve (no record yet, or ambiguous) stays re-eligible forever: agents
+ * buffer their session writes, so the record for a request often lands on
+ * disk seconds AFTER the first pass ran (observed live: omp's JSONL flush
+ * sealed 1174 rows behind the cursor as "shared" while every one of them
+ * had a matching record). A later pass heals such rows when the evidence
+ * arrives — ccusage re-reads local records on every run for the same
+ * reason; an attempt-once cursor makes attribution one flush-race away
+ * from permanently wrong. The cursor still advances: it bounds work per
+ * pass, not the lifetime of an unresolved row.
  *
- * # ponytail: no stale-expiry pass — a refinement stays until a fresh pass
- * overwrites it; evidence that later contradicts an already-persisted label
- * is not re-checked. Re-attempt sweeps if agents are observed backfilling
- * records.
+ * # ponytail: full-table re-attempt each pass, O(rows × candidates) with the
+ * (model, output) index — fine at personal-store scale (10^4 rows). Move
+ * the unresolved set into a table if multi-month stores feel it.
  */
 export function refreshCorrelations(
   db: DatabaseSync,
@@ -412,43 +417,32 @@ export function refreshCorrelations(
 
   const cursorRaw = correlationCursor(db);
   const cursor = cursorRaw === null ? 0 : Number(cursorRaw);
+  // Re-eligible: fresh rows, plus stale rows that were ATTEMPTED before and
+  // left unresolved. A persisted refinement settles a row for good; a
+  // specific base label never needed one.
   const fresh = requests.filter((row) => {
     const at = Date.parse(row.created_at);
-    return Number.isNaN(at) || at > cursor;
+    if (Number.isNaN(at)) return true;
+    if (at > cursor) return true;
+    const base = labels.get(row.id) ?? "";
+    return (
+      (base === SHARED_AGENT || base === "unknown") &&
+      row.output_tokens !== null &&
+      row.input_tokens !== null
+    );
   });
-  const freshIds = new Set(fresh.map((row) => row.id));
-  const stale = requests.filter((row) => !freshIds.has(row.id));
-  if (stale.length > 0) {
-    for (const [id, agent] of attributedAgents(
-      db,
-      stale.map((row) => row.id),
-    )) {
-      labels.set(id, agent);
-    }
-  }
   if (fresh.length === 0 || records.length === 0) return { labels, changed, ambiguous };
 
-  // Cursor safety: advance only when the batch leaves no UNATTEMPTED row at
-  // or below its newest one. A windowed pass (report --last 24h over a
-  // 30-day store) must not strand the older rows it never saw behind the
-  // cost gate — they stay "pending" until a batch that reaches back to the
-  // cursor (or covers from the oldest pending row) picks them up.
-  const batchNewest = fresh.reduce((max, row) => {
-    const at = Date.parse(row.created_at);
-    return Number.isNaN(at) ? max : Math.max(max, at);
-  }, Number.NEGATIVE_INFINITY);
-  // created_at is the gateway's wire format ("YYYY-MM-DD HH:MM:SS.ssssss+00"),
-  // not ISO — compare with Date.parse, not strings. One-column scan, once
-  // per pending pass.
-  const allCreatedAt = db.prepare("SELECT created_at FROM requests").all() as unknown as {
-    created_at?: unknown;
-  }[];
-  const unattemptedBelow =
-    allCreatedAt.filter((r) => {
-      const at = typeof r.created_at === "string" ? Date.parse(r.created_at) : Number.NaN;
-      return !Number.isNaN(at) && at > cursor && at <= batchNewest;
-    }).length - fresh.length;
-  const advanceCursor = unattemptedBelow <= 0;
+  // Index records by (model, output): the matcher's two exact gates. One
+  // probe touches only the records that can agree, not every record of the
+  // model — the difference between a fast and a quadratic full-table pass.
+  const byModelOutput = new Map<string, LocalUsageRecord[]>();
+  for (const record of records) {
+    const key = `${record.model}\u0000${record.outputTokens}`;
+    const bucket = byModelOutput.get(key) ?? [];
+    bucket.push(record);
+    byModelOutput.set(key, bucket);
+  }
 
   try {
     const update = db.prepare("UPDATE requests SET attributed_agent = ? WHERE id = ?");
@@ -458,6 +452,10 @@ export function refreshCorrelations(
     );
     db.exec("BEGIN");
     let maxAt = cursor;
+    const batchNewest = fresh.reduce((max, row) => {
+      const at = Date.parse(row.created_at);
+      return Number.isNaN(at) ? max : Math.max(max, at);
+    }, Number.NEGATIVE_INFINITY);
     for (const row of fresh) {
       const at = Date.parse(row.created_at);
       if (!Number.isNaN(at) && at > maxAt) maxAt = at;
@@ -466,6 +464,7 @@ export function refreshCorrelations(
       if (row.output_tokens === null || row.input_tokens === null || Number.isNaN(at)) {
         continue;
       }
+      const bucket = byModelOutput.get(`${row.model}\u0000${row.output_tokens}`) ?? [];
       const match = matchRequest(
         {
           output: row.output_tokens,
@@ -473,7 +472,7 @@ export function refreshCorrelations(
           cached: row.cached_tokens ?? 0,
           at,
         },
-        recordsForModel(records, row.model),
+        bucket,
       );
       if (match.kind === "ambiguous") {
         ambiguous += 1;
@@ -486,7 +485,19 @@ export function refreshCorrelations(
         changed += 1;
       }
     }
-    if (advanceCursor) metaSet(db, CURSOR_KEY, String(maxAt));
+    // Cursor safety (unchanged): advance only when the batch leaves no
+    // UNATTEMPTED row at or below its newest one — a windowed pass must not
+    // strand rows it never saw behind the gate. Unresolved rows stay
+    // re-eligible by construction, so they cost the cursor nothing.
+    const allCreatedAt = db.prepare("SELECT created_at FROM requests").all() as unknown as {
+      created_at?: unknown;
+    }[];
+    const unattemptedBelow =
+      allCreatedAt.filter((r) => {
+        const at = typeof r.created_at === "string" ? Date.parse(r.created_at) : Number.NaN;
+        return !Number.isNaN(at) && at > cursor && at <= batchNewest;
+      }).length - fresh.length;
+    if (unattemptedBelow <= 0) metaSet(db, CURSOR_KEY, String(maxAt));
     db.exec("COMMIT");
   } catch {
     // The write is best-effort: a locked store keeps its old column values
@@ -521,8 +532,12 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
 }
 
 /**
- * Whether any request row postdates the correlation cursor — the cheap gate
- * callers check before parsing local records at all. Fail-open false.
+ * Whether a correlation pass can do work — the cheap gate callers check
+ * before parsing local records at all. True when any row postdates the
+ * cursor (new traffic), or when any shared/unknown row with token data sits
+ * at-or-below it still unresolved: agents buffer their session writes, so
+ * a row the last pass missed is healed by a later pass once its record
+ * lands (see refreshCorrelations). Fail-open false.
  */
 export function correlationsPending(db: DatabaseSync): boolean {
   try {
@@ -531,18 +546,17 @@ export function correlationsPending(db: DatabaseSync): boolean {
       | undefined;
     const at = typeof newest?.t === "string" ? Date.parse(newest.t) : Number.NaN;
     if (Number.isNaN(at)) return true;
-    return at > Number(correlationCursor(db) ?? "0");
+    if (at > Number(correlationCursor(db) ?? "0")) return true;
+    const unresolved = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM requests WHERE attributed_agent IS NULL " +
+          "AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL",
+      )
+      .get() as { n?: unknown };
+    return Number(unresolved?.n ?? 0) > 0;
   } catch {
     return false;
   }
-}
-
-/** The records for one model id (empty when the model has no local records). */
-function recordsForModel(
-  records: readonly LocalUsageRecord[],
-  model: string,
-): readonly LocalUsageRecord[] {
-  return records.filter((record) => record.model === model);
 }
 
 /**

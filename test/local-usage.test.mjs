@@ -102,6 +102,18 @@ function writeOmpSession(home, cwdDir, lines) {
   writeFileSync(join(sessions, "2026-10-20T09-00-00-000Z_s1.jsonl"), lines.join("\n"));
 }
 
+/**
+ * omp's live layout also nests session files BELOW the per-cwd dir —
+ * `sessions/<cwd>/<session>/<task>.jsonl` holds one file per background
+ * task (observed live: 8,063 of 8,364 records nested there). The reader
+ * must recurse, or most evidence is invisible.
+ */
+function writeNestedOmpSession(home, cwdDir, sessionDir, fileName, lines) {
+  const sessions = join(home, ".omp", "agent", "sessions", cwdDir, sessionDir);
+  mkdirSync(sessions, { recursive: true });
+  writeFileSync(join(sessions, fileName), lines.join("\n"));
+}
+
 function ompLine({ ts, model = "zai-org/glm-5.3", input, output, cacheRead = 0 }) {
   return JSON.stringify({
     type: "message",
@@ -261,6 +273,108 @@ describe("local-usage correlation", () => {
     );
     const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
     assert.equal(byHarness.shared, 1);
+  });
+
+  test("late-flushed local evidence heals a row the first pass missed", async () => {
+    const dir = join(box.dir, "heal");
+    const home = join(box.dir, "home-heal");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    // First pass: omp's record for this row is still buffered in the agent
+    // process — only an OLDER session's record is on disk (the live shape:
+    // 10k records existed, the newest rows' did not). The row is
+    // attempted, misses, and the cursor settles past it, sealing it.
+    writeOmpSession(home, "--D--old--", [
+      ompLine({ ts: "2026-10-20T09:00:03.000Z", input: 999, output: 999 }),
+    ]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const { DatabaseSync } = await import("node:sqlite");
+    const dbSealed = new DatabaseSync(join(dir, "store.db"));
+    const sealed = dbSealed
+      .prepare("SELECT attributed_agent FROM requests WHERE id = 'row-1'")
+      .get();
+    const cursor = dbSealed
+      .prepare("SELECT value FROM sync_meta WHERE key = 'correlation_cursor_ms'")
+      .get();
+    dbSealed.close();
+    assert.equal(sealed?.attributed_agent, null);
+    assert.ok(cursor, "first pass must settle the cursor past the row");
+
+    // omp flushes its session JSONL seconds later. A later report run must
+    // re-attempt the unrefined row and heal it — never leave it shared
+    // behind the cursor.
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.shared, undefined);
+    // and the healing is durable
+    const dbHealed = new DatabaseSync(join(dir, "store.db"));
+    const healed = dbHealed
+      .prepare("SELECT attributed_agent FROM requests WHERE id = 'row-1'")
+      .get();
+    dbHealed.close();
+    assert.equal(healed?.attributed_agent, "omp");
+  });
+
+  test("records in omp's nested session layout still refine", async () => {
+    const dir = join(box.dir, "nested");
+    const home = join(box.dir, "home-nested");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    // omp writes one JSONL per background task BELOW the per-cwd dir —
+    // sessions/<cwd>/<session>/<task>.jsonl (live: 8,063 of 8,364 records
+    // nested). A reader that stops at one subdir level never sees them
+    // and the rows stay shared forever.
+    writeNestedOmpSession(home, "--D--proj--", "2026-10-20T09-30-00-000Z_task", "T6Run.jsonl", [
+      matchingOmpLine(),
+    ]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.shared, undefined);
   });
 
   test("ambiguous double-match does not refine", async () => {

@@ -369,7 +369,9 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
  *
  * v3: local-usage correlation refinement (`requests.attributed_agent`,
  * migration 0006) feeds the agent labels, so rows rebuilt under the old
- * rule are re-baked.
+ * rule are re-baked. The refined count rides the fingerprint: a heal that
+ * resolves rows in an otherwise-unchanged store (late local evidence,
+ * see local-usage.ts) must re-bake the materialized labels too.
  */
 export const SESSIONIZE_RULES_VERSION = 3;
 
@@ -406,6 +408,11 @@ function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
   const watermark = db
     .prepare("SELECT id, created_at FROM requests ORDER BY created_at DESC, id DESC LIMIT 1")
     .get() as Record<string, unknown> | undefined;
+  // Refined-row count: healing changes labels without touching count or
+  // watermark, so it must invalidate on its own.
+  const refined = db
+    .prepare("SELECT COUNT(*) AS n FROM requests WHERE attributed_agent IS NOT NULL")
+    .get() as Record<string, unknown>;
   let mapRev = "";
   try {
     mapRev = createHash("sha256").update(readFileSync(agentKeysPath(), "utf8")).digest("hex");
@@ -414,7 +421,7 @@ function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
     // deterministic — same missing map, same fingerprint.
     mapRev = "none";
   }
-  return `${SESSIONIZE_RULES_VERSION}:${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${gapMinutes}:${mapRev}`;
+  return `${SESSIONIZE_RULES_VERSION}:${count?.n ?? 0}:${String(watermark?.created_at ?? "")}:${String(watermark?.id ?? "")}:${refined?.n ?? 0}:${gapMinutes}:${mapRev}`;
 }
 
 /**

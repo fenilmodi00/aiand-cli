@@ -120,6 +120,16 @@ breaking changes while the command surface settles.
   attributed precisely instead of collapsing to `shared`. Same-dialect
   agents sharing one key (e.g. omp and pi) still honestly share, and rows
   synced before this change keep the old label until re-served.
+- Harness attribution heals late local evidence: the correlation pass used to
+  attempt each request row exactly once, and the attempt cursor then sealed
+  any row it could not resolve. Agents buffer their session files, so a
+  request whose local usage record landed on disk seconds after the pass ran
+  (a live store showed 1,174 such rows attributed to `shared` while every
+  one had a matching omp record) stayed wrong forever — re-syncing or
+  resetting the store did not help, the same race re-sealed new rows.
+  Unresolved rows are now re-attempted on every pass and healed as soon as
+  their record appears; the cursor bounds per-pass work, not a row's
+  lifetime.
 
 ### Removed
 - The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
