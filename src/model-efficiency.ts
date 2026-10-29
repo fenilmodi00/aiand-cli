@@ -23,13 +23,35 @@ import { estimated, heuristic, type Labeled, labeled } from "./obs/provenance.js
  * coverage note (`efficiencyCoverageNote`) next to it.
  */
 
-/** One turn as the efficiency rule reads it. */
+/** Turn outcome granularity, once capture provides it. */
+export type ToolOutcome = { name: string; ok: boolean };
+export type TurnTerminal = "clean" | "aborted" | "errored";
+
+/**
+ * One turn as the efficiency rules read it. Outcome info is v2-only: absent
+ * (v1 envelopes) → every new rate is null plus a coverage note, never zero.
+ */
 export type EfficiencyTurn = {
   tools: readonly string[];
   editTargets: readonly string[];
+  /** Per-tool call outcomes (pinned envelope name `toolOutcomes`); absent on v1 envelopes. */
+  toolOutcomes?: readonly ToolOutcome[] | null;
+  /** Turn terminal marker (pinned envelope name `terminal`); null/absent on v1 envelopes. */
+  terminal?: TurnTerminal | null;
 };
 
 const SHELL_TOOL = /bash|shell|terminal|exec|command|powershell|zsh|cmd\b|sh\b|run/;
+
+/** Extract v2 outcome info from a stored envelope record; absent fields → null (v1). */
+function turnOutcomeInfo(e: {
+  toolOutcomes?: ToolOutcome[] | null;
+  terminal?: TurnTerminal | null;
+}): Pick<EfficiencyTurn, "toolOutcomes" | "terminal"> {
+  return {
+    toolOutcomes: Array.isArray(e.toolOutcomes) ? e.toolOutcomes : null,
+    terminal: e.terminal ?? null,
+  };
+}
 
 export function isShellTurn(turn: EfficiencyTurn): boolean {
   return turn.tools.some((tool) => SHELL_TOOL.test(tool.toLowerCase()));
@@ -47,26 +69,66 @@ export type OneShotRetryStats = {
   retries: number;
   /** oneShots / (oneShots + retries), null when no edit events exist. */
   oneShotRate: number | null;
+  /** Tool calls that errored / total tool calls; null when zero tool calls or no outcome info (v1). */
+  toolErrorRate: number | null;
+  /** Turns where the missed-catch rule fired (see MISSED_CATCH_RULE). */
+  missedCatches: number;
+  /** missedCatches / turns, null when no turns or no outcome info (v1). */
+  missedCatchRate: number | null;
+  /**
+   * Turns until (and including) the first clean-terminal turn; null when no
+   * turn terminates clean or terminal info is missing (v1).
+   * Success definition: `terminal === "clean"` on a turn — "errored"/"aborted"
+   * never count as success; a session with no clean turn has none.
+   */
+  turnsToSuccess: number | null;
+  /** Terminal outcome split; all 0 and rates null when no terminal info (v1). */
+  sessions: { clean: number; aborted: number; errored: number };
 };
 
 /**
- * Walk the envelope sequence in order and score every edit event. Returns the
- * per-event outcomes alongside the aggregate — callers can show which files
- * retried without re-walking the rule.
+ * Missed-catch v1 rule (ticket #127, deterministic, fixture-pinned): a shell
+ * tool ran and ERRORED, a later edit turn re-edits a file already edited
+ * before that shell run (the agent returned to the file without an
+ * intervening signal the failure was addressed), and a SUBSEQUENT shell run
+ * errors again. Layered onto the same walk as the one-shot/retry verdict —
+ * one pass, two verdicts. Exposed for labeling/output.
  */
+export const MISSED_CATCH_RULE =
+  "shell error → re-edit of a file edited before that shell run → second shell error";
+
+/** Shell tool that errored: outcomes carry the error flag, name matches the shell heuristic. */
+function erroredShell(turn: EfficiencyTurn): boolean {
+  return (
+    isShellTurn(turn) &&
+    (turn.toolOutcomes ?? []).some((o) => !o.ok && SHELL_TOOL.test(o.name.toLowerCase()))
+  );
+}
+
 export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
   stats: Labeled<OneShotRetryStats>;
   outcomes: EditOutcome[];
+  missedCatchTurns: number[];
 } {
   const outcomes: EditOutcome[] = [];
   let oneShots = 0;
   let retries = 0;
   let editTurns = 0;
+  let toolCalls = 0;
+  let toolErrors = 0;
+  let hasOutcomes = false;
+  // Missed-catch walk state: shell errored earlier; files edited before that
+  // shell run (candidates for re-edit); a re-edit of such a file is pending.
+  let shellErrored = false;
+  const editedBeforeShellError = new Set<string>();
+  let reEditPending = false;
+  const missedCatchTurns: number[] = [];
   // Per file: whether a shell command has run since its last edit.
   const shellSinceEdit = new Map<string, boolean>();
 
-  for (const turn of turns) {
+  for (const [index, turn] of turns.entries()) {
     const edits = [...new Set(turn.editTargets)];
+
     if (edits.length > 0) {
       editTurns += 1;
       for (const target of edits) {
@@ -79,6 +141,10 @@ export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
           outcomes.push("one-shot");
         }
         shellSinceEdit.set(target, false);
+        // Missed-catch: re-editing a file we edited BEFORE the last errored
+        // shell run arms the rule (a subsequent shell error completes it).
+        if (shellErrored && editedBeforeShellError.has(target)) reEditPending = true;
+        editedBeforeShellError.delete(target);
       }
     }
 
@@ -87,9 +153,45 @@ export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
     if (isShellTurn(turn)) {
       for (const key of shellSinceEdit.keys()) shellSinceEdit.set(key, true);
     }
+
+    // Outcome tally (v2 envelopes only; v1 turns leave everything null).
+    const toolOuts = turn.toolOutcomes;
+    if (toolOuts !== null && toolOuts !== undefined) {
+      hasOutcomes = true;
+      toolCalls += toolOuts.length;
+      toolErrors += toolOuts.filter((o) => !o.ok).length;
+    }
+
+    // Missed-catch completion: an errored shell run after the armed re-edit.
+    const shellFailed = erroredShell(turn);
+    if (shellFailed) {
+      if (reEditPending) {
+        missedCatchTurns.push(index);
+        reEditPending = false;
+      }
+      shellErrored = true;
+    }
+    // Files edited in this turn become "edited before the (next) shell run".
+    for (const target of edits) editedBeforeShellError.add(target);
   }
 
   const total = oneShots + retries;
+  // turnsToSuccess: 1-based index of the first turn with terminal "clean" —
+  // "success" means the turn ended clean; "errored"/"aborted" never count.
+  let turnsToSuccess: number | null = null;
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i]?.terminal === "clean") {
+      turnsToSuccess = i + 1;
+      break;
+    }
+  }
+  const sessions = { clean: 0, aborted: 0, errored: 0 };
+  let hasTerminals = false;
+  for (const turn of turns) {
+    if (turn.terminal === null || turn.terminal === undefined) continue;
+    hasTerminals = true;
+    sessions[turn.terminal] += 1;
+  }
   return {
     stats: labeled(
       {
@@ -97,10 +199,17 @@ export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
         oneShots,
         retries,
         oneShotRate: total > 0 ? oneShots / total : null,
+        toolErrorRate: hasOutcomes && toolCalls > 0 ? toolErrors / toolCalls : null,
+        missedCatches: hasOutcomes ? missedCatchTurns.length : 0,
+        missedCatchRate:
+          hasOutcomes && turns.length > 0 ? missedCatchTurns.length / turns.length : null,
+        turnsToSuccess: hasTerminals ? turnsToSuccess : null,
+        sessions: hasTerminals ? sessions : { clean: 0, aborted: 0, errored: 0 },
       },
       heuristic("one-shot/retry envelope rule"),
     ),
     outcomes,
+    missedCatchTurns,
   };
 }
 
@@ -113,13 +222,25 @@ export type EfficiencySlice = {
 
 /** Aggregate the rule per model id over stored envelope rows. */
 export function efficiencyByModel(
-  rows: readonly { model: string | null; envelope: { tools: string[]; edit_targets: string[] } }[],
+  rows: readonly {
+    model: string | null;
+    envelope: {
+      tools: string[];
+      edit_targets: string[];
+      toolOutcomes?: ToolOutcome[];
+      terminal?: TurnTerminal | null;
+    };
+  }[],
 ): EfficiencySlice[] {
   const groups = new Map<string, EfficiencyTurn[]>();
   for (const row of rows) {
     const key = row.model ?? "unknown";
     const list = groups.get(key) ?? [];
-    list.push({ tools: row.envelope.tools, editTargets: row.envelope.edit_targets });
+    list.push({
+      tools: row.envelope.tools,
+      editTargets: row.envelope.edit_targets,
+      ...turnOutcomeInfo(row.envelope),
+    });
     groups.set(key, list);
   }
   return finishAggregate(groups);
@@ -127,12 +248,24 @@ export function efficiencyByModel(
 
 /** Aggregate the rule per harness id over stored envelope rows. */
 export function efficiencyByHarness(
-  rows: readonly { agent: string; envelope: { tools: string[]; edit_targets: string[] } }[],
+  rows: readonly {
+    agent: string;
+    envelope: {
+      tools: string[];
+      edit_targets: string[];
+      toolOutcomes?: ToolOutcome[];
+      terminal?: TurnTerminal | null;
+    };
+  }[],
 ): EfficiencySlice[] {
   const groups = new Map<string, EfficiencyTurn[]>();
   for (const row of rows) {
     const list = groups.get(row.agent) ?? [];
-    list.push({ tools: row.envelope.tools, editTargets: row.envelope.edit_targets });
+    list.push({
+      tools: row.envelope.tools,
+      editTargets: row.envelope.edit_targets,
+      ...turnOutcomeInfo(row.envelope),
+    });
     groups.set(row.agent, list);
   }
   return finishAggregate(groups);

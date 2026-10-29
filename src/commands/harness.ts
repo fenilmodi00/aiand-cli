@@ -6,6 +6,7 @@ import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import * as importCmd from "./harness-import.js";
 import { runHarnessMatrix } from "./harness-matrix.js";
 import { runHarnessWorkload } from "./harness-stats.js";
 import * as recommend from "./recommend.js";
@@ -22,6 +23,7 @@ Usage
   aiand harness compare [--last <window>]                    side-by-side on your workload
   aiand harness recommend [--last <window>]                  cheapest (harness, model) pair (#79)
   aiand harness matrix [--last <window>] [--synthetic]       (harness × model) matrix
+  aiand harness import [--harness <name>]...                 backfill behavioral markers (#133)
   aiand harness --json
 
 Options
@@ -58,6 +60,9 @@ export async function run(argv: string[]): Promise<void> {
   }
   if (subcommand === "matrix") {
     return runHarnessMatrix(argv.slice(1));
+  }
+  if (subcommand === "import") {
+    return importCmd.run(argv.slice(1));
   }
 
   const parsed = parse(argv, {

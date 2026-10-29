@@ -93,6 +93,11 @@ export const COMMANDS: Command[] = [
     ...lazy(() => import("./harness.js")),
   },
   {
+    name: "compare",
+    summary: "Personal task packs: scaffold, list, validate",
+    ...lazy(() => import("./compare.js")),
+  },
+  {
     name: "usage",
     summary: "Request and token usage",
     aliases: ["analytics"],

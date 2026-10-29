@@ -19,6 +19,16 @@ import {
   sql as localUsageSql,
   version as localUsageVersion,
 } from "./0006-local-usage.js";
+import {
+  name as envelopeOutcomesName,
+  sql as envelopeOutcomesSql,
+  version as envelopeOutcomesVersion,
+} from "./0007-envelope-outcomes.js";
+import {
+  name as importedArtifactsName,
+  sql as importedArtifactsSql,
+  version as importedArtifactsVersion,
+} from "./0008-imported-artifacts.js";
 
 /**
  * The store's numbered migrations, in application order. Each entry carries
@@ -43,4 +53,6 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: envelopesVersion, name: envelopesName, sql: envelopesSql },
   { version: requestEndpointVersion, name: requestEndpointName, sql: requestEndpointSql },
   { version: localUsageVersion, name: localUsageName, sql: localUsageSql },
+  { version: envelopeOutcomesVersion, name: envelopeOutcomesName, sql: envelopeOutcomesSql },
+  { version: importedArtifactsVersion, name: importedArtifactsName, sql: importedArtifactsSql },
 ];

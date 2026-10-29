@@ -14,8 +14,18 @@ import {
 } from "../obs/pair-stats.js";
 import { getStoreInfo, noSyncRequested, syncStore } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { parseWindowFlags, readHarnessRows } from "./harness-stats.js";
+import {
+  cohortFromFlags,
+  parseWindowFlags,
+  readHarnessRows,
+  windowEnvelopes,
+} from "./harness-stats.js";
 import { isValidTimezone } from "./usage-report.js";
+
+/** Behavioral sort keys rank on envelope-derived columns (#130). */
+function isBehavioralSort(key: PairSortKey): boolean {
+  return key === "tool-err" || key === "one-shot";
+}
 
 /**
  * `aiand recommend` (ticket #79, feature catalog C4): rank the (harness,
@@ -30,7 +40,7 @@ import { isValidTimezone } from "./usage-report.js";
  * does not guess.
  */
 
-const SORT_KEYS: readonly PairSortKey[] = ["cost", "ttft", "hit", "errors"];
+const SORT_KEYS: readonly PairSortKey[] = ["cost", "ttft", "hit", "errors", "tool-err", "one-shot"];
 
 export const help = `${style.bold("aiand recommend")} -- the cheapest (harness, model) pair for YOUR workload
 
@@ -46,10 +56,14 @@ Options
   --last <window>     30m, 12h, 1d, 7d, 30d (default), 4w
   --range <window>    alias for --last
   --harness <name>    rank one harness's models only
+  --cohort <category> rank same-kind-of-work pairs only (classifier category:
+                      Coding, Debugging, …) — excluded, not folded (C6)
   --top <n>           keep only the first n ranked rows
-  --sort <key>        cost (default) | ttft | hit | errors — the ranking keys
-                      are the component metrics themselves, so re-sorting is
-                      just re-reading the same table
+  --sort <key>        cost (default) | ttft | hit | errors | tool-err |
+                      one-shot — the ranking keys are the component metrics
+                      themselves, so re-sorting is just re-reading the same
+                      table; behavioral keys rank only pairs with envelope
+                      coverage (others sink, as with unpriced rows)
   --timezone <tz>     IANA timezone for --since/--until interpretation
   --session-gap <min> session gap override (default 10, or sessionGapMinutes)
   --no-sync           read the local store without syncing (AIAND_NO_SYNC=1)
@@ -73,6 +87,7 @@ export async function run(argv: string[]): Promise<void> {
     harness: { type: "string" },
     timezone: { type: "string" },
     "session-gap": { type: "string" },
+    cohort: { type: "string" },
     top: { type: "string" },
     sort: { type: "string" },
     "no-sync": { type: "boolean", default: false },
@@ -120,6 +135,8 @@ export async function run(argv: string[]): Promise<void> {
       : (int(parsed, "session-gap") ?? undefined),
   );
 
+  // #130: behavioral ranking needs the window's envelopes; read fail-open.
+  const envelopes = windowEnvelopes(sinceMs, untilMs);
   const stats = buildPairStats(rows, {
     gapMinutes,
     timezone,
@@ -128,11 +145,22 @@ export async function run(argv: string[]): Promise<void> {
       since: sinceMs === null ? null : new Date(sinceMs).toISOString(),
       until: untilMs === null ? null : new Date(untilMs).toISOString(),
     },
+    envelopes,
+    // #135: --cohort rides the same classifier seam as stats/compare (C6).
+    cohort: cohortFromFlags(parsed, rows),
   });
 
   const harnessFilter = str(parsed, "harness");
   let pairs = stats.pairs;
   if (harnessFilter !== undefined) pairs = pairs.filter((row) => row.harness === harnessFilter);
+
+  // #130: the ranking states its basis — behavioral columns participate only
+  // when at least one pair's cell has envelope coverage.
+  const basis = pairs.some((row) => row.behavioral)
+    ? isBehavioralSort(sortKey)
+      ? "behavioral+request"
+      : "request (behavioral columns available)"
+    : "request-only (no envelope coverage — behavioral columns not ranked on)";
 
   const eligible = pairs.filter((row) => row.sessions >= MIN_SAMPLE_SESSIONS);
   const insufficient = pairs
@@ -150,6 +178,7 @@ export async function run(argv: string[]): Promise<void> {
         minSampleSessions: MIN_SAMPLE_SESSIONS,
         rankedFrom: "observed-workload-only",
         expectedDelta: "heuristic (median of past traffic, not a guarantee)",
+        rankedOn: basis,
       },
       ranked: ranked.map(annotatedPairRow),
       insufficient: insufficient.map((row) => ({
@@ -173,6 +202,7 @@ export async function run(argv: string[]): Promise<void> {
         `${MIN_SAMPLE_SESSIONS} sessions`,
     ),
   );
+  out(style.dim(`ranking basis: ${basis}`));
   out();
 
   if (ranked.length === 0) {

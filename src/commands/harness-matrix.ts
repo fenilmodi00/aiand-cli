@@ -17,7 +17,7 @@ import {
 } from "../obs/pair-stats.js";
 import { getStoreInfo, noSyncRequested, syncStore } from "../store/index.js";
 import { resolveGapMinutes, sessionizationNote } from "../store/sessions.js";
-import { parseWindowFlags, readHarnessRows } from "./harness-stats.js";
+import { cohortFromFlags, parseWindowFlags, readHarnessRows } from "./harness-stats.js";
 import { applyJqPath, isValidTimezone, parseJqPath } from "./usage-report.js";
 
 /**
@@ -46,6 +46,8 @@ Options
   --since <iso>       window start (interpreted in --timezone)
   --until <iso>       window end
   --last <window>     30m, 12h, 1d, 7d, 30d, 4w (default: all stored history)
+  --cohort <category> rank same-kind-of-work pairs only (classifier category:
+                      Coding, Debugging, …) — excluded, not folded (C6)
   --harness <name>    one harness only
   --model <glob>      repeatable model filter (* wildcards)
   --top <n>           keep only the first n rows after sorting
@@ -80,6 +82,7 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
     model: { type: "string", multiple: true },
     timezone: { type: "string" },
     "session-gap": { type: "string" },
+    cohort: { type: "string" },
     top: { type: "string" },
     sort: { type: "string" },
     order: { type: "string" },
@@ -128,6 +131,9 @@ export async function runHarnessMatrix(argv: string[]): Promise<void> {
       since: sinceMs === null ? null : new Date(sinceMs).toISOString(),
       until: untilMs === null ? null : new Date(untilMs).toISOString(),
     },
+    // #135: --cohort rides the same classifier seam as stats/compare (C6) —
+    // same-kind-of-work pairs only, excluded-not-folded.
+    cohort: cohortFromFlags(parsed, rows),
   });
 
   let pairs = stats.pairs;

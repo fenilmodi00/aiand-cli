@@ -223,10 +223,17 @@ const server = createServer((req, res) => {
     // the JSON file named by AIAND_MOCK_LOG_FILE (gateway LogEntry shape, any
     // order — served newest-first); re-read per request so tests can land new
     // traffic between syncs by rewriting the file.
-    if (scenario === "logs-pinned") {
+    if (scenario === "logs-pinned" || scenario === "logs-pinned-file") {
+      // `logs-pinned-file` reads a per-test rows file from
+      // AIAND_MOCK_LOG_FILE_<n> (the CLI child's env carries it), so tests
+      // with concurrent run children don't share one rows file.
+      const envName =
+        scenario === "logs-pinned-file"
+          ? (process.env.AIAND_MOCK_LOG_FILE_VAR ?? "AIAND_MOCK_LOG_FILE")
+          : "AIAND_MOCK_LOG_FILE";
       let rows = [];
       try {
-        const file = process.env.AIAND_MOCK_LOG_FILE;
+        const file = process.env[envName];
         rows = JSON.parse(file ? readFileSync(file, "utf8") : "[]");
       } catch {
         rows = [];

@@ -12,6 +12,7 @@ const {
   efficiencyCoverage,
   efficiencyCoverageNote,
   isShellTurn,
+  MISSED_CATCH_RULE,
   oneShotRetry,
 } = await import("../dist/model-efficiency.js");
 
@@ -114,5 +115,125 @@ describe("one-shot/retry (C5 flagship metric)", () => {
     const coverage = efficiencyCoverage(1, 4);
     assert.equal(coverage.value.coverage, 0.25);
     assert.equal(coverage.provenance.kind, "estimated");
+  });
+});
+
+// #127 (T2): tool-error rate, missed-catch walk, turns-to-success, outcome
+// split — layered on the SAME walk as one-shot/retry (one pass, two verdicts).
+describe("tool-error / missed-catch / outcome (#127)", () => {
+  test("tool-error rate over toolOutcomes; null when zero tool calls", () => {
+    const { stats } = oneShotRetry([
+      {
+        tools: ["Edit", "Bash"],
+        editTargets: ["a.ts"],
+        toolOutcomes: [
+          { name: "Edit", ok: true },
+          { name: "Bash", ok: false },
+        ],
+      },
+      { tools: ["Read"], editTargets: [], toolOutcomes: [{ name: "Read", ok: true }] },
+    ]);
+    assert.equal(stats.value.toolErrorRate, 1 / 3);
+    // no tool calls at all → null, never 0
+    const none = oneShotRetry([{ tools: ["Edit"], editTargets: ["a.ts"], toolOutcomes: [] }]);
+    assert.equal(none.stats.value.toolErrorRate, null);
+  });
+
+  test("positive missed-catch chain: shell error → re-edit of pre-shell file → second shell error", () => {
+    const { stats, missedCatchTurns } = oneShotRetry([
+      edit("a.ts"), // edit a.ts
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] }, // shell errors
+      edit("a.ts"), // re-edit of file edited before the shell error
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] }, // errors again → miss
+    ]);
+    assert.deepEqual(missedCatchTurns, [3]);
+    assert.equal(stats.value.missedCatches, 1);
+    assert.equal(stats.value.missedCatchRate, 1 / 4);
+    assert.equal(stats.provenance.kind, "heuristic");
+  });
+
+  test("shell error WITHOUT a re-edit afterwards: no miss", () => {
+    const { stats, missedCatchTurns } = oneShotRetry([
+      edit("a.ts"),
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] },
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] },
+    ]);
+    assert.deepEqual(missedCatchTurns, []);
+    assert.equal(stats.value.missedCatches, 0);
+  });
+
+  test("re-edit after shell error but NO second failure: no miss", () => {
+    const { missedCatchTurns } = oneShotRetry([
+      edit("a.ts"),
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] },
+      edit("a.ts"),
+      { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: true }] },
+    ]);
+    assert.deepEqual(missedCatchTurns, []);
+  });
+
+  test("MISSED_CATCH_RULE exposes the deterministic rule string", () => {
+    assert.equal(typeof MISSED_CATCH_RULE, "string");
+    assert.match(MISSED_CATCH_RULE, /shell error/);
+    assert.match(MISSED_CATCH_RULE, /second shell error/);
+  });
+
+  test("turns-to-success counts to the first clean terminal; outcome split tallies", () => {
+    const { stats } = oneShotRetry([
+      { tools: ["Edit"], editTargets: ["a.ts"], terminal: null },
+      { tools: ["Bash"], editTargets: [], terminal: "errored" },
+      { tools: ["Edit"], editTargets: ["a.ts"], terminal: "clean" },
+    ]);
+    assert.equal(stats.value.turnsToSuccess, 3); // first clean at turn 3
+    assert.deepEqual(stats.value.sessions, { clean: 1, aborted: 0, errored: 1 });
+  });
+
+  test("no clean terminal: turnsToSuccess null, split still counted", () => {
+    const { stats } = oneShotRetry([
+      { tools: ["Edit"], editTargets: ["a.ts"], terminal: "aborted" },
+    ]);
+    assert.equal(stats.value.turnsToSuccess, null);
+    assert.deepEqual(stats.value.sessions, { clean: 0, aborted: 1, errored: 0 });
+  });
+
+  test("empty turn list: all new rates null, zero split", () => {
+    const { stats } = oneShotRetry([]);
+    assert.equal(stats.value.toolErrorRate, null);
+    assert.equal(stats.value.missedCatchRate, null);
+    assert.equal(stats.value.turnsToSuccess, null);
+    assert.deepEqual(stats.value.sessions, { clean: 0, aborted: 0, errored: 0 });
+  });
+
+  test("v1 turns (no outcome info): every new rate null plus heuristic provenance, never zeros", () => {
+    const { stats } = oneShotRetry([edit("a.ts"), turn(["Bash"]), edit("a.ts")]);
+    assert.equal(stats.value.toolErrorRate, null);
+    assert.equal(stats.value.missedCatchRate, null);
+    assert.equal(stats.value.turnsToSuccess, null);
+    assert.deepEqual(stats.value.sessions, { clean: 0, aborted: 0, errored: 0 });
+    assert.equal(stats.provenance.kind, "heuristic");
+    // legacy verdicts still work
+    assert.equal(stats.value.oneShotRate, 0.5);
+  });
+
+  test("aggregation carries the new stats per harness", () => {
+    const rows = [
+      {
+        agent: "v2",
+        envelope: {
+          tools: ["Bash"],
+          edit_targets: [],
+          toolOutcomes: [{ name: "Bash", ok: false }],
+          terminal: "errored",
+        },
+      },
+      { agent: "v1", envelope: { tools: ["Bash"], edit_targets: [] } },
+    ];
+    const byHarness = efficiencyByHarness(rows);
+    const v2 = byHarness.find((s) => s.key === "v2");
+    const v1 = byHarness.find((s) => s.key === "v1");
+    assert.equal(v2.stats.toolErrorRate, 1);
+    assert.deepEqual(v2.stats.sessions, { clean: 0, aborted: 0, errored: 1 });
+    assert.equal(v1.stats.toolErrorRate, null);
+    assert.deepEqual(v1.stats.sessions, { clean: 0, aborted: 0, errored: 0 });
   });
 });

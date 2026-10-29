@@ -8,6 +8,92 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across
+  harnesses and models. `compare add` scaffolds a task pack
+  (`instruction.md` + `workspace/` + `verify.sh`) with verifier discipline —
+  verify must FAIL on the untouched workspace (the built-in null-harness
+  control, scoring 0) and PASS after a `--golden` solution replay; `compare
+  validate` enforces both loudly — a task is validated only when the golden
+  replay passed too (without `--golden` the verdict is golden-missing, never
+  valid, and `compare run` refuses it). `compare run` drives each harness
+  headless (claude/codex/opencode; adapters that cannot run headless fail
+  loudly), pins one model across harnesses, meters cost+tokens from gateway
+  rows (masked-key + time-window join; missing usage is `null`, never 0),
+  and classifies failures (agent/verify timeout, parse_error,
+  context_exceeded, integrity_violation via verify-script hashing, infra —
+  reported separately, never folded into solve rate). `--dry-run` replays
+  the recorded simulated lane with zero gateway spend; its rows go to
+  `compare-runs/<task>.recorded.jsonl`, kept apart from live rows.
+  `compare table` aggregates per (harness,
+  model): solve x/n with Wilson 95% CI, cost/solve, wall, turns/solve,
+  retry rate, and the failure histogram; recorded (simulated) rows are
+  excluded and reported on a separate line, never ranked with your workload;
+  overlapping CIs say "tied — not
+  distinguishable yet" instead of crowning a winner, cells under 3 trials
+  are flagged, and every rate carries `n=`. `compare audit` applies a fixed
+  deterministic rubric (integrity — the verify-hash verdict `compare run`
+  recorded per row, suspicious-success median
+  heuristic, instruction sufficiency) — advisory only, never part of solve
+  rate or rankings.
+- Envelope capture v2 (#126): envelopes now record per-tool-call outcomes
+  (`toolOutcomes`, names + ok only — error text is never captured) and the
+  turn's terminal state (`terminal: clean|aborted|errored`). Store schema v7
+  carries both columns; old v1 rows still parse and read back with the
+  fields absent (unknown, never counted as ok or error).
+- Efficiency walk v2 (#127): tool-error rate, missed-catch rate (a shell
+  error → re-edit of a previously edited file → the same check failing
+  again — deterministic rule, layered onto the one-shot/retry walk),
+  turns-to-success, and the clean/aborted/errored session split, all labeled
+  `heuristic(...)` with coverage notes; turns without outcome data yield
+  `null`, never zeros.
+- `aiand harness import` (#133): opt-in backfill of behavioral markers from
+  the harnesses' own session files (Claude Code JSONL `is_error`/`stop_reason`,
+  Codex turn/compaction markers, OpenCode SQLite tool-state + compaction
+  parts) for sessions predating envelope capture — markers only, never
+  content; re-imports are idempotent by structural dedup key (store
+  schema v8), and derived rates stay `heuristic`-labeled.
+- `harness compare --out <file>` table export (#135): writes the compare
+  table to a file as markdown, csv, or json (`--format`, default inferred
+  from the extension). Exports preserve everything the terminal table
+  carries — per-column winners (`▸`), `n=` counts, uncovered-cell em-dashes,
+  the coverage line, and the cohort/provenance footers; the synthetic sweep
+  block stays display-only and never joins an export.
+- Cohort seam end-to-end (C6, #135): `--cohort <category>` now also narrows
+  `harness matrix` and `recommend` through the same classifier predicate as
+  `harness stats|compare` — one shared flag parser, identical
+  excluded-not-folded semantics and error text on every surface.
+- `compare cohorts` (lane B, #135): per-category task breakdown. Task packs
+  gain optional `tags:` (classifier categories, via `compare add --tags` or
+  a hand-edited `task.json`); when `compare run` rows exist
+  (`compare-runs/<task>.jsonl`) the breakdown rolls up solves (infra rows
+  excluded), cost, and mean wall-clock per task; without run rows it
+  degrades honestly (tags only, stated in text and `--json`).
+- Scripted tool outcomes in the recorded benchmark (#128): scenarios can
+  pin per-call results (`scriptedOutcomes`, reusing the `call_N` ids), the
+  offline replay turns them into per-turn `toolErrors` and `retries`
+  (error followed by a repeat) and per-row totals, and a new
+  `tool-error-retry` scenario exercises the error → retry → success chain.
+  The goldens pin the new fields; every behavioral number is labeled
+  `simulated(scripted tool outcomes)` via the new fourth provenance tier
+  and never joins observed rankings — the live gateway path is unchanged.
+- `harness compare` behavioral columns (#130): per-harness tool-error rate,
+  one-shot/retry rate, missed-catch rate, turns-to-success, and the clean/
+  aborted/errored outcome split — sourced from locally captured adapter
+  envelopes (v2 outcome fields) via the same walk as `aiand efficiency`.
+  Every rate carries `n=`; envelope-derived numbers are labeled
+  `heuristic(one-shot/retry envelope rule)`. Columns render only when
+  envelope data covers a harness; uncovered cells show `—` (never zeros) and
+  the table prints an honest coverage line (`behavioral columns: envelopes
+  N% of turns, uncovered → —`). Per-column winners (`▸`) extend to the
+  behavioral metrics — only covered cells compete.
+- `recommend` ranks on the behavioral columns when coverage exists
+  (`--sort tool-err|one-shot`; uncovered pairs sink, as unpriced rows do)
+  and states its basis — `ranking basis: behavioral+request` or
+  `request-only` — in text and `--json` (`provenance.rankedOn`).
+- `harness stats|compare --cohort <category>` (C6): narrows the rows to one
+  deterministic classifier category (Coding, Debugging, …) before
+  sessionization; non-matching requests are excluded AND counted
+  ("excluded, not folded"), never silently dropped.
 - Harness attribution refinement from the agents' own local usage records:
   a request the key+endpoint rules can only label `shared` (chat-dialect
   agents sharing one key) is refined to omp, pi, or opencode when that

@@ -57,7 +57,7 @@
     "pretest": "npm run build",
     "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "benchmark:recorded": "node scripts/benchmark-recorded.mjs",
-    "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=91 --test-coverage-branches=85 --test-coverage-functions=91 test/*.test.mjs"
+    "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95 test/*.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

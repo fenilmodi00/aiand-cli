@@ -7,10 +7,12 @@ import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
+  type EfficiencySlice,
   efficiencyByHarness,
   efficiencyByModel,
   efficiencyCoverage,
   efficiencyCoverageNote,
+  MISSED_CATCH_RULE,
   type OneShotRetryStats,
   oneShotRetry,
 } from "../model-efficiency.js";
@@ -84,9 +86,13 @@ type EfficiencyPayload = {
   coverageNote: string;
   oneShotRetry: {
     overall: OneShotRetryStats;
-    byHarness: ReturnType<typeof efficiencyByHarness>;
-    byModel: ReturnType<typeof efficiencyByModel>;
+    byHarness: EfficiencySlice[];
+    byModel: EfficiencySlice[];
   };
+  /** #127: tool-error / missed-catch / turns-to-success / outcome split. */
+  behavioral: OneShotRetryStats;
+  /** #127: the missed-catch rule string, for labeling the heuristic number. */
+  missedCatchRule: string;
   taskMix: ReturnType<typeof classifyEnvelopes>;
   attribution: ReturnType<typeof attributeBranchSpend>["value"];
 };
@@ -142,7 +148,13 @@ export async function run(argv: string[]): Promise<void> {
     }));
     const envelopeV1s: EnvelopeV1[] = effTurns.map((t) => t.envelope);
     const overallStats = oneShotRetry(
-      envelopeV1s.map((e) => ({ tools: e.tools, editTargets: e.edit_targets })),
+      envelopeV1s.map((e) => ({
+        tools: e.tools,
+        editTargets: e.edit_targets,
+        // #127: pinned v2 outcome fields — null on v1 envelopes → null rates.
+        toolOutcomes: e.toolOutcomes ?? null,
+        terminal: e.terminal ?? null,
+      })),
     );
     const overall: ReturnType<typeof oneShotRetry>["stats"] = overallStats.stats;
     const byHarness = efficiencyByHarness(effTurns);
@@ -156,6 +168,8 @@ export async function run(argv: string[]): Promise<void> {
       coverage: coverage.value,
       coverageNote: efficiencyCoverageNote(envelopes.length, requests.length),
       oneShotRetry: { overall: overall.value, byHarness, byModel },
+      behavioral: overallStats.stats.value,
+      missedCatchRule: MISSED_CATCH_RULE,
       taskMix: mix,
       attribution: attribution.value,
     };
@@ -173,6 +187,12 @@ export async function run(argv: string[]): Promise<void> {
       coverage: payload.coverage,
       coverageNote: payload.coverageNote,
       oneShotRetry: payload.oneShotRetry,
+      behavioral: {
+        ...payload.behavioral,
+        missedCatchRule: payload.missedCatchRule,
+        provenance: "heuristic(one-shot/retry envelope rule)",
+        coverage: payload.coverageNote,
+      },
       taskMix: payload.taskMix,
       attribution: payload.attribution,
       notes: { classification: CLASSIFICATION_NOTE, attribution: ATTRIBUTION_NOTE },
@@ -237,6 +257,18 @@ function render(payload: EfficiencyPayload): void {
   out(style.dim("  retry = same file re-edited after a shell command in between"));
   renderSlices("by harness", efficiency.byHarness);
   renderSlices("by model", efficiency.byModel);
+  out("");
+
+  // #127: behavioral columns — heuristic over locally captured envelopes only.
+  const b = payload.behavioral;
+  heading("Behavioral (tool errors, missed catches, outcomes)");
+  out(`  tool errors: ${percent(b.toolErrorRate)} (heuristic: envelope toolOutcomes)`);
+  out(`  missed catches: ${percent(b.missedCatchRate)} (${b.missedCatches} turn(s))`);
+  out(style.dim(`  rule: ${payload.missedCatchRule}`));
+  out(
+    `  turns to success: ${b.turnsToSuccess ?? "n/a"}  ` +
+      `outcomes: clean ${b.sessions.clean}, aborted ${b.sessions.aborted}, errored ${b.sessions.errored}`,
+  );
   out("");
 
   heading("Task mix");

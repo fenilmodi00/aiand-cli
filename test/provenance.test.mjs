@@ -46,7 +46,7 @@ describe("provenance labels", () => {
     assert.ok(rows.length >= 10);
     for (const r of rows) {
       assert.ok(r.report.length > 0 && r.field.length > 0 && r.source.length > 0);
-      assert.match(r.label, /^(gateway-billed|estimated\(|heuristic\()/);
+      assert.match(r.label, /^(gateway-billed|estimated\(|heuristic\(|simulated\()/);
     }
     // Cost that is billed by the gateway is labeled gateway-billed, and the
     // catalog says outright that we never recompute it.

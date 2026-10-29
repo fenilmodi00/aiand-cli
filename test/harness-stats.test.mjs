@@ -769,3 +769,221 @@ test("#101 compare/stats/matrix synopsis shows no fake --last default; harness r
     assert.ok(r.stdout.length > 0);
   }
 });
+
+// ---------------------------------------------------------------------------
+// #130 (T3): behavioral columns — coverage gating, n= rendering, winners,
+// cohort filter, --json shape.
+// ---------------------------------------------------------------------------
+
+import { normalizeEnvelope } from "../dist/agents/envelope.js";
+import { insertEnvelope } from "../dist/store/envelopes.js";
+
+/** Five v2 envelope turns for `agent` with per-tool outcomes + terminals. */
+function v2Envelope(toolErrors, terminal) {
+  const outcomes = [
+    { name: "Bash", ok: toolErrors < 1 },
+    { name: "Edit", ok: true },
+  ];
+  return normalizeEnvelope({
+    tools: outcomes.map((o) => o.name),
+    toolOutcomes: outcomes,
+    terminal,
+    editTargets: ["/repo/src/a.ts"],
+    projectRoot: "/repo",
+  });
+}
+
+async function seedBehavioralStore(cfg) {
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+  });
+  const claudeMask = await withEnv({ AIAND_CONFIG_DIR: cfg }, async () =>
+    maskKey("sk-test-claude-super-secret-key-000"),
+  );
+  const opencodeMask = await withEnv({ AIAND_CONFIG_DIR: cfg }, async () =>
+    maskKey("sk-test-opencode-super-secret-0001"),
+  );
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    // 6 requests per harness, far enough apart to be one session each.
+    seedRequests(opened.db, [
+      ...Array.from({ length: 6 }, (_, i) =>
+        row({ id: `bc${i}`, api_key: claudeMask, created_at: iso(i * 60_000) }),
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        row({ id: `bo${i}`, api_key: opencodeMask, created_at: iso(i * 60_000) }),
+      ),
+    ]);
+    // claude: 5 v2 envelopes, one errored tool call, mix of terminals.
+    const claudeTerminals = ["clean", "clean", "clean", "clean", "errored"];
+    for (let i = 0; i < 5; i += 1) {
+      insertEnvelope(opened.db, {
+        agent: "claude",
+        model: "zai-org/glm-5.3",
+        apiKey: claudeMask,
+        createdAt: iso(i * 60_000 + 30_000),
+        envelope: v2Envelope(i === 0 ? 1 : 0, claudeTerminals[i]),
+      });
+    }
+    // opencode: 5 v1 envelopes (no outcomes) → behavioral uncovered.
+    for (let i = 0; i < 5; i += 1) {
+      insertEnvelope(opened.db, {
+        agent: "opencode",
+        model: "zai-org/glm-5.3",
+        apiKey: opencodeMask,
+        createdAt: iso(i * 60_000 + 30_000),
+        envelope: normalizeEnvelope({ tools: ["Edit"], editTargets: ["/repo/src/a.ts"] }),
+      });
+    }
+    opened.db.close();
+  });
+  return { claudeMask, opencodeMask };
+}
+
+test("#130 behavioral columns are gated on envelope coverage; covered cells carry n=", async () => {
+  const cfg = cfgDir("behavioral");
+  await seedBehavioralStore(cfg);
+  const base = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+  const run = await runCli(["harness", "compare", "--no-sync"], base);
+  assert.equal(run.code, 0, run.stderr);
+  // Coverage line: 10 covered turns / 12 requests.
+  assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), uncovered → —/);
+  // claude (v2): tool-err with n=; opencode (v1): v2-gated cells are —,
+  // one-shot still computable from the edit walk — cells, never zeros.
+  assert.match(run.stdout, /▸ 10\.0% \(n=5\)/, "covered tool-err cell with n and winner");
+  assert.match(run.stdout, /▸ 100\.0% \(n=5\)/, "one-shot computable from v1 envelopes");
+  assert.ok(run.stdout.includes("—"), "uncovered cells render em-dashes");
+});
+
+test("#130 compare without any envelope data degrades to the coverage line only", async () => {
+  const cfg = cfgDir("behavioral-none");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    const claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+    const opencodeMask = maskKey("sk-test-opencode-super-secret-0001");
+    const opened = (await import("../dist/store/index.js")).openStore(
+      (await import("../dist/store/index.js")).storePath(),
+    );
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      ...Array.from({ length: 6 }, (_, i) =>
+        row({ id: `pn${i}`, api_key: claudeMask, created_at: iso(i * 60_000) }),
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        row({ id: `qn${i}`, api_key: opencodeMask, created_at: iso(i * 60_000) }),
+      ),
+    ]);
+    opened.db.close();
+  });
+  const run = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /behavioral columns: envelopes 0% of turns \(0\/12\), uncovered → —/);
+  // No behavioral column headers at all when nothing is covered.
+  assert.ok(!run.stdout.includes("TOOL-ERR"));
+  assert.ok(!run.stdout.includes("tool-err"));
+});
+
+test("#130 compare --json carries behavioral fields, provenance label, and coverage", async () => {
+  const cfg = cfgDir("behavioral-json");
+  await seedBehavioralStore(cfg);
+  const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  assert.ok(payload.behavioralCoverage);
+  assert.equal(payload.behavioralCoverage.covered, 10);
+  assert.equal(payload.behavioralCoverage.total, 12);
+  const claude = payload.harnesses.find((h) => h.harness === "claude");
+  const opencode = payload.harnesses.find((h) => h.harness === "opencode");
+  assert.equal(claude.behavioral.envelopeTurns, 5);
+  // 1 errored tool call of 10 (Bash+Edit on each of 5 turns).
+  assert.ok(Math.abs(claude.behavioral.toolErrorRate - 0.1) < 1e-9);
+  // Each turn is a shell turn (Bash) → edits after turn 1 are retries.
+  assert.ok(Math.abs(claude.behavioral.oneShotRate - 0.2) < 1e-9);
+  assert.ok(Math.abs(claude.behavioral.retryRate - 0.8) < 1e-9);
+  assert.equal(claude.behavioral.sessions.clean, 4);
+  assert.equal(claude.behavioral.sessions.errored, 1);
+  assert.equal(claude.behavioral.turnsToSuccess, 1);
+  assert.equal(claude.labels.behavioral, "heuristic(one-shot/retry envelope rule)");
+  // v1 harness: v2-gated rates null (never zeros); the edit walk still runs.
+  assert.equal(opencode.behavioral.toolErrorRate, null);
+  assert.equal(opencode.behavioral.missedCatchRate, null);
+  assert.ok(Math.abs(opencode.behavioral.oneShotRate - 1) < 1e-9);
+  assert.equal(opencode.behavioral.envelopeTurns, 5);
+  // No terminals on v1 → the split is all-zero with no invented outcome.
+  assert.deepEqual(opencode.behavioral.sessions, { clean: 0, aborted: 0, errored: 0 });
+});
+
+test("#130 behavioral winner eligibility: uncovered harness never wins", async () => {
+  const { compareWinners } = await loadEngine();
+  const covered = {
+    harness: "covered",
+    requests: 10,
+    sessions: 2,
+    tokens: { in: 1, out: 1, cached: 1 },
+    cost: 1,
+    currency: "usd",
+    costPerSession: { p50: 0.5, p90: 1 },
+    ttft: { p50: 400, p95: 900 },
+    cacheHitRatio: 0.8,
+    errorRate: 0.1,
+    verdict: "good",
+    behavioral: {
+      toolErrorRate: 0.2,
+      oneShotRate: 0.5,
+      retryRate: 0.5,
+      missedCatchRate: 0.1,
+      turnsToSuccess: 3,
+      sessions: { clean: 2, aborted: 0, errored: 0 },
+      envelopeTurns: 5,
+    },
+    samples: [],
+  };
+  const uncovered = {
+    ...covered,
+    harness: "uncovered",
+    behavioral: {
+      toolErrorRate: null,
+      oneShotRate: null,
+      retryRate: null,
+      missedCatchRate: null,
+      turnsToSuccess: null,
+      sessions: null,
+      envelopeTurns: 0,
+    },
+  };
+  const winners = compareWinners([covered, uncovered]);
+  assert.equal(winners.toolErrorRate, "covered");
+  assert.equal(winners.oneShotRate, "covered");
+  assert.equal(winners.missedCatchRate, "covered");
+  assert.equal(winners.turnsToSuccess, "covered");
+  // No covered cells at all → no behavioral winners.
+  const none = compareWinners([uncovered, { ...uncovered, harness: "also-none" }]);
+  assert.equal(none.toolErrorRate, null);
+  assert.equal(none.oneShotRate, null);
+});
+
+test("#130 --cohort narrows to the classifier category and states the exclusion", async () => {
+  const cfg = cfgDir("behavioral-cohort");
+  await seedBehavioralStore(cfg);
+  // All envelopes carry Edit only → "Coding" via the deterministic classifier.
+  const run = await runCli(["harness", "compare", "--no-sync", "--cohort", "Coding"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /cohort Coding: \d+ of \d+ request\(s\) match — excluded, not folded/);
+  const bad = await runCli(["harness", "compare", "--no-sync", "--cohort", "Bogus"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.stderr, /Unknown cohort/);
+});

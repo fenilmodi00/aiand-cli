@@ -1,19 +1,30 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
-import { bool, int, list, parse, str } from "../cli/args.js";
+import { bool, int, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
 import { resolveProfile } from "../config.js";
+import { writeFileAtomic } from "../fsutil.js";
+import { MISSED_CATCH_RULE } from "../model-efficiency.js";
+import {
+  assertCategory,
+  classifyEnvelope,
+  TASK_CATEGORIES,
+  type TaskCategory,
+} from "../obs/classifier.js";
 import {
   buildHarnessStats,
   compareWinners,
   type ExcludedMixedAggregate,
   type HarnessRequestRow,
+  type HarnessStatsOptions,
   type HarnessStatsRow,
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
+import { listEnvelopesFromDb } from "../store/envelopes.js";
 import {
   createdSince,
   createdUntilIncl,
@@ -39,6 +50,98 @@ import {
  * the store (auto-sync fail-open, `--no-sync` honored) and never run requests.
  */
 
+// ---------------------------------------------------------------------------
+// Behavioral envelope read + cohort classification (#130)
+// ---------------------------------------------------------------------------
+
+/** The envelope-row shape `HarnessStatsOptions.envelopes` accepts. */
+type EnvelopeOptionRow = HarnessStatsOptions["envelopes"] extends readonly (infer Row)[] | undefined
+  ? Row
+  : never;
+
+/** Stored envelope rows inside the window, mapped to the options shape. */
+export function windowEnvelopes(
+  sinceMs: number | null,
+  untilMs: number | null,
+): EnvelopeOptionRow[] {
+  const opened = openStore(storePath());
+  if (!opened.ok) return [];
+  try {
+    return listEnvelopesFromDb(opened.db, {
+      since: sinceMs === null ? undefined : new Date(sinceMs).toISOString(),
+      until: untilMs === null ? undefined : new Date(untilMs).toISOString(),
+    }).map((row) => ({ agent: row.agent, model: row.model, envelope: row.envelope }));
+  } catch {
+    return [];
+  } finally {
+    try {
+      opened.db.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+/**
+ * Classify each in-scope request row's session once (C6, deterministic
+ * classifier over its envelope turns) and return the id set matching the
+ * cohort. A row in an unclassified session is simply not in the set —
+ * excluded, never folded. Shared by every --cohort consumer (compare,
+ * matrix, recommend) so one classification pass feeds all of them.
+ */
+function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
+  const opened = openStore(storePath());
+  const matching = new Set<string>();
+  if (!opened.ok) return matching;
+  try {
+    const envelopes = listEnvelopesFromDb(opened.db);
+    for (const row of rows) {
+      // The row's session turns: envelopes attributed to this row's masked
+      // key within the turn window (the same join branch-spend uses).
+      const at = Date.parse(row.created_at);
+      const turn = envelopes.find((e) => {
+        if (e.api_key !== row.api_key) return false;
+        const ts = Date.parse(e.created_at);
+        return !Number.isNaN(ts) && ts <= at && at - ts <= 10 * 60_000;
+      });
+      if (turn?.envelope && classifyEnvelope(turn.envelope) === category) {
+        matching.add(row.id);
+      }
+    }
+  } catch {
+    // fail-open: no classification → empty cohort
+  } finally {
+    try {
+      opened.db.close();
+    } catch {
+      // already closed
+    }
+  }
+  return matching;
+}
+
+/**
+ * Parse the shared `--cohort <category>` flag and narrow the rows through
+ * the classifier. Returns undefined when no flag was given; throws for an
+ * unknown category. One definition for stats/compare, matrix, and recommend
+ * — the same excluded-not-folded semantics everywhere (C6).
+ */
+export function cohortFromFlags(
+  parsed: Parsed,
+  rows: readonly HarnessRequestRow[],
+): ((row: HarnessRequestRow) => boolean) | undefined {
+  const category = str(parsed, "cohort");
+  if (category === undefined) return undefined;
+  const validated = assertCategory(category);
+  if (validated === null) {
+    throw new CliError(`Unknown cohort "${category}".`, {
+      hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
+    });
+  }
+  const matching = cohortOf(rows, validated);
+  return (row) => matching.has(row.id);
+}
+
 export async function runHarnessWorkload(mode: "stats" | "compare", argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     since: { type: "string" },
@@ -49,12 +152,34 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     model: { type: "string", multiple: true },
     timezone: { type: "string" },
     "session-gap": { type: "string" },
+    cohort: { type: "string" },
+    out: { type: "string" },
+    format: { type: "string" },
     samples: { type: "boolean", default: false },
     "include-mixed": { type: "boolean", default: false },
     "no-cost": { type: "boolean", default: false },
     "no-sync": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(workloadHelp(mode));
+
+  // #135: --out exports the compare table (--format markdown|csv|json, default
+  // from the file extension). Only compare mode exports; stats stays stdout.
+  const outPath = str(parsed, "out");
+  const formatFlag = str(parsed, "format");
+  if (outPath === undefined && formatFlag !== undefined) {
+    throw new CliError("--format needs --out.", {
+      hint: "Usage: aiand harness compare --out table.md [--format csv]",
+    });
+  }
+  const exportFormat =
+    outPath === undefined
+      ? undefined
+      : oneOf(
+          parsed,
+          "format",
+          ["markdown", "csv", "json"],
+          inferExportFormat(outPath, formatFlag),
+        );
 
   const timezone = str(parsed, "timezone") ?? "UTC";
   if (!isValidTimezone(timezone)) {
@@ -95,6 +220,22 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
   });
   const storeInfo = getStoreInfo();
 
+  // #130: cohort seam (C6) — a named classifier category narrows the rows to
+  // "same kind of work" before sessionization. Excluded rows are counted in
+  // the coverage line, never folded silently. Validation rides the shared
+  // cohortFromFlags helper (same rules for matrix/recommend).
+  const cohortRaw = str(parsed, "cohort");
+  let cohortCategory: TaskCategory | undefined;
+  if (cohortRaw !== undefined) {
+    const validated = assertCategory(cohortRaw);
+    if (validated === null) {
+      throw new CliError(`Unknown cohort "${cohortRaw}".`, {
+        hint: `Categories: ${TASK_CATEGORIES.join(", ")}.`,
+      });
+    }
+    cohortCategory = validated;
+  }
+
   const stats = buildHarnessStats(rows, {
     gapMinutes,
     timezone,
@@ -103,6 +244,11 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
       since: sinceMs === null ? null : new Date(sinceMs).toISOString(),
       until: untilMs === null ? null : new Date(untilMs).toISOString(),
     },
+    cohort:
+      cohortCategory === undefined
+        ? undefined
+        : (row) => cohortOf(rows, cohortCategory).has(row.id),
+    envelopes: windowEnvelopes(sinceMs, untilMs),
   });
 
   // #100: an empty (or entirely filtered-out) window is a clean empty answer,
@@ -149,9 +295,25 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     );
   }
 
+  // #135: --out exports the compare table (markdown/csv/json) and returns —
+  // an explicit file target wins over terminal rendering, --json included.
+  const noCost = bool(parsed, "no-cost");
+  if (mode === "compare" && outPath !== undefined) {
+    exportCompareTable({
+      rows: harnesses,
+      noCost,
+      coverage: stats.behavioralCoverage,
+      cohort: cohortCategory,
+      range: describeRange(sinceMs, untilMs),
+      timezone,
+      path: outPath,
+      format: exportFormat!,
+    });
+    return;
+  }
+
   if (bool(parsed, "json")) return json(payload(stats, harnesses));
 
-  const noCost = bool(parsed, "no-cost");
   out(
     style.bold(
       mode === "compare" ? "harness compare · your workload" : "harness stats · your workload",
@@ -166,6 +328,16 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
 
   if (mode === "compare") {
     renderCompare(harnesses, noCost);
+    out(style.dim(behavioralCoverageLine(stats.behavioralCoverage)));
+    if (cohortCategory !== undefined) {
+      const cohortRequests = stats.harnesses.reduce((s, h) => s + h.requests, 0);
+      out(
+        style.yellow(
+          `cohort ${cohortCategory}: ${cohortRequests} of ${rows.length} request(s) match — ` +
+            "excluded, not folded (C6)",
+        ),
+      );
+    }
   } else {
     renderStats(harnesses, noCost);
   }
@@ -302,9 +474,13 @@ function payload(
 ): unknown {
   return {
     provenance: stats.provenance,
-    harnesses: harnesses.map((row) => ({ ...row })),
+    harnesses: harnesses.map((row) => ({
+      ...row,
+      labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+    })),
     excluded: stats.excluded,
     excludedMixedSpend: stats.excludedMixed,
+    behavioralCoverage: stats.behavioralCoverage,
   };
 }
 
@@ -368,8 +544,72 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
   out();
 }
 
-function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
+/**
+ * The compare-table columns, pure: the terminal renderer and every export
+ * format build from this one definition so winners (▸), n= counts, em-dash
+ * uncovered cells, and provenance survive into markdown/csv/json unchanged.
+ */
+function compareColumns(
+  rows: readonly HarnessStatsRow[],
+  noCost: boolean,
+): Column<HarnessStatsRow>[] {
   const w = compareWinners(rows);
+  const covered = rows.some((r) => r.behavioral.oneShotRate !== null);
+  const rate = (value: number | null, n: number): string =>
+    value === null ? "—" : `${(value * 100).toFixed(1)}% (n=${n})`;
+  const outcome = (b: HarnessStatsRow["behavioral"]): string => {
+    if (b.sessions === null) return "—";
+    // A v1 sequence has no terminal info (all-zero split, no success marker)
+    // — that's missing data, rendered as — not 0/0/0.
+    const s = b.sessions;
+    if (s.clean + s.aborted + s.errored === 0 && b.turnsToSuccess === null) return "—";
+    return `${s.clean}/${s.aborted}/${s.errored}`;
+  };
+  const behavioralColumns: Column<HarnessStatsRow>[] = covered
+    ? [
+        {
+          header: "tool-err",
+          value: (r) =>
+            maybeMark(
+              w.toolErrorRate === r.harness,
+              rate(r.behavioral.toolErrorRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "one-shot",
+          value: (r) =>
+            maybeMark(
+              w.oneShotRate === r.harness,
+              rate(r.behavioral.oneShotRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "missed-catch",
+          value: (r) =>
+            maybeMark(
+              w.missedCatchRate === r.harness,
+              rate(r.behavioral.missedCatchRate, r.behavioral.envelopeTurns),
+            ),
+          align: "right",
+        },
+        {
+          header: "turns/success",
+          value: (r) =>
+            maybeMark(
+              w.turnsToSuccess === r.harness,
+              r.behavioral.turnsToSuccess === null ? "—" : String(r.behavioral.turnsToSuccess),
+            ),
+          align: "right",
+        },
+        {
+          header: "outcome",
+          value: (r) => outcome(r.behavioral),
+          align: "right",
+        },
+      ]
+    : [];
   const costColumn: Column<HarnessStatsRow>[] = [
     {
       header: "cost/session p50",
@@ -381,7 +621,7 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
       align: "right",
     },
   ];
-  table<HarnessStatsRow>(rows, [
+  return [
     { header: "harness", value: (r) => r.harness },
     ...(noCost ? [] : costColumn),
     {
@@ -404,15 +644,119 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
       value: (r) => maybeMark(w.errorRate === r.harness, `${(r.errorRate * 100).toFixed(1)}%`),
       align: "right",
     },
+    ...behavioralColumns,
     { header: "requests", value: (r) => num(r.requests), align: "right" },
     { header: "sessions", value: (r) => num(r.sessions), align: "right" },
-  ]);
-  out(
-    style.dim(
-      `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft)`,
-    ),
-  );
+  ];
+}
+
+/** The footer lines under the compare table (marker legend + provenance). */
+function compareFooterLines(covered: boolean): string[] {
+  return [
+    `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft` +
+      (covered
+        ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
+        : "") +
+      ")",
+    `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule)`,
+  ];
+}
+
+function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
+  const columns = compareColumns(rows, noCost);
+  table<HarnessStatsRow>(rows, columns);
+  for (const line of compareFooterLines(rows.some((r) => r.behavioral.oneShotRate !== null))) {
+    out(style.dim(line));
+  }
   out();
+}
+
+/**
+ * #135: write the compare table to a file. Markdown/csv carry the exact
+ * rendered columns (winners, n=, provenance in the footer lines); the JSON
+ * export is the same payload `--json` prints, plus the coverage/cohort
+ * context lines. The synthetic sweep block never joins this table — it is
+ * display-only in `harness matrix --synthetic` and has no export here.
+ */
+function exportCompareTable(args: {
+  rows: HarnessStatsRow[];
+  noCost: boolean;
+  coverage: { covered: number; total: number; ratio: number | null };
+  cohort: TaskCategory | undefined;
+  range: string;
+  timezone: string;
+  path: string;
+  format: "markdown" | "csv" | "json";
+}): void {
+  const columns = compareColumns(args.rows, args.noCost);
+  const covered = args.rows.some((r) => r.behavioral.oneShotRate !== null);
+  const footers = compareFooterLines(covered).concat(
+    behavioralCoverageLine(args.coverage),
+    args.cohort === undefined
+      ? []
+      : [
+          `cohort ${args.cohort}: ${args.rows.reduce((s, h) => s + h.requests, 0)} request(s) match — excluded, not folded (C6)`,
+        ],
+  );
+  const headers = columns.map((c) => c.header);
+  const aligns = columns.map((c) => c.align ?? "left");
+  const cellRows = args.rows.map((row) => columns.map((c) => c.value(row)));
+
+  let body: string;
+  if (args.format === "json") {
+    body = `${JSON.stringify(
+      {
+        provenance: {
+          range: args.range,
+          timezone: args.timezone,
+          behavioralCoverage: args.coverage,
+          cohort: args.cohort ?? null,
+          missedCatchRule: MISSED_CATCH_RULE,
+          labels: "heuristic(one-shot/retry envelope rule)",
+        },
+        harnesses: args.rows.map((row) => ({
+          ...row,
+          labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+        })),
+        notes: footers,
+      },
+      null,
+      2,
+    )}\n`;
+  } else {
+    const lines =
+      args.format === "markdown"
+        ? [
+            `### harness compare — ${args.range} (${args.timezone})`,
+            "",
+            ...toMarkdownTable(headers, aligns, cellRows),
+            "",
+            ...footers.map((f) => `> ${f}`),
+          ]
+        : toCsvRows(headers, cellRows);
+    body = `${lines.join("\n")}\n`;
+  }
+  void writeFileAtomic(args.path, body).then(() => {
+    err(
+      style.green(
+        `Wrote compare table (${args.format}, ${args.rows.length} row(s)) to ${args.path}.`,
+      ),
+    );
+  });
+}
+
+/**
+ * The #130 coverage line: covered envelope turns / total in-scope requests —
+ * honest math, uncovered cells render `—`, never a zero.
+ */
+function behavioralCoverageLine(coverage: {
+  covered: number;
+  total: number;
+  ratio: number | null;
+}): string {
+  const pct =
+    coverage.total > 0 && coverage.ratio !== null ? `${Math.round(coverage.ratio * 100)}%` : "n/a";
+  return `behavioral columns: envelopes ${pct} of turns (${coverage.covered}/${coverage.total}), uncovered → —`;
 }
 
 function maybeMark(isWinner: boolean, cell: string): string {
@@ -475,6 +819,8 @@ Options
   --agent <name>      repeatable; masked-key attribution filter
   --model <glob>      repeatable model filter (* wildcards)
   --timezone <tz>     IANA timezone for --since/--until interpretation
+  --cohort <category> rank same-kind-of-work rows only (classifier category:
+                      Coding, Debugging, Testing, …) — excluded, not folded
   --session-gap <min> session gap override (default 10, or sessionGapMinutes)
   --samples           print the contributing sessions per harness
   --include-mixed     also print the excluded mixed-model sessions
