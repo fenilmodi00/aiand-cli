@@ -94,7 +94,7 @@ export const COMMANDS: Command[] = [
   },
   {
     name: "compare",
-    summary: "Personal task packs: scaffold, list, validate",
+    summary: "Personal task packs: add tasks, list, validate",
     ...lazy(() => import("./compare.js")),
   },
   {
