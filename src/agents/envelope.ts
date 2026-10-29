@@ -41,6 +41,13 @@ export type EnvelopeV1 = {
   project_root_id: string | null;
   /** Current git branch, null on detached HEAD / outside a repo / unknown. */
   git_branch: string | null;
+  // --- #127 (T2 efficiency) pinned field contract — T1 owns the authoritative
+  // envelope enrichment; expect the merger to prefer T1's version on conflict.
+  // Optional so v1 records keep validating; absent = no outcome info. ---
+  /** Per-tool call outcomes (pinned name `toolOutcomes`). Absent on v1. */
+  toolOutcomes?: Array<{ name: string; ok: boolean }>;
+  /** Turn terminal marker (pinned name `terminal`). Absent/null on v1. */
+  terminal?: "clean" | "aborted" | "errored" | null;
 };
 
 /**
@@ -171,6 +178,25 @@ function isEnvelopeV1(value: unknown): value is EnvelopeV1 {
   );
 }
 
+// #127 (T2): structural guards for the pinned v2 outcome fields (T1 owns the
+// authoritative enrichment; these tolerate absence and malformed shapes).
+function isToolOutcomes(value: unknown): value is Array<{ name: string; ok: boolean }> {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (o) =>
+        typeof o === "object" &&
+        o !== null &&
+        typeof (o as Record<string, unknown>).name === "string" &&
+        typeof (o as Record<string, unknown>).ok === "boolean",
+    )
+  );
+}
+
+function isTurnTerminal(value: unknown): value is "clean" | "aborted" | "errored" {
+  return value === "clean" || value === "aborted" || value === "errored";
+}
+
 /**
  * Parse a stored envelope JSON string; null when not recognizable.
  * Unknown fields are DROPPED on read (the v1 forward-compatibility contract),
@@ -189,6 +215,10 @@ export function parseEnvelope(json: string): EnvelopeV1 | null {
       ),
       project_root_id: typeof record.project_root_id === "string" ? record.project_root_id : null,
       git_branch: typeof record.git_branch === "string" ? record.git_branch : null,
+      // #127 (T2): pinned v2 outcome fields — absent on v1 records. Omitted
+      // (not undefined) so a parsed v1 record stays key-for-key v1.
+      ...(isToolOutcomes(record.toolOutcomes) ? { toolOutcomes: record.toolOutcomes } : {}),
+      ...(isTurnTerminal(record.terminal) ? { terminal: record.terminal } : {}),
     };
   } catch {
     return null;

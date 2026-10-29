@@ -84,6 +84,8 @@ function rowToEnvelope(row: Record<string, unknown>): EnvelopeRow {
     project_root_id: asStringOrNull(row.project_root_id),
     git_branch: asStringOrNull(row.git_branch),
   };
+  // #127 (T2): v2 outcome columns are not in this table yet (T1 owns the
+  // migration); rows read as v1 (outcome info null downstream).
   return {
     id: String(row.id),
     schema_version: asStringOrNull(row.schema_version) ?? ENVELOPE_SCHEMA_VERSION,
