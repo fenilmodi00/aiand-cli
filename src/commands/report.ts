@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { openBrowser } from "../cli/browser.js";
+import { CliError } from "../cli/errors.js";
 import { err, json, out, style } from "../cli/output.js";
 import { assertSafeProfileName } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
@@ -79,6 +80,12 @@ export async function run(argv: string[]): Promise<void> {
   });
   if (bool(parsed, "help")) return out(help);
 
+  if (parsed.positionals.length > 0) {
+    throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
+      hint: "Run `aiand report --help` to see the subcommands and flags.",
+    });
+  }
+
   const timezone = str(parsed, "timezone") ?? "UTC";
   assertTimezone(timezone);
   const theme = oneOf(parsed, "theme", ["light", "dark", "auto"], "auto");
@@ -87,7 +94,9 @@ export async function run(argv: string[]): Promise<void> {
   ];
   const top = int(parsed, "top") ?? DEFAULT_TOP_SESSIONS;
   if (top < 1) {
-    throw new Error("--top must be a positive number.");
+    throw new CliError("--top must be a positive number.", {
+      hint: "Pass a positive integer, e.g. `aiand report --top 10`.",
+    });
   }
 
   // -- one sync, then ONE store read for every section --------------------------
