@@ -86,7 +86,13 @@ describe("aggregateCells", () => {
       row({ success: true }),
       row({ success: true }),
       row({ success: true }),
-      row({ success: null, failure_mode: "infra", cost_usd: 999, wall_ms: 999_999, completed: false }),
+      row({
+        success: null,
+        failure_mode: "infra",
+        cost_usd: 999,
+        wall_ms: 999_999,
+        completed: false,
+      }),
     ];
     const [c] = aggregateCells(rows);
     assert.equal(c.trials, 3);
@@ -112,9 +118,7 @@ describe("aggregateCells", () => {
   });
 
   test("unmetered cost stays null", () => {
-    const rows = [
-      ...Array.from({ length: 3 }, () => row({ success: true, cost_usd: null })),
-    ];
+    const rows = [...Array.from({ length: 3 }, () => row({ success: true, cost_usd: null }))];
     const [c] = aggregateCells(rows);
     assert.equal(c.solves, 3);
     assert.equal(c.costUsd, null);
@@ -140,11 +144,12 @@ describe("aggregateCells", () => {
 });
 
 describe("tableWinners", () => {
-  const mk = (harness, solves, trials) => aggregateCells(
-    Array.from({ length: trials }, (_, i) =>
-      row({ harness, model: "m", success: i < solves, cost_usd: 0.01 * trials }),
-    ),
-  )[0];
+  const mk = (harness, solves, trials) =>
+    aggregateCells(
+      Array.from({ length: trials }, (_, i) =>
+        row({ harness, model: "m", success: i < solves, cost_usd: 0.01 * trials }),
+      ),
+    )[0];
 
   test("disjoint CIs → solve winner", () => {
     // 30/30 vs 0/30: Wilson intervals far apart.
@@ -173,7 +178,15 @@ describe("tableWinners", () => {
   test("per-column deterministic winners for cost, wall, turns, retries", () => {
     const rows = [
       ...Array.from({ length: 30 }, () =>
-        row({ harness: "claude", model: "m", success: true, cost_usd: 0.3, wall_ms: 3000, turns: 6, retries: 2 }),
+        row({
+          harness: "claude",
+          model: "m",
+          success: true,
+          cost_usd: 0.3,
+          wall_ms: 3000,
+          turns: 6,
+          retries: 2,
+        }),
       ),
       ...Array.from({ length: 30 }, (_, i) =>
         row({
@@ -202,7 +215,13 @@ describe("tableWinners", () => {
         row({ harness: "claude", model: "m", success: true, cost_usd: 0.3 }),
       ),
       ...Array.from({ length: 3 }, () =>
-        row({ harness: "codex", model: "m", success: false, failure_mode: "parse_error", cost_usd: 0.1 }),
+        row({
+          harness: "codex",
+          model: "m",
+          success: false,
+          failure_mode: "parse_error",
+          cost_usd: 0.1,
+        }),
       ),
     ];
     const w = tableWinners(aggregateCells(rows));

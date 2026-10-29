@@ -11,18 +11,14 @@ import type { CompareRunRow } from "./run-rows.js";
  */
 
 /** Wilson score interval at 95% (z = 1.96), no dependencies. */
-export function wilson95(
-  successes: number,
-  trials: number,
-): { lo: number; hi: number } | null {
+export function wilson95(successes: number, trials: number): { lo: number; hi: number } | null {
   if (trials <= 0) return null;
   const z = 1.96;
   const p = successes / trials;
   const z2 = z * z;
   const denom = 1 + z2 / trials;
   const center = (p + z2 / (2 * trials)) / denom;
-  const half =
-    (z / denom) * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials));
+  const half = (z / denom) * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials));
   return { lo: Math.max(0, center - half), hi: Math.min(1, center + half) };
 }
 
@@ -34,7 +30,7 @@ const FAILURE_MODES = [
   "integrity_violation",
 ] as const;
 
-export type FailureMode = (typeof FAILURE_MODES)[number];
+type FailureMode = (typeof FAILURE_MODES)[number];
 
 export type CellStats = {
   harness: string;
@@ -62,7 +58,7 @@ export type CellStats = {
   lowN: boolean;
 };
 
-export type Winners = {
+type Winners = {
   solve: string | null;
   costPerSolve: string | null;
   meanWallMs: string | null;
@@ -161,7 +157,8 @@ function best(
     if (
       winnerValue === null ||
       better(v, winnerValue) ||
-      (v === winnerValue && (c.harness < winner!.harness || (c.harness === winner!.harness && c.model < winner!.model)))
+      (v === winnerValue &&
+        (c.harness < winner!.harness || (c.harness === winner!.harness && c.model < winner!.model)))
     ) {
       winner = c;
       winnerValue = v;
@@ -200,10 +197,26 @@ export function tableWinners(cells: readonly CellStats[]): TableResult {
     tieNote,
     winners: {
       solve: solveTied ? null : anchor ? `${anchor.harness} / ${anchor.model}` : null,
-      costPerSolve: best(cells, (c) => c.costPerSolve, (a, b) => a < b),
-      meanWallMs: best(cells, (c) => c.meanWallMs, (a, b) => a < b),
-      turnsPerSolve: best(cells, (c) => c.turnsPerSolve, (a, b) => a < b),
-      retryRate: best(cells, (c) => c.retryRate, (a, b) => a < b),
+      costPerSolve: best(
+        cells,
+        (c) => c.costPerSolve,
+        (a, b) => a < b,
+      ),
+      meanWallMs: best(
+        cells,
+        (c) => c.meanWallMs,
+        (a, b) => a < b,
+      ),
+      turnsPerSolve: best(
+        cells,
+        (c) => c.turnsPerSolve,
+        (a, b) => a < b,
+      ),
+      retryRate: best(
+        cells,
+        (c) => c.retryRate,
+        (a, b) => a < b,
+      ),
     },
   };
 }

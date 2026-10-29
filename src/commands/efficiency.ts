@@ -7,11 +7,11 @@ import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
+  type EfficiencySlice,
   efficiencyByHarness,
   efficiencyByModel,
   efficiencyCoverage,
   efficiencyCoverageNote,
-  type EfficiencySlice,
   MISSED_CATCH_RULE,
   type OneShotRetryStats,
   oneShotRetry,
@@ -263,9 +263,7 @@ function render(payload: EfficiencyPayload): void {
   const b = payload.behavioral;
   heading("Behavioral (tool errors, missed catches, outcomes)");
   out(`  tool errors: ${percent(b.toolErrorRate)} (heuristic: envelope toolOutcomes)`);
-  out(
-    `  missed catches: ${percent(b.missedCatchRate)} (${b.missedCatches} turn(s))`,
-  );
+  out(`  missed catches: ${percent(b.missedCatchRate)} (${b.missedCatches} turn(s))`);
   out(style.dim(`  rule: ${payload.missedCatchRule}`));
   out(
     `  turns to success: ${b.turnsToSuccess ?? "n/a"}  ` +

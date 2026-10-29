@@ -8,6 +8,43 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across
+  harnesses and models. `compare add` scaffolds a task pack
+  (`instruction.md` + `workspace/` + `verify.sh`) with verifier discipline —
+  verify must FAIL on the untouched workspace (the built-in null-harness
+  control, scoring 0) and PASS after a `--golden` solution replay; `compare
+  validate` enforces both loudly. `compare run` drives each harness headless
+  (claude/codex/opencode; adapters that cannot run headless fail loudly),
+  pins one model across harnesses, meters cost+tokens from gateway rows
+  (masked-key + time-window join; missing usage is `null`, never 0), and
+  classifies failures (agent/verify timeout, parse_error, context_exceeded,
+  integrity_violation via verify-script hashing, infra — reported separately,
+  never folded into solve rate). `--dry-run` replays the recorded simulated
+  lane with zero gateway spend. `compare table` aggregates per (harness,
+  model): solve x/n with Wilson 95% CI, cost/solve, wall, turns/solve,
+  retry rate, and the failure histogram; overlapping CIs say "tied — not
+  distinguishable yet" instead of crowning a winner, cells under 3 trials
+  are flagged, and every rate carries `n=`. `compare audit` applies a fixed
+  deterministic rubric (integrity flags, suspicious-success median
+  heuristic, instruction sufficiency) — advisory only, never part of solve
+  rate or rankings.
+- Envelope capture v2 (#126): envelopes now record per-tool-call outcomes
+  (`toolOutcomes`, names + ok only — error text is never captured) and the
+  turn's terminal state (`terminal: clean|aborted|errored`). Store schema v7
+  carries both columns; old v1 rows still parse and read back with the
+  fields absent (unknown, never counted as ok or error).
+- Efficiency walk v2 (#127): tool-error rate, missed-catch rate (a shell
+  error → re-edit of a previously edited file → the same check failing
+  again — deterministic rule, layered onto the one-shot/retry walk),
+  turns-to-success, and the clean/aborted/errored session split, all labeled
+  `heuristic(...)` with coverage notes; turns without outcome data yield
+  `null`, never zeros.
+- `aiand harness import` (#133): opt-in backfill of behavioral markers from
+  the harnesses' own session files (Claude Code JSONL `is_error`/`stop_reason`,
+  Codex turn/compaction markers, OpenCode SQLite tool-state + compaction
+  parts) for sessions predating envelope capture — markers only, never
+  content; re-imports are idempotent by structural dedup key (store
+  schema v8), and derived rates stay `heuristic`-labeled.
 - `harness compare --out <file>` table export (#135): writes the compare
   table to a file as markdown, csv, or json (`--format`, default inferred
   from the extension). Exports preserve everything the terminal table

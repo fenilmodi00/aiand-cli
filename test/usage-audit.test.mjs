@@ -46,7 +46,7 @@ describe("aiand usage --audit", () => {
     assert.ok(Array.isArray(rows) && rows.length >= 10);
     for (const row of rows) {
       assert.ok(row.report && row.field && row.label && row.source);
-      assert.match(row.label, /^(gateway-billed|estimated\(|heuristic\()/);
+      assert.match(row.label, /^(gateway-billed|estimated\(|heuristic\(|simulated\()/);
     }
     const cost = rows.find((r) => r.field === "totals.costUsd");
     assert.equal(cost.label, "gateway-billed");

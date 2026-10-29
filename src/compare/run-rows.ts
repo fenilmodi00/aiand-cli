@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir } from "../fsutil.js";
 import { TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
-import { listTaskIds, taskPath } from "./tasks.js";
+import { taskPath } from "./tasks.js";
 
 /**
  * Lane-B run rows and task tags for the cohort + export surface (ticket #135).
@@ -54,7 +54,7 @@ export function runsPath(): string {
 }
 
 /** A task's run-row JSONL. */
-export function taskRunsPath(id: string): string {
+function taskRunsPath(id: string): string {
   return join(runsPath(), `${id}.jsonl`);
 }
 
@@ -107,7 +107,7 @@ function taskMetaPath(id: string): string {
 }
 
 /** Read task.json; {} when absent/corrupt (fail open — tags are optional). */
-export function readTaskMeta(id: string): TaskMeta {
+function readTaskMeta(id: string): TaskMeta {
   try {
     const raw = JSON.parse(readFileSync(taskMetaPath(id), "utf8")) as TaskMeta;
     if (typeof raw !== "object" || raw === null) return {};
@@ -142,10 +142,4 @@ export function taskTags(id: string): TaskCategory[] {
   const tags = readTaskMeta(id).tags;
   if (!Array.isArray(tags)) return [];
   return tags.filter((t): t is TaskCategory => TASK_CATEGORIES.includes(t)).sort();
-}
-
-/** Tasks carrying a given category in their tags. */
-export function tasksWithTag(category: TaskCategory, ids?: readonly string[]): string[] {
-  const all = ids ?? listTaskIds();
-  return all.filter((id) => taskTags(id).includes(category));
 }

@@ -1,8 +1,8 @@
 import type { Session } from "../api/client.js";
+import { formatLabel, simulated } from "../obs/provenance.js";
 import { type ModelPrice, runHarnessBenchmark } from "./harness-bench.js";
 import { HARNESS_LAYOUTS } from "./harness-layouts.js";
 import { BENCH_SCENARIOS } from "./scenarios.js";
-import { formatLabel, simulated } from "../obs/provenance.js";
 
 /** The provenance label for every scripted behavioral number in the report. */
 export const TOOL_OUTCOMES_PROVENANCE = simulated("scripted tool outcomes");

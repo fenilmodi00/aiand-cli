@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
@@ -20,14 +19,14 @@ function cfgDir(name) {
   return dir;
 }
 
-const HOUR = 60 * 60 * 1000;
+const _HOUR = 60 * 60 * 1000;
 const baseTime = Date.parse("2026-10-20T10:00:00.000Z");
 
 function iso(offsetMs) {
   return new Date(baseTime + offsetMs).toISOString();
 }
 
-function row(overrides) {
+function _row(overrides) {
   return {
     model: "zai-org/glm-5.3",
     api_key: "sk-test-claude...aaaa",
@@ -70,7 +69,22 @@ async function seedTwoHarnessStore(cfg) {
         ["o", opencodeMask, 0.02],
       ]) {
         const at = iso(i * 60_000);
-        insert.run(`${id}${i}`, "zai-org/glm-5.3", mask, 200, 300, null, 1000, 100, 500, String(cost), cost, "usd", at, at);
+        insert.run(
+          `${id}${i}`,
+          "zai-org/glm-5.3",
+          mask,
+          200,
+          300,
+          null,
+          1000,
+          100,
+          500,
+          String(cost),
+          cost,
+          "usd",
+          at,
+          at,
+        );
       }
     }
     // claude: v2 envelopes (Edit+Bash → "Coding" via the deterministic classifier).
@@ -116,7 +130,10 @@ test("toMarkdownTable strips ANSI and preserves alignment + winner markers", asy
   const lines = toMarkdownTable(
     ["harness", "hit"],
     ["left", "right"],
-    [["claude", "▸ 50.0%"], ["opencode", "—"]],
+    [
+      ["claude", "▸ 50.0%"],
+      ["opencode", "—"],
+    ],
   );
   assert.deepEqual(lines, [
     "| harness | hit |",
@@ -133,7 +150,12 @@ test("toCsvRows quotes only when needed and escapes embedded quotes", async () =
   const { toCsvRows } = await import("../dist/compare/table-export.js");
   const lines = toCsvRows(
     ["harness", "note"],
-    [["claude", "plain"], ["x", 'has,comma'], ["y", 'has "quote"'], ["z", "line\nbreak"]],
+    [
+      ["claude", "plain"],
+      ["x", "has,comma"],
+      ["y", 'has "quote"'],
+      ["z", "line\nbreak"],
+    ],
   );
   assert.equal(lines[0], "harness,note");
   assert.equal(lines[1], "claude,plain");
@@ -169,7 +191,11 @@ test("compare --out writes markdown with winners, n=, and coverage intact", asyn
   assert.match(md, /^\| harness \| .+ \|$/m);
   assert.match(md, /▸ 10\.0% \(n=5\)/, "winner marker + n= survive the export");
   assert.match(md, /behavioral columns: envelopes \d+% of turns/, "coverage line preserved");
-  assert.match(md, /provenance: heuristic\(one-shot\/retry envelope rule\)/, "provenance preserved");
+  assert.match(
+    md,
+    /provenance: heuristic\(one-shot\/retry envelope rule\)/,
+    "provenance preserved",
+  );
   assert.match(md, /—/, "uncovered cells stay em-dashes");
   assert.ok(!/synthetic/i.test(md), "synthetic sweep never joins the export");
 });
@@ -204,7 +230,10 @@ test("compare --out .json exports the payload with coverage + cohort context", a
   assert.equal(payload.harnesses.length, 2);
   assert.ok(payload.provenance.behavioralCoverage);
   assert.equal(payload.provenance.cohort, null);
-  assert.ok(payload.notes.some((n) => /behavioral columns/.test(n)), "coverage in notes");
+  assert.ok(
+    payload.notes.some((n) => /behavioral columns/.test(n)),
+    "coverage in notes",
+  );
   // --out --json must not also print the table to stdout.
   assert.ok(!run.stdout.includes("HARNESS"), "stdout stays clean on export");
 });
@@ -220,7 +249,7 @@ test("compare --cohort --out carries the cohort provenance line", async () => {
   assert.equal(run.code, 0, run.stderr);
   const md = readFileSync(file, "utf8");
   assert.match(md, /cohort Coding: \d+ request\(s\) match — excluded, not folded \(C6\)/);
-  assert.match(md, /"cohort": "Coding"/ === null ? /never/ : /▸/, "winners still marked");
+  assert.match(md, /▸/, "winners still marked");
 });
 
 test("compare --out infers format from extension; bad --format rejected; --format alone errors", async () => {
@@ -272,7 +301,10 @@ test("--cohort narrows stats, matrix, and recommend through the same classifier"
 
   // An empty cohort is honest-zero, not an error, on every surface.
   for (const args of [["harness", "stats"], ["harness", "matrix"], ["recommend"]]) {
-    const run = await runCli([...args, "--no-sync", "--cohort", "Brainstorming", "--json"], envOpts);
+    const run = await runCli(
+      [...args, "--no-sync", "--cohort", "Brainstorming", "--json"],
+      envOpts,
+    );
     assert.equal(run.code, 0, `${args.join(" ")}: ${run.stderr}`);
     const payload = JSON.parse(run.stdout);
     const rows = payload.harnesses ?? payload.pairs ?? payload.ranked;
@@ -327,7 +359,16 @@ test("tags are optional: add without --tags leaves no task.json and cohorts show
       .stdout,
   );
   assert.deepEqual(listed.tasks, [
-    { id: "plain", tags: [], runs: 0, solves: 0, trials: 0, infra: 0, costUsd: null, meanWallMs: null },
+    {
+      id: "plain",
+      tags: [],
+      runs: 0,
+      solves: 0,
+      trials: 0,
+      infra: 0,
+      costUsd: null,
+      meanWallMs: null,
+    },
   ]);
   assert.match(listed.note, /no run rows yet/, "honest degradation without the run surface");
 });
@@ -393,12 +434,12 @@ test("compare cohorts rolls up run rows when present; infra excluded from solves
     });
   writeFileSync(
     join(runsDir, "demo.jsonl"),
-    [
+    `${[
       runRow("claude", true, null, 0.02, 40000),
       runRow("codex", false, null, 0.01, 60000),
       runRow("opencode", null, "infra", null, 1000),
       "not json at all",
-    ].join("\n") + "\n",
+    ].join("\n")}\n`,
   );
   const run = await runCli(["compare", "cohorts", "--cohort", "Debugging", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -428,7 +469,9 @@ test("compare cohorts skips corrupt task.json instead of failing (fail-open)", a
 
 test("run-rows module: absent surface reads empty, guards file absence", async () => {
   const cfg = cfgDir("runs-absent");
-  const { hasRuns, readTaskRuns, parseRunRows, runsPath } = await import("../dist/compare/run-rows.js");
+  const { hasRuns, readTaskRuns, parseRunRows, runsPath } = await import(
+    "../dist/compare/run-rows.js"
+  );
   await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
     assert.equal(hasRuns("ghost"), false);
     assert.deepEqual(readTaskRuns("ghost"), []);

@@ -84,7 +84,7 @@ export function windowEnvelopes(
  * excluded, never folded. Shared by every --cohort consumer (compare,
  * matrix, recommend) so one classification pass feeds all of them.
  */
-export function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
+function cohortOf(rows: readonly HarnessRequestRow[], category: TaskCategory): Set<string> {
   const opened = openStore(storePath());
   const matching = new Set<string>();
   if (!opened.ok) return matching;

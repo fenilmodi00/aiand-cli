@@ -123,7 +123,14 @@ describe("one-shot/retry (C5 flagship metric)", () => {
 describe("tool-error / missed-catch / outcome (#127)", () => {
   test("tool-error rate over toolOutcomes; null when zero tool calls", () => {
     const { stats } = oneShotRetry([
-      { tools: ["Edit", "Bash"], editTargets: ["a.ts"], toolOutcomes: [{ name: "Edit", ok: true }, { name: "Bash", ok: false }] },
+      {
+        tools: ["Edit", "Bash"],
+        editTargets: ["a.ts"],
+        toolOutcomes: [
+          { name: "Edit", ok: true },
+          { name: "Bash", ok: false },
+        ],
+      },
       { tools: ["Read"], editTargets: [], toolOutcomes: [{ name: "Read", ok: true }] },
     ]);
     assert.equal(stats.value.toolErrorRate, 1 / 3);
@@ -134,9 +141,9 @@ describe("tool-error / missed-catch / outcome (#127)", () => {
 
   test("positive missed-catch chain: shell error → re-edit of pre-shell file → second shell error", () => {
     const { stats, missedCatchTurns } = oneShotRetry([
-      edit("a.ts"),                                   // edit a.ts
+      edit("a.ts"), // edit a.ts
       { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] }, // shell errors
-      edit("a.ts"),                                   // re-edit of file edited before the shell error
+      edit("a.ts"), // re-edit of file edited before the shell error
       { tools: ["Bash"], editTargets: [], toolOutcomes: [{ name: "Bash", ok: false }] }, // errors again → miss
     ]);
     assert.deepEqual(missedCatchTurns, [3]);
@@ -210,7 +217,15 @@ describe("tool-error / missed-catch / outcome (#127)", () => {
 
   test("aggregation carries the new stats per harness", () => {
     const rows = [
-      { agent: "v2", envelope: { tools: ["Bash"], edit_targets: [], toolOutcomes: [{ name: "Bash", ok: false }], terminal: "errored" } },
+      {
+        agent: "v2",
+        envelope: {
+          tools: ["Bash"],
+          edit_targets: [],
+          toolOutcomes: [{ name: "Bash", ok: false }],
+          terminal: "errored",
+        },
+      },
       { agent: "v1", envelope: { tools: ["Bash"], edit_targets: [] } },
     ];
     const byHarness = efficiencyByHarness(rows);

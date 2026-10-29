@@ -50,8 +50,7 @@ export type ArtifactMarker = {
 
 /** Where Claude Code keeps project session JSONL (overridable for tests). */
 function claudeProjectsRoot(): string | null {
-  const root =
-    process.env.AIAND_CLAUDE_DIR ?? join(agentHome(), ".claude", "projects");
+  const root = process.env.AIAND_CLAUDE_DIR ?? join(agentHome(), ".claude", "projects");
   return existsSync(root) ? root : null;
 }
 
@@ -225,8 +224,13 @@ function codexMarkersFromFile(path: string): ArtifactMarker[] {
   } catch {
     return [];
   }
-  const sessionId = safeSessionId(path.split(/[\\/]/).pop()?.replace(/\.jsonl$/, "") ?? "") ??
-    dedupKey([path]).slice(0, 16);
+  const sessionId =
+    safeSessionId(
+      path
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.jsonl$/, "") ?? "",
+    ) ?? dedupKey([path]).slice(0, 16);
   const markers: ArtifactMarker[] = [];
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i += 1) {
@@ -317,7 +321,10 @@ function opencodeMarkers(): ArtifactMarker[] {
     // Lazy node:sqlite load (platform-gated), same bridge as local-usage.ts.
     const require_ = createRequire(import.meta.url);
     const { DatabaseSync } = require_("node:sqlite") as {
-      DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => {
+      DatabaseSync: new (
+        path: string,
+        options?: { readOnly?: boolean },
+      ) => {
         prepare(sql: string): { all(): unknown[] };
         close(): void;
       };
@@ -339,7 +346,9 @@ function opencodeMarkers(): ArtifactMarker[] {
         if (!Array.isArray(parsed.parts)) continue;
         let toolSeq = 0;
         for (let i = 0; i < parsed.parts.length; i += 1) {
-          const part = parsed.parts[i] as OpencodeToolPart & OpencodeStepPart & OpencodeReasoningPart;
+          const part = parsed.parts[i] as OpencodeToolPart &
+            OpencodeStepPart &
+            OpencodeReasoningPart;
           if (typeof part !== "object" || part === null) continue;
           if (part.type === "tool") {
             const status = (part.state as { status?: unknown } | undefined)?.status;
@@ -424,7 +433,9 @@ export function sessionStats(markers: readonly ArtifactMarker[]): SessionBehavio
       terminal: terminal === "ok" || terminal === "error" ? null : terminal,
     });
   }
-  stats.sort((a, b) => (a.harness < b.harness ? -1 : a.harness > b.harness ? 1 : a.session_id < b.session_id ? -1 : 1));
+  stats.sort((a, b) =>
+    a.harness < b.harness ? -1 : a.harness > b.harness ? 1 : a.session_id < b.session_id ? -1 : 1,
+  );
   return stats;
 }
 
@@ -505,7 +516,9 @@ function countClaudeFiles(): number {
     const root = claudeProjectsRoot();
     if (root !== null) {
       for (const project of safeReaddir(root)) {
-        claudeFileCount += safeReaddir(join(root, project)).filter((f) => f.endsWith(".jsonl")).length;
+        claudeFileCount += safeReaddir(join(root, project)).filter((f) =>
+          f.endsWith(".jsonl"),
+        ).length;
       }
     }
   }

@@ -19,22 +19,39 @@ function cfg(name) {
   return dir;
 }
 
-const INSTRUCTION = "Fix the off-by-one error in src/list.ts so every element is rendered. Add a test covering the last element.";
+const INSTRUCTION =
+  "Fix the off-by-one error in src/list.ts so every element is rendered. Add a test covering the last element.";
 
 /** Seed run rows directly into the config dir's compare-runs/<task>.jsonl. */
 function seedRuns(cfgDir, task, rows) {
   const dir = join(cfgDir, "compare-runs");
   mkdirSync(dir, { recursive: true });
   const base = {
-    run_id: "r", ts: "2026-10-29T00:00:00Z", harness: "claude", harness_version: "1",
-    model: "m", task, success: true, score: 1, failure_mode: null, completed: true,
-    wall_ms: 1000, turns: 10, retries: 0, tokens_in: 1000, tokens_cached: 0,
-    tokens_out: 500, cost_usd: 0.01, token_basis: "gateway", cost_basis: "gateway",
-    request_ids: [], verify_exit: 0,
+    run_id: "r",
+    ts: "2026-10-29T00:00:00Z",
+    harness: "claude",
+    harness_version: "1",
+    model: "m",
+    task,
+    success: true,
+    score: 1,
+    failure_mode: null,
+    completed: true,
+    wall_ms: 1000,
+    turns: 10,
+    retries: 0,
+    tokens_in: 1000,
+    tokens_cached: 0,
+    tokens_out: 500,
+    cost_usd: 0.01,
+    token_basis: "gateway",
+    cost_basis: "gateway",
+    request_ids: [],
+    verify_exit: 0,
   };
   writeFileSync(
     join(dir, `${task}.jsonl`),
-    rows.map((r) => JSON.stringify({ ...base, ...r })).join("\n") + "\n",
+    `${rows.map((r) => JSON.stringify({ ...base, ...r })).join("\n")}\n`,
   );
 }
 
@@ -50,7 +67,12 @@ test("audit flags a clear suspicious success far below the task median", async (
   seedTaskPack(dir, "t1");
   // 5 healthy successes at 1500 tokens / 10 turns; one at 100 tokens / 2 turns.
   seedRuns(dir, "t1", [
-    ...Array.from({ length: 5 }, (_, i) => ({ run_id: `ok${i}`, tokens_in: 1000, tokens_out: 500, turns: 10 })),
+    ...Array.from({ length: 5 }, (_, i) => ({
+      run_id: `ok${i}`,
+      tokens_in: 1000,
+      tokens_out: 500,
+      turns: 10,
+    })),
     { run_id: "cheap", tokens_in: 60, tokens_out: 40, turns: 1 },
   ]);
   const res = await runCli(["compare", "audit", "--task", "t1", "--json"], {
@@ -72,7 +94,12 @@ test("borderline success at exactly the threshold passes", async () => {
   seedTaskPack(dir, "t1");
   // median total = 1500; 25% = 375; a 375-token success is NOT below it.
   seedRuns(dir, "t1", [
-    ...Array.from({ length: 4 }, (_, i) => ({ run_id: `ok${i}`, tokens_in: 1000, tokens_out: 500, turns: 10 })),
+    ...Array.from({ length: 4 }, (_, i) => ({
+      run_id: `ok${i}`,
+      tokens_in: 1000,
+      tokens_out: 500,
+      turns: 10,
+    })),
     { run_id: "edge", tokens_in: 250, tokens_out: 125, turns: 3 },
   ]);
   const res = await runCli(["compare", "audit", "--task", "t1", "--json"], {
@@ -102,8 +129,20 @@ test("integrity_violation failure mode surfaces as an integrity FAIL", async () 
   const dir = cfg("integrity");
   seedTaskPack(dir, "t1");
   seedRuns(dir, "t1", [
-    ...Array.from({ length: 3 }, (_, i) => ({ run_id: `ok${i}`, tokens_in: 1000, tokens_out: 500, turns: 10 })),
-    { run_id: "cheat", success: true, failure_mode: "integrity_violation", tokens_in: 1000, tokens_out: 500, turns: 10 },
+    ...Array.from({ length: 3 }, (_, i) => ({
+      run_id: `ok${i}`,
+      tokens_in: 1000,
+      tokens_out: 500,
+      turns: 10,
+    })),
+    {
+      run_id: "cheat",
+      success: true,
+      failure_mode: "integrity_violation",
+      tokens_in: 1000,
+      tokens_out: 500,
+      turns: 10,
+    },
   ]);
   const res = await runCli(["compare", "audit", "--task", "t1", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: dir }),
@@ -144,7 +183,9 @@ test("honest empty: no run rows prints 'no run rows to audit'", async () => {
   assert.equal(res.code, 0, res.stderr);
   assert.match(res.stdout, /No run rows to audit/);
 
-  const res2 = await runCli(["compare", "audit", "--task", "nope"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+  const res2 = await runCli(["compare", "audit", "--task", "nope"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
   assert.equal(res2.code, 0);
   assert.match(res2.stdout, /No run rows to audit/);
 });
@@ -157,12 +198,29 @@ test("corrupt lines are skipped fail-open", async () => {
     join(runDir, "t1.jsonl"),
     "{not json}\n" +
       JSON.stringify({
-        run_id: "good", ts: "t", harness: "claude", harness_version: null, model: "m",
-        task: "t1", success: true, score: 1, failure_mode: null, completed: true,
-        wall_ms: 1, turns: null, retries: null, tokens_in: null, tokens_cached: null,
-        tokens_out: null, cost_usd: null, token_basis: "none", cost_basis: "none",
-        request_ids: [], verify_exit: 0,
-      }) + "\n",
+        run_id: "good",
+        ts: "t",
+        harness: "claude",
+        harness_version: null,
+        model: "m",
+        task: "t1",
+        success: true,
+        score: 1,
+        failure_mode: null,
+        completed: true,
+        wall_ms: 1,
+        turns: null,
+        retries: null,
+        tokens_in: null,
+        tokens_cached: null,
+        tokens_out: null,
+        cost_usd: null,
+        token_basis: "none",
+        cost_basis: "none",
+        request_ids: [],
+        verify_exit: 0,
+      }) +
+      "\n",
   );
   const res = await runCli(["compare", "audit", "--task", "t1", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: dir }),
@@ -203,7 +261,9 @@ test("audit makes no network traffic (net guard blocks non-loopback)", async () 
   const dir = cfg("nonet");
   seedRuns(dir, "t1", [{ run_id: "a" }]);
   // No AIAND_TEST_ALLOW_NETWORK — any non-loopback fetch would reject and fail the CLI.
-  const res = await runCli(["compare", "audit", "--task", "t1"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+  const res = await runCli(["compare", "audit", "--task", "t1"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
   assert.equal(res.code, 0, res.stderr);
 });
 
@@ -213,7 +273,12 @@ test("full healthy task audits to all-PASS across every criterion", async () => 
   writeFileSync(join(dir, "tasks", "t1", "verify.sh"), "#!/bin/sh\nexit 1\n");
   writeFileSync(join(dir, "tasks", "t1", "instruction.md"), INSTRUCTION);
   seedRuns(dir, "t1", [
-    ...Array.from({ length: 4 }, (_, i) => ({ run_id: `ok${i}`, tokens_in: 1000, tokens_out: 500, turns: 10 })),
+    ...Array.from({ length: 4 }, (_, i) => ({
+      run_id: `ok${i}`,
+      tokens_in: 1000,
+      tokens_out: 500,
+      turns: 10,
+    })),
   ]);
   const res = await runCli(["compare", "audit", "--task", "t1", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: dir }),

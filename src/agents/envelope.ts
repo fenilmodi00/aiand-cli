@@ -27,10 +27,10 @@ export const ENVELOPE_SCHEMA_VERSION = "aiand-envelope/v1";
 
 /** Deterministic truncation caps that keep the serialized envelope ≤ 2 KiB. */
 const ENVELOPE_MAX_TOOLS = 32;
-export const ENVELOPE_MAX_TOOL_OUTCOMES = 32;
+const ENVELOPE_MAX_TOOL_OUTCOMES = 32;
 const ENVELOPE_MAX_EDIT_TARGETS = 16;
-export const ENVELOPE_TERMINAL_STATES = ["clean", "aborted", "errored"] as const;
-export type EnvelopeTerminalState = (typeof ENVELOPE_TERMINAL_STATES)[number];
+const ENVELOPE_TERMINAL_STATES = ["clean", "aborted", "errored"] as const;
+type EnvelopeTerminalState = (typeof ENVELOPE_TERMINAL_STATES)[number];
 export const ENVELOPE_MAX_BYTES = 2048;
 
 /** A normalized `aiand-envelope/v1` record. Unknown input fields are dropped. */
@@ -115,9 +115,7 @@ function cleanBranch(branch: string | null | undefined): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
-function cleanToolOutcomes(
-  outcomes: TurnObservation["toolOutcomes"],
-): EnvelopeV1["toolOutcomes"] {
+function cleanToolOutcomes(outcomes: TurnObservation["toolOutcomes"]): EnvelopeV1["toolOutcomes"] {
   if (!Array.isArray(outcomes)) return undefined;
   const seen = new Set<string>();
   const out: NonNullable<EnvelopeV1["toolOutcomes"]> = [];
@@ -232,7 +230,9 @@ export function parseEnvelope(json: string): EnvelopeV1 | null {
       project_root_id: typeof record.project_root_id === "string" ? record.project_root_id : null,
       git_branch: typeof record.git_branch === "string" ? record.git_branch : null,
       ...(Array.isArray(record.toolOutcomes)
-        ? { toolOutcomes: cleanToolOutcomes(record.toolOutcomes as TurnObservation["toolOutcomes"]) }
+        ? {
+            toolOutcomes: cleanToolOutcomes(record.toolOutcomes as TurnObservation["toolOutcomes"]),
+          }
         : {}),
       ...(record.toolOutcomes === undefined && record.terminal === undefined
         ? {}

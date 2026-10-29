@@ -6,9 +6,9 @@ import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
+import * as importCmd from "./harness-import.js";
 import { runHarnessMatrix } from "./harness-matrix.js";
 import { runHarnessWorkload } from "./harness-stats.js";
-import * as importCmd from "./harness-import.js";
 import * as recommend from "./recommend.js";
 
 export const help = `${style.bold("aiand harness")} -- compare harnesses on cache behavior

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { hasRuns, readTaskRuns, type CompareRunRow } from "./run-rows.js";
+import { type CompareRunRow, hasRuns, readTaskRuns } from "./run-rows.js";
 import { taskPath } from "./tasks.js";
 
 /**
@@ -26,13 +26,13 @@ import { taskPath } from "./tasks.js";
  */
 
 /** Suspicious-success threshold: below this fraction of the task median. */
-export const SUSPICIOUS_FRACTION = 0.25;
+const SUSPICIOUS_FRACTION = 0.25;
 /** Minimum metered successful runs before the median is trusted. */
-export const MIN_MEDIAN_SAMPLE = 3;
+const MIN_MEDIAN_SAMPLE = 3;
 /** instruction.md shorter than this is flagged as under-specified. */
-export const MIN_INSTRUCTION_CHARS = 80;
+const MIN_INSTRUCTION_CHARS = 80;
 
-export type Verdict = "PASS" | "FAIL" | "N-A";
+type Verdict = "PASS" | "FAIL" | "N-A";
 
 export type RunAudit = {
   run_id: string;
@@ -66,21 +66,26 @@ function totalTokens(row: CompareRunRow): number | null {
  * Audit one task's run rows. Pure over (rows, instruction) — the command
  * layer reads the files; tests can call this directly with fixtures.
  */
-export function auditTaskRows(
+function auditTaskRows(
   task: string,
   rows: CompareRunRow[],
   instruction: string | null,
 ): RunAudit[] {
   const successes = rows.filter((r) => r.success === true);
-  const turnMedians = successes.map((r) => r.turns).filter((t): t is number => typeof t === "number");
-  const tokenMedians = successes
-    .map(totalTokens)
-    .filter((t): t is number => t !== null);
-  const enoughHistory = turnMedians.length >= MIN_MEDIAN_SAMPLE && tokenMedians.length >= MIN_MEDIAN_SAMPLE;
+  const turnMedians = successes
+    .map((r) => r.turns)
+    .filter((t): t is number => typeof t === "number");
+  const tokenMedians = successes.map(totalTokens).filter((t): t is number => t !== null);
+  const enoughHistory =
+    turnMedians.length >= MIN_MEDIAN_SAMPLE && tokenMedians.length >= MIN_MEDIAN_SAMPLE;
   const specFail = instruction === null || instruction.length < MIN_INSTRUCTION_CHARS;
 
   return rows.map((row) => {
-    const criteria = { integrity: "PASS" as Verdict, suspicious: "N-A" as Verdict, specification: "PASS" as Verdict };
+    const criteria = {
+      integrity: "PASS" as Verdict,
+      suspicious: "N-A" as Verdict,
+      specification: "PASS" as Verdict,
+    };
     const reasons: string[] = [];
 
     if (row.failure_mode === "integrity_violation") {
@@ -99,7 +104,8 @@ export function auditTaskRows(
       }
     } else {
       const tokens = totalTokens(row);
-      const turnLow = typeof row.turns === "number" && row.turns < SUSPICIOUS_FRACTION * median(turnMedians);
+      const turnLow =
+        typeof row.turns === "number" && row.turns < SUSPICIOUS_FRACTION * median(turnMedians);
       const tokenLow = tokens !== null && tokens < SUSPICIOUS_FRACTION * median(tokenMedians);
       if (turnLow || tokenLow) {
         criteria.suspicious = "FAIL";
@@ -123,7 +129,11 @@ export function auditTaskRows(
     }
 
     const values = Object.values(criteria);
-    const verdict: Verdict = values.includes("FAIL") ? "FAIL" : values.includes("N-A") ? "N-A" : "PASS";
+    const verdict: Verdict = values.includes("FAIL")
+      ? "FAIL"
+      : values.includes("N-A")
+        ? "N-A"
+        : "PASS";
     return {
       run_id: row.run_id,
       task: row.task || task,
@@ -137,7 +147,7 @@ export function auditTaskRows(
 }
 
 /** Read a task's instruction.md, or null when absent/unreadable. */
-export function readInstruction(id: string): string | null {
+function readInstruction(id: string): string | null {
   try {
     return readFileSync(join(taskPath(id), "instruction.md"), "utf8");
   } catch {

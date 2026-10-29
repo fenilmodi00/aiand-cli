@@ -1,10 +1,10 @@
-import { openStore, storePath } from "../store/index.js";
-import { IMPORT_HARNESSES, importArtifacts, type ImportHarness } from "../store/artifact-import.js";
 import { bool, parse } from "../cli/args.js";
-import { heading, json, out } from "../cli/output.js";
 import { CliError } from "../cli/errors.js";
+import { heading, json, out } from "../cli/output.js";
+import { IMPORT_HARNESSES, type ImportHarness, importArtifacts } from "../store/artifact-import.js";
+import { openStore, storePath } from "../store/index.js";
 
-export const help = `${"aiand harness import"} -- backfill behavioral markers from harness session files
+const help = `${"aiand harness import"} -- backfill behavioral markers from harness session files
 
 Usage
   aiand harness import [--harness <name>]... [--json]
@@ -29,11 +29,12 @@ function parseHarnesses(argv: string[]): ImportHarness[] {
   });
   if (bool(parsed, "help")) return [];
   const requested = parsed.values.harness;
-  const names = typeof requested === "string"
-    ? [requested]
-    : Array.isArray(requested)
-      ? requested.filter((v): v is string => typeof v === "string")
-      : [];
+  const names =
+    typeof requested === "string"
+      ? [requested]
+      : Array.isArray(requested)
+        ? requested.filter((v): v is string => typeof v === "string")
+        : [];
   if (names.length === 0) return [...IMPORT_HARNESSES];
   for (const name of names) {
     if (!(IMPORT_HARNESSES as readonly string[]).includes(name)) {

@@ -2,13 +2,8 @@ import { existsSync, writeFileSync } from "node:fs";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, out, style, table } from "../cli/output.js";
-import { WINNER_MARKER } from "../obs/harness-stats.js";
-import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
-import {
-  aggregateCells,
-  type CellStats,
-  tableWinners,
-} from "../compare/table.js";
+import { auditTask } from "../compare/audit.js";
+import { runCompareRun } from "../compare/run.js";
 import {
   hasRuns,
   readTaskRuns,
@@ -16,6 +11,8 @@ import {
   validateTags,
   writeTaskMeta,
 } from "../compare/run-rows.js";
+import { aggregateCells, type CellStats, tableWinners } from "../compare/table.js";
+import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
 import type { TaskVerdict } from "../compare/tasks.js";
 import {
   listTaskIds,
@@ -26,9 +23,7 @@ import {
   validateTask,
 } from "../compare/tasks.js";
 import { TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
-import { runCompareRun } from "../compare/run.js";
-import { auditTask } from "../compare/audit.js";
-
+import { WINNER_MARKER } from "../obs/harness-stats.js";
 
 export const help = `${style.bold("aiand compare")} -- replay your own tasks across harnesses
 
@@ -316,9 +311,7 @@ async function runAudit(argv: string[]): Promise<void> {
   const task = str(parsed, "task");
 
   const ids = task === undefined ? listTaskIds() : [task];
-  const audited = ids
-    .map((id) => ({ id, runs: auditTask(id) }))
-    .filter((t) => t.runs.length > 0);
+  const audited = ids.map((id) => ({ id, runs: auditTask(id) })).filter((t) => t.runs.length > 0);
 
   if (bool(parsed, "json")) {
     json({
@@ -331,7 +324,9 @@ async function runAudit(argv: string[]): Promise<void> {
 
   heading(task === undefined ? "compare · audit" : `compare · audit — ${task}`);
   if (audited.length === 0) {
-    out(style.dim(task === undefined ? "No run rows to audit." : `No run rows to audit for ${task}.`));
+    out(
+      style.dim(task === undefined ? "No run rows to audit." : `No run rows to audit for ${task}.`),
+    );
     return;
   }
   out(style.dim("  deterministic rubric — advisory only, never part of solve rate or rankings"));
@@ -339,7 +334,11 @@ async function runAudit(argv: string[]): Promise<void> {
     out(`  ${id}`);
     for (const r of runs) {
       const color =
-        r.verdict === "FAIL" ? (v: string) => style.red(v) : r.verdict === "PASS" ? (v: string) => style.green(v) : (v: string) => v;
+        r.verdict === "FAIL"
+          ? (v: string) => style.red(v)
+          : r.verdict === "PASS"
+            ? (v: string) => style.green(v)
+            : (v: string) => v;
       out(
         `        ${color(r.verdict.padEnd(4))} ${r.run_id.padEnd(20)} ${r.harness.padEnd(12)}` +
           ` integrity:${r.criteria.integrity} suspicious:${r.criteria.suspicious} specification:${r.criteria.specification}`,
@@ -404,8 +403,7 @@ function cellToJson(c: CellStats): TableJsonCell {
     trials: c.trials,
     solves: c.solves,
     solveRate: c.trials > 0 ? c.solves / c.trials : null,
-    solveCi95:
-      c.solveLo !== null && c.solveHi !== null ? { lo: c.solveLo, hi: c.solveHi } : null,
+    solveCi95: c.solveLo !== null && c.solveHi !== null ? { lo: c.solveLo, hi: c.solveHi } : null,
     lowN: c.lowN,
     costUsd: c.costUsd,
     costPerSolve: c.costPerSolve,
@@ -418,7 +416,11 @@ function cellToJson(c: CellStats): TableJsonCell {
 }
 
 async function runTable(argv: string[]): Promise<void> {
-  const parsed = parse(argv, { task: { type: "string" }, out: { type: "string" }, format: { type: "string" } });
+  const parsed = parse(argv, {
+    task: { type: "string" },
+    out: { type: "string" },
+    format: { type: "string" },
+  });
   if (bool(parsed, "help")) return out(help);
 
   const ids = str(parsed, "task") ? [str(parsed, "task")!] : listTaskIds();
@@ -442,7 +444,10 @@ async function runTable(argv: string[]): Promise<void> {
       solveTied,
       tieNote,
       winners,
-      note: rows.length === 0 ? "no run rows yet — run `aiand compare run --task <id>` first" : undefined,
+      note:
+        rows.length === 0
+          ? "no run rows yet — run `aiand compare run --task <id>` first"
+          : undefined,
     });
     return;
   }
@@ -476,7 +481,10 @@ async function runTable(argv: string[]): Promise<void> {
     {
       header: "wall",
       value: (c) =>
-        mark(c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`, w.meanWallMs === cellKey(c)),
+        mark(
+          c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`,
+          w.meanWallMs === cellKey(c),
+        ),
     },
     {
       header: "turns/solve",
@@ -498,7 +506,15 @@ async function runTable(argv: string[]): Promise<void> {
   if (outPath !== undefined) {
     const format = inferExportFormat(outPath, str(parsed, "format"));
     const aligns = ["left", "left", "right", "right", "right", "right", "left"] as const;
-    const headers = ["harness / model", "solve", "cost/solve", "wall", "turns/solve", "retries/solve", "failures"];
+    const headers = [
+      "harness / model",
+      "solve",
+      "cost/solve",
+      "wall",
+      "turns/solve",
+      "retries/solve",
+      "failures",
+    ];
     const body = cells.map((c) => [
       cellKey(c),
       `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`,
@@ -510,7 +526,7 @@ async function runTable(argv: string[]): Promise<void> {
     ]);
     let payload: string;
     if (format === "csv") {
-      payload = [toCsvRows(headers, body).join("\n"), solveTied ? tieNote ?? "" : ""].join("\n");
+      payload = [toCsvRows(headers, body).join("\n"), solveTied ? (tieNote ?? "") : ""].join("\n");
     } else if (format === "json") {
       payload = JSON.stringify(
         { cells: cells.map(cellToJson), solveTied, tieNote, winners },

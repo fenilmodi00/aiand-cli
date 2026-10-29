@@ -4,12 +4,12 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { CliError } from "../cli/errors.js";
@@ -44,7 +44,7 @@ export function taskPath(id: string): string {
   return join(tasksPath(), id);
 }
 
-export type TaskValidation = {
+type TaskValidation = {
   /** Fail-before check ran and the verify script failed on the untouched workspace. */
   failBefore?: { ok: boolean; at: string };
   /** Null-harness control: the no-op run scored 0 (verify failed untouched). */
@@ -73,7 +73,7 @@ export function listTaskIds(): string[] {
 }
 
 /** Read validation.json for a task dir; null when absent/corrupt (fail open). */
-export function readValidation(dir: string): TaskValidation | null {
+function readValidation(dir: string): TaskValidation | null {
   try {
     const raw = JSON.parse(readFileSync(join(dir, VALIDATION_FILE), "utf8")) as TaskValidation;
     if (typeof raw !== "object" || raw === null) return null;
@@ -88,7 +88,7 @@ function writeValidation(dir: string, validation: TaskValidation): Promise<void>
 }
 
 /** Files every task needs; anything missing means the pack is malformed. */
-export function missingTaskFiles(dir: string): string[] {
+function missingTaskFiles(dir: string): string[] {
   const missing: string[] = [];
   for (const file of [INSTRUCTION_FILE, VERIFY_FILE, "workspace"]) {
     if (!existsSync(join(dir, file))) missing.push(file);
@@ -154,7 +154,7 @@ export type VerifyResult = {
 };
 
 /** First valid SCORE line in the output, clamped to [0, 1]; 0 otherwise. */
-export function extractScore(output: string): number {
+function extractScore(output: string): number {
   for (const line of output.split("\n")) {
     const m = SCORE_RE.exec(line.trim());
     if (m) {
@@ -236,7 +236,9 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
   if (/\bverify(\.sh)?\b/i.test(instruction)) {
     verdict.complete = false;
     verdict.valid = false;
-    verdict.problems.push("instruction.md references the verify script — agents must not see how they are graded");
+    verdict.problems.push(
+      "instruction.md references the verify script — agents must not see how they are graded",
+    );
     return verdict;
   }
 
@@ -257,7 +259,11 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
 
   const validation: TaskValidation = {
     failBefore: { ok: controlOk, at: new Date().toISOString() },
-    nullHarness: { ok: controlOk, score: controlOk ? 0 : untouched.score, at: new Date().toISOString() },
+    nullHarness: {
+      ok: controlOk,
+      score: controlOk ? 0 : untouched.score,
+      at: new Date().toISOString(),
+    },
   };
 
   if (controlOk && goldenDir !== undefined) {
@@ -281,7 +287,9 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
     verdict.valid = verdict.golden ? true : null; // golden replay decides full validation
   }
   if (verdict.valid === null && verdict.golden === null) {
-    verdict.problems.push("not fully validated — re-run with --golden <dir> to replay the recorded solution");
+    verdict.problems.push(
+      "not fully validated — re-run with --golden <dir> to replay the recorded solution",
+    );
   }
   await writeValidation(dir, validation);
   return verdict;

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
-import { cliEnv, FAKE_API_KEY, plantStub, runCli, seedCatalogCache, withEnv, withMockGateway, withTestEnv } from "./helpers.mjs";
+import {
+  cliEnv,
+  FAKE_API_KEY,
+  plantStub,
+  runCli,
+  withEnv,
+  withMockGateway,
+  withTestEnv,
+} from "./helpers.mjs";
 
 /**
  * Ticket #131 — `aiand compare run`: headless harness drivers, JSONL run
@@ -29,7 +36,8 @@ node -e "if(process.env.AIAND_HACK)require('fs').writeFileSync(process.env.AIAND
 echo 'done: workspace updated'
 exit 0`;
 
-const VERIFY_SCRIPT = "#!/bin/sh\nif [ -f solved.txt ]; then echo 'SCORE: 1'; exit 0; else echo 'not solved'; exit 1; fi\n";
+const VERIFY_SCRIPT =
+  "#!/bin/sh\nif [ -f solved.txt ]; then echo 'SCORE: 1'; exit 0; else echo 'not solved'; exit 1; fi\n";
 
 /** Scaffold a task, hand-write a deterministic verify script, validate it. */
 async function addValidatedTask(cfgDir, id) {
@@ -121,10 +129,27 @@ const readRows = (cfgDir, task) =>
     .map((line) => JSON.parse(line));
 
 const RUN_SHAPE = [
-  "run_id", "ts", "harness", "harness_version", "model", "task", "success",
-  "score", "failure_mode", "completed", "wall_ms", "turns", "retries",
-  "tokens_in", "tokens_cached", "tokens_out", "cost_usd", "token_basis",
-  "cost_basis", "request_ids", "verify_exit",
+  "run_id",
+  "ts",
+  "harness",
+  "harness_version",
+  "model",
+  "task",
+  "success",
+  "score",
+  "failure_mode",
+  "completed",
+  "wall_ms",
+  "turns",
+  "retries",
+  "tokens_in",
+  "tokens_cached",
+  "tokens_out",
+  "cost_usd",
+  "token_basis",
+  "cost_basis",
+  "request_ids",
+  "verify_exit",
 ];
 
 test("happy path: solved row with gateway-metered cost and exact pinned shape", async () => {
@@ -167,7 +192,7 @@ test("happy path: solved row with gateway-metered cost and exact pinned shape", 
 });
 
 test("verify-fail row: success false, score null, exit recorded", async () => {
-  await withPinnedGateway(async ({ url, logs }) => {
+  await withPinnedGateway(async ({ url }) => {
     const dir = cfg("fail");
     await addValidatedTask(dir, "miss-it");
     plantStub(join(dir, "bin"), "codex", AGENT_STUB); // never writes solved.txt
@@ -187,7 +212,7 @@ test("verify-fail row: success false, score null, exit recorded", async () => {
 });
 
 test("integrity violation: agent edits verify.sh => flagged, verify result not taken", async () => {
-  await withPinnedGateway(async ({ url, logs }) => {
+  await withPinnedGateway(async ({ url }) => {
     const dir = cfg("hack");
     const taskDir = await addValidatedTask(dir, "grader-hack");
     plantStub(join(dir, "bin"), "codex", AGENT_STUB);
@@ -211,7 +236,7 @@ test("integrity violation: agent edits verify.sh => flagged, verify result not t
 });
 
 test("trials > 1: one row per trial, stable run_ids", async () => {
-  await withPinnedGateway(async ({ url, logs }) => {
+  await withPinnedGateway(async ({ url }) => {
     const dir = cfg("trials");
     await addValidatedTask(dir, "repeat");
     plantStub(join(dir, "bin"), "codex", AGENT_STUB);
@@ -252,7 +277,20 @@ test("unvalidated task refused with a hint; --force overrides", async () => {
   // --force still refuses to spend: the harness stub is absent, so the run
   // reports the missing binary as infra rather than crashing.
   const forced = await runCli(
-    ["compare", "run", "--task", "raw", "--harness", "codex", "--trials", "1", "--force", "--model", "zai-org/glm-5.3", "--json"],
+    [
+      "compare",
+      "run",
+      "--task",
+      "raw",
+      "--harness",
+      "codex",
+      "--trials",
+      "1",
+      "--force",
+      "--model",
+      "zai-org/glm-5.3",
+      "--json",
+    ],
     { env: runEnv(dir, "http://127.0.0.1:9") },
   );
   assert.notEqual(forced.code, 0, "infra rows fail the command, reported separately");
@@ -268,7 +306,19 @@ test("gateway unreachable => infra row, cost null, never folded into solve rate"
 
   // CLOSED_URL fails fast with ECONNREFUSED — the gateway is unreachable.
   const res = await runCli(
-    ["compare", "run", "--task", "offline-task", "--harness", "codex", "--trials", "1", "--model", "zai-org/glm-5.3", "--json"],
+    [
+      "compare",
+      "run",
+      "--task",
+      "offline-task",
+      "--harness",
+      "codex",
+      "--trials",
+      "1",
+      "--model",
+      "zai-org/glm-5.3",
+      "--json",
+    ],
     { env: runEnv(dir, "http://127.0.0.1:9") },
   );
   assert.notEqual(res.code, 0, "infra is reported, not swallowed");
@@ -287,8 +337,16 @@ test("--dry-run: recorded lane, zero gateway spend, recorded basis", async () =>
 
   const res = await runCli(
     [
-      "compare", "run", "--task", "dry-task", "--dry-run",
-      "--harness", "claude-code", "--trials", "2", "--json",
+      "compare",
+      "run",
+      "--task",
+      "dry-task",
+      "--dry-run",
+      "--harness",
+      "claude-code",
+      "--trials",
+      "2",
+      "--json",
     ],
     { env: runEnv(dir, "http://127.0.0.1:9") },
   );
@@ -309,7 +367,7 @@ test("--dry-run: recorded lane, zero gateway spend, recorded basis", async () =>
 });
 
 test("parse_error: harness exits cleanly with no output => never graded as success", async () => {
-  await withPinnedGateway(async ({ url, logs }) => {
+  await withPinnedGateway(async ({ url }) => {
     const dir = cfg("silent");
     await addValidatedTask(dir, "silent-task");
     plantStub(join(dir, "bin"), "codex", `exit 0`);

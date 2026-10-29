@@ -11,23 +11,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { AgentAdapter, SessionLaunchInput } from "../agents/types.js";
 import { getCatalog, resolveDefault, validateCatalogModel } from "../agents/catalog.js";
 import { notInstalledError } from "../agents/launch.js";
 import { findAgent } from "../agents/registry.js";
-import { resolveWindowsCommand } from "../cli/win-spawn.js";
+import type { AgentAdapter, SessionLaunchInput } from "../agents/types.js";
+import { maskKey, recordAgentKey } from "../api/agent-keys.js";
+import { openSession, type Session } from "../api/client.js";
+import type { Model } from "../api/models.js";
+import { findHarnessLayout, HARNESS_LAYOUTS } from "../benchmark/harness-layouts.js";
+import { PINNED_MODEL, runRecordedBenchmark } from "../benchmark/recorded.js";
 import { bool, int, list, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, heading, json, out, style } from "../cli/output.js";
-import { openSession, type Session } from "../api/client.js";
-import { maskKey, recordAgentKey } from "../api/agent-keys.js";
-import { type ResolvedProfile, resolveProfile, configDir } from "../config.js";
-import { openStore, storePath, syncStore } from "../store/index.js";
-import type { Model } from "../api/models.js";
-import { HARNESS_LAYOUTS, findHarnessLayout } from "../benchmark/harness-layouts.js";
-import { PINNED_MODEL, runRecordedBenchmark } from "../benchmark/recorded.js";
+import { resolveWindowsCommand } from "../cli/win-spawn.js";
+import { configDir, type ResolvedProfile, resolveProfile } from "../config.js";
 import { oneShotRetry } from "../model-efficiency.js";
 import { listEnvelopes } from "../store/envelopes.js";
+import { openStore, storePath, syncStore } from "../store/index.js";
+import type { CompareRunRow } from "./run-rows.js";
 import { runVerify, taskPath, taskStatus } from "./tasks.js";
 
 /**
@@ -69,7 +70,7 @@ const VERIFY_TIMEOUT_MS = 120_000;
 const CONTEXT_RE =
   /context (?:window|length|limit)|exceeds the context|prompt is too long|token limit/i;
 
-export const help = `${style.bold("aiand compare run")} -- replay a task pack across harnesses
+const help = `${style.bold("aiand compare run")} -- replay a task pack across harnesses
 
 Usage
   aiand compare run --task <id> [--harness a,b] [--model m] [--trials 3]
@@ -95,43 +96,8 @@ its hash is checked before/after each run so an agent that edits the grader
 is flagged integrity_violation instead of scored. Cost and tokens join the
 gateway's /logs by masked key + time window; missing usage stays null.`;
 
-export type CompareFailureMode =
-  | "agent_timeout"
-  | "verify_timeout"
-  | "parse_error"
-  | "context_exceeded"
-  | "infra"
-  | "integrity_violation";
-
-/** One run row — the shape pinned in the plan §1 Lane B. */
-export type CompareRunRow = {
-  run_id: string;
-  ts: string;
-  harness: string;
-  harness_version: string | null;
-  model: string;
-  task: string;
-  /** verify exit 0 — null when infra/integrity/timeout left nothing to grade. */
-  success: boolean | null;
-  score: number | null;
-  failure_mode: CompareFailureMode | null;
-  /** The harness binary exited cleanly — recorded separately, never = success. */
-  completed: boolean;
-  wall_ms: number;
-  turns: number | null;
-  retries: number | null;
-  tokens_in: number | null;
-  tokens_cached: number | null;
-  tokens_out: number | null;
-  cost_usd: number | null;
-  token_basis: "gateway" | "none" | "recorded";
-  cost_basis: "gateway" | "none" | "recorded";
-  request_ids: string[];
-  verify_exit: number | null;
-};
-
 /** The compare-runs root, next to config.json in the config dir. */
-export function runsPath(): string {
+function runsPath(): string {
   return join(configDir(), "compare-runs");
 }
 
@@ -146,9 +112,7 @@ function sha256File(path: string): string {
 
 /** Parse a gateway created_at (ISO or wire `… …+00`) to an instant. */
 function instant(value: string): number | null {
-  const normalized = value.includes(" ")
-    ? value.replace(" ", "T").replace(/\+00$/, "Z")
-    : value;
+  const normalized = value.includes(" ") ? value.replace(" ", "T").replace(/\+00$/, "Z") : value;
   const ms = Date.parse(normalized);
   return Number.isNaN(ms) ? null : ms;
 }
@@ -286,9 +250,7 @@ function spawnHeadless(
     maxBuffer: 32 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     // cmd.exe .cmd shims: the escaped line only parses verbatim (launch.ts).
-    ...(process.platform === "win32" && command !== bin
-      ? { windowsVerbatimArguments: true }
-      : {}),
+    ...(process.platform === "win32" && command !== bin ? { windowsVerbatimArguments: true } : {}),
   });
   return {
     status: proc.status,
@@ -308,7 +270,10 @@ type LiveOptions = {
 };
 
 function parseHarnessIds(raw: string[]): string[] {
-  return raw.flatMap((value) => value.split(",")).map((id) => id.trim()).filter(Boolean);
+  return raw
+    .flatMap((value) => value.split(","))
+    .map((id) => id.trim())
+    .filter(Boolean);
 }
 
 function freshWorkspace(taskDir: string): string {
@@ -364,9 +329,7 @@ function envelopeWalk(
   const masked = maskKey(token);
   const since = new Date(startMs - JOIN_TOLERANCE_MS).toISOString();
   const until = new Date(endMs + JOIN_TOLERANCE_MS).toISOString();
-  const rows = listEnvelopes({ since, until }).filter(
-    (row) => row.api_key === masked,
-  );
+  const rows = listEnvelopes({ since, until }).filter((row) => row.api_key === masked);
   if (rows.length === 0) return { count: null, retries: null };
   const turns = rows.map((row) => ({
     tools: row.envelope?.tools ?? [],
@@ -435,7 +398,8 @@ async function runLive(task: string, id: string, options: LiveOptions): Promise<
         options.timeoutMs,
       );
       row.wall_ms = Date.now() - startMs;
-      row.completed = spawned.spawnError === null && spawned.signal === null && spawned.status === 0;
+      row.completed =
+        spawned.spawnError === null && spawned.signal === null && spawned.status === 0;
 
       const usage = await joinGatewayUsage(session, maskedKey, startMs, Date.now());
 
@@ -556,8 +520,7 @@ function printRowLine(row: CompareRunRow): void {
       : row.success === true
         ? style.green("✓ solved")
         : style.red(`✗ ${row.failure_mode ?? "verify failed"}`);
-  const cost =
-    row.cost_usd === null ? "cost —" : `$${row.cost_usd.toFixed(4)} (${row.cost_basis})`;
+  const cost = row.cost_usd === null ? "cost —" : `$${row.cost_usd.toFixed(4)} (${row.cost_basis})`;
   out(
     `  ${row.harness.padEnd(12)} ${row.run_id.split(":").at(-1)?.padEnd(7)} ${status}  ` +
       `wall ${(row.wall_ms / 1000).toFixed(1)}s  ${cost}`,
@@ -692,7 +655,9 @@ export async function runCompareRun(argv: string[]): Promise<void> {
   const selectedIds = harnessIds.length > 0 ? harnessIds : DEFAULT_HARNESSES;
   const rows: CompareRunRow[] = [];
   for (const id of selectedIds) {
-    rows.push(...(await runLive(task, id, { model, trials, timeoutMs, session, catalog, profile })));
+    rows.push(
+      ...(await runLive(task, id, { model, trials, timeoutMs, session, catalog, profile })),
+    );
   }
   if (reportResults(task, model, false, rows, bool(parsed, "json"))) {
     process.exitCode = 1;

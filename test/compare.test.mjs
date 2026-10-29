@@ -98,7 +98,7 @@ test("validate fail-before: verify passing untouched => invalid, non-zero exit",
 
 test("validate end-to-end: fail-before ok, golden replay passes, tasks shows validated", async () => {
   const dir = cfg("golden");
-  const taskDir = await addPassingTask(dir, "real");
+  const _taskDir = await addPassingTask(dir, "real");
   const golden = mkdtempSync(join(tmpdir(), "compare-golden-"));
   writeFileSync(join(golden, "solved.txt"), "done\n");
 
@@ -155,7 +155,9 @@ test("unknown subcommand errors with a hint; table is honest about absent run ro
   const empty = await runCli(["compare", "table"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
   assert.equal(empty.code, 0);
   assert.match(empty.stdout, /No task packs yet/);
-  const emptyJson = await runCli(["compare", "table", "--json"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+  const emptyJson = await runCli(["compare", "table", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
   assert.equal(emptyJson.code, 0);
   assert.match(emptyJson.stdout, /No task packs yet/);
 });

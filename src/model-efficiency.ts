@@ -213,8 +213,6 @@ export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
   };
 }
 
-
-
 /** Aggregated one-shot/retry stats for one harness (or model) slice. */
 export type EfficiencySlice = {
   key: string;
@@ -226,7 +224,12 @@ export type EfficiencySlice = {
 export function efficiencyByModel(
   rows: readonly {
     model: string | null;
-    envelope: { tools: string[]; edit_targets: string[]; toolOutcomes?: ToolOutcome[]; terminal?: TurnTerminal | null };
+    envelope: {
+      tools: string[];
+      edit_targets: string[];
+      toolOutcomes?: ToolOutcome[];
+      terminal?: TurnTerminal | null;
+    };
   }[],
 ): EfficiencySlice[] {
   const groups = new Map<string, EfficiencyTurn[]>();
@@ -247,7 +250,12 @@ export function efficiencyByModel(
 export function efficiencyByHarness(
   rows: readonly {
     agent: string;
-    envelope: { tools: string[]; edit_targets: string[]; toolOutcomes?: ToolOutcome[]; terminal?: TurnTerminal | null };
+    envelope: {
+      tools: string[];
+      edit_targets: string[];
+      toolOutcomes?: ToolOutcome[];
+      terminal?: TurnTerminal | null;
+    };
   }[],
 ): EfficiencySlice[] {
   const groups = new Map<string, EfficiencyTurn[]>();
