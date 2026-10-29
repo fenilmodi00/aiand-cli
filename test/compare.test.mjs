@@ -146,15 +146,13 @@ test("validate rejects an instruction that mentions the verify script", async ()
   assert.match(res.stderr, /references the verify script/);
 });
 
-test("unknown subcommand errors with a hint; run/table are honest placeholders", async () => {
+test("unknown subcommand errors with a hint; table stays an honest placeholder", async () => {
   const dir = cfg("dispatch");
   const unknown = await runCli(["compare", "bogus"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
   assert.notEqual(unknown.code, 0);
   assert.match(unknown.stderr, /Unknown subcommand/);
 
-  for (const sub of ["run", "table"]) {
-    const soon = await runCli(["compare", sub], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
-    assert.notEqual(soon.code, 0);
-    assert.match(soon.stderr, /not implemented yet/);
-  }
+  const soon = await runCli(["compare", "table"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
+  assert.notEqual(soon.code, 0);
+  assert.match(soon.stderr, /not implemented yet/);
 });
