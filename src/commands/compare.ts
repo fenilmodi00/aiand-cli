@@ -20,6 +20,7 @@ import {
 } from "../compare/tasks.js";
 import { TASK_CATEGORIES, type TaskCategory } from "../obs/classifier.js";
 import { runCompareRun } from "../compare/run.js";
+import { auditTask } from "../compare/audit.js";
 
 
 export const help = `${style.bold("aiand compare")} -- replay your own tasks across harnesses
@@ -29,6 +30,7 @@ Usage
   aiand compare tasks                       list task packs and their validation status
   aiand compare validate [--golden <dir>]   fail-before check + optional golden replay
   aiand compare run  --task <id>            replay across harnesses (--dry-run = free)
+  aiand compare audit [--task <id>]         rubric audit of suspicious successes (advisory)
   aiand compare table [--task <id>]         (coming soon)
 
 Options
@@ -51,6 +53,7 @@ export async function run(argv: string[]): Promise<void> {
   if (subcommand === "validate") return runValidate(argv.slice(1));
   if (subcommand === "cohorts") return runCohorts(argv.slice(1));
   if (subcommand === "run") return runCompareRun(argv.slice(1));
+  if (subcommand === "audit") return runAudit(argv.slice(1));
   if (subcommand === "table") {
     throw new CliError("`aiand compare table` is not implemented yet.", {
       hint: "Run rows land under compare-runs/; the table reads them (coming soon).",
@@ -295,5 +298,48 @@ async function runCohorts(argv: string[]): Promise<void> {
         "run rows: none yet — the per-category solve/cost columns stay empty until `compare run` lands",
       ),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `compare audit` — opt-in rubric audit of suspicious successes (ticket #134)
+// ---------------------------------------------------------------------------
+
+async function runAudit(argv: string[]): Promise<void> {
+  const parsed = parse(argv, { task: { type: "string" } });
+  if (bool(parsed, "help")) return out(help);
+  const task = str(parsed, "task");
+
+  const ids = task === undefined ? listTaskIds() : [task];
+  const audited = ids
+    .map((id) => ({ id, runs: auditTask(id) }))
+    .filter((t) => t.runs.length > 0);
+
+  if (bool(parsed, "json")) {
+    json({
+      // Deterministic-only v1: no gateway LLM call, no cost rows.
+      note: "deterministic rubric (integrity flags, suspicious-success median heuristic, instruction sufficiency) — advisory only, never part of solve rate",
+      tasks: audited,
+    });
+    return;
+  }
+
+  heading(task === undefined ? "compare · audit" : `compare · audit — ${task}`);
+  if (audited.length === 0) {
+    out(style.dim(task === undefined ? "No run rows to audit." : `No run rows to audit for ${task}.`));
+    return;
+  }
+  out(style.dim("  deterministic rubric — advisory only, never part of solve rate or rankings"));
+  for (const { id, runs } of audited) {
+    out(`  ${id}`);
+    for (const r of runs) {
+      const color =
+        r.verdict === "FAIL" ? (v: string) => style.red(v) : r.verdict === "PASS" ? (v: string) => style.green(v) : (v: string) => v;
+      out(
+        `    ${color(r.verdict.padEnd(4))} ${r.run_id.padEnd(20)} ${r.harness.padEnd(12)}` +
+          ` integrity:${r.criteria.integrity} suspicious:${r.criteria.suspicious} specification:${r.criteria.specification}`,
+      );
+      for (const reason of r.reasons) out(style.dim(`        ${reason}`));
+    }
   }
 }
