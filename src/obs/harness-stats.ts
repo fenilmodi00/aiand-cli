@@ -1,7 +1,6 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
-import type { ProvenanceLabel } from "./provenance.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
 
 /** The input shape of the shared verdict function (its thresholds are law). */
@@ -44,7 +43,7 @@ export type SessionSample = {
  * envelope at-or-before the request within the turn window). All nullable:
  * v1 envelopes or no envelope data → null, rendered as `—`, never a zero.
  */
-export type BehavioralStats = {
+type BehavioralStats = {
   toolErrorRate: number | null;
   oneShotRate: number | null;
   retryRate: number | null;
@@ -56,7 +55,7 @@ export type BehavioralStats = {
 };
 
 /** The uncovered cell: nulls and a zero count — never fake zeros in rates. */
-export const EMPTY_BEHAVIORAL: BehavioralStats = {
+const EMPTY_BEHAVIORAL: BehavioralStats = {
   toolErrorRate: null,
   oneShotRate: null,
   retryRate: null,
@@ -108,7 +107,7 @@ export type ExcludedMixedAggregate = {
 };
 
 /** Sum the excluded sessions' rows. Pure; same provenance as pair costs. */
-export function excludedMixedAggregate(
+function excludedMixedAggregate(
   sessions: readonly { rows: readonly HarnessRequestRow[] }[],
 ): ExcludedMixedAggregate {
   const rows = sessions.flatMap((session) => [...session.rows]);
@@ -457,19 +456,5 @@ export function compareWinners(rows: readonly HarnessStatsRow[]): CompareWinners
       (r) => r.behavioral?.turnsToSuccess ?? null,
       (a, b) => a < b,
     ),
-  };
-}
-
-/** The provenance labels used by this module, re-exported for the catalog. */
-export function harnessStatsLabels(): Record<string, ProvenanceLabel> {
-  return {
-    "harness-stats.cost": gatewayBilled("store cost_value sums"),
-    "harness-stats.tokens": gatewayBilled("store token sums (input includes cached)"),
-    "harness-stats.ttft": gatewayBilled("gateway ttft_ms"),
-    "harness-stats.cacheHitRatio": estimated("cached_tokens / input_tokens"),
-    "harness-stats.errorRate": estimated("non-2xx excluding 429 / requests"),
-    "harness-stats.costPerSession": heuristic("per-session cost over time-gap sessions"),
-    "harness-stats.verdict": estimated("cacheVerdict thresholds"),
-    "harness-stats.behavioral": heuristic("one-shot/retry envelope rule (T2 walk)"),
   };
 }

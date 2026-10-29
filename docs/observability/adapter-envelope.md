@@ -42,31 +42,16 @@ test pins the size bound and idempotent re-normalization.
 ## Privacy posture
 
 Metadata only. No prompts, no completions, no file contents, no full file
-paths — ever. The capture API (`src/agents/envelope-capture.ts`) accepts only
-tool names, edit-target paths (hashed at normalization), the project root
-(hashed), and the branch name; nothing else has a place in the schema.
+paths — ever. The schema accepts only tool names, edit-target paths (hashed
+at normalization), the project root (hashed), and the branch name; nothing
+else has a place in the schema.
 
-## Capture
-
-Capture is **opt-in and default off**: enable with `AIAND_ENVELOPE_CAPTURE=1`
-or `"envelopeCapture": true` in config.json. A disabled recorder is a silent
-no-op — callers may create one unconditionally.
-
-```ts
-import { createEnvelopeRecorder } from "../agents/envelope-capture.js";
-
-const recorder = createEnvelopeRecorder({ agent: "opencode", model, apiKey });
-recorder.tool("Edit");
-recorder.edit("/repo/src/config.ts"); // hashed at flush time
-const result = recorder.flush({ projectRoot: "/repo", gitBranch: "main" });
-// result.recorded === true → one row in the local store's `envelopes` table
-```
-
-Envelopes are stored in the local store (`migration 0003`, table `envelopes`),
+Envelopes live in the local store (`migration 0004`, table `envelopes`),
 linked to the gateway request rows by the same masked `api_key` plus
 `created_at`; `session_id` / `request_id` are best-effort nullable links.
 
-Local capture is the only envelope path today. Forwarding envelopes through
+Locally stored envelopes (written via the store's `envelopes` table) are the
+only envelope data today. Forwarding envelopes through
 the gateway (which would populate `request_id`) is a tracked gateway ask
 (ticket #80); no schema change is needed when it lands.
 

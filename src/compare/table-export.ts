@@ -8,7 +8,7 @@
  * same two serializers when it lands.
  */
 
-export type ExportAlign = "left" | "right";
+type ExportAlign = "left" | "right";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 

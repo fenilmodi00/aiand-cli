@@ -248,7 +248,7 @@ export function buildPairStats(
 /** The sort keys `--sort` accepts on both matrix and recommend. */
 export type PairSortKey = "cost" | "ttft" | "hit" | "errors" | "tool-err" | "one-shot";
 
-export function pairSortValue(row: PairStatsRow, key: PairSortKey): number | null {
+function pairSortValue(row: PairStatsRow, key: PairSortKey): number | null {
   switch (key) {
     case "cost":
       return row.costPerSession.p50;

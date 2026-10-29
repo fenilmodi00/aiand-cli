@@ -67,7 +67,7 @@ type Winners = {
   retryRate: string | null;
 };
 
-export type TableResult = {
+type TableResult = {
   cells: CellStats[];
   winners: Winners;
   /** True when the best solve-rate CIs overlap — no winner for that column. */

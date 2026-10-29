@@ -527,11 +527,14 @@ function loadSweepImports(): Promise<[RegistryModule, AgentKeysModule]> {
  */
 export async function sweepNativeAgentKeys(session?: Session): Promise<void> {
   try {
-    // Dynamic: agents/registry statically imports store consumers
-    // (envelope-capture) and agent-keys imports config — a static import
-    // here would close a store→agents→store cycle (same pattern as
-    // src/api/client.ts's rebake import). Memoized: module resolution is
-    // wasted work on every syncStore call otherwise.
+    // Dynamic (defensive): nothing in src currently closes a cycle here —
+    // agent-keys imports config, but config's import closure (cli/errors,
+    // cli/output, fsutil, secrets, time) never reaches the store, and
+    // agents/registry no longer pulls in store consumers like
+    // envelope-capture. The dynamic import keeps it that way: any future
+    // store→agents or store→config edge stays load-order-safe (same
+    // pattern as src/api/client.ts's rebake import). Memoized: module
+    // resolution is wasted work on every syncStore call otherwise.
     const [{ AGENTS }, { recordNativeAgentKeys, recordSelfAgentKey }] = await loadSweepImports();
     // OBS-LT-1 (#106): the CLI's own traffic must attribute even with an
     // empty agent map — the key this session authenticates with is known

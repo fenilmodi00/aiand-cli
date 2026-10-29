@@ -22,7 +22,7 @@ import { PRIVATE_FILE_MODE } from "../fsutil.js";
  * mappings are never dropped by the sweep, because history under a
  * rotated-away key must stay attributed.
  */
-export type AgentKeyRecord = {
+type AgentKeyRecord = {
   /** Agent id as the registry spells it: "claude", "codex", "opencode", … */
   agent: string;
   /** The masked key, e.g. "sk-abcd...1234" — the same shape /logs returns. */
@@ -111,7 +111,7 @@ export async function recordAgentKey(agent: string, key: string): Promise<AgentK
  * "unknown". Never-guess rule untouched: only the key this CLI itself
  * presented gets this label; anything else stays unknown.
  */
-export const SELF_AGENT = "aiand-cli";
+const SELF_AGENT = "aiand-cli";
 
 /**
  * Remember the CLI's own active session key as {@link SELF_AGENT}. Additive
@@ -190,7 +190,7 @@ export const SHARED_AGENT = "shared";
  * dialects are known to map to specific harnesses. An endpoint not listed
  * here narrows nothing — attribution falls back to the endpoint-less rule.
  */
-export const ENDPOINT_HARNESSES: Readonly<Record<string, readonly string[]>> = {
+const ENDPOINT_HARNESSES: Readonly<Record<string, readonly string[]>> = {
   "/v1/messages": ["claude"],
   "/v1/responses": ["codex"],
   "/v1/chat/completions": ["opencode", "pi", "omp", "copilot", "copilot-app", "hermes"],

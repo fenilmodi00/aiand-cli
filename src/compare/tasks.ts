@@ -144,7 +144,7 @@ exit $status
   return dir;
 }
 
-export type VerifyResult = {
+type VerifyResult = {
   ok: boolean;
   exitCode: number | null;
   output: string;

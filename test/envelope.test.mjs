@@ -3,12 +3,11 @@ import test, { describe } from "node:test";
 import { withEnv, withTestEnv } from "./helpers.mjs";
 
 // OBS-P3-6 (#78): the adapter envelope — schema round-trip, size bound,
-// privacy hashing, the opt-in capture recorder, and the migration-0003 store
-// path. Privacy is pinned here: no full path ever reaches the store.
+// privacy hashing, and the migration-0004 store path. Privacy is pinned
+// here: no full path ever reaches the store.
 
 const box = withTestEnv("aiand-envelope-test-", (dir) => {
   process.env.AIAND_CONFIG_DIR = dir;
-  delete process.env.AIAND_ENVELOPE_CAPTURE;
   process.env.NO_COLOR = "1";
 });
 
@@ -23,8 +22,6 @@ const {
   parseEnvelope,
   projectRootId,
 } = await import("../dist/agents/envelope.js");
-const { ENVELOPE_CAPTURE_CONFIG_KEY, envelopeCaptureEnabled, createEnvelopeRecorder } =
-  await import("../dist/agents/envelope-capture.js");
 const { STORE_VERSION } = await import("../dist/store/index.js");
 const { insertEnvelope, listEnvelopes, listEnvelopesFromDb, countEnvelopes, countEnvelopesInDb } =
   await import("../dist/store/envelopes.js");
@@ -122,72 +119,6 @@ describe("envelope schema (aiand-envelope/v1)", () => {
   });
 });
 
-// -- capture recorder ----------------------------------------------------------
-
-describe("envelope capture (opt-in, default off)", () => {
-  test("capture is disabled by default", () => {
-    assert.equal(envelopeCaptureEnabled(), false);
-    assert.equal(ENVELOPE_CAPTURE_CONFIG_KEY, "envelopeCapture");
-  });
-
-  test("disabled recorder is a silent no-op that records nothing", async () => {
-    await withEnv({ AIAND_CONFIG_DIR: box.dir }, async () => {
-      const recorder = createEnvelopeRecorder({ agent: "opencode" });
-      assert.equal(recorder.enabled, false);
-      recorder.tool("Edit");
-      recorder.edit("/repo/src/config.ts");
-      const result = recorder.flush({ projectRoot: "/repo", gitBranch: "main" });
-      assert.deepEqual(result, { recorded: false, reason: "disabled" });
-      assert.equal(countEnvelopes(), 0);
-    });
-  });
-
-  test("AIAND_ENVELOPE_CAPTURE=1 opts in and stores a linked row", async () => {
-    await withEnv({ AIAND_ENVELOPE_CAPTURE: "1" }, async () => {
-      const recorder = createEnvelopeRecorder({
-        agent: "claude",
-        model: "zai-org/glm-5.3",
-        apiKey: "sk-abcd…1234",
-      });
-      assert.equal(recorder.enabled, true);
-      recorder.tool("Bash");
-      recorder.tool("Edit");
-      recorder.edit("/repo/src/index.ts");
-      const result = recorder.flush({ projectRoot: "/repo", gitBranch: "feat/envelope" });
-      assert.equal(result.recorded, true);
-      assert.match(result.envelope.edit_targets[0], /^index\.ts#[0-9a-f]{16}$/);
-
-      const opened = openStore(storePath());
-      assert.ok(opened.ok);
-      const rows = listEnvelopesFromDb(opened.db);
-      opened.db.close();
-      assert.equal(rows.length, 1);
-      const row = rows[0];
-      assert.equal(row.agent, "claude");
-      assert.equal(row.model, "zai-org/glm-5.3");
-      assert.equal(row.api_key, "sk-abcd…1234");
-      assert.equal(row.git_branch, "feat/envelope");
-      assert.equal(row.envelope.tools.join(","), "Bash,Edit");
-    });
-  });
-
-  test("config.json envelopeCapture: true opts in; empty turns are not stored", async () => {
-    const { writeFileSync } = await import("node:fs");
-    const { configPath } = await import("../dist/config.js");
-    writeFileSync(configPath(), JSON.stringify({ envelopeCapture: true }));
-    await withEnv({ AIAND_ENVELOPE_CAPTURE: "" }, async () => {
-      assert.equal(envelopeCaptureEnabled(), true);
-      const recorder = createEnvelopeRecorder({ agent: "pi" });
-      recorder.tool("Read"); // tools only, no edits — still a valid turn
-      const result = recorder.flush({ projectRoot: "/repo", gitBranch: null });
-      assert.equal(result.recorded, true);
-
-      const empty = createEnvelopeRecorder({ agent: "pi" });
-      assert.deepEqual(empty.flush(), { recorded: false, reason: "empty" });
-    });
-  });
-});
-
 // -- store (migration 0004; renumbered at merge, was 0003 pre-#73) ------------------------------------------------------
 
 describe("envelope store (migration 0004)", () => {
@@ -259,81 +190,6 @@ describe("envelope store (migration 0004)", () => {
 // -- tool outcomes + terminal (T1, #126) ---------------------------------------
 
 describe("envelope toolOutcomes + terminal (ticket #126)", () => {
-  test("recorder captures per-tool outcomes and a terminal marker; store round-trips them", async () => {
-    const { join } = await import("node:path");
-    await withEnv(
-      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-clean"), AIAND_ENVELOPE_CAPTURE: "1" },
-      async () => {
-        const recorder = createEnvelopeRecorder({ agent: "claude" });
-        recorder.tool("Read");
-        recorder.tool("Bash");
-        recorder.tool("Edit");
-        recorder.edit("/repo/src/a.ts");
-        recorder.toolOutcome("Read", true);
-        recorder.toolOutcome("Bash", true);
-        recorder.toolOutcome("Edit", true);
-        recorder.terminal("clean");
-        const result = recorder.flush({ projectRoot: "/repo", gitBranch: "main" });
-        assert.equal(result.recorded, true);
-        assert.deepEqual(result.envelope.toolOutcomes, [
-          { name: "Read", ok: true },
-          { name: "Bash", ok: true },
-          { name: "Edit", ok: true },
-        ]);
-        assert.equal(result.envelope.terminal, "clean");
-
-        // reload from disk: outcomes + terminal intact
-        const rows = listEnvelopes();
-        assert.equal(rows.length, 1);
-        assert.deepEqual(rows[0].envelope.toolOutcomes, [
-          { name: "Read", ok: true },
-          { name: "Bash", ok: true },
-          { name: "Edit", ok: true },
-        ]);
-        assert.equal(rows[0].envelope.terminal, "clean");
-      },
-    );
-  });
-
-  test("an errored tool records ok=false — and never any error text", async () => {
-    const { join } = await import("node:path");
-    await withEnv(
-      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-errored"), AIAND_ENVELOPE_CAPTURE: "1" },
-      async () => {
-        const recorder = createEnvelopeRecorder({ agent: "claude" });
-        recorder.tool("Bash");
-        recorder.toolOutcome("Bash", false); // the error MESSAGE never enters the API
-        recorder.terminal("errored");
-        const result = recorder.flush();
-        assert.equal(result.recorded, true);
-        assert.deepEqual(result.envelope.toolOutcomes, [{ name: "Bash", ok: false }]);
-        assert.equal(result.envelope.terminal, "errored");
-        assert.equal(
-          envelopeJson(result.envelope).includes("EACCES"),
-          false,
-          "no error text can exist — only the boolean is captured",
-        );
-      },
-    );
-  });
-
-  test("an aborted turn records terminal=aborted", async () => {
-    const { join } = await import("node:path");
-    await withEnv(
-      { AIAND_CONFIG_DIR: join(box.dir, "outcomes-aborted"), AIAND_ENVELOPE_CAPTURE: "1" },
-      async () => {
-        const recorder = createEnvelopeRecorder({ agent: "claude" });
-        recorder.tool("Read");
-        recorder.toolOutcome("Read", true);
-        recorder.terminal("aborted");
-        const result = recorder.flush();
-        assert.equal(result.recorded, true);
-        assert.equal(result.envelope.terminal, "aborted");
-        assert.equal(result.envelope.toolOutcomes?.length, 1);
-      },
-    );
-  });
-
   test("old-shape v1 rows (no new columns populated) load as unknown, never ok/error", async () => {
     const { join } = await import("node:path");
     await withEnv({ AIAND_CONFIG_DIR: join(box.dir, "outcomes-legacy") }, async () => {

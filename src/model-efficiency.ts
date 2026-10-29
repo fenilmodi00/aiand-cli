@@ -24,8 +24,8 @@ import { estimated, heuristic, type Labeled, labeled } from "./obs/provenance.js
  */
 
 /** Turn outcome granularity, once capture provides it. */
-export type ToolOutcome = { name: string; ok: boolean };
-export type TurnTerminal = "clean" | "aborted" | "errored";
+type ToolOutcome = { name: string; ok: boolean };
+type TurnTerminal = "clean" | "aborted" | "errored";
 
 /**
  * One turn as the efficiency rules read it. Outcome info is v2-only: absent
@@ -58,7 +58,7 @@ export function isShellTurn(turn: EfficiencyTurn): boolean {
 }
 
 /** The rule's verdict for one edit event. */
-export type EditOutcome = "one-shot" | "retry";
+type EditOutcome = "one-shot" | "retry";
 
 export type OneShotRetryStats = {
   /** Turns that edited at least one file. */

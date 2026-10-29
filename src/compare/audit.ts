@@ -40,7 +40,7 @@ const MIN_INSTRUCTION_CHARS = 80;
 
 type Verdict = "PASS" | "FAIL" | "N-A";
 
-export type RunAudit = {
+type RunAudit = {
   run_id: string;
   task: string;
   harness: string;

@@ -132,6 +132,12 @@ breaking changes while the command surface settles.
   lifetime.
 
 ### Removed
+- The adapter-side envelope capture API (`src/agents/envelope-capture.ts`,
+  `createEnvelopeRecorder`, `ENVELOPE_CAPTURE_CONFIG_KEY`, the
+  `envelopeCapture` config.json flag, and the `AIAND_ENVELOPE_CAPTURE` env
+  toggle). It was never wired into any adapter, so no behavior changes; the
+  envelope schema (`aiand-envelope/v1`), the `envelopes` store table, and the
+  efficiency reports built on them are unchanged.
 - The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
   `--include-imported` combined grand total, the import adapter module, the
   imported-usage report section, and the migration 0003 store tables
@@ -223,7 +229,7 @@ breaking changes while the command surface settles.
   constant and its serializer from `src/agents/envelope.ts`. Nothing sent the
   header and nothing read it back — the gateway does not forward or echo
   envelopes (gateway ask #2 remains open in ticket #80). Locally captured
-  envelopes (the store table, `envelope-capture`, and the `efficiency` reports
+  envelopes (the store table and the `efficiency` reports
   built on them) are the only envelope path and are unchanged.
 
 ### Fixed
