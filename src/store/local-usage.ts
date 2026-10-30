@@ -32,11 +32,13 @@ import { agentHome } from "../fsutil.js";
  * `input_tokens` INCLUDES `cached_tokens` (0001-init contract), and the
  * gateway row is consistently the LATER timestamp.
  *
- * Precedence: correlation only ever refines rows the current rule labels
- * `shared` (or `unknown`) — a specific key/dialect label (claude, codex,
- * …) is never overridden, and refinement never overrides a recorded
- * non-shared mapping either. All reads and writes fail open: a missing or
- * unreadable agent store degrades to no records, never a throw.
+ * Precedence: a UNIQUE local match outranks the key-map rules — including a
+ * specific key/dialect label, which is only an inference and can be stale
+ * (a harness whose data lives outside the swept homes is missing from the
+ * map). A specific-base row with no matching record settles to its base
+ * label; refinement never overrides a recorded non-shared mapping. All
+ * reads and writes fail open: a missing or unreadable agent store degrades
+ * to no records, never a throw.
  */
 
 /** One local per-request usage record, agent-agnostic. */
@@ -485,26 +487,38 @@ function inputWithin(localInput: number, gatewayInput: number): boolean {
  * Correlate every row and persist the refinement into
  * `requests.attributed_agent` (migration 0006), returning refinement labels
  * plus what changed — `labels` holds ONLY rows the pass actually refined via
- * a unique local match (shared/unknown base); base labels never enter it,
- * so a caller that applies `labels` cannot overwrite a persisted refinement
- * with the weaker base rule. Idempotent: a row is written only when its
- * persisted value differs, so repeated passes are no-ops.
+ * a unique local match; base labels never enter it, so a caller that applies
+ * `labels` cannot overwrite a persisted refinement with the weaker base
+ * rule. Idempotent: a row is written only when its persisted value differs,
+ * so repeated passes are no-ops.
+ *
+ * Precedence per attemptable row: a UNIQUE local match outranks everything —
+ * the agent wrote the record, per-request ground truth — including a
+ * specific base label, which is only a key-map inference and can be stale
+ * (a harness whose data lives outside the swept homes is missing from the
+ * map, and the key holders ∩ dialect intersection then collapses to a
+ * sibling agent). A specific-base row with no matching record still settles
+ * to its base label (these never need a local record); a row matched
+ * ambiguously stays NULL and re-attempts on every later pass.
  *
  * Cost gate: the pass settles a row the moment it RESOLVES — a unique local
- * match writes the matched agent, a specific base label writes itself (these
- * never need a local record and are never heal-eligible) — and a settled row
- * is never re-attempted. A row that matched nothing yet (its agent's record
- * not flushed to disk) or matched ambiguously stays NULL and re-attempts on
- * every later pass: agents buffer their session writes, so the record for a
- * request often lands on disk seconds AFTER the first pass ran (observed
- * live: omp's JSONL flush sealed 1174 rows behind the cursor as "shared"
- * while every one of them had a matching record). A later pass heals such
- * rows when the evidence arrives — ccusage re-reads local records on every
- * run for the same reason; an attempt-once cursor makes attribution one
- * flush-race away from permanently wrong. The cursor only records how far
- * the last pass reached; it bounds neither the unresolved set nor per-pass
- * cost — the unresolved set is re-attempted in full every pass until each
- * row resolves, and the (model, output) index keeps that affordable.
+ * match writes the matched agent, a specific base label with no matching
+ * record writes itself — and a row whose column equals its base label is
+ * re-probed cheaply every pass but rewritten only when the resolution
+ * DIFFERS, so a healed row is never re-attempted (a settled row costs one
+ * indexed probe per pass). A row that matched nothing yet (its agent's
+ * record not flushed to disk) or matched ambiguously stays NULL and
+ * re-attempts on every later pass: agents buffer their session writes, so
+ * the record for a request often lands on disk seconds AFTER the first pass
+ * ran (observed live: omp's JSONL flush sealed 1174 rows behind the cursor
+ * as "shared" while every one of them had a matching record). A later pass
+ * heals such rows when the evidence arrives — ccusage re-reads local
+ * records on every run for the same reason; an attempt-once cursor makes
+ * attribution one flush-race away from permanently wrong. The cursor only
+ * records how far the last pass reached; it bounds neither the unresolved
+ * set nor per-pass cost — the unresolved set is re-attempted in full every
+ * pass until each row resolves, and the (model, output) index keeps that
+ * affordable.
  *
  * # ponytail: full-table re-attempt each pass, O(rows × candidates) with the
  * (model, output) index — fine at personal-store scale (10^4 rows). Move
@@ -533,17 +547,26 @@ export function refreshCorrelations(
     db,
     requests.map((row) => row.id),
   );
-  // Re-eligible: fresh rows (past the cursor), plus any behind it still
-  // NULL — a row the pass has not resolved yet (its record hadn't flushed,
-  // or the match was ambiguous) re-attempts until it heals, and a legacy
-  // specific-base row settles to its base label on first sight. A row with
-  // a persisted label — matched agent or its own base label — never
-  // re-attempts.
+  // Re-eligible: fresh rows (past the cursor), any row still NULL (its
+  // record hadn't flushed, or the match was ambiguous — re-attempted until
+  // it heals), and any row whose column holds only a base settlement:
+  // either the label still equals the base the map derives today, or the
+  // map has since collapsed the row's base to shared/unknown (e.g. it
+  // gained the missing harness). The probe re-runs for those, and the write
+  // side never rewrites a column unless the resolution DIFFERS — so a
+  // settled row costs one indexed probe per pass, while a row whose column
+  // carries a match refinement (a value that differs from today's specific
+  // base) is never re-attempted at all. That asymmetry is the point: a
+  // key-map settlement is a guess the map may correct, a unique local match
+  // is ground truth nothing else may veto.
   const fresh = requests.filter((row) => {
     const at = Date.parse(row.created_at);
     if (Number.isNaN(at)) return true;
     if (at > cursor) return true;
-    return existing.get(row.id) === undefined;
+    const settled = existing.get(row.id);
+    if (settled === undefined) return true;
+    const base = baseLabel(row);
+    return settled === base || base === SHARED_AGENT || base === "unknown";
   });
   if (fresh.length === 0 || records.length === 0) return { labels, changed, ambiguous };
 
@@ -570,21 +593,19 @@ export function refreshCorrelations(
       const at = Date.parse(row.created_at);
       if (!Number.isNaN(at) && at > maxAt) maxAt = at;
       const base = baseLabel(row);
-      if (base !== SHARED_AGENT && base !== "unknown") {
-        // Settle a specific-base row by recording its base label: these rows
-        // never need a local record and are never heal-eligible, so writing
-        // the label takes them out of the pending set
-        // (correlationsPending counts NULL attributed_agent rows) and out of
-        // every later pass, permanently. Render never reads the column on a
-        // specific-base row (the dialect/key label always wins), so this
-        // write cannot change any report.
-        if (existing.get(row.id) !== base) {
+      // Probe the local-usage index for EVERY attemptable row, specific-base
+      // included: a unique local match is stronger evidence than the
+      // key-map label, which can be stale — a harness whose data lives
+      // outside the swept homes (e.g. omp in WSL) is missing from the map,
+      // and the key holders ∩ dialect intersection then collapses to a
+      // sibling agent, so the specific base can be flat-out wrong.
+      if (row.output_tokens === null || row.input_tokens === null || Number.isNaN(at)) {
+        // Nothing probeable: a specific base still settles (a NULL-token row
+        // can never match anything), a shared/unknown row stays NULL.
+        if (base !== SHARED_AGENT && base !== "unknown" && existing.get(row.id) !== base) {
           update.run(base, row.id);
           changed += 1;
         }
-        continue;
-      }
-      if (row.output_tokens === null || row.input_tokens === null || Number.isNaN(at)) {
         continue;
       }
       const bucket = byModelOutput.get(`${row.model}\u0000${row.output_tokens}`) ?? [];
@@ -597,17 +618,30 @@ export function refreshCorrelations(
         },
         bucket,
       );
+      if (match.kind === "refined") {
+        labels.set(row.id, match.agent);
+        if (existing.get(row.id) !== match.agent) {
+          update.run(match.agent, row.id);
+          changed += 1;
+        }
+        continue;
+      }
       if (match.kind === "ambiguous") {
         // Stays NULL: an ambiguous row is still re-attemptable (more
         // evidence may disambiguate it later) and must keep counting as
-        // pending until it heals.
+        // pending until it heals — the base label is NOT written over the
+        // ambiguity, or it would seal the row against the evidence.
         ambiguous += 1;
         continue;
       }
-      if (match.kind !== "refined") continue;
-      labels.set(row.id, match.agent);
-      if (existing.get(row.id) !== match.agent) {
-        update.run(match.agent, row.id);
+      // No local record: a specific base settles (these rows need no local
+      // record; writing the label takes them out of the pending set
+      // (correlationsPending counts NULL attributed_agent rows) and out of
+      // every later pass), while a shared/unknown row stays NULL and
+      // re-attempts — its agent's record often lands on disk seconds AFTER
+      // the first pass ran.
+      if (base !== SHARED_AGENT && base !== "unknown" && existing.get(row.id) !== base) {
+        update.run(base, row.id);
         changed += 1;
       }
     }
@@ -663,10 +697,11 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
  * before parsing local records at all. True when any row postdates the
  * cursor (new traffic), or when any attemptable row still carries NULL
  * attributed_agent: the pass settles a row only once it RESOLVES — a unique
- * local match writes the agent, a specific base label writes itself — while
- * a row that matched nothing yet (its agent's record not flushed to disk)
- * or matched ambiguously stays NULL and keeps the gate true until a later
- * pass heals it (see refreshCorrelations). Fail-open false.
+ * local match writes the agent, a specific base label with no matching
+ * record writes itself — while a row that matched nothing yet (its agent's
+ * record not flushed to disk) or matched ambiguously stays NULL and keeps
+ * the gate true until a later pass heals it (see refreshCorrelations).
+ * Fail-open false.
  */
 export function correlationsPending(db: DatabaseSync): boolean {
   try {

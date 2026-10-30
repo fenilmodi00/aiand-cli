@@ -166,12 +166,17 @@ function parseKeyLine(raw: string): KeyLine | null {
     comment: commentAt >= 0 ? content.slice(commentAt) : null,
   };
 }
-
-/** Split a flow-sequence body on commas that sit outside quotes. */
+/**
+ * Split a flow body (`{…}` or `[…]`) into top-level items on commas that sit
+ * outside quotes AND outside nested `{}` / `[…]`. Nest-awareness is what lets a
+ * flow map value hold a nested flow sequence or map without mis-splitting:
+ * `["a,b", {b: 1}]` yields two items, `{a: {x: 1}, b: 2}` yields two map entries.
+ */
 function splitFlowItems(inner: string): string[] {
   const parts: string[] = [];
   let cur = "";
   let quote: '"' | "'" | null = null;
+  let depth = 0;
   for (let i = 0; i < inner.length; i++) {
     const char = inner[i]!;
     if (quote === '"') {
@@ -197,7 +202,9 @@ function splitFlowItems(inner: string): string[] {
       cur += char;
       continue;
     }
-    if (char === ",") {
+    if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+    if (char === "," && depth === 0) {
       parts.push(cur);
       cur = "";
       continue;
@@ -208,16 +215,37 @@ function splitFlowItems(inner: string): string[] {
   return parts;
 }
 
-/** An inline value: `{}` / `[a, b]` flow, else a scalar. */
+/** An inline value: `null`/scalar, `{}` / `[…]` / `{k: v, …}` flow. Comments
+ * are stripped first so a trailing `# note` never corrupts the value. */
 function parseInline(raw: string): YamlValue {
-  const text = raw.trim();
+  const text = stripComment(raw).trim();
   if (text === "{}") return {};
+  if (text === "[]") return [];
+  if (text.startsWith("{") && text.endsWith("}")) {
+    const inner = text.slice(1, -1).trim();
+    if (inner === "") return {};
+    const out: Record<string, YamlValue> = {};
+    for (const item of splitFlowItems(inner)) {
+      const keyMatch = KEY_LINE.exec(stripComment(item).trim());
+      if (keyMatch === null) throw new SyntaxError(`bad flow-map entry: ${item}`);
+      const key = unquoteKey(keyMatch[1]!);
+      const valueText = keyMatch[2] ?? null;
+      out[key] = valueText === null || valueText.trim() === "" ? null : parseInline(valueText);
+    }
+    return out;
+  }
   if (text.startsWith("[") && text.endsWith("]")) {
     const inner = text.slice(1, -1).trim();
     if (inner === "") return [];
-    return splitFlowItems(inner).map((part) => parseScalar(part));
+    return splitFlowItems(inner).map((part) => {
+      const trimmed = part.trim();
+      if (trimmed === "") return null;
+      return parseInline(part);
+    });
   }
-  if (text.startsWith("{")) throw new SyntaxError(`flow mappings are not supported: ${text}`);
+  if (text.startsWith("{") || text.startsWith("[")) {
+    throw new SyntaxError(`unbalanced flow collection: ${raw}`);
+  }
   return parseScalar(text);
 }
 

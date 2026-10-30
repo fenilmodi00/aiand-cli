@@ -7,8 +7,9 @@ import { withEnv, withTestEnv } from "./helpers.mjs";
 // Local-usage correlation (#harness-correlate): a gateway row the key+endpoint
 // rules label "shared" is refined to the agent whose LOCAL usage record
 // (omp/pi session JSONL, opencode.db) uniquely matches it — same model, same
-// output tokens, input within tolerance, |Δt| <= 2 min. Precedence: a
-// specific base label (claude via /v1/messages, …) is never overridden; a
+// output tokens, input within tolerance, |Δt| <= 2 min. Precedence: a unique
+// local match outranks even a specific base label (the key map can be stale —
+// a harness whose data lives outside the swept homes is missing from it); a
 // weak or ambiguous match falls back, never guesses; missing agent stores
 // fail open.
 
@@ -214,13 +215,15 @@ describe("local-usage correlation", () => {
     assert.equal(byHarness.omp, undefined);
   });
 
-  test("a claude-dialect row (/v1/messages) is never overridden", async () => {
+  test("a unique local match overrides a claude-dialect base label", async () => {
     const dir = join(box.dir, "claude-guard");
     const home = join(box.dir, "home-claude");
     mkdirSync(dir, { recursive: true });
     // claude + omp hold the key (so an endpoint-less row would share), the
     // row speaks the Anthropic dialect, and an omp record matches it to the
-    // token — the dialect label must still win.
+    // token — the local evidence wins. The key map is only an inference and
+    // can be stale: the live bug had omp's records in WSL, invisible to the
+    // sweep, so the map settled a sibling agent's label permanently.
     seedSharedKey(dir, ["claude", "omp"]);
     writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
     await insertRows(dir, [storeRow({ id: "row-claude", endpoint: "/v1/messages" })]);
@@ -239,18 +242,86 @@ describe("local-usage correlation", () => {
       }),
     );
     const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
-    assert.equal(byHarness.claude, 1);
-    assert.equal(byHarness.omp, undefined);
-    // Nothing was persisted for it but its own base label — never the omp
-    // record that token-matches it. (Settling the base label into the
-    // column is what retires the row from the pending set; render ignores
-    // the column on a specific-base row.)
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.claude, undefined);
+    // The unique match replaced the base settlement in the column — the
+    // refinement is durable, not just a render-side override.
     const db = await openStoreFor(dir);
     const stored = db
       .prepare("SELECT attributed_agent FROM requests WHERE id = 'row-claude'")
       .get();
     db.close();
-    assert.equal(stored.attributed_agent, "claude");
+    assert.equal(stored.attributed_agent, "omp");
+  });
+
+  test("a stale pi key-map label heals from a unique omp record; no evidence settles to pi", async () => {
+    // The live 6-way misattribution: omp's records live in WSL, invisible to
+    // the Windows key sweep, so the map held sk-… → ["pi"] and every
+    // /v1/chat/completions row settled `pi` permanently — only `store reset`
+    // re-labeled. Now the unique local match outranks the settled base, and
+    // a row with no matching record still settles to its base (no
+    // re-attempt loop; the gate reaches false).
+    const dir = join(box.dir, "stale-map-heals");
+    const home = join(box.dir, "home-stale-map");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir, ["pi"]); // the stale map: no omp entry at all
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await insertRows(dir, [
+      storeRow({ id: "row-evidence" }),
+      // An hour later and no record matches (output tokens nothing records):
+      // its own base label is the best evidence there is.
+      storeRow({
+        id: "row-no-evidence",
+        output_tokens: 555,
+        cached_tokens: 0,
+        created_at: "2026-10-20T11:00:10.000Z",
+      }),
+    ]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const report = () =>
+      withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+        buildReportData({
+          timezone: "UTC",
+          sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+          untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+          harnesses: [],
+          models: [],
+          sections: ["by-harness"],
+          top: 20,
+          sync: { skipped: true },
+          now: PINNED_NOW,
+        }),
+      );
+    const data = await report();
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1, "the evidenced row must credit omp, not the stale pi base");
+    assert.equal(byHarness.pi, 1, "the unevidenced row still settles to its pi base");
+    // Both resolved durably: the match AND the base settlement.
+    const db = await openStoreFor(dir);
+    const stored = db
+      .prepare("SELECT id, attributed_agent FROM requests ORDER BY id")
+      .all()
+      .reduce((acc, r) => acc.set(r.id, r.attributed_agent), new Map());
+    const { correlationsPending } = await import("../dist/store/local-usage.js");
+    const pending = await withEnv({ AIAND_CONFIG_DIR: dir }, () => correlationsPending(db));
+    db.close();
+    assert.equal(stored.get("row-evidence"), "omp");
+    assert.equal(stored.get("row-no-evidence"), "pi");
+    assert.equal(pending, false);
+    // The session label vote agrees: omp's session bakes omp, pi's session
+    // bakes pi (the two rows are an hour apart — separate sessions).
+    const { listSessions } = await import("../dist/store/sessions.js");
+    const listed = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => listSessions());
+    assert.deepEqual(
+      listed.sessions.map((s) => s.agent),
+      ["omp", "pi"],
+    );
+    // Idempotent: a second pass changes nothing and never reopens the gate.
+    const again = await report();
+    const byHarnessAgain = Object.fromEntries(again.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarnessAgain.omp, 1);
+    assert.equal(byHarnessAgain.pi, 1);
   });
 
   test("missing agent stores fail open (label stays shared)", async () => {
@@ -613,7 +684,10 @@ describe("local-usage correlation", () => {
     mkdirSync(dir, { recursive: true });
     mkdirSync(home, { recursive: true });
     // claude + omp hold the key: the /v1/messages rows resolve to claude by
-    // the base rule alone and never need a local record.
+    // the base rule alone — but the omp record matches row-claude to the
+    // token, so the unique local evidence outranks the base label there.
+    // (row-claude-empty has NULL tokens and can never match; it settles to
+    // its base.)
     seedSharedKey(dir, ["claude", "omp"]);
     writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
     await insertRows(dir, [
@@ -648,12 +722,13 @@ describe("local-usage correlation", () => {
         now: PINNED_NOW,
       }),
     );
-    // Render is unchanged: the specific base label wins whether or not the
-    // column carries it.
+    // Render follows the evidence: row-claude and row-omp both carry the omp
+    // refinement, row-claude-empty keeps its claude base.
     const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
-    assert.equal(byHarness.claude, 2);
-    assert.equal(byHarness.omp, 1);
-    // The pass settled every row: base labels and the omp match are durable.
+    assert.equal(byHarness.claude, 1);
+    assert.equal(byHarness.omp, 2);
+    // The pass settled every row: base settlements and the omp matches are
+    // all durable.
     const db = await openStoreFor(dir);
     const stored = db
       .prepare("SELECT id, attributed_agent FROM requests ORDER BY id")
@@ -661,7 +736,7 @@ describe("local-usage correlation", () => {
       .reduce((acc, r) => acc.set(r.id, r.attributed_agent), new Map());
     const pending = correlationsPending(db);
     db.close();
-    assert.equal(stored.get("row-claude"), "claude");
+    assert.equal(stored.get("row-claude"), "omp");
     assert.equal(stored.get("row-claude-empty"), "claude");
     assert.equal(stored.get("row-omp"), "omp");
     // Nothing unresolved remains: a later build must not re-parse the

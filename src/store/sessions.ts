@@ -226,11 +226,14 @@ function walkSessions<T extends SessionRequestRow>(
       const labels = new Set<string>();
       for (const row of current) {
         const base = resolveHarness(harnessIndex, row.api_key, row.endpoint);
-        // Correlation precedence: a specific base label is never overridden;
-        // shared/unknown rows take the persisted attributed_agent refinement.
-        labels.add(
-          base === SHARED_AGENT || base === "unknown" ? (refinements.get(row.id) ?? base) : base,
-        );
+        // Correlation precedence: the persisted attributed_agent wins when
+        // present — it either agrees with the base (the pass settled the
+        // row on its base, no matching local record) or carries a unique
+        // local match, and unique local-usage evidence outranks a stale
+        // key-map settlement (the map can misattribute when a harness's
+        // data lives outside the swept homes). The base label stands only
+        // for rows the column cannot refine.
+        labels.add(refinements.get(row.id) ?? base);
       }
       const agent = labels.size === 1 ? (labels.values().next().value ?? "unknown") : SHARED_AGENT;
       sessions.push({
@@ -359,6 +362,39 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
 }
 
 /**
+ * Does the materialized bake (its fingerprint) MISmatch the current rules
+ * version or key map? True only for a store that HAS a bake built under an
+ * older rules version or a since-changed key map — each needs the
+ * correlation pass to re-open and a re-bake: the map is the base label's
+ * only input, so a map change can heal misattributed rows (the
+ * unique-local-match precedence) and always changes the labels a rebuild
+ * would bake. A store with no bake, a locked/unreadable store, or a store
+ * whose bake is current reports not-stale — a pass with nothing resolved
+ * left and an unchanged map would only re-parse the agents' histories for
+ * nothing (the dashboard-hang failure mode).
+ */
+export function bakeStale(db: DatabaseSync): boolean {
+  try {
+    const stored = metaGet(db, FINGERPRINT_KEY);
+    if (stored === null) return false;
+    // First field is the rules version, last is the map hash — the middle
+    // fields include ISO timestamps whose colons make positional indexing
+    // from the right unreliable.
+    const fields = stored.split(":");
+    if (fields[0] !== String(SESSIONIZE_RULES_VERSION)) return true;
+    let current = "";
+    try {
+      current = createHash("sha256").update(readFileSync(agentKeysPath(), "utf8")).digest("hex");
+    } catch {
+      current = "none";
+    }
+    return fields[fields.length - 1] !== current;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Row count + watermark + threshold + key-map revision: any change
  * invalidates the materialized table. The map revision matters because
  * `agent` labels are baked into the materialized rows at rebuild time — a
@@ -372,14 +408,20 @@ function metaSet(db: DatabaseSync, key: string, value: string): void {
  * rule are re-baked. The refined count rides the fingerprint: a heal that
  * resolves rows in an otherwise-unchanged store (late local evidence,
  * see local-usage.ts) must re-bake the materialized labels too.
+ *
+ * v4: a unique local match now outranks a settled key-map label — rows the
+ * old rule sealed with a wrong specific base (the key map never learned the
+ * harness, e.g. its data lives outside the swept homes) re-bake with the
+ * healed labels.
  */
-export const SESSIONIZE_RULES_VERSION = 3;
+export const SESSIONIZE_RULES_VERSION = 4;
 
 /**
- * The correlation pass behind `rebuildSessions`: refine shared-key rows from
- * the agents' local usage records and persist the labels, before the
+ * The correlation pass behind `rebuildSessions`: refine rows from the
+ * agents' local usage records and persist the labels, before the
  * materialized table bakes them in. Fail-open (the correlator never throws);
- * a no-new-rows pass is a cursor no-op.
+ * a no-new-rows pass on a store whose bake is current (rules version + key
+ * map, see {@link bakeStale}) is a cursor no-op.
  */
 function refreshCorrelationsInStore(
   db: DatabaseSync,
@@ -394,7 +436,13 @@ function refreshCorrelationsInStore(
     cached_tokens: number | null;
   }[],
 ): void {
-  if (!correlationsPending(db)) return;
+  // The pass re-opens when the bake is stale (older rules version, changed
+  // key map — the base labels' only input — or never sessionized), so rows
+  // the old rule sealed with a stale base label are re-probed and healed,
+  // then the rebuild bakes the labels in.
+  if (!correlationsPending(db) && !bakeStale(db)) {
+    return;
+  }
   const records = collectLocalUsageRecords();
   if (records.length === 0) return;
   const keyIndex = buildHarnessIndex();
@@ -431,7 +479,7 @@ function sessionsFingerprint(db: DatabaseSync, gapMinutes: number): string {
  * same rows + same gap → byte-identical contents, and the fingerprint makes a
  * no-change rebuild a no-op. New request rows first get their local-usage
  * correlation pass (migration 0006 refinement), so the materialized `agent`
- * labels carry it; the fingerprint (rules version 3) then notices and this
+ * labels carry it; the fingerprint (rules version) then notices and this
  * rebuild is the one that bakes the refined labels in.
  */
 function rebuildSessions(db: DatabaseSync, gapMinutes: number): void {

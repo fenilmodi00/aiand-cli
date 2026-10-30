@@ -1,12 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  buildHarnessIndex,
-  type HarnessIndex,
-  resolveHarness,
-  SHARED_AGENT,
-} from "../api/agent-keys.js";
+import { buildHarnessIndex, type HarnessIndex, resolveHarness } from "../api/agent-keys.js";
 import { type CacheGroup, cacheVerdict } from "../api/cache-report.js";
 import { CliError } from "../cli/errors.js";
 import {
@@ -30,6 +25,7 @@ import {
   refreshCorrelations,
 } from "../store/local-usage.js";
 import {
+  bakeStale,
   type SessionizationMeta,
   type SessionRequestRow,
   type SessionRow,
@@ -245,16 +241,23 @@ function storeLoadWith(
 }
 
 /**
- * The one correlation pass: refine shared-key rows from the agents' local
- * usage records and persist any newly resolved labels. Local records are
- * parsed only when new rows await processing (`correlationsPending`); the
- * `attributed_agent` column rides along on every row for `harnessOf`.
- * Fail-open end to end — a read-only or locked store keeps the key+endpoint
- * labels.
+ * The one correlation pass: refine rows from the agents' local usage
+ * records and persist any newly resolved labels. Local records are parsed
+ * only when new rows await processing (`correlationsPending`) or the
+ * materialized bake is stale (older rules version, changed key map — see
+ * `bakeStale`); the `attributed_agent` column rides along on every row for
+ * `harnessOf`. Fail-open end to end — a read-only or locked store keeps the
+ * key+endpoint labels.
  */
 function correlateInPlace(db: DatabaseSync, rows: ReportRow[]): void {
   try {
-    if (!correlationsPending(db)) return;
+    // The pass re-opens when the bake is stale (older rules version, a key
+    // map that changed since — the base labels' only input — or a store
+    // never sessionized), so rows the old rule sealed with a stale base
+    // label are re-probed and healed without a `store reset`.
+    if (!correlationsPending(db) && !bakeStale(db)) {
+      return;
+    }
     const records = collectLocalUsageRecords();
     if (records.length === 0) return;
     const keyIndex = buildHarnessIndex();
@@ -388,14 +391,17 @@ type KeyIndex = HarnessIndex;
 
 /**
  * Harness precedence, refined by local-usage correlation: the key+endpoint
- * rule first; a specific label (claude, codex, the CLI itself, …) is never
- * overridden, while a `shared`/`unknown` row takes its persisted
- * `attributed_agent` refinement (the agent wrote the local record —
- * per-request ground truth) when one exists.
+ * rule first, then the persisted `attributed_agent` refinement when the
+ * column carries one. A specific base label (claude via /v1/messages, …)
+ * wins only when no refinement exists: the column either agrees with it (the
+ * pass settled the row on its base, no matching local record) or carries a
+ * unique local match — and unique local-usage evidence outranks the key-map
+ * label, which can be stale (e.g. a harness's data lives outside the swept
+ * homes, so the map never learned it and the dialect intersection
+ * misattributes to a sibling agent).
  */
 function harnessOf(row: ReportRow, keyIndex: KeyIndex): string {
   const base = resolveHarness(keyIndex, row.api_key, row.endpoint);
-  if (base !== SHARED_AGENT && base !== "unknown") return base;
   return row.attributed_agent ?? base;
 }
 

@@ -27,7 +27,9 @@ const { ompAdapter } = await import("../dist/agents/omp/adapter.js");
 const { buildOmpProviderBlock } = await import("../dist/agents/omp/provider.js");
 const { parseYaml, parseScalar, readYamlMapping, renderScalar, yamlDelete, yamlRender, yamlSet } =
   await import("../dist/agents/omp/yaml.js");
-const { restoreSnapshot, snapshotFiles } = await import("../dist/agents/snapshot.js");
+const { recordAddedState, restoreSnapshot, snapshotFiles } = await import(
+  "../dist/agents/snapshot.js"
+);
 
 beforeEach(() => {
   rmSync(join(process.env.AIAND_HOME, ".omp"), { recursive: true, force: true });
@@ -619,6 +621,62 @@ describe("omp adapter", () => {
     // The broken file is left exactly as it was.
     assert.equal(readText(modelsPath()), "providers: {broken}\n");
   });
+  test("refreshKey/probe/bakedKey survive an omp-written flow-mapping (cost: {…})", async () => {
+    // Regression: omp's own writer emits flow mappings for a provider's
+    // model cost (`cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}`).
+    // The CLI's hand-rolled YAML parser used to reject flow mappings, which
+    // made probe() silently report `off`, bakedKey() throw, and refreshKey()
+    // return false — stranding a stale/deactivated key in an active config.
+    // Seed a file shaped like a real user's: a foreign provider with a flow
+    // cost map, plus our stamped aiand block.
+    writeFileSync(
+      modelsPath(),
+      [
+        "# my omp providers",
+        "providers:",
+        "  openai:",
+        "    baseUrl: https://api.openai.com/v1",
+        "    apiKey: sk-user-openai",
+        "  freeflow:",
+        "    baseUrl: https://example.com",
+        "    apiKey: sk-foreign",
+        "    models:",
+        "      - id: kilo-auto/free",
+        "        name: Kilo Auto",
+        "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
+        "  aiand:",
+        "    baseUrl: https://api.aiand.com/v1",
+        "    apiKey: sk-baked-1",
+        "    managedBy: aiand",
+        "    headers:",
+        "      x-aiand-agent: omp",
+        "",
+      ].join("\n"),
+    );
+    await recordAddedState("omp", {
+      previousDefaultModel: "openai/x",
+      wroteDefaultModel: "aiand/zai-org/glm-5.3",
+      previousModelsMode: 438,
+      previousConfigMode: 438,
+      modelsPath: modelsPath(),
+      configPath: configPath(),
+      wroteBaseUrl: "https://api.aiand.com/v1",
+    });
+    // probe() reads the real file and must report active (not silently off).
+    assert.deepEqual(await ompAdapter.probe(), { active: true, model: null });
+    // bakedKey() must resolve the live key instead of throwing.
+    assert.equal(await ompAdapter.bakedKey(), "sk-baked-1");
+    // refreshKey() swaps exactly our literal, leaving the flow cost map and the
+    // foreign provider untouched.
+    assert.equal(
+      await ompAdapter.refreshKey({ apiKey: "sk-baked-2", previousKey: "sk-baked-1" }),
+      true,
+    );
+    const after = readText(modelsPath());
+    assert.equal(after, after.replace("apiKey: sk-baked-1", "apiKey: sk-baked-2"));
+    assert.ok(after.includes("cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}"));
+    assert.ok(after.includes("apiKey: sk-user-openai"));
+  });
 
   const sessionInput = (overrides = {}) => ({
     apiKey: "sk-session-1",
@@ -896,8 +954,24 @@ describe("omp yaml editors", () => {
     });
   });
 
-  test("parseYaml: flow mappings and tab indentation are SyntaxError", () => {
-    assert.throws(() => parseYaml("providers: {aiand: x}\n"), SyntaxError);
+  test("parseYaml: flow mappings parse (omp writes cost: {input: 0, …})", () => {
+    assert.deepEqual(parseYaml("providers: {aiand: x, other: y}\n"), {
+      providers: { aiand: "x", other: "y" },
+    });
+    assert.deepEqual(parseYaml("cost: {input: 0, output: 0.5, cacheRead: 1, cacheWrite: 2}\n"), {
+      cost: { input: 0, output: 0.5, cacheRead: 1, cacheWrite: 2 },
+    });
+    // nested flows survive the comma splitter
+    assert.deepEqual(parseYaml("opts: {a: [1, 2], b: {c: true}}\n"), {
+      opts: { a: [1, 2], b: { c: true } },
+    });
+    // a trailing `#` comment outside the flow collection is still a comment
+    assert.deepEqual(parseYaml("cost: {input: 1} # inline note\n"), {
+      cost: { input: 1 },
+    });
+  });
+
+  test("parseYaml: tab indentation is a SyntaxError", () => {
     assert.throws(() => parseYaml("modelRoles:\n\tdefault: x\n"), SyntaxError);
   });
 

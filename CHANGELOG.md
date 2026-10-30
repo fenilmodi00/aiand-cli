@@ -27,6 +27,22 @@ breaking changes while the command surface settles.
   (provider/model/usage/timestamp at the top level, no `message` key) are
   parsed as local usage records for aiand, refining the gateway rows that
   previously stayed NULL forever.
+- `aiand omp` no longer reports `off` and can no longer re-bake a stale key
+  when the user's `models.yml` contains the flow mappings omp itself writes
+  (e.g. a provider's `cost: {input: 0, output: 0, …}` map): the omp YAML
+  reader rejected flow mappings, so `aiand omp status`/`probe`/`bakedKey`
+  silently failed and `aiand omp on` / key rotation could not swap a
+  deactivated key into the wired provider block. Flow mappings now parse; run
+  `aiand omp on --force` (or `aiand login` to trigger a rotation) to refresh a
+  stale `api_key has been deactivated` key into the active session key.
+- Dashboard attribution no longer seals a stale key-map label: a unique
+  local-usage match now overrides the key holders ∩ wire-dialect label on
+  specific-base rows, so traffic misattributed when a harness's data lived
+  outside the swept homes (e.g. omp in WSL, invisible to the key sweep, left
+  the map with no `omp` entry) heals on the next correlation pass instead of
+  staying wrong until `store reset`. Rows with no matching local record
+  still settle to their base label, and `correlationsPending` still reaches
+  false (materialized sessions re-bake once, rules version 3 → 4).
 
 ### Added
 - `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across
