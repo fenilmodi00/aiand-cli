@@ -7,6 +7,138 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+
+- Both one-line installers end with an agent summary: which coding-agent
+  binaries (`opencode`, `claude`, `pi`, `omp`, `codex`, `copilot`, `dsh`,
+  `hermes`) are on `PATH`, install hints for the missing ones, and a nudge to
+  run `aiand init`. Wiring still never happens at install time. The omp hint
+  picks its release asset by platform and architecture and verifies the
+  download against the sha256 the release publishes. `npm ci` also passes
+  `--prefer-offline`, so re-runs and updates reuse the npm cache.
+  (#32, thanks @fenilmodi00)
+
+- `aiand dsh on` wires DeepSeek Harness to ai& through `$DSH_HOME`
+  (or `~/.dsh`): an `aiand` provider route replacing the `llm-pi-ai`
+  row in `cordis.patch.yml`, speaking the gateway's OpenAI-compatible
+  chat dialect with every model from the live catalog, and a marked
+  `agent-default-model` pin. The key rides in `$DSH_HOME/.credentials.yaml`
+  as a credential ref dsh resolves on every request (locked to 0600),
+  never as a literal in the patch YAML. `off` removes exactly what
+  `on` added, including from the files `on` recorded when the dsh
+  home moved in between, and puts back a default it had to set aside
+  because the gateway cannot serve it; one it can serve is kept, and
+  your own rows survive both verbs. Pass `--model <id>` to switch;
+  `--model native` is refused, since DeepSeek Harness's own default
+  needs a DeepSeek key the gateway cannot serve. `aiand run-agent dsh`
+  runs one session with the real `~/.dsh` config and credentials
+  untouched: a throwaway `$DSH_HOME` holds the same rows and the key,
+  dsh starts in its `web` profile on a terminal and answers a piped
+  task headless, session history still lands in the real
+  `~/.dsh/sessions`, and the overlay is removed after the session ends.
+  Bare `aiand dsh` opens DeepSeek Harness the way `aiand code` does —
+  wiring it with `on` when it is not wired yet, offering the npm install
+  after a yes when missing, then running dsh with the args you passed (a
+  profile you named stands; otherwise dsh starts in its `web` profile on a
+  terminal, or headless for a piped task), and a `--patch` overlay dropped
+  since it would outrank the injected routing). Each model's published
+  reasoning levels pass through when dsh's own schema names them: GLM-5.3
+  offers low, high, and max, an omitted level runs at the engine default
+  (max on GLM-5.3), and a level dsh does not name (`none`) is dropped
+  rather than written, since one unmappable key would fail the whole
+  route's validation and leave dsh with no route at all; the route states
+  `supportsReasoningEffort: true` rather than `false`, which dropped the
+  parameter. `status` probes the patch file itself, so a marker a dsh
+  rewrite dropped still reads active while the record proves the routing
+  ours; the same proof gates `off` and `refreshKey`, and rebaking swaps
+  only the ref `on` wrote, keyed on the previous key. The patch reader
+  survives the shapes a hand-edited `cordis.patch.yml` and dsh's own
+  writers produce — a row's `id` read from any first-level key, in block
+  or flow (`- {id: …}`) form, through CRLF endings, quoted scalars and
+  comments — and refuses the ones it cannot prove safe with a loud error
+  naming the file rather than a raw crash. A hand-written `llm-pi-ai` row
+  carrying any user config (`timeoutMs`, a flow `providers:` map,
+  anything) is refused instead of overwritten, and a
+  `$DSH_HOME/profiles/<profile>` layer that also configures `llm-pi-ai`
+  warns, since the home layer hides its providers while the aiand route
+  is on. `off` hands a set-aside default back exactly as it found it —
+  the user's own `name:`, keys and comments, byte for byte, no banner —
+  never touches the blank that separated the user's rows or the comment
+  above the next one, and each on/off cycle round-trips the file byte
+  for byte, trailing newline included. A credentials file whose last ref
+  dsh deleted (`refs: {}`, or a user's flow map) takes ours without a
+  second `refs:` key, which dsh would refuse to boot. A rotation reads
+  both the block and the flow form of the credential store, so `status`,
+  `off` and `refreshKey` still agree, and a key swap never disturbs the
+  user's own flow refs. (#21, thanks @fenilmodi00)
+
+### Changed
+
+- `install.sh` reads the staged version with `sed` instead of spawning node,
+  dropping the verification path to two node spawns.
+  (#32, thanks @fenilmodi00)
+
+### Fixed
+
+- The installers' agent summary and install hints can no longer drift from the
+  releases the CLI pins: `scripts/check-dist.mjs` reads `install.sh` and
+  `install.ps1` the same way it reads `ci.yml`, so a versioned install hint
+  (e.g. `opencode-ai@`, `pi-coding-agent@`, `@github/copilot@`, the omp release
+  asset and the sha256 it is verified against, the Hermes commit in both the
+  `install.ps1` `irm` URL and the `-Commit` flag) that disagrees with its
+  adapter's pinned version — or drops out of one installer — fails the gate
+  instead of quietly telling users to install an unreviewed release. The probed
+  agent list is derived from the registry, so a newly shipped agent that never
+  appears in the summary fails the gate too.
+  (#32, thanks @fenilmodi00)
+- `install.ps1` picks the launcher by platform after install: `aiand` on
+  Linux/macOS (pwsh) and `aiand.cmd` on Windows (`$env:OS -eq 'Windows_NT'`;
+  not `$IsWindows`, which Windows PowerShell 5.1 does not define), so
+  `Show-InstalledVersion` and `Invoke-LoginOffer` call a runnable launcher
+  instead of handing `.cmd` to `xdg-open`.
+  (#32, thanks @fenilmodi00)
+- The installers' omp hint is checked against the adapter's own rendering,
+  per platform, so each one prints a command the CLI would print on that
+  machine: `scripts/check-dist.mjs` renders `install.sh`'s hint function
+  under a `uname` that answers for Linux and macOS on both x64 and arm64 and
+  `install.ps1`'s through PowerShell with `PROCESSOR_ARCHITECTURE` set for
+  both Windows architectures. A case arm pointing at the other architecture's
+  asset, a mismatched digest, or a removed `mkdir`/`chmod` fails the gate, and
+  `scripts/install-behavior.mjs` compares the summary it actually prints
+  against the same commands rather than one host's asset spelled by hand, so
+  the macOS and Linux-arm64 cases are covered too. The agent ids both
+  installers probe are read from the built registry and compared as a set,
+  each installer keeping its own display order.
+  (#32, thanks @fenilmodi00)
+- `install.ps1` ships without a UTF-8 BOM, so `irm ... | iex` no longer
+  prints `The term '#' is not recognized` and `The term 'param' is not
+  recognized`: `irm` delivers the BOM as a character, which stops line 1
+  from parsing as a comment and demotes the `param()` block. The wordmark is
+  ASCII now, so the file parses the same whether Windows PowerShell 5.1 reads
+  it as UTF-8 or ANSI, and the bold-cyan colour is reset after it instead of
+  leaving every later line coloured.
+  (#32, thanks @fenilmodi00)
+
+- `aiand dsh on` refuses a hand-written `llm-pi-ai` row carrying any user
+  config — not just `providers` — instead of replacing the whole row and
+  deleting settings like `timeoutMs`. (#21, thanks @fenilmodi00)
+- `aiand dsh on` reads a row's `id` from any first-level key of the item
+  (`-\n  id: llm-pi-ai`, `- name: ...` before `id:`), so a hand-edited
+  `cordis.patch.yml` in those shapes no longer makes `on` append a second
+  `llm-pi-ai` row whose whole-config replace silently drops the user's
+  providers. (#21, thanks @fenilmodi00)
+- A flow-map `llm-pi-ai` row (`- {id: llm-pi-ai}`) is no longer invisible to
+  the patch reader: a dormant one is replaced in place instead of stacked
+  under a duplicate `on` appends, and a foreign one carrying `config:` (or
+  `providers:`) is refused — the foreign-config check it used to bypass
+  silently now runs on it. A flow row whose braces never close, or which
+  names a key twice, is a loud `CliError` naming the file rather than an
+  unread row. (#21, thanks @fenilmodi00)
+- `aiand dsh on` warns when a `$DSH_HOME/profiles/<profile>/cordis.patch.yml`
+  layer also configures `llm-pi-ai`: the home layer replaces the entry's
+  whole config, so Web UI providers are hidden while the aiand route is on.
+  (#21, thanks @fenilmodi00)
+
 ## [0.7.0] - 2026-10-26
 
 ### Added
@@ -41,6 +173,7 @@ breaking changes while the command surface settles.
   `ANTHROPIC_*` and `OPENAI_*` values are dropped so they cannot outrank
   the files `on` wrote. `status`, `init --all`, logout, and rebake cover it
   (#17, thanks @fenilmodi00).
+
 - `aiand run-agent hermes` launches Hermes on ai& for one session with
   nothing written under the real `~/.hermes`. A throwaway `HERMES_HOME`
   holds the same `aiand` provider plugin, a routing-only `config.yaml`, and
@@ -141,20 +274,24 @@ breaking changes while the command surface settles.
   and the line is only recorded (and noted on `off`) when a drop actually
   happened. `yaml-probes.ts` moved out of routing.ts without behavior
   change.
+
 - OpenCode Launcher sessions and Pi pass each model's published reasoning
   levels. Pi's own default is medium, and an unsupported level moves up to
   the next published one. On GLM-5.3 that level is high. The 0.6.0 Pi note
   called an omitted level a gateway default. That name was wrong.
+
 - `aiand <agent> on` proves the session key with one authenticated request
   before writing anything, so a gateway-rejected key refuses with the
   rejected-key advice instead of being baked into agent configs (a blank
   `AIAND_API_KEY` still reads as signed out). A padded `AIAND_API_KEY` or
   stored key now wires trimmed, so the header no longer serializes as
   `"Bearer  sk-…  "`. (#34, thanks @fenilmodi00)
+
 - `aiand <agent> --help` no longer prints an empty "Config files" line for
   adapters that own no config files, and unusable config paths (a file where
   a directory belongs, a directory where a file belongs, unreadable files)
   refuse exit 1 with a hint instead of a raw stack. (#34, thanks @fenilmodi00)
+
 
 ## [0.6.0] - 2026-10-06
 
@@ -491,3 +628,4 @@ Initial public release of the ai& command line interface.
 - Cost and timing headers are requested with `X-Aiand-Metrics: true` and are returned on
   non-streaming responses only.
 - Apache License 2.0, matching the ai& SDKs.
+

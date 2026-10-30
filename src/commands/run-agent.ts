@@ -1,5 +1,5 @@
 import { getCatalog, validateCatalogModel } from "../agents/catalog.js";
-import { notInstalledError, runAgentBinary } from "../agents/launch.js";
+import { dropOwnedFlags, notInstalledError, runAgentBinary } from "../agents/launch.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { requireSessionKey } from "../auth/session.js";
 import { CliError } from "../cli/errors.js";
@@ -185,23 +185,8 @@ export async function run(argv: string[]): Promise<void> {
   // The adapter may own routing flags in the passthrough (e.g. Pi's
   // --provider/--model/--api-key): drop the user's `--flag value` and
   // `--flag=value` forms so the injected routing cannot be overridden.
-  // Everything else passes verbatim. A value is only consumed when it is
-  // not itself a flag, so `--model --print` keeps --print and a trailing
-  // `--model` eats nothing.
-  const ownedFlags = launch.stripPassthroughFlags ?? [];
-  const passthrough: string[] = [];
-  for (let i = 0; i < split.passthrough.length; i += 1) {
-    const token = split.passthrough[i]!;
-    if (ownedFlags.includes(token)) {
-      // `--flag value`: the value is the next token, when present and not
-      // itself a flag.
-      const next = split.passthrough[i + 1];
-      if (next !== undefined && !next.startsWith("-")) i += 1;
-      continue;
-    }
-    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
-    passthrough.push(token);
-  }
+  // Everything else passes verbatim.
+  const passthrough = dropOwnedFlags(split.passthrough, launch.stripPassthroughFlags);
 
   await runAgentBinary(adapter, [...(launch.args ?? []), ...passthrough], env, launch.cleanup);
 }

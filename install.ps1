@@ -1,4 +1,4 @@
-﻿# aiand one-line installer for Windows (PowerShell 5.1+).
+# aiand one-line installer for Windows (PowerShell 5.1+).
 #
 #   Invoke-RestMethod https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | Invoke-Expression
 #   .\install.ps1
@@ -96,16 +96,21 @@ function Show-AiandIntro {
     $useColor = Test-SupportsColor
     if ($useColor) { [Console]::Error.WriteLine("$esc[1;36m") }
     # 8 wordmark lines; leading spaces are significant for column alignment.
-    [Console]::Error.WriteLine('  █████████    █████   ██████')
-    [Console]::Error.WriteLine('  ███░░░░░███ ░░███   ███░░███')
-    [Console]::Error.WriteLine(' ░███    ░███  ░███  ░░██████')
-    [Console]::Error.WriteLine(' ░███████████  ░███   ██████')
-    [Console]::Error.WriteLine(' ░███░░░░░███  ░███ ░███░░███')
-    [Console]::Error.WriteLine(' ░███    ░███  ░███ ░███ ░░███')
-    [Console]::Error.WriteLine(' █████   █████ █████░░█████░███')
-    [Console]::Error.WriteLine('░░░░░   ░░░░░ ░░░░░  ░░░░░ ░░░')
-    if ($useColor) { [Console]::Error.WriteLine("$esc[0m") }
+    # Pure ASCII: with the BOM gone, Windows PowerShell 5.1 reads this file
+    # as ANSI, where the UTF-8 block bytes decode into cp1252 smart quotes
+    # that break the parser (0x91 inside a single-quoted literal). Each line
+    # is the original wordmark transliterated (# for a filled block, . for a
+    # shade) so the columns line up exactly as they did before.
+    [Console]::Error.WriteLine('  #########    #####   ######')
+    [Console]::Error.WriteLine('  ###.....### ..###   ###..###')
+    [Console]::Error.WriteLine(' .###    .###  .###  ..######')
+    [Console]::Error.WriteLine(' .###########  .###   ######')
+    [Console]::Error.WriteLine(' .###.....###  .### .###..###')
+    [Console]::Error.WriteLine(' .###    .###  .### .### ..###')
+    [Console]::Error.WriteLine(' #####   ##### #####..#####.###')
+    [Console]::Error.WriteLine('.....   ..... .....  ..... ...')
     [Console]::Error.WriteLine('')
+    if ($useColor) { [Console]::Error.WriteLine("$esc[0m") }
 }
 function Add-InstallNote {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -114,6 +119,57 @@ function Add-InstallNote {
 function Write-InstallNotes {
     if ($script:InstallNotes.Count -eq 0) { return }
     foreach ($note in $script:InstallNotes) { Write-Output "Note: $note" }
+}
+# Coding-agent binaries the installer looks for, in display order: the same
+# ids src/agents/registry.ts registers, minus copilot-app (a GUI with no
+# single PATH binary). Every hint must stay identical to its adapter's
+# `install.command` (scripts/install-behavior.mjs checks); every versioned
+# one is re-checked against its adapter's pin by scripts/check-dist.mjs.
+# omp has to branch: the adapter prints one line for the host it runs on,
+# while this summary is read on either Windows architecture, so the two arms
+# print exactly that architecture's command, digest included.
+function Get-AgentInstallHint {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    if ($Id -eq 'opencode') { return 'npm install -g opencode-ai@1.18.32' }
+    if ($Id -eq 'claude') { return 'npm install -g @anthropic-ai/claude-code' }
+    if ($Id -eq 'pi') { return 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1' }
+    if ($Id -eq 'codex') { return 'npm install -g @openai/codex' }
+    if ($Id -eq 'copilot') { return 'npm install -g @github/copilot@1.0.89' }
+    if ($Id -eq 'dsh') { return 'npm install -g --ignore-scripts @deepseek-ai/dsh@0.2.0-rc.2' }
+    if ($Id -eq 'hermes') { return 'iex "& { $(irm https://raw.githubusercontent.com/NousResearch/hermes-agent/666f313d1d3abd8077291ba464cf0a10f1a6157f/scripts/install.ps1) } -Commit 666f313d1d3abd8077291ba464cf0a10f1a6157f -NonInteractive -SkipBrowser -SkipComputerUse"' }
+    if ($Id -eq 'omp') {
+        $arch = $null
+        if ($env:PROCESSOR_ARCHITECTURE) { $arch = $env:PROCESSOR_ARCHITECTURE }
+        elseif ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
+        if ($arch -eq 'ARM64') { $asset = 'omp-windows-arm64.exe'; $sum = '5ccab44f345ef524c6f62c44160d4676349e02b915729f1a8f04f1ab279ab692' }
+        else { $asset = 'omp-windows-x64.exe'; $sum = '5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54' }
+        return "powershell -Command `"`$d = Join-Path `$env:USERPROFILE '.local\bin'; New-Item -ItemType Directory -Force `$d | Out-Null; Invoke-WebRequest https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/$asset -OutFile `"`$d\omp.exe`"; if ((Get-FileHash `"`$d\omp.exe`" -Algorithm SHA256).Hash -ne '$sum') { throw 'sha256 mismatch' }`""
+    }
+    return ''
+}
+# Post-install summary on stdout (like Note: lines): which supported agents
+# are on PATH and the `aiand init` nudge. Nudge only: wiring needs an
+# interactive sign-in, so the installer never runs init itself.
+function Write-AgentSummary {
+    $order = @('opencode', 'claude', 'pi', 'omp', 'codex', 'copilot', 'dsh', 'hermes')
+    $detected = @()
+    $missing = @()
+    foreach ($id in $order) {
+        if (Get-Command $id -ErrorAction SilentlyContinue) { $detected += $id } else { $missing += $id }
+    }
+    if ($detected.Count -eq 0) {
+        Write-Output 'No coding agents detected on this machine.'
+        foreach ($id in $order) { Write-Output ("  $id  Install it with: " + (Get-AgentInstallHint -Id $id)) }
+        Write-Output "Install one, then run 'aiand init'."
+        return
+    }
+    Write-Output 'Detected agents:'
+    foreach ($id in $detected) { Write-Output ("  " + [char]0x2713 + " $id") }
+    if ($missing.Count -gt 0) {
+        Write-Output 'Not installed:'
+        foreach ($id in $missing) { Write-Output ("  $id  Install it with: " + (Get-AgentInstallHint -Id $id)) }
+    }
+    Write-Output "Next: run 'aiand init' to wire them to ai&."
 }
 # Only https://github.com/aiandlabs/aiand-cli(.git) may be a URL source.
 # Local paths stay allowed: they carry no network trust decision.
@@ -366,7 +422,9 @@ function Ensure-Build {
     if ($env:AIAND_INSTALL_VERBOSE -eq '1') { $npmLoglevel = 'notice' }
     # --omit=dev would drop the TypeScript compiler the build needs; the CLI
     # itself ships zero runtime dependencies, so node_modules never runs.
-    try { Push-Location $SourceDir; try { & npm ci --ignore-scripts --no-fund --no-audit --loglevel="$npmLoglevel" 2>&1; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' } } finally { Pop-Location } } catch { throw 'error: staged aiand verification failed; the existing installation was left unchanged.' }
+    # --prefer-offline reuses the npm cache on re-runs/updates and falls
+    # back to the network on a cold machine.
+    try { Push-Location $SourceDir; try { & npm ci --ignore-scripts --no-fund --no-audit --prefer-offline --loglevel="$npmLoglevel" 2>&1; if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' } } finally { Pop-Location } } catch { throw 'error: staged aiand verification failed; the existing installation was left unchanged.' }
     try {
         Push-Location $SourceDir
         try {
@@ -710,9 +768,12 @@ function Invoke-Main {
     Write-Step 'Installing CLI...'
     Install-CliLauncher -SourceDir $finalDir
     Write-InstallNotes
-    $launcherCmd = Join-Path $BinDir 'aiand.cmd'
-    Show-InstalledVersion -Launcher $launcherCmd
-    Invoke-LoginOffer -Launcher $launcherCmd
+    Write-AgentSummary
+    $launcherName = 'aiand'
+    if ($env:OS -eq 'Windows_NT') { $launcherName = 'aiand.cmd' }
+    $launcher = Join-Path $BinDir $launcherName
+    Show-InstalledVersion -Launcher $launcher
+    Invoke-LoginOffer -Launcher $launcher
 }
 try {
     Invoke-Main -MainArgs $RemainingArgs

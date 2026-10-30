@@ -11,8 +11,11 @@ const BASE_URL = `https://github.com/can1357/oh-my-pi/releases/download/v${OMP_V
  * hint installs the binary itself instead of piping `omp.sh/install`, which
  * serves the main-branch script with no digest. sha256 for each asset, from
  * the release's SHA256SUMS.txt; refresh these when OMP_VERSION moves.
+ * @public read from dist/ by scripts/check-dist.mjs: both installers carry
+ * their own copy of these commands (they run where dist/ does not exist),
+ * so the digests and the assets they name are gated there.
  */
-const ASSET_SHA256: Record<string, string> = {
+export const ASSET_SHA256: Record<string, string> = {
   "omp-darwin-arm64": "e76e02821242fb36844676a9dfb79fbe5fb069d93ef3bf62625ec339fe9d092b",
   "omp-darwin-x64": "18541fd15a7707195a9041b748f2b1d647f39514ad20d9c41df53044244deab5",
   "omp-linux-arm64": "602eefddc0fd87043f8f08d8628d72592e5802c003a05f203f1ecbc63a8fdd30",
