@@ -34,6 +34,14 @@ breaking changes while the command surface settles.
   attributed precisely instead of collapsing to `shared`. Same-dialect
   agents sharing one key (e.g. omp and pi) still honestly share, and rows
   synced before this change keep the old label until re-served.
+- `aiand omp` no longer reports `off` and can no longer re-bake a stale key
+  when the user's `models.yml` contains the flow mappings omp itself writes
+  (e.g. a provider's `cost: {input: 0, output: 0, …}` map): the omp YAML
+  reader rejected flow mappings, so `aiand omp status`/`probe`/`bakedKey`
+  silently failed and `aiand omp on` / key rotation could not swap a
+  deactivated key into the wired provider block. Flow mappings now parse; run
+  `aiand omp on --force` (or `aiand login` to trigger a rotation) to refresh a
+  stale `api_key has been deactivated` key into the active session key.
 
 ### Removed
 - The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
