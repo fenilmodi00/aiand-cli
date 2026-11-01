@@ -59,9 +59,9 @@
     "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=89 --test-coverage-branches=84 --test-coverage-functions=91 test/*.test.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
-    "@types/node": "22.20.4",
-    "knip": "6.38.0",
+    "@biomejs/biome": "2.6.2",
+    "@types/node": "22.20.5",
+    "knip": "6.42.1",
     "typescript": "7.0.2"
   }
 }
