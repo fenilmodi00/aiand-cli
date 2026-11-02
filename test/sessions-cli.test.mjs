@@ -168,9 +168,9 @@ test("cli: sessions table is a deterministic snapshot over a fixture store", asy
       "▌ Sessions",
       "  sessions derived by 10-min gap heuristic — boundaries are approximate, not authoritative",
       "",
-      "SESSION           HARNESS  MODELS             TURNS  INPUT TOK  OUT TOK  CACHED TOK       COST  TTFT P50    P95         TPS     AVG TPS  ERRORS  START             END",
-      `${SESSION_A_ID}  claude   zai-org/glm-5.3:3      3      3,000      300       1,500  $0.060000     300ms  390ms  83.3 tok/s  90.9 tok/s       0  2026-10-20 10:00  2026-10-20 10:02`,
-      `${SESSION_B_ID}  claude   openai/gpt-5.2:2       2      4,000      400           0          -       n/a    n/a           -           -       1  2026-10-20 12:00  2026-10-20 12:01`,
+      "SESSION           HARNESS  MODELS     TURNS  INPUT TOK  OUT TOK  CACHED TOK       COST  TTFT P50    P95         TPS     AVG TPS  ERRORS  START             END",
+      `${SESSION_A_ID}  claude   glm-5.3:3      3      3,000      300       1,500  $0.060000     300ms  390ms  83.3 tok/s  90.9 tok/s       0  2026-10-20 10:00  2026-10-20 10:02`,
+      `${SESSION_B_ID}  claude   gpt-5.2:2      2      4,000      400           0          -       n/a    n/a           -           -       1  2026-10-20 12:00  2026-10-20 12:01`,
       "",
     ].join("\n"),
   );
@@ -256,7 +256,7 @@ test("cli: drill-down reconciles to the session row and prints request rows", as
   assert.ok(stdout.includes("harness claude · 3 turns"));
   assert.ok(stdout.includes("2026-10-20 10:00 → 2026-10-20 10:02"));
   // request-level rows: one per turn, gateway-verbatim fields
-  assert.ok(stdout.includes("2026-10-20 10:00:00  zai-org/glm-5.3"));
+  assert.ok(stdout.includes("2026-10-20 10:00:00  glm-5.3"));
   assert.ok(stdout.includes("1500ms"));
   assert.ok(stdout.includes("$0.010000"));
   assert.ok(stdout.includes("200"));

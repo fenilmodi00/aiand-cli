@@ -547,6 +547,7 @@ export function buildHarnessStats(
         cachedTokens,
         outputTokens,
         costUsd: cost ?? 0,
+        avgTps: null,
       };
       return {
         harness,

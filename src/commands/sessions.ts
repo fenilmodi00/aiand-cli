@@ -1,5 +1,6 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { bool, list, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import {
@@ -452,7 +453,7 @@ function costCell(session: SessionView, showCost: boolean): string {
 }
 
 function modelMix(session: SessionView): string {
-  return session.models.map((m) => `${m.model}:${m.count}`).join(", ");
+  return session.models.map((m) => `${modelLabel(m.model)}:${m.count}`).join(", ");
 }
 
 function stamp(iso: string, timezone: string): string {
@@ -691,7 +692,7 @@ function runDrillDown(
   };
   const columns: Column<RequestRowView>[] = [
     { header: "time", value: (r) => r.time },
-    { header: "model", value: (r) => r.model },
+    { header: "model", value: (r) => modelLabel(r.model) },
   ];
   if (compact) {
     columns.push({ header: "tokens", value: (r) => num(r.input + r.output), align: "right" });

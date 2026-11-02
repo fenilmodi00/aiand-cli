@@ -1,4 +1,5 @@
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
@@ -374,7 +375,7 @@ export async function run(argv: string[]): Promise<void> {
 
   out();
   out(
-    `Recommended: harness=${best.harness} model=${best.model} ` +
+    `Recommended: harness=${best.harness} model=${modelLabel(best.model)} ` +
       `(${costLabel(best)}, n=${best.sessions} sessions)`,
   );
   out(`verdict: ${gate!.verdict}`);
@@ -391,11 +392,11 @@ export async function run(argv: string[]): Promise<void> {
   }
   if (current.harness === best.harness && current.model === best.model) {
     out(
-      `Current:      harness=${current.harness} model=${current.model} — already the recommended pair`,
+      `Current:      harness=${current.harness} model=${modelLabel(current.model)} — already the recommended pair`,
     );
   } else {
     out(
-      `Current:      harness=${current.harness} model=${current.model} ` +
+      `Current:      harness=${current.harness} model=${modelLabel(current.model)} ` +
         `(${costLabel(current)}, n=${current.sessions} sessions)`,
     );
     out(`Expected delta: ${deltaLine(best, current)} (heuristic)`);
@@ -487,7 +488,7 @@ function rankedColumns(): Column<PairStatsRow>[] {
   return [
     { header: "rank", value: () => "", align: "right" },
     { header: "harness", value: (r) => r.harness },
-    { header: "model", value: (r) => r.model },
+    { header: "model", value: (r) => modelLabel(r.model) },
     { header: "n", value: (r) => num(r.sessions), align: "right" },
     { header: "cost/sess", value: (r) => costCell(r), align: "right" },
     {
@@ -533,7 +534,7 @@ function renderInsufficient(rows: PairStatsRow[]): void {
   heading(`insufficient data (fewer than ${MIN_SAMPLE_SESSIONS} sessions — not ranked)`);
   table<PairStatsRow>(rows, [
     { header: "harness", value: (r) => r.harness },
-    { header: "model", value: (r) => r.model },
+    { header: "model", value: (r) => modelLabel(r.model) },
     { header: "n", value: (r) => num(r.sessions), align: "right" },
     { header: "cost/sess", value: (r) => costCell(r), align: "right" },
   ]);

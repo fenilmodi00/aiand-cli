@@ -44,11 +44,11 @@ describe("models table", () => {
   });
 
   test("labels vision models 'vision' and text-only models 'text-only'", () => {
-    const visionLine = table.split("\n").find((line) => line.includes("vendor/vision-model"));
+    const visionLine = table.split("\n").find((line) => line.includes("vision-model"));
     assert.ok(visionLine, "vision model row present");
     assert.match(visionLine, /\bvision\b/, "vision model labeled vision");
 
-    const textLine = table.split("\n").find((line) => line.includes("vendor/text-model"));
+    const textLine = table.split("\n").find((line) => line.includes("text-model"));
     assert.ok(textLine, "text-only model row present");
     assert.match(textLine, /\btext-only\b/, "text-only model labeled text-only");
   });

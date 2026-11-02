@@ -1,6 +1,6 @@
 import { saveCatalogCache, visionLabel } from "../agents/catalog.js";
 import { openSession } from "../api/client.js";
-import { listModels, type Model } from "../api/models.js";
+import { listModels, modelLabel, type Model } from "../api/models.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, json, num, out, style, table } from "../cli/output.js";
@@ -16,7 +16,7 @@ Options
   --capability <name>    only models tagged with this capability (repeatable)
   --sort <field>         id (default), input, output, or context
   --long                 include the description column
-  --json                 machine-readable output
+  --json                 machine-readable output (full <org>/<model> ids)
 
 Prices are per 1M tokens in your organization's billing currency. Signed out,
 the catalog is still readable and priced in USD.`;
@@ -73,7 +73,7 @@ export async function run(argv: string[]): Promise<void> {
     `${currencySymbol(currency)}${trimZeros(value)}`;
 
   table<Model>(models, [
-    { header: "id", value: (m) => m.id },
+    { header: "id", value: (m) => modelLabel(m.id) },
     { header: "context", value: (m) => num(m.context_window), align: "right" },
     {
       header: "vision",

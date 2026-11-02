@@ -1,4 +1,5 @@
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { bool, list, parse, str } from "../cli/args.js";
 import { CliError, cancelled } from "../cli/errors.js";
 import { clipToWidth, currencySymbol, err, out, style, visibleWidth } from "../cli/output.js";
@@ -720,7 +721,7 @@ function renderPanels(
   } else {
     for (const model of topModels.slice(0, 5)) {
       const cost = view.showCost ? `  ${formatCosts(model.costs)}` : "";
-      modelLines.push(`${model.key}  ${model.requests} req${cost}`);
+      modelLines.push(`${modelLabel(model.key)}  ${model.requests} req${cost}`);
     }
   }
   panels.push({ title: "Top models", lines: modelLines });

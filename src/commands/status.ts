@@ -1,5 +1,6 @@
 import { type AgentStatusResult, agentStatus } from "../agents/setup.js";
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { authStatus } from "../auth/identity.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
@@ -346,7 +347,7 @@ async function printAgents(agents: AgentStatusResult[]): Promise<void> {
   table(agents, [
     { header: "agent", value: (a) => a.agent },
     { header: "state", value: (a) => stateLabel(a.state) },
-    { header: "model", value: (a) => a.model ?? "—" },
+    { header: "model", value: (a) => (a.model ? modelLabel(a.model) : "—") },
     {
       header: "binary",
       value: (a) =>

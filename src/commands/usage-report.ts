@@ -1,4 +1,5 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
+import { modelLabel } from "../api/models.js";
 import { CliError } from "../cli/errors.js";
 import { type Column, currencySymbol, heading, num, out, style, table } from "../cli/output.js";
 import { errorCount } from "../obs/harness-stats.js";
@@ -1085,7 +1086,9 @@ function renderGroupTable(rows: GroupRow[] | undefined, view: RenderOptions, hea
 }
 
 function groupColumns(view: RenderOptions, header: string): Column<GroupRow>[] {
-  const columns: Column<GroupRow>[] = [{ header, value: (r) => r.key }];
+  const columns: Column<GroupRow>[] = [
+    { header, value: (r) => (header === "model" ? modelLabel(r.key) : r.key) },
+  ];
   if (view.compact) {
     columns.push(
       { header: "requests", value: (r) => num(r.requests), align: "right" },

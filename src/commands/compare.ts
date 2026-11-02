@@ -1,4 +1,5 @@
 import { existsSync, writeFileSync } from "node:fs";
+import { modelLabel } from "../api/models.js";
 import { bool, int, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, out, style, table } from "../cli/output.js";
@@ -379,6 +380,9 @@ const pct = (p: number | null): string => (p === null ? "—" : `${(p * 100).toF
 
 const num2 = (v: number | null): string => (v === null ? "—" : v.toFixed(2));
 
+/** TPS cell: avg tok/s over the cell's trials; — when none eligible. */
+const tpsCell = (c: CellStats): string => (c.avgTps === null ? "—" : c.avgTps.toFixed(1));
+
 /** The WINNER_MARKER discipline from harness compare — deterministic, works without color. */
 const mark = (cell: string, isWinner: boolean): string =>
   isWinner ? `${WINNER_MARKER} ${cell}` : cell;
@@ -422,6 +426,8 @@ type TableJsonCell = {
   meanWallMs: number | null;
   turnsPerSolve: number | null;
   retryRate: number | null;
+  /** Throughput-weighted avg tok/s over eligible trials; null when none eligible. */
+  avgTps: number | null;
   failures: Partial<Record<FailureMode, number>>;
   infra: number;
   /** The k pass@k and pass^k were computed for (#152). */
@@ -451,6 +457,7 @@ function cellToJson(c: CellStats): TableJsonCell {
     meanWallMs: c.meanWallMs,
     turnsPerSolve: c.turnsPerSolve,
     retryRate: c.retryRate,
+    avgTps: c.avgTps,
     failures: c.failures,
     infra: c.infra,
     k: c.k,
@@ -534,7 +541,7 @@ async function runTable(argv: string[]): Promise<void> {
 
   const w = winners;
   table<CellStats>(cells, [
-    { header: "harness / model", value: (c) => mark(cellKey(c), false) },
+    { header: "harness / model", value: (c) => mark(`${c.harness} / ${modelLabel(c.model)}`, false) },
     {
       header: "solve",
       value: (c) => mark(solveCell(c), w.solve === cellKey(c)),
@@ -554,6 +561,11 @@ async function runTable(argv: string[]): Promise<void> {
     {
       header: "cost/solve",
       value: (c) => mark(costCell(c), w.costPerSolve === cellKey(c)),
+    },
+    {
+      header: "tok/s",
+      value: (c) => tpsCell(c),
+      align: "right" as const,
     },
     {
       header: "wall",
@@ -605,6 +617,7 @@ async function runTable(argv: string[]): Promise<void> {
       "method",
       ...(k > 1 ? ["pass@k / pass^k"] : []),
       "cost/solve",
+      "tok/s",
       "wall",
       "turns/solve",
       "retries/solve",
@@ -617,6 +630,7 @@ async function runTable(argv: string[]): Promise<void> {
       c.solveMethod === "clustered" ? "clustered" : "Wilson",
       ...(k > 1 ? [passCell(c)] : []),
       costCell(c),
+      tpsCell(c),
       wallCell(c),
       num2(c.turnsPerSolve),
       num2(c.retryRate),

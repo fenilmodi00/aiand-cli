@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { EnvelopeV1 } from "../agents/envelope.js";
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { ATTRIBUTION_NOTE, attributeBranchSpend } from "../branch-spend.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
@@ -440,7 +441,7 @@ function render(payload: EfficiencyPayload): void {
   );
   out(style.dim("  retry = same file re-edited after a shell command in between"));
   renderSlices("by harness", efficiency.byHarness);
-  renderSlices("by model", efficiency.byModel);
+  renderSlices("by model", efficiency.byModel, modelLabel);
   out("");
 
   // #127: behavioral columns — heuristic over locally captured envelopes only.
@@ -516,7 +517,7 @@ type SliceRow = {
   };
 };
 
-function renderSlices(label: string, slices: SliceRow[]): void {
+function renderSlices(label: string, slices: SliceRow[], formatKey: (key: string) => string = (key) => key): void {
   if (slices.length === 0) return;
   out(`  ${label}:`);
   for (const slice of slices) {
@@ -530,6 +531,6 @@ function renderSlices(label: string, slices: SliceRow[]): void {
       stats.oneShotRate === null && stats.toolErrorRate != null
         ? ` · tool errors ${percent(stats.toolErrorRate)} (imported markers)`
         : "";
-    out(`    ${slice.key.padEnd(24)}${oneShot}${toolErr}`);
+    out(`    ${formatKey(slice.key).padEnd(24)}${oneShot}${toolErr}`);
   }
 }

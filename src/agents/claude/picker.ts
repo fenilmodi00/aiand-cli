@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Model } from "../../api/models.js";
+import { modelLabel, type Model } from "../../api/models.js";
 import { visionLabel } from "../catalog.js";
 import { jsoncDelete, jsoncSet } from "../managed-file.js";
 
@@ -25,7 +25,7 @@ export function buildModelPicker(catalog: Model[]): ModelPicker {
   return {
     options: catalog.map((model) => ({
       model: model.id,
-      label: model.name || model.id,
+      label: modelLabel(model.id),
       description: `ai& · ${visionLabel(model)}${contextLabel(model.context_window)}`,
     })),
     // The built-in Opus, Sonnet and Haiku rows would run ai&'s slot models

@@ -10,6 +10,7 @@ import {
   type Usage,
   withModelHint,
 } from "../api/inference.js";
+import { modelLabel } from "../api/models.js";
 import { bool, float, int, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, json, out, style } from "../cli/output.js";
@@ -187,7 +188,7 @@ async function runStreaming(
 
 function statsLine(meta: ChatMeta, usage: Usage | null): string {
   const parts: string[] = [];
-  if (meta.model) parts.push(meta.model);
+  if (meta.model) parts.push(modelLabel(meta.model));
   if (usage) {
     const cached = usage.prompt_tokens_details?.cached_tokens;
     parts.push(

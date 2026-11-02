@@ -51,6 +51,8 @@ export type CellStats = {
   turnsPerSolve: number | null;
   /** Retries of successful runs ÷ solves; null when 0 solves or retries unmetered. */
   retryRate: number | null;
+  /** Throughput-weighted avg TPS over trials with TPS data; null when none eligible. */
+  avgTps: number | null;
   /** Every non-infra failure mode, counted individually, never collapsed. */
   failures: Partial<Record<FailureMode, number>>;
   /** Infra rows, reported separately — never part of solve rate. */
@@ -214,6 +216,9 @@ export function aggregateCells(
     }
 
     const [harness, model] = cellKey.split("\u0000");
+    const tpsValues = trials.map((r) => r.tps).filter(num);
+    const avgTps =
+      tpsValues.length > 0 ? tpsValues.reduce((s, v) => s + v, 0) / tpsValues.length : null;
     cells.push({
       harness: harness ?? "",
       model: model ?? "",
@@ -236,6 +241,7 @@ export function aggregateCells(
         solved > 0 && solvedRetries.length > 0
           ? solvedRetries.reduce((s, t) => s + t, 0) / solved
           : null,
+      avgTps,
       failures,
       infra,
       lowN: trials.length < 3,

@@ -1,5 +1,6 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { bool, int, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
@@ -628,16 +629,14 @@ export function parseWindowFlags(
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-
-/** The per-harness JSON projection — every scorecard field EXCEPT `avgTps` (#155): TPS is informational and stays out of the harness scorecard JSON (dashboard renders it from the full row). */
-type HarnessStatsJsonRow = Omit<HarnessStatsRow, "avgTps"> & {
+/** The per-harness JSON projection — TPS is informational (never a verdict input) but included so `--json` can render it alongside cost/hit. */
+type HarnessStatsJsonRow = HarnessStatsRow & {
   labels: { behavioral: string };
 };
 
 function jsonRow(row: HarnessStatsRow): HarnessStatsJsonRow {
-  const { avgTps: _tps, ...rest } = row;
   return {
-    ...rest,
+    ...row,
     labels: {
       behavioral:
         row.behavioral.behavioralSource === "imported"
@@ -752,6 +751,11 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
     {
       header: "errors",
       value: (r) => bracketCell(r.errorRate, r.ci95.errorRate, pct),
+      align: "right",
+    },
+    {
+      header: "avg tok/s",
+      value: (r) => (r.avgTps === null ? "—" : r.avgTps.toFixed(1)),
       align: "right",
     },
     {
@@ -922,6 +926,11 @@ function compareColumns(
           w.errorRate.winner === r.harness,
           bracketCell(r.errorRate, r.ci95.errorRate, pct),
         ),
+      align: "right",
+    },
+    {
+      header: "avg tok/s",
+      value: (r) => (r.avgTps === null ? "—" : r.avgTps.toFixed(1)),
       align: "right",
     },
     ...behavioralColumns,
@@ -1116,7 +1125,7 @@ function renderSamples(rows: HarnessStatsRow[]): void {
     out(style.dim(`${row.harness} · ${row.samples.length} session(s)`));
     table<SessionSample>(row.samples, [
       { header: "session", value: (s) => s.session_id },
-      { header: "models", value: (s) => s.models.join(" + ") },
+      { header: "models", value: (s) => s.models.map(modelLabel).join(" + ") },
       { header: "turns", value: (s) => num(s.turns), align: "right" },
       {
         header: "cost",
@@ -1142,7 +1151,7 @@ function renderExcluded(excluded: SessionSample[], noCost: boolean): void {
   ];
   table<SessionSample>(excluded, [
     { header: "session", value: (s) => s.session_id },
-    { header: "models", value: (s) => s.models.join(" + ") },
+    { header: "models", value: (s) => s.models.map(modelLabel).join(" + ") },
     { header: "turns", value: (s) => num(s.turns), align: "right" },
     ...(noCost ? [] : excludedCostColumn),
     { header: "started", value: (s) => s.started_at },
@@ -1196,7 +1205,7 @@ function renderRegression(
     out(style.dim("  no metric has enough data in both windows to screen."));
   } else {
     table<RegressionRow>(shown, [
-      { header: "harness/model", value: (row) => `${row.harness}/${row.model}` },
+      { header: "harness/model", value: (row) => `${row.harness}/${modelLabel(row.model)}` },
       { header: "metric", value: (row) => row.metric },
       {
         header: "current",
@@ -1222,7 +1231,7 @@ function renderRegression(
     out(
       style.red(
         `regression: ${report.regressions.length} metric(s) worse — ` +
-          report.regressions.map((row) => `${row.harness}/${row.model}/${row.metric}`).join(", "),
+          report.regressions.map((row) => `${row.harness}/${modelLabel(row.model)}/${row.metric}`).join(", "),
       ),
     );
   } else {

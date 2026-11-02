@@ -1,4 +1,5 @@
 import { currencySymbol, num, style } from "../cli/output.js";
+import { modelLabel } from "../api/models.js";
 import { formatMoneyFixed } from "../pricing/currency.js";
 import type { Costs, ReportData } from "../report/data.js";
 
@@ -202,12 +203,12 @@ export function renderWrappedText(
   if (story.topPair !== null) {
     lines.push(
       bullet(
-        `Favorite pairing: ${story.topPair.harness} + ${story.topPair.model} ` +
+        `Favorite pairing: ${story.topPair.harness} + ${modelLabel(story.topPair.model)} ` +
           `(${num(story.topPair.requests)} request${story.topPair.requests === 1 ? "" : "s"}).`,
       ),
     );
   } else if (story.topModel !== null) {
-    lines.push(bullet(`Top model: ${story.topModel}.`));
+    lines.push(bullet(`Top model: ${modelLabel(story.topModel)}.`));
   }
   if (story.busiestDay !== null) {
     const dayCost =

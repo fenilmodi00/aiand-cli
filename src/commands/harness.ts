@@ -1,4 +1,5 @@
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import { type BenchResult, loadPrices, runHarnessBenchmark } from "../benchmark/harness-bench.js";
 import { findHarnessLayout, HARNESS_LAYOUTS } from "../benchmark/harness-layouts.js";
 import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
@@ -170,7 +171,7 @@ function printSweep(sweep: { model: string; results: BenchResult[] }[], title: s
   heading(`${title} · every model`);
   out();
   for (const { model, results } of sweep) {
-    heading(model);
+    heading(modelLabel(model));
     out();
     table<BenchResult>(results, [
       { header: "harness", value: (r) => r.label },
@@ -195,7 +196,7 @@ function printSweep(sweep: { model: string; results: BenchResult[] }[], title: s
 }
 
 function printResults(results: BenchResult[], scenarioTitle: string, model: string): void {
-  heading(`${scenarioTitle} · ${model}`);
+  heading(`${scenarioTitle} · ${modelLabel(model)}`);
   out();
 
   table<BenchResult>(results, [

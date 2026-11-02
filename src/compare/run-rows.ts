@@ -42,6 +42,8 @@ export type CompareRunRow = {
   tokens_cached: number | null;
   tokens_out: number | null;
   cost_usd: number | null;
+  /** Throughput-weighted avg TPS over gateway rows matched to this run; null when none eligible. */
+  tps: number | null;
   token_basis: string | null;
   cost_basis: string | null;
   request_ids: string[];

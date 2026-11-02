@@ -200,8 +200,8 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
   },
   {
     report: "cache",
-    field: "savedUsd",
-    provenance: estimated("costIfUncached minus the gateway-billed cost"),
+    field: "avgTps",
+    provenance: estimated("sum(output_tokens)/sum(latency_ms - ttft_ms)*1000 over eligible rows"),
   },
   {
     report: "cache",
@@ -295,6 +295,16 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     report: "harness compare",
     field: "behavioralCoverage",
     provenance: estimated("covered envelope turns / in-scope request rows"),
+  },
+  {
+    report: "harness compare",
+    field: "avg tok/s, tok/s",
+    provenance: estimated("sum(output_tokens)/sum(latency_ms - ttft_ms)*1000 over eligible rows"),
+  },
+  {
+    report: "compare",
+    field: "tok/s",
+    provenance: estimated("sum(output_tokens)/sum(latency_ms - ttft_ms)*1000 over eligible trials"),
   },
   // recommend behavioral ranking (ticket #130)
   {

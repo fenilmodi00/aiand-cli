@@ -1,5 +1,6 @@
 import { openSession, type Session } from "../api/client.js";
 import { getLogs, getLogsPaged, LOG_PAGE_MAX, LOG_RANGES, type LogEntry } from "../api/logs.js";
+import { modelLabel } from "../api/models.js";
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, json, num, out, relativeTime, style, table } from "../cli/output.js";
@@ -95,7 +96,7 @@ function printTable(entries: LogEntry[]): void {
   table<LogEntry>(entries, [
     { header: "when", value: (e) => relativeTime(e.created_at) },
     { header: "status", value: (e) => statusCell(e.status_code), align: "right" },
-    { header: "model", value: (e) => e.model },
+    { header: "model", value: (e) => modelLabel(e.model) },
     {
       header: "in",
       value: (e) => (e.input_tokens === null ? "-" : num(e.input_tokens)),
@@ -207,7 +208,7 @@ function followRow(entry: LogEntry): string {
   return [
     style.dim(entry.created_at.slice(11, 19)),
     statusCell(entry.status_code),
-    entry.model,
+    modelLabel(entry.model),
     style.dim(`${tokens} tok`),
     style.dim(latency),
     costCell(entry),

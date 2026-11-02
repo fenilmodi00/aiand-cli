@@ -141,8 +141,8 @@ describe("aiand harness — benchmark run", () => {
       );
       assert.equal(code, 0);
       assert.match(stdout, /Multi-turn refactor \(short context\) · every model/);
-      assert.match(stdout, /vendor\/vision-model/);
-      assert.match(stdout, /vendor\/text-model/);
+      assert.match(stdout, /vision-model/);
+      assert.match(stdout, /text-model/);
       assert.match(stdout, /Oh My Pi/);
     });
   });

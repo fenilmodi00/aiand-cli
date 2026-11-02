@@ -12,6 +12,7 @@ import { CANCELLED_MESSAGE, CliError, EXIT } from "../cli/errors.js";
 import { err, out, style } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { inferenceModel } from "./run.js";
+import { modelLabel } from "../api/models.js";
 
 export const help = `${style.bold("aiand chat")} -- interactive conversation
 
@@ -68,7 +69,7 @@ export async function run(argv: string[]): Promise<void> {
   let transcript: Message[] = [];
   const totals = { input: 0, output: 0 };
 
-  out(style.dim(`ai& chat -- model ${model}. /help for commands, /exit to leave.`));
+  out(style.dim(`ai& chat -- model ${modelLabel(model)}. /help for commands, /exit to leave.`));
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const prompt = () => style.cyan("> ");
@@ -103,11 +104,11 @@ export async function run(argv: string[]): Promise<void> {
         }
         if (command === "model") {
           if (!argument) {
-            out(style.dim(`Model is ${model}.`));
+            out(style.dim(`Model is ${modelLabel(model)}.`));
             continue;
           }
           model = argument;
-          out(style.dim(`Model set to ${model}.`));
+          out(style.dim(`Model set to ${modelLabel(model)}.`));
           continue;
         }
         if (command === "system") {
@@ -155,7 +156,7 @@ export async function run(argv: string[]): Promise<void> {
           totals.output += usage.completion_tokens ?? 0;
         }
         if (meta.model && meta.model !== model) {
-          err(style.dim(`(${meta.model})`));
+          err(style.dim(`(${modelLabel(meta.model)})`));
         }
       } catch (e) {
         const failure = withModelHint(e, model);

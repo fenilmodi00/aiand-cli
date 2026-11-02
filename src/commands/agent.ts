@@ -7,6 +7,7 @@ import { bool, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, fields, json, out, spinner, style } from "../cli/output.js";
 import { agentHome, resolveProfile } from "../config.js";
+import { modelLabel } from "../api/models.js";
 
 const VERBS: Verb[] = ["on", "off", "status"];
 
@@ -204,7 +205,7 @@ async function runOn(adapter: AgentAdapter, parsed: Parsed, jsonOut: boolean): P
   out(style.green(`${adapter.label} is now using ai&.`));
   fields([
     ["agent", result.agent],
-    ["model", result.model],
+    ["model", modelLabel(result.model)],
     ["files", result.files.join(", ")],
   ]);
   for (const warning of result.warnings ?? []) {
@@ -230,12 +231,12 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
     return json(result);
   }
 
-  const modelLabel: string = result.model ?? style.dim("—");
+  const configuredModel: string = result.model ? modelLabel(result.model) : style.dim("—");
   fields([
     ["agent", result.agent],
     ["installed", result.installed ? (result.binary ?? style.dim("yes")) : style.dim("no")],
     ["state", stateLabel(result.state)],
-    ["model", modelLabel],
+    ["model", configuredModel],
   ]);
   if (!result.installed) {
     err(style.dim(`Install it with: ${adapter.install.command}  See: ${adapter.install.url}`));

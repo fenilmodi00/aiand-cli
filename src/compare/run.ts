@@ -135,6 +135,8 @@ type GatewayUsage = {
   tokensCached: number | null;
   tokensOut: number | null;
   costUsd: number | null;
+  /** Throughput-weighted avg TPS over matched gateway rows; null when none eligible. */
+  tps: number | null;
   requestIds: string[];
 };
 
@@ -144,8 +146,31 @@ type StoreRow = {
   output_tokens: number | null;
   cached_tokens: number | null;
   cost_value: number | null;
+  /** Per-request latency fields for TPS; null when unmetered. */
+  ttft_ms: number | null;
+  latency_ms: number | null;
   created_at: string;
 };
+
+/** Throughput-weighted avg TPS over matched rows; eligibility is the shared requestTps gate. */
+function matchedTps(rows: StoreRow[]): number | null {
+  let tokens = 0;
+  let ms = 0;
+  for (const row of rows) {
+    if (
+      row.ttft_ms === null ||
+      row.latency_ms === null ||
+      row.output_tokens === null ||
+      row.latency_ms <= row.ttft_ms ||
+      row.output_tokens <= 0
+    )
+      continue;
+    tokens += row.output_tokens;
+    ms += row.latency_ms - row.ttft_ms;
+  }
+  if (ms <= 0) return null;
+  return (tokens / ms) * 1000;
+}
 
 /** Sum a column over matched rows; all-null stays null, never 0. */
 function sumColumn(rows: StoreRow[], pick: (row: StoreRow) => number | null): number | null {
@@ -177,13 +202,14 @@ async function joinGatewayUsage(
       tokensCached: null,
       tokensOut: null,
       costUsd: null,
+      tps: null,
       requestIds: [],
     };
   }
   try {
     const rows = opened.db
       .prepare(
-        "SELECT id, input_tokens, output_tokens, cached_tokens, cost_value, created_at " +
+        "SELECT id, input_tokens, output_tokens, cached_tokens, cost_value, ttft_ms, latency_ms, created_at " +
           "FROM requests WHERE api_key = ?",
       )
       .all(maskedKey) as StoreRow[];
@@ -197,6 +223,7 @@ async function joinGatewayUsage(
       tokensCached: sumColumn(matched, (r) => r.cached_tokens),
       tokensOut: sumColumn(matched, (r) => r.output_tokens),
       costUsd: sumColumn(matched, (r) => r.cost_value),
+      tps: matchedTps(matched),
       requestIds: matched.map((r) => r.id).sort(),
     };
   } finally {
@@ -314,6 +341,7 @@ function baseRow(
     tokens_cached: null,
     tokens_out: null,
     cost_usd: null,
+    tps: null,
     token_basis: "none",
     cost_basis: "none",
     request_ids: [],
@@ -451,6 +479,7 @@ async function runLive(task: string, id: string, options: LiveOptions): Promise<
         row.tokens_cached = usage.tokensCached;
         row.tokens_out = usage.tokensOut;
         row.cost_usd = usage.costUsd;
+        row.tps = usage.tps;
         const metered = usage.requestIds.length > 0;
         row.token_basis = metered ? "gateway" : "none";
         row.cost_basis = metered ? "gateway" : "none";

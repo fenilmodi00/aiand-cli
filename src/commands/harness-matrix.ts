@@ -1,5 +1,6 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { openSession } from "../api/client.js";
+import { modelLabel } from "../api/models.js";
 import type { BenchResult } from "../benchmark/harness-bench.js";
 import { loadSavedSweep, type SavedSweep } from "../benchmark/sweep-store.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
@@ -252,6 +253,7 @@ function syntheticRow(
     cachedTokens: result.cachedTokens,
     outputTokens: 0,
     costUsd: result.costUsd,
+    avgTps: null as number | null,
   };
   return {
     scenario: result.scenario,
@@ -277,12 +279,12 @@ function renderSynthetic(sweep: SavedSweep, format: "table" | "markdown"): void 
       const row = syntheticRow(result, model);
       if (format === "markdown") {
         out(
-          `| ${row.harness} | ${model} | ${row.requests} | ` +
+          `| ${row.harness} | ${modelLabel(model)} | ${row.requests} | ` +
             `${(row.hitRatio * 100).toFixed(1)}% | ${row.costUsd.toFixed(6)} | ${row.verdict} |`,
         );
       } else {
         out(
-          `  ${row.harness} · ${model} · ${row.requests} requests · ` +
+          `  ${row.harness} · ${modelLabel(model)} · ${row.requests} requests · ` +
             `hit ${(row.hitRatio * 100).toFixed(1)}% · ` +
             `${currencySymbol("usd")}${row.costUsd.toFixed(6)} · ${row.verdict}`,
         );
@@ -321,7 +323,7 @@ function verdictCell(row: PairStatsRow): string {
 function pairColumns(showP90: boolean): Column<PairStatsRow>[] {
   return [
     { header: "harness", value: (r) => r.harness },
-    { header: "model", value: (r) => r.model },
+    { header: "model", value: (r) => modelLabel(r.model) },
     { header: "n", value: (r) => num(r.sessions), align: "right" },
     { header: "cost/sess", value: (r) => costCell(r, "p50"), align: "right" },
     ...(showP90

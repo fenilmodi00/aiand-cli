@@ -53,7 +53,9 @@ Options
 Every number comes from the Gateway's own per-request reporting. Requests are
 attributed to an agent by the API key the CLI baked into that agent's config,
 so an agent wired by hand shows as "unknown" rather than being guessed. Use
---attribute to label such a key yourself. Coverage (last sync, ingestion lag,
+--attribute to label such a key yourself. Throughput (avg tok/s) rides the
+same rows: output_tokens over the decode window (latency_ms - ttft_ms);
+ineligible rows stay —, never 0. Coverage (last sync, ingestion lag,
 days with no local data) is reported alongside the aggregates, never folded
 into them.`;
 
@@ -179,6 +181,10 @@ function printCoverage(coverage: ReturnType<typeof computeCoverage>): void {
   for (const line of coverageLines(coverage)) out(style.dim(line));
 }
 
+function formatTpsValue(avgTps: number | null): string {
+  return avgTps === null ? "—" : `${avgTps.toFixed(1)} tok/s`;
+}
+
 function printReport(report: CacheReport, by: GroupBy): void {
   const { totals } = report;
 
@@ -194,6 +200,7 @@ function printReport(report: CacheReport, by: GroupBy): void {
         value: `${percent(totals.misses / Math.max(1, totals.requests))} (${num(totals.misses)} turns)`,
       },
       { label: "hit rate", value: percent(report.hitRatio) },
+      { label: "avg tok/s", value: formatTpsValue(report.avgTps) },
       { label: "spent", value: `${currencySymbol("usd")}${report.totals.costUsd.toFixed(6)}` },
       { label: "saved by cache", value: `${currencySymbol("usd")}${report.savedUsd.toFixed(6)}` },
     ],
@@ -246,6 +253,7 @@ function printGroups(groups: CacheGroup[]): void {
       align: "right",
     },
     { header: "misses", value: (g) => num(g.misses), align: "right" },
+    { header: "tok/s", value: (g) => formatTpsValue(g.avgTps), align: "right" },
     {
       header: "cost",
       value: (g) => `${currencySymbol("usd")}${g.costUsd.toFixed(6)}`,

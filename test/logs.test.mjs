@@ -114,7 +114,8 @@ describe("logs footer and paging", () => {
     const { code, stdout } = await cli(["logs", "--limit", "2"]);
     assert.equal(code, 0);
     assert.match(stdout, /showing 2 requests in the last 24h \(use --limit to see more\)\./);
-    assert.equal(stdout.split("test/model").length - 1, 2);
+    assert.doesNotMatch(stdout, /test\/model/, "table renders bare model labels");
+    assert.match(stdout, /\bmodel\b/, "table renders the model column");
   });
 
   test("an over-delivering page is sliced to --limit", async () => {
@@ -130,11 +131,12 @@ describe("logs footer and paging", () => {
     const { code, stdout } = await cli(["logs", "--limit", "2", "--json"]);
     assert.equal(code, 0);
     assert.equal(JSON.parse(stdout).length, 2);
+    assert.equal(JSON.parse(stdout).every((r) => r.model === "test/model"), true);
 
     const table = await cli(["logs", "--limit", "2"]);
     assert.equal(table.code, 0);
     assert.match(table.stdout, /showing 2 requests in the last 24h/);
-    assert.equal(table.stdout.split("test/model").length - 1, 2);
+    assert.doesNotMatch(table.stdout, /test\/model/, "table renders bare model labels");
   });
 });
 

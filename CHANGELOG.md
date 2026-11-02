@@ -8,6 +8,20 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- Cache and leaderboards now show throughput next to hit rate and cost, so
+  the 98% vs 85% gap pairs with how fast each harness+model is. All three
+  reuse the same throughput-weighted avg TPS
+  (`sum(output_tokens)/sum(latency_ms − ttft_ms)*1000`, eligible rows only;
+  ineligible stays `—` / `null`, never 0).
+  - `aiand cache`: `avg tok/s` in the totals header and a `tok/s` column in
+    the By agent/model/key table, plus `avgTps` per group in `--json`
+    (`estimated(sum(output_tokens)/sum(latency_ms − ttft_ms)*1000 over eligible rows)`).
+  - `aiand harness stats` / `aiand harness compare`: `avg tok/s` column
+    (informational, never a verdict input), and the value now ships in
+    `--json` and the markdown/csv `--out` export.
+  - `aiand compare table`: `tok/s` column (`CompareRunRow.tps` → `CellStats.avgTps`,
+    mean over eligible trials; `—` when none), preserved in `compare table --out`
+    markdown/csv and in `--json` (`cells[].avgTps`).
 - Throughput (tokens/s) is now surfaced across the observability commands,
   derived at render time from the store's existing `ttft_ms`/`latency_ms`/
   `output_tokens` columns — no migration, no new dependency. Two labelled

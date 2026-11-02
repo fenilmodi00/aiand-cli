@@ -1,11 +1,13 @@
 import { estimated, gatewayBilled, type ProvenanceLabel } from "../obs/provenance.js";
+import { avgTps, requestTps } from "../obs/tps.js";
 import type { LogEntry } from "./logs.js";
 
 /**
  * Cache observability over Gateway /logs rows.
  *
  * Every number here is derived from what the Gateway already reports per
- * request: `input_tokens`, `cached_tokens`, `cost`, `api_key`.
+ * request: `input_tokens`, `cached_tokens`, `cost`, `api_key`, plus
+ * throughput from `output_tokens` / (`latency_ms` - `ttft_ms`).
  * Nothing is estimated, and nothing requires a second data source.
  *
  * The one thing the Gateway does NOT report is which client sent a request.
@@ -22,6 +24,8 @@ type CacheRow = {
   costUsd: number;
   /** Turns that read 0 cached tokens — i.e. the cache did not fire. */
   misses: number;
+  /** Throughput-weighted avg TPS over eligible rows in this group; null when none eligible. */
+  avgTps: number | null;
 };
 
 export type CacheGroup = CacheRow & {
@@ -34,6 +38,8 @@ export type CacheReport = {
   totals: CacheRow;
   /** Cache hit ratio over prompt tokens: cached / (input + cached). */
   hitRatio: number;
+  /** Throughput-weighted avg TPS over eligible totals rows; null when none eligible. */
+  avgTps: number | null;
   /** What the run would have cost with no cache at all, at the same mix. */
   costIfUncached: number;
   /** costIfUncached - costUsd. The money the cache saved. */
@@ -62,6 +68,7 @@ export type CacheReport = {
       costUsd: ProvenanceLabel;
     };
     hitRatio: ProvenanceLabel;
+    avgTps: ProvenanceLabel;
     costIfUncached: ProvenanceLabel;
     savedUsd: ProvenanceLabel;
     unattributed: ProvenanceLabel;
@@ -83,7 +90,15 @@ export type ModelPrice = {
 };
 
 function emptyRow(): CacheRow {
-  return { requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, costUsd: 0, misses: 0 };
+  return {
+    requests: 0,
+    inputTokens: 0,
+    cachedTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    misses: 0,
+    avgTps: null,
+  };
 }
 
 function addRow(target: CacheRow, entry: LogEntry): void {
@@ -111,6 +126,17 @@ function bucket(map: Map<string, CacheRow>, key: string): CacheRow {
   return row;
 }
 
+type TpsAccum = { tokens: number; ms: number };
+
+function tpsBucket(map: Map<string, TpsAccum>, key: string): TpsAccum {
+  let acc = map.get(key);
+  if (!acc) {
+    acc = { tokens: 0, ms: 0 };
+    map.set(key, acc);
+  }
+  return acc;
+}
+
 export type BuildCacheReportOptions = {
   range: string;
   entries: LogEntry[];
@@ -128,6 +154,12 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
   const perModelCost = new Map<string, { uncached: number; cached: number; output: number }>();
   let unattributed = 0;
 
+  // Throughput accumulators — throughput-weighted avg TPS rides sum(output)/sum(decodeMs).
+  const totalsTps: TpsAccum = { tokens: 0, ms: 0 };
+  const agentsTps = new Map<string, TpsAccum>();
+  const modelsTps = new Map<string, TpsAccum>();
+  const keysTps = new Map<string, TpsAccum>();
+
   for (const entry of options.entries) {
     addRow(totals, entry);
 
@@ -137,6 +169,23 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
     addRow(bucket(agents, agent), entry);
     addRow(bucket(models, entry.model), entry);
     addRow(bucket(keys, entry.api_key), entry);
+
+    // TPS eligibility is the shared requestTps gate: null never becomes 0.
+    if (requestTps(entry.output_tokens, entry.ttft_ms, entry.latency_ms) !== null) {
+      const decodeMs = (entry.latency_ms ?? 0) - (entry.ttft_ms ?? 0);
+      const out = entry.output_tokens ?? 0;
+      totalsTps.tokens += out;
+      totalsTps.ms += decodeMs;
+      const a = tpsBucket(agentsTps, agent);
+      a.tokens += out;
+      a.ms += decodeMs;
+      const m = tpsBucket(modelsTps, entry.model);
+      m.tokens += out;
+      m.ms += decodeMs;
+      const k = tpsBucket(keysTps, entry.api_key);
+      k.tokens += out;
+      k.ms += decodeMs;
+    }
 
     // Price each request's tokens at its own model's catalog rates.
     const price = options.prices?.[entry.model];
@@ -166,9 +215,18 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
     costIfUncached += (uncached + cached) * price.inputPer1m + output * price.outputPer1m;
   }
 
-  const sorted = (map: Map<string, CacheRow>): CacheGroup[] =>
+  totals.avgTps = avgTps(totalsTps.tokens, totalsTps.ms);
+
+  const finalizeGroups = (
+    map: Map<string, CacheRow>,
+    tpsMap: Map<string, TpsAccum>,
+  ): CacheGroup[] =>
     [...map.entries()]
-      .map(([key, row]) => toGroup(key, row))
+      .map(([key, row]) => {
+        const acc = tpsMap.get(key);
+        const avg = acc ? avgTps(acc.tokens, acc.ms) : null;
+        return toGroup(key, { ...row, avgTps: avg });
+      })
       .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
 
   const unattributedCount = unattributed;
@@ -176,11 +234,12 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
     range: options.range,
     totals,
     hitRatio,
+    avgTps: totals.avgTps,
     costIfUncached,
     savedUsd: costIfUncached - totals.costUsd,
-    byAgent: sorted(agents),
-    byModel: sorted(models),
-    byKey: sorted(keys),
+    byAgent: finalizeGroups(agents, agentsTps),
+    byModel: finalizeGroups(models, modelsTps),
+    byKey: finalizeGroups(keys, keysTps),
     unattributedRequests: unattributedCount,
     unattributed: {
       count: unattributedCount,
@@ -199,6 +258,7 @@ export function buildCacheReport(options: BuildCacheReportOptions): CacheReport 
         costUsd: gatewayBilled("sum of gateway-computed per-request cost"),
       },
       hitRatio: estimated("cached_tokens / input_tokens over the window's rows"),
+      avgTps: estimated("sum(output_tokens)/sum(latency_ms - ttft_ms)*1000 over eligible rows"),
       costIfUncached: estimated("model-catalog prices applied to the window's token counts"),
       savedUsd: estimated("costIfUncached minus the gateway-billed cost"),
       unattributed: estimated("count of /logs rows whose api_key is absent from agent-keys.json"),
