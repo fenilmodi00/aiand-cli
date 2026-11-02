@@ -339,7 +339,7 @@ describe("overview text", () => {
         "  opencode     ███████·············  33%  $0.0042",
         "",
         "Top models (by cost, top 5; tok/s avg)",
-        "  glm-5.3                           3 666.7  $0.0126",
+        "  glm-5.3                           3  666.7  $0.0126",
         "",
         "Busiest days (by cost)",
         "  2026-10-20       2  $0.0084",
