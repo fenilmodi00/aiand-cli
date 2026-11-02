@@ -514,6 +514,7 @@ Flags win over environment variables, which win over the stored profile.
 | `AIAND_KEY_STORAGE` | `keychain`, `file`, or `plaintext` |
 | `AIAND_SECRET_STORE_MASTER_KEY` | 64 hex characters; your own key for the encrypted file |
 | `AIAND_NO_BROWSER=1` | Never open a browser; print the sign-in link instead |
+| `AIAND_NO_CLIPBOARD=1` | Never write to the clipboard; `overview --share` saves the PNG and prints its path |
 | `AIAND_UPDATE_CHECK=0` or `NO_UPDATE_CHECK=1` | Turn off the daily update notice |
 | `AIAND_AUTO_UPDATE=0` | Turn off the background update notice (foreground `aiand update` still works) |
 | `NO_COLOR` | Turn off color |

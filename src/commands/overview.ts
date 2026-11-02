@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { bool, list, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, json, out, style } from "../cli/output.js";
@@ -13,6 +14,8 @@ import {
   syncWarningFor,
 } from "../report/data.js";
 import { renderOverviewText } from "../report/overview.js";
+import { renderOverviewSvg } from "../report/overview-svg.js";
+import { writeAndShare } from "../report/share-image.js";
 import { runPreReadSync } from "../store/sync.js";
 
 /**
@@ -41,6 +44,8 @@ Options
   --sections <list>     totals,by-harness,models,busiest,daily,budget (default all)
   --no-cost             mask monetary figures
   --json                machine-readable version of the same summary
+  --share               render a Mac-terminal-style PNG of the overview and copy it to the clipboard
+  --out <file>          with --share: output file (default aiand-overview.png)
   --no-sync             skip the pre-read store sync and read the local store as-is`;
 
 export async function run(argv: string[]): Promise<void> {
@@ -55,6 +60,8 @@ export async function run(argv: string[]): Promise<void> {
     sections: { type: "string" },
     "no-cost": { type: "boolean", default: false },
     "no-sync": { type: "boolean", default: false },
+    share: { type: "boolean", default: false },
+    out: { type: "string" },
   });
   if (bool(parsed, "help")) return out(help);
 
@@ -71,6 +78,13 @@ export async function run(argv: string[]): Promise<void> {
     OVERVIEW_SECTIONS,
   ) ?? [...OVERVIEW_SECTIONS];
   const showCost = !bool(parsed, "no-cost");
+  const share = bool(parsed, "share");
+  if (share && bool(parsed, "json")) {
+    throw new CliError("--share cannot be combined with --json.");
+  }
+  if (str(parsed, "out") !== undefined && !share) {
+    throw new CliError("--out requires --share.");
+  }
 
   // -- one sync, then ONE store read for every section --------------------------
   // #87: validate --profile even when sync is skipped or fails open.
@@ -106,6 +120,17 @@ export async function run(argv: string[]): Promise<void> {
   if (syncWarning) err(style.yellow(`Warning: ${syncWarning}`));
   const budgetWarning = storeBudgetWarning();
   if (budgetWarning && showCost) err(style.yellow(budgetWarning));
+
+  if (share) {
+    const target = resolve(str(parsed, "out") ?? "aiand-overview.png");
+    const { svg, width, height } = renderOverviewSvg(data, { showCost, sections });
+    const result = await writeAndShare(svg, width, height, target, {
+      noClipboard: process.env.AIAND_NO_CLIPBOARD === "1",
+    });
+    out(result.note);
+    out(style.dim(`Saved ${result.path}`));
+    return;
+  }
 
   if (bool(parsed, "json")) {
     return json(overviewPayload(data, sections, showCost));

@@ -23,6 +23,13 @@ export type OverviewView = {
   sections: readonly OverviewSection[];
 };
 
+/** The bold section labels the text renderer emits, shared with the share card. */
+const HEADING_RE = /^(Totals|By harness|Top models|Busiest days|Per day|Budget)/;
+
+export function isOverviewHeading(line: string): boolean {
+  return HEADING_RE.test(line);
+}
+
 /** Width budget: every line stays at or under 80 columns. */
 const OVERVIEW_WIDTH = 80;
 const BAR_WIDTH = 20;
@@ -175,17 +182,17 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
     const rows = data.days.slice(-OVERVIEW_DAY_ROWS);
     lines.push(style.bold(`Per day (last ${rows.length} of ${data.days.length} day(s))`));
     const header =
-      `  ${padRight("date", 11)}${padLeft("requests", 9)}${padLeft("tokens", 10)}` +
-      (view.showCost ? `${padLeft("cost", 14)}${padLeft("savings", 14)}` : "");
+      `  ${padRight("date", 11)} ${padLeft("requests", 9)} ${padLeft("tokens", 12)}` +
+      (view.showCost ? ` ${padLeft("cost", 14)} ${padLeft("savings", 14)}` : "");
     lines.push(style.dim(header));
     for (const day of rows) {
       const cells =
-        `  ${padRight(day.day, 11)}${padLeft(num(day.requests), 9)}` +
-        `${padLeft(num(day.inputTokens + day.outputTokens), 10)}`;
+        `  ${padRight(day.day, 11)} ${padLeft(num(day.requests), 9)} ` +
+        `${padLeft(num(day.inputTokens + day.outputTokens), 12)}`;
       lines.push(
         cells +
           (view.showCost
-            ? `${padLeft(costCell(day.costs), 14)}${
+            ? ` ${padLeft(costCell(day.costs), 14)} ${
                 day.savings === null
                   ? padLeft("-", 14)
                   : padLeft(money(day.savings, meta.currency ?? ""), 14)

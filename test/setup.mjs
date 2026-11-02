@@ -56,6 +56,8 @@ if (!process.env.AIAND_TEST_STUB_BIN) {
   process.on("exit", () => rmSync(bin, { recursive: true, force: true }));
 }
 process.env.AIAND_NO_BROWSER = "1";
+// --share never reaches the real clipboard (tests only exercise the save paths).
+process.env.AIAND_NO_CLIPBOARD = "1";
 // AIAND_HOME must not resolve to the real home: local-usage scans the real
 // ~/.omp and ~/.pi session dirs through it (951MB here), which makes every
 // report-family CLI subprocess take seconds (#155 test-suite slowdown).

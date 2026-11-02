@@ -8,6 +8,11 @@ breaking changes while the command surface settles.
 ## [Unreleased]
 
 ### Added
+- `aiand overview --share`: renders the overview as a Mac-terminal-style
+  SVG/PNG (inline ai& logo in the terminal body), rasterizes it at 2x via
+  OS-native tools, and copies the PNG to the clipboard — with save-and-print
+  fallback when no rasterizer/clipboard tool is available. Zero new
+  dependencies.
 - Cache and leaderboards now show throughput next to hit rate and cost, so
   the 98% vs 85% gap pairs with how fast each harness+model is. All three
   reuse the same throughput-weighted avg TPS
@@ -46,6 +51,8 @@ breaking changes while the command surface settles.
     models render `-` and `null`, never 0.
 
 ### Changed
+- `aiand overview`: the per-day table separates requests, tokens, cost, and
+  savings with explicit spaces, so large counts cannot merge into one number.
 - Terminal output shows the bare model name (`glm-5.3`) instead of the
   org-qualified id (`zai-org/glm-5.3`), so model columns no longer inflate
   every table. Applies to `models`, `logs`, `sessions`, `status`, `agent`,

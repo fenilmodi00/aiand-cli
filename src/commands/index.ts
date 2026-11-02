@@ -110,7 +110,7 @@ export const COMMANDS: Command[] = [
   },
   {
     name: "overview",
-    summary: "Pasteable plain-text period summary",
+    summary: "Pasteable plain-text period summary or share card",
     ...lazy(() => import("./overview.js")),
   },
   {
