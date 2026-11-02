@@ -338,8 +338,9 @@ describe("overview text", () => {
         "  claude       █████████████·······  67%  $0.0084",
         "  opencode     ███████·············  33%  $0.0042",
         "",
-        "Top models (by cost, top 5; tok/s avg)",
-        "  glm-5.3                           3  666.7  $0.0126",
+        "Top models (by cost, top 5)",
+        "  model                         requests avg tok/s max tok/s       cost",
+        "  glm-5.3                              3     666.7     750.0    $0.0126",
         "",
         "Busiest days (by cost)",
         "  2026-10-20       2  $0.0084",
@@ -384,10 +385,26 @@ describe("overview text", () => {
       // A fast model (5-digit tok/s): its cell clips to the fixed width.
       row("2026-10-20T12:00:00.000Z", {
         id: "fast1",
-        model: "fast/model",
+        model: "acme/fast",
         ttft_ms: 100,
         latency_ms: 1_100,
         output_tokens: 100_000,
+      }),
+      // Timer-noise model: a 1ms decode window fabricates 38000 tok/s;
+      // a real 1000ms window row gives 200 tok/s. Max must show 200.0.
+      row("2026-10-20T13:00:00.000Z", {
+        id: "n1",
+        model: "acme/noisy",
+        ttft_ms: 500,
+        latency_ms: 501,
+        output_tokens: 38,
+      }),
+      row("2026-10-20T13:30:00.000Z", {
+        id: "n2",
+        model: "acme/noisy",
+        ttft_ms: 100,
+        latency_ms: 1_100,
+        output_tokens: 200,
       }),
     ]);
     seedKeysAndCatalog(dir);
@@ -399,11 +416,13 @@ describe("overview text", () => {
     const lines = text.stdout.split("\n");
     const glm = lines.find((l) => l.includes("glm-5.3"));
     const gpt = lines.find((l) => l.includes("gpt-5.2") && !l.includes("glm"));
-    assert.match(glm, /3\s+666\.7\s+\$/, "eligible model renders its avg TPS cell");
-    assert.match(gpt, /\s-\s/, "ineligible model renders - (latency<=ttft and null latency)");
+    assert.match(glm, /3\s+666\.7\s+750\.0\s+\$/, "avg + max TPS cells render");
+    assert.match(gpt, /\s-\s+-\s/, "ineligible model renders - in both TPS columns");
     assert.ok(!gpt.includes("tok/s"), "no fabricated tok/s for an ineligible model");
-    const fast = lines.find((l) => l.includes("model") && l.includes("100000"));
-    assert.match(fast, /100000/, "5-digit tok/s renders in integer form, cell width held");
+    const noise = lines.find((l) => l.includes("noisy"));
+    assert.match(noise, /200\.0\s+200\.0\s/, "sub-floor rows excluded from both TPS cells");
+    const fast = lines.find((l) => l.includes("fast") && l.includes("100000"));
+    assert.match(fast, /100000\s+100000\s/, "avg and max render integer form at 5 digits");
     assert.ok(fast.indexOf("$") > fast.indexOf("100000"), "cost column survives the wide value");
     for (const line of lines) assert.ok(line.length <= 80, `line over 80 cols: ${line}`);
 
@@ -423,8 +442,22 @@ describe("overview text", () => {
     assert.equal(js.code, 0);
     const payload = JSON.parse(js.stdout);
     const byKey = Object.fromEntries(payload.topModels.map((m) => [m.key, m.avgTps]));
+    const maxKey = Object.fromEntries(payload.topModels.map((m) => [m.key, m.maxTps]));
     assert.ok(Math.abs(byKey["zai-org/glm-5.3"] - 800 / 1.2) < 1e-9);
     assert.equal(byKey["openai/gpt-5.2"], null, "no eligible rows → null, never 0");
+    assert.ok(
+      Math.abs(maxKey["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
+      "maxTps = fastest eligible request",
+    );
+    assert.equal(maxKey["openai/gpt-5.2"], null, "no eligible rows → maxTps null");
+    assert.equal(byKey["acme/noisy"], 200, "avg TPS ignores sub-floor timer noise");
+    assert.equal(maxKey["acme/noisy"], 200, "max TPS ignores sub-floor timer noise");
+    assert.equal(maxKey["acme/fast"], 100000, "measurable fast row keeps its peak");
+    assert.ok(
+      Math.abs(maxKey["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
+      "maxTps = fastest eligible request",
+    );
+    assert.equal(maxKey["openai/gpt-5.2"], null, "no eligible rows → maxTps null");
     const serialized = JSON.stringify(payload);
     assert.ok(!serialized.includes("tpsTokens"), "tpsTokens accumulator never leaks to JSON");
     assert.ok(!serialized.includes("tpsMs"), "tpsMs accumulator never leaks to JSON");

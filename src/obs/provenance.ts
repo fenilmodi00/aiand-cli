@@ -167,7 +167,14 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     report: "overview",
     field: "topModels[].avgTps",
     provenance: estimated(
-      "sum of output_tokens / sum of latency_ms − ttft_ms over the model's rows",
+      "sum of output_tokens / sum of latency_ms − ttft_ms over the model's rows with a measurable (≥200 ms) decode window",
+    ),
+  },
+  {
+    report: "overview",
+    field: "topModels[].maxTps",
+    provenance: estimated(
+      "max per-request output_tokens / ((latency_ms − ttft_ms)/1000) over requests with a measurable (≥200 ms) decode window",
     ),
   },
   // cache

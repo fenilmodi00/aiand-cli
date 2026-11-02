@@ -15,7 +15,7 @@ import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast, monthWindow } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
-import { avgTps, requestTps } from "../obs/tps.js";
+import { avgTps, MIN_MEASURABLE_DECODE_MS, requestTps } from "../obs/tps.js";
 import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
@@ -193,6 +193,8 @@ export type ReportData = {
     key: string;
     savings: number | null /** #155: per-model system throughput; null without eligible rows. */;
     avgTps: number | null;
+    /** #155: the model's fastest eligible request; null without eligible rows. */
+    maxTps: number | null;
   })[];
   matrix: MatrixRow[];
   sessions: SessionRow[];
@@ -522,9 +524,17 @@ type Group = {
   models: Map<string, Mix>;
   tpsTokens: number;
   tpsMs: number;
+  /** #155: peak per-request TPS over eligible rows; null without eligible rows. */
+  tpsMax: number | null;
 };
 
-const emptyGroup = (): Group => ({ mix: emptyMix(), models: new Map(), tpsTokens: 0, tpsMs: 0 });
+const emptyGroup = (): Group => ({
+  mix: emptyMix(),
+  models: new Map(),
+  tpsTokens: 0,
+  tpsMs: 0,
+  tpsMax: null,
+});
 
 function accMix(mix: Mix, row: ReportRow): void {
   mix.requests += 1;
@@ -543,9 +553,17 @@ function accGroup(group: Group, row: ReportRow): void {
   const perModel = group.models.get(row.model) ?? emptyMix();
   accMix(perModel, row);
   group.models.set(row.model, perModel);
+  const decodeMs = (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
   if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) return;
+  // A sub-floor window cannot measure a rate (ms-granularity timers):
+  // its tokens still count in the mix, but it never feeds avg or peak
+  // TPS — otherwise a single 1ms row fabricates six-figure tok/s and
+  // can push avg above max.
+  if (decodeMs < MIN_MEASURABLE_DECODE_MS) return;
   group.tpsTokens += row.output_tokens ?? 0;
-  group.tpsMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
+  group.tpsMs += decodeMs;
+  const tps = (row.output_tokens ?? 0) / (decodeMs / 1000);
+  group.tpsMax = group.tpsMax === null ? tps : Math.max(group.tpsMax, tps);
 }
 
 function groupSavings(group: Group, prices: Record<string, Price> | null): number | null {
@@ -590,8 +608,10 @@ function windowAvgTps(rows: readonly ReportRow[]): number | null {
   let decodeMs = 0;
   for (const row of rows) {
     if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) continue;
+    const window = (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
+    if (window < MIN_MEASURABLE_DECODE_MS) continue;
     tokens += row.output_tokens ?? 0;
-    decodeMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
+    decodeMs += window;
   }
   return avgTps(tokens, decodeMs);
 }
@@ -599,6 +619,11 @@ function windowAvgTps(rows: readonly ReportRow[]): number | null {
 /** #155: the group's throughput-weighted avg TPS; null without eligible rows. */
 function groupAvgTps(group: Group): number | null {
   return avgTps(group.tpsTokens, group.tpsMs);
+}
+
+/** #155: the model's fastest eligible request; null without eligible rows. */
+function groupMaxTps(group: Group): number | null {
+  return group.tpsMax;
 }
 
 const MATRIX_NOTE =
@@ -745,6 +770,7 @@ export function buildReportData(
       costs: sortedCosts(group.mix.costs),
       savings: groupSavings(group, prices),
       avgTps: groupAvgTps(group),
+      maxTps: groupMaxTps(group),
     }));
 
   const matrix: MatrixRow[] = [...byHarnessModel.entries()]

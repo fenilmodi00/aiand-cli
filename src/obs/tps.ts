@@ -9,6 +9,18 @@
  * null when either latency input is null, latency ≤ ttft, or output is
  * null/0.
  */
+/**
+ * The shortest decode window a rate can meaningfully measure. `ttft_ms`
+ * and `latency_ms` have millisecond granularity, so a 1ms window (e.g.
+ * ttft 500, latency 501) turns 382 tokens into 382,000 tok/s of timer
+ * noise. Benchmark harnesses (vLLM's `vllm bench serve`) summarize
+ * per-request rates with medians/percentiles for the same reason; we
+ * additionally gate the aggregates: sub-200ms windows never feed a TPS
+ * mean or peak. Per-request display surfaces (logs, sessions) keep the
+ * plain formula and show the row as-is.
+ */
+export const MIN_MEASURABLE_DECODE_MS = 200;
+
 export function requestTps(
   outputTokens: number | null,
   ttftMs: number | null,

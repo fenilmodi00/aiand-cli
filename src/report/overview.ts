@@ -47,6 +47,12 @@ function costCell(costs: Costs): string {
   return entries.map(([currency, value]) => money(value, currency)).join("; ");
 }
 
+/** #155: a TPS cell's digits — one decimal under 10k, integer above. */
+function tpsCell(value: number | null): string {
+  if (value === null) return "-";
+  return value >= 10000 ? value.toFixed(0) : value.toFixed(1);
+}
+
 /** ASCII share bar, e.g. `████████████░░░░░░░░` truncated to the share. */
 function bar(share: number): string {
   const filled = Math.max(0, Math.min(BAR_WIDTH, Math.round(share * BAR_WIDTH)));
@@ -123,21 +129,22 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
 
   // -- top models ------------------------------------------------------------
   if (wants.has("models") && data.topModels.length > 0) {
-    lines.push(style.bold(`Top models (by cost, top ${OVERVIEW_TOP_N}; tok/s avg)`));
+    lines.push(style.bold(`Top models (by cost, top ${OVERVIEW_TOP_N})`));
+    // Labeled columns, right-aligned like the cells below them; TPS units
+    // ride the column headers (number-only cells, same as requests/cost).
+    lines.push(
+      style.dim(
+        `  ${"model".padEnd(28)} ${"requests".padStart(9)} ${"avg tok/s".padStart(9)} ${"max tok/s".padStart(
+          9,
+        )} ${view.showCost ? "cost".padStart(10) : ""}`,
+      ),
+    );
     for (const model of data.topModels) {
-      const cost = view.showCost ? `  ${costCell(model.costs)}` : "";
-      // TPS rides the section header (the `tok/s avg` suffix, like the other
-      // numeric columns), clipped so a 5-digit value can't push the cost
-      // column out of shape.
-      const tpsRaw =
-        model.avgTps === null
-          ? "-"
-          : model.avgTps >= 10000
-            ? model.avgTps.toFixed(0)
-            : model.avgTps.toFixed(1);
-      const tps = clipToWidth(tpsRaw, 6).padStart(7);
+      const cost = view.showCost ? padLeft(clipToWidth(costCell(model.costs), 10), 10) : "";
+      const avg = clipToWidth(tpsCell(model.avgTps), 6).padStart(9);
+      const max = clipToWidth(tpsCell(model.maxTps), 6).padStart(9);
       lines.push(
-        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 6)}${tps}${cost}`,
+        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 9)} ${avg} ${max} ${cost}`,
       );
     }
     lines.push("");
