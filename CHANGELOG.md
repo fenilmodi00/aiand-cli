@@ -156,11 +156,37 @@ breaking changes while the command surface settles.
   header (`claude` / `codex` / `hermes`) so the gateway can log each request's
   agent. Claude Code carries it in `env.ANTHROPIC_CUSTOM_HEADERS` (the user's
   own pairs survive `on` and come back whole on `off`); Codex bakes it into
-  the profile's `[model_providers.aiand]` as `http_headers`; Hermes adds
+  profile's `[model_providers.aiand]` as `http_headers`; Hermes adds
   `extra_headers` to the generated `providers.aiand` block, in persistent
   wiring and launcher sessions alike.
+- Imported session files now power reporting: `harness import` markers fill
+  `harness stats`, `harness compare`, and `efficiency` behavioral cells when
+  captured envelopes are absent or below the 5-turn gate. The source is
+  labeled per harness (`envelope` / `imported`), coverage is printed next to
+  every rate, and the two sources are never summed.
+- `harness compare` and the dashboard show 95% intervals — Wilson for rates,
+  seeded percentile bootstrap for cost and latency — and mark `▸` only when
+  the leader's interval is disjoint from every rival; `recommend` gates its
+  wiring hint the same way and prints projected monthly savings
+  (`--sessions-per-month`, default 200) only when the interval is decisive
+  and excludes zero.
+- `harness compare --save-baseline` / `--baseline` store a local,
+  metadata-only scorecard and compare the current window against it; the
+  `doctor` baseline line reports regressions over the last 7 days.
+- `aiand export` emits per-harness scorecard gauges (cost/session, TTFT p95,
+  cache hit, error/clean/tool-error rates, behavioral coverage), store sync
+  lag, and Prometheus `# HELP` lines for every metric; uncovered gauges are
+  omitted rather than fabricated as zero.
+- Claude Code and Codex local usage readers refine `shared` gateway rows to
+  their harness when the model and usage match uniquely, without changing
+  the ambiguity rules.
+- `harness compare --bootstrap <k>` reports task-clustered bootstrap
+  intervals and pass@k/pass^k for runs of the same task.
 
 ### Changed (UX)
+- Comparisons at small n no longer crown a point-estimate winner: when 95%
+  intervals overlap the footer says `tied — not distinguishable yet (…)`,
+  and `recommend` withholds the monthly-savings claim.
 - The interactive menu no longer flattens all 31 commands into one
   undifferentiated section: rows are grouped by activity — Ask & run, Spend &
   reports, Harness & compare, Setup & health, Account — between the agent
