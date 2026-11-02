@@ -15,6 +15,7 @@ import {
 } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
+import { requestTps as requestTpsOf } from "../obs/tps.js";
 import { currencyKey } from "../pricing/currency.js";
 import {
   createdSince,
@@ -89,21 +90,11 @@ function costAcross(session: SessionView): number {
 }
 
 /**
- * #155: per-request TPS = output_tokens / ((latency_ms − ttft_ms) / 1000);
- * null without ttft/latency/output, zero output, or latency ≤ ttft —
- * `null` never becomes 0.
+ * #155: per-request TPS — the shared formula in obs/tps.ts; null never
+ * becomes 0.
  */
 export function requestTps(row: SessionCommandRow): number | null {
-  if (
-    row.latency_ms === null ||
-    row.ttft_ms === null ||
-    row.latency_ms <= row.ttft_ms ||
-    row.output_tokens === null ||
-    row.output_tokens === 0
-  ) {
-    return null;
-  }
-  return row.output_tokens / ((row.latency_ms - row.ttft_ms) / 1000);
+  return requestTpsOf(row.output_tokens, row.ttft_ms, row.latency_ms);
 }
 
 /** #155: median per-request TPS and the throughput-weighted session average. */
@@ -118,8 +109,10 @@ export function tpsStats(rows: readonly SessionCommandRow[]): {
     const tps = requestTps(row);
     if (tps === null) continue;
     samples.push(tps);
-    outputSum += row.output_tokens ?? 0;
-    secondsSum += ((row.latency_ms ?? 0) - (row.ttft_ms ?? 0)) / 1000;
+    // requestTps returned non-null, so output_tokens and both latency
+    // inputs are non-null here — no `?? 0` fallbacks.
+    outputSum += row.output_tokens!;
+    secondsSum += (row.latency_ms! - row.ttft_ms!) / 1000;
   }
   return {
     tps: percentile(samples, 0.5),

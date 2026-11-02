@@ -7,6 +7,7 @@ import { createdSince, createdUntilIncl, openStore, storePath } from "../store/i
 import { listSessions, resolveGapMinutes, type SessionRow } from "../store/sessions.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
 import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
+import { requestTps } from "./tps.js";
 
 /**
  * OTel metrics export (feature catalog G2, ticket #72).
@@ -303,14 +304,8 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
     // #155: per-request TPS — steady-state decode rate. Same null discipline
     // as the ttft/duration histograms: ineligible rows are excluded, never
     // zeroed (latency<=ttft has no decode window; 0 tokens has no numerator).
-    if (
-      row.latency_ms !== null &&
-      row.ttft_ms !== null &&
-      row.latency_ms > row.ttft_ms &&
-      output > 0
-    ) {
-      hist.tps.push(output / ((row.latency_ms - row.ttft_ms) / 1000));
-    }
+    const tps = requestTps(output, row.ttft_ms, row.latency_ms);
+    if (tps !== null) hist.tps.push(tps);
     genHist.set(histKey, hist);
   }
 

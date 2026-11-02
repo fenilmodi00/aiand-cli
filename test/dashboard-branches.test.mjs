@@ -580,7 +580,7 @@ test("dashboard: panels never exceed their column width with long tps values (#1
   });
   await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
     const { runDashboardUi, columnsFor } = await import("../dist/commands/dashboard.js");
-    const { clipToWidth, visibleWidth } = await import("../dist/cli/output.js");
+    const { visibleWidth } = await import("../dist/cli/output.js");
     const width = 100; // 3 columns → colWidth = max(20, floor((100-6)/3)) = 31
     const colWidth = Math.max(20, Math.floor((width - 3 * (columnsFor(width) - 1)) / 3));
     const input = new FakeInput();
@@ -601,18 +601,28 @@ test("dashboard: panels never exceed their column width with long tps values (#1
     try {
       await waitFor(() => output.text.includes("ai& dashboard"));
       assert.match(output.text, /tps\s+1000000\.0 tok\/s/, "large tps value rendered");
+      // Capture the settled frame BEFORE quitting — after `q` the last
+      // `\r` frame is the teardown blank, not the dashboard.
+      const lastFrame = output.text.split("\r").pop() ?? "";
       input.send("q");
       await done;
       // The panel grid clips per column (composeColumns): every drawn line
       // fits the terminal AND the per-panel lines fit their column width —
-      // a wide tps value must clip, never reflow the grid.
-      const frame = output.text.split("\r").pop() ?? "";
-      for (const line of frame.split("\n")) {
-        assert.ok(
-          visibleWidth(clipToWidth(line, width)) <= width,
-          `line exceeds width: ${JSON.stringify(line)}`,
-        );
+      // a wide tps value must clip, never reflow the grid. `clipToWidth`
+      // would make the check true by construction, so measure the frame as
+      // drawn (ANSI-stripped): a reflow would push a line past `width`.
+      // Strip every CSI sequence (\x1b[2K erase, SGR \x1b[…m, cursor moves).
+      const plainFrame = lastFrame.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+      for (const line of plainFrame.split("\n")) {
+        assert.ok(visibleWidth(line) <= width, `line exceeds width: ${JSON.stringify(line)}`);
       }
+      // The wide tok/s value stays inside the Totals panel's column — the
+      // full value renders (no clip needed) and the column gutter holds, so
+      // the other panels' content starts at the same offsets it would
+      // without the wide value.
+      const tpsLine = plainFrame.split("\n").find((l) => l.includes("1000000.0 tok/s"));
+      assert.ok(tpsLine, "tps line present in the frame");
+      assert.ok(tpsLine.length <= colWidth, `totals panel fits its column (${colWidth})`);
       assert.ok(colWidth >= 20, "column width computation sanity");
     } finally {
       input.send("q");

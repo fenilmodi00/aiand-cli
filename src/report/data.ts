@@ -15,6 +15,7 @@ import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast, monthWindow } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { avgTps, requestTps } from "../obs/tps.js";
 import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
@@ -102,14 +103,6 @@ type Mix = {
   outputTokens: number;
   cachedTokens: number;
   costs: Costs;
-  /**
-   * #155: sum(output_tokens) and sum(latency_ms − ttft_ms) over TPS-eligible
-   * rows only (null ttft/latency, latency ≤ ttft, or null/0 output skip) —
-   * the throughput-weighted avg-TPS numerator/denominator. Derived at render
-   * time; never a stored column.
-   */
-  tpsTokens: number;
-  tpsMs: number;
 };
 
 export type DayBucket = Mix & {
@@ -511,8 +504,6 @@ const emptyMix = (): Mix => ({
   outputTokens: 0,
   cachedTokens: 0,
   costs: {},
-  tpsTokens: 0,
-  tpsMs: 0,
 });
 
 /** A grouping plus the per-model detail its savings computation needs. */
@@ -525,17 +516,6 @@ function accMix(mix: Mix, row: ReportRow): void {
   mix.inputTokens += row.input_tokens ?? 0;
   mix.outputTokens += row.output_tokens ?? 0;
   mix.cachedTokens += row.cached_tokens ?? 0;
-  // #155: throughput-weighted sums over eligible rows only (null is never 0).
-  if (
-    row.ttft_ms !== null &&
-    row.latency_ms !== null &&
-    row.latency_ms > row.ttft_ms &&
-    row.output_tokens !== null &&
-    row.output_tokens > 0
-  ) {
-    mix.tpsTokens += row.output_tokens;
-    mix.tpsMs += row.latency_ms - row.ttft_ms;
-  }
   if (row.cost_value !== null) {
     // #89: casefold so mixed-case stored currencies stay in one lane.
     const currency = currencyKey(row.currency);
@@ -578,6 +558,24 @@ function dominantCurrency(costs: Costs): string | null {
 
 function sortedCosts(costs: Costs): Costs {
   return Object.fromEntries(Object.entries(costs).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * #155: throughput-weighted avg TPS over the window's rows —
+ * sum(output)/sum(latency_ms − ttft_ms)*1000 over the rows whose per-request
+ * TPS is non-null; null without eligible rows (never a fabricated 0).
+ * Computed here, not on `Mix`, so the raw sums never leak into the
+ * overview `--json` shape.
+ */
+function windowAvgTps(rows: readonly ReportRow[]): number | null {
+  let tokens = 0;
+  let decodeMs = 0;
+  for (const row of rows) {
+    if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) continue;
+    tokens += row.output_tokens ?? 0;
+    decodeMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
+  }
+  return avgTps(tokens, decodeMs);
 }
 
 const MATRIX_NOTE =
@@ -833,7 +831,7 @@ export function buildReportData(
       ...totals.mix,
       costs: sortedCosts(totals.mix.costs),
       /** #155: sum(output_tokens)/sum(latency_ms − ttft_ms)*1000; null without eligible rows. */
-      avgTps: totals.mix.tpsMs > 0 ? (totals.mix.tpsTokens / totals.mix.tpsMs) * 1000 : null,
+      avgTps: windowAvgTps(rows),
       savings: groupSavings(totals, prices),
     },
     byHarness: byHarnessRows,

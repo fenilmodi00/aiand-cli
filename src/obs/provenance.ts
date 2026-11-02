@@ -157,7 +157,7 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
   // #155: avg tok/s (system throughput)
   {
     report: "usage",
-    field: "totals.avgTps",
+    field: "totals.avgOutputTokensPerSecond",
     provenance: estimated(
       "sum of output_tokens / sum of latency_ms − ttft_ms over the window's rows",
     ),

@@ -189,6 +189,62 @@ describe("logs --follow", () => {
       assert.deepEqual(process.listeners("SIGINT"), before);
     });
   });
+
+  // #155: follow JSON rows must carry the same derived `tps` key as the
+  // one-shot --json path. In-process (like the SIGINT test above) so the
+  // rows are assertable — the follow loop prints them straight to stdout.
+  test("follow --json rows carry the derived tps key", async () => {
+    const { run } = await import("../dist/commands/logs.js");
+    const { captureStdio } = await import("./helpers.mjs");
+    requests.length = 0;
+    // The seed page returns one entry; each later poll returns a NEW one —
+    // follow only prints fresh ids, so a static handler prints nothing.
+    let poll = 0;
+    handler = () => {
+      poll += 1;
+      return {
+        data:
+          poll === 1
+            ? [entry("follow-seed")]
+            : [entry(`follow-${poll}`, { ttft_ms: poll === 2 ? 10 : null })],
+        has_more: false,
+        next_after: null,
+        next_after_id: null,
+      };
+    };
+    const before = process.listeners("SIGINT");
+    const capture = captureStdio();
+    try {
+      await withEnv({ AIAND_API_KEY: FAKE_API_KEY, AIAND_BASE_URL: baseUrl }, async () => {
+        // interval 1s: the follow loop polls only after one interval, so 30s
+        // would never print within the test; 1s fires one poll promptly.
+        const running = run(["--follow", "--json", "--interval", "1"]);
+        // Seed fetch + one poll: the poll's fresh row prints.
+        await waitFor(
+          () => capture.log.out.join("").includes("follow-2"),
+          5000,
+          "follow row printed",
+        );
+        const listeners = process.listeners("SIGINT").filter((l) => !before.includes(l));
+        listeners[0]?.();
+        await running;
+        const rows = capture.log.out
+          .join("")
+          .split("\n")
+          .filter((l) => l.startsWith("{"))
+          .map((l) => JSON.parse(l));
+        assert.ok(rows.length >= 1, `poll row(s) printed: ${rows.length}`);
+        // Every printed follow row carries the derived tps — the one-shot
+        // --json contract, honored by the follow path too.
+        for (const row of rows) assert.ok("tps" in row, `row ${row.id} carries tps`);
+        const happy = rows.find((r) => r.id === "follow-2");
+        assert.ok(happy, "the eligible poll row printed");
+        assert.ok(Math.abs(happy.tps - 77.77777777777777) < 1e-9);
+      });
+    } finally {
+      capture.restore();
+    }
+  });
 });
 
 describe("logs tok/s (#155)", () => {

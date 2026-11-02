@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
 Versioning follows semver, with the caveat that before `1.0` a minor version may include
 breaking changes while the command surface settles.
 
@@ -21,8 +23,8 @@ breaking changes while the command surface settles.
   - `aiand usage`: `avgOutputTokensPerSecond` in the `--json` summary and an
     `avg tok/s` footer line.
   - `aiand export`: OTel histogram `gen_ai.server.output_tokens_per_second`
-    (unit `{token}/s`, same bucket family as `time_to_first_token`), in
-    Prometheus and OTLP JSON, emitted only where TPS samples exist.
+    (unit `{token}/s`, explicit bucket family mirroring `time_to_first_token`'s
+    shape), in Prometheus and OTLP JSON, emitted only where TPS samples exist.
 
 ### Fixed
 - The installer's post-install check and login offer address the launcher by

@@ -415,7 +415,7 @@ describe("usage --jq and --format csv", () => {
       errors: 0, // #98: the shared #88 count over the window's rows
       errorRate: 0, // 0/4 — all 200s; only an empty window yields null
       // #155: throughput-weighted avg TPS over the window's rows.
-      avgTps: 62.5,
+      avgOutputTokensPerSecond: 62.5,
     });
   });
 
@@ -912,7 +912,7 @@ describe("usage error rate (#98)", () => {
 // -- avg TPS footer (#155) -------------------------------------------------------
 
 describe("usage avg TPS (#155)", () => {
-  test("JSON summary adds avgTps (throughput-weighted) without touching existing keys", async () => {
+  test("JSON summary adds avgOutputTokensPerSecond (throughput-weighted) without touching existing keys", async () => {
     const dir = freshDir("tps-json");
     // One eligible row: 300 tokens over (500-100)ms -> 750 tok/s.
     await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "t1" })]);
@@ -921,10 +921,10 @@ describe("usage avg TPS (#155)", () => {
     });
     assert.equal(run.code, 0, run.stderr);
     const payload = JSON.parse(run.stdout);
-    assert.equal(payload.sections.totals.avgTps, 750);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, 750);
     // JSON stability: only the new key joined the totals row.
     assert.deepEqual(Object.keys(payload.sections.totals).sort(), [
-      "avgTps",
+      "avgOutputTokensPerSecond",
       "cached_tokens",
       "costs",
       "errorRate",
@@ -935,7 +935,7 @@ describe("usage avg TPS (#155)", () => {
     ]);
   });
 
-  test("aggregate divergence: avgTps differs from any per-request TPS", async () => {
+  test("aggregate divergence: avgOutputTokensPerSecond differs from any per-request TPS", async () => {
     const dir = freshDir("tps-divergence");
     // Fast short request: 60 tokens / 60ms = 1000 tok/s.
     // Slow long request: 1000 tokens / 4000ms = 250 tok/s.
@@ -958,12 +958,12 @@ describe("usage avg TPS (#155)", () => {
       env: reportEnv(dir),
     });
     assert.equal(run.code, 0, run.stderr);
-    const avgTps = JSON.parse(run.stdout).sections.totals.avgTps;
-    assert.ok(Math.abs(avgTps - (1060 / 4060) * 1000) < 1e-9);
-    assert.notEqual(avgTps, 1000);
-    assert.notEqual(avgTps, 250);
+    const avg = JSON.parse(run.stdout).sections.totals.avgOutputTokensPerSecond;
+    assert.ok(Math.abs(avg - (1060 / 4060) * 1000) < 1e-9);
+    assert.notEqual(avg, 1000);
+    assert.notEqual(avg, 250);
     // The median per-request TPS (625) is not the aggregate either.
-    assert.notEqual(avgTps, 625);
+    assert.notEqual(avg, 625);
   });
 
   test("null propagation: ineligible rows (null ttft/latency, zero output, latency <= ttft)", async () => {
@@ -979,7 +979,7 @@ describe("usage avg TPS (#155)", () => {
     });
     assert.equal(run.code, 0, run.stderr);
     const payload = JSON.parse(run.stdout);
-    assert.equal(payload.sections.totals.avgTps, null);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, null);
     assert.equal(payload.sections.totals.requests, 4);
     // Text footer renders `-`, never 0.
     const text = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
@@ -987,7 +987,7 @@ describe("usage avg TPS (#155)", () => {
     assert.ok(text.stdout.includes("avg tok/s  -"), text.stdout);
   });
 
-  test("empty window: JSON totals.avgTps is null", async () => {
+  test("empty window: JSON totals.avgOutputTokensPerSecond is null", async () => {
     const dir = freshDir("tps-empty");
     const run = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
       env: reportEnv(dir),
@@ -995,7 +995,7 @@ describe("usage avg TPS (#155)", () => {
     assert.equal(run.code, 0, run.stderr);
     const payload = JSON.parse(run.stdout);
     assert.equal(payload.sections.totals.requests, 0);
-    assert.equal(payload.sections.totals.avgTps, null);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, null);
     // An empty window renders no block table at all (nothing to footer), so
     // the null surfaces only in JSON here; the `-` text path is the null-row
     // window test below.
@@ -1010,14 +1010,14 @@ describe("usage avg TPS (#155)", () => {
     assert.ok(text.stdout.includes("estimated"), text.stdout);
   });
 
-  test("--audit lists the avgTps provenance entry", async () => {
+  test("--audit lists the avgOutputTokensPerSecond provenance entry", async () => {
     const run = await runCli(["usage", "--audit", "--json"], {
       env: reportEnv(freshDir("tps-audit")),
     });
     assert.equal(run.code, 0, run.stderr);
     const rows = JSON.parse(run.stdout);
-    const entry = rows.find((r) => r.field === "totals.avgTps");
-    assert.ok(entry, "audit lists totals.avgTps");
+    const entry = rows.find((r) => r.field === "totals.avgOutputTokensPerSecond");
+    assert.ok(entry, "audit lists totals.avgOutputTokensPerSecond");
     assert.match(entry.label, /^estimated\(/);
   });
 });

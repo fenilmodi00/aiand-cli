@@ -10,6 +10,7 @@ import {
   wilson95,
 } from "./evidence.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
+import { avgTps, requestTps } from "./tps.js";
 
 /** The input shape of the shared verdict function (its thresholds are law). */
 type VerdictGroup = Parameters<typeof cacheVerdict>[0];
@@ -481,20 +482,13 @@ export function buildHarnessStats(
         .filter((value): value is number => value !== null);
       // #155: throughput-weighted avg TPS over this harness's eligible rows —
       // sum(output)/sum(latency − ttft)*1000; null without eligible rows
-      // (null never becomes 0).
+      // (null never becomes 0). Eligibility rides the shared requestTps.
       let tpsTokens = 0;
       let tpsMs = 0;
       for (const row of bucket.rows) {
-        if (
-          row.latency_ms !== null &&
-          row.ttft_ms !== null &&
-          row.latency_ms > row.ttft_ms &&
-          row.output_tokens !== null &&
-          row.output_tokens > 0
-        ) {
-          tpsTokens += row.output_tokens;
-          tpsMs += row.latency_ms - row.ttft_ms;
-        }
+        if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) continue;
+        tpsTokens += row.output_tokens ?? 0;
+        tpsMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
       }
       const errors = errorCount(bucket.rows);
       // #147: per-request cache vectors for the hit-ratio bootstrap — cached
@@ -566,7 +560,7 @@ export function buildHarnessStats(
           p90: percentile(sessionCosts, 0.9),
         },
         ttft: { p50: percentile(ttfts, 0.5), p95: percentile(ttfts, 0.95) },
-        avgTps: tpsMs > 0 ? (tpsTokens / tpsMs) * 1000 : null,
+        avgTps: avgTps(tpsTokens, tpsMs),
         cacheHitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
         errorRate: requests > 0 ? errors / requests : 0,
         verdict: cacheVerdict(verdictGroup),

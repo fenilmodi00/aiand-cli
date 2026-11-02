@@ -22,6 +22,10 @@
 //   so a developer's own setting would point tests at their real ~/.copilot.
 // - FORCE_COLOR unset: it overrides NO_COLOR and forces ANSI on non-TTY
 //   streams, flipping the color and table assertions.
+// - AIAND_HOME pointed at a temp dir (never the developer's real home):
+//   local-usage scans ~/.omp and ~/.pi session dirs through it; a real home
+//   makes every report-family CLI subprocess take seconds (#155 slowdown).
+//   The temp home is removed on exit like the stub dir above.
 // - test/net-guard.mjs on NODE_OPTIONS: fetch to anything but loopback fails
 //   like an offline machine, in test files and CLI children alike.
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -55,9 +59,14 @@ process.env.AIAND_NO_BROWSER = "1";
 // AIAND_HOME must not resolve to the real home: local-usage scans the real
 // ~/.omp and ~/.pi session dirs through it (951MB here), which makes every
 // report-family CLI subprocess take seconds (#155 test-suite slowdown).
+let tempHome = null;
 if (!process.env.AIAND_HOME) {
-  process.env.AIAND_HOME = join(tmpdir(), `aiand-test-home-${process.pid}`);
+  tempHome = join(tmpdir(), `aiand-test-home-${process.pid}`);
+  process.env.AIAND_HOME = tempHome;
 }
+process.on("exit", () => {
+  if (tempHome) rmSync(tempHome, { recursive: true, force: true });
+});
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CODEX_HOME;
 delete process.env.HERMES_HOME;

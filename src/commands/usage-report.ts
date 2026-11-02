@@ -119,7 +119,7 @@ type TotalsRow = Omit<GroupRow, "key"> & {
   /** #98: errors / requests; null when the window holds no requests — never a fabricated 0. */
   errorRate: number | null;
   /** #155: system throughput over the window; null when no TPS-eligible rows. */
-  avgTps: number | null;
+  avgOutputTokensPerSecond: number | null;
 };
 
 type CurrencyHandling = "single" | "mixed" | "none";
@@ -667,7 +667,7 @@ export function buildReport(options: BuildReportOptions): Report {
     errors,
     errorRate: totalsAcc.requests > 0 ? errors / totalsAcc.requests : null,
     // #155: throughput-weighted avg TPS over the window's rows.
-    avgTps: avgTpsOf(rows),
+    avgOutputTokensPerSecond: avgTpsOf(rows),
   };
 
   const byModelAll = new Map<string, Accumulator>();
@@ -761,7 +761,7 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
     errors: formatLabel(estimated("non-2xx statuses excluding 429 over the window's rows")),
     errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
     // #155: system throughput — derived from the same rows the totals sum.
-    avgTps: formatLabel(
+    avgOutputTokensPerSecond: formatLabel(
       estimated("sum of output_tokens / sum of latency_ms − ttft_ms over the window's rows"),
     ),
   };
@@ -1060,8 +1060,11 @@ function renderBlockTable(blocks: BlockRow[], report: Report, view: RenderOption
 
 /** The #155 footer line, identical in the block-table and totals-only paths. */
 function avgTpsLine(totals: TotalsRow, meta: ReportMeta): string {
-  const value = totals.avgTps === null ? "-" : num(Math.round(totals.avgTps));
-  return `avg tok/s  ${value} · ${meta.provenance.avgTps ?? ""}`.trimEnd();
+  const value =
+    totals.avgOutputTokensPerSecond === null
+      ? "-"
+      : num(Math.round(totals.avgOutputTokensPerSecond));
+  return `avg tok/s  ${value} · ${meta.provenance.avgOutputTokensPerSecond ?? ""}`.trimEnd();
 }
 
 function renderBreakdowns(report: Report, view: RenderOptions): void {
@@ -1145,11 +1148,13 @@ function renderTotalsFields(
     ]);
     pairs.push(["error rate provenance", meta.provenance.errorRate ?? ""]);
   }
-  out(avgTpsLine(totals, meta));
   if (view.showCost) {
     for (const [currency, sum] of Object.entries(totals.costs)) {
       pairs.push([`cost (${currency === "" ? "unknown" : currency})`, formatCost(sum, currency)]);
     }
   }
+  // #155: the footer metric lands after the totals fields, the same position
+  // the block-table footer prints it.
+  out(avgTpsLine(totals, meta));
   for (const [key, value] of pairs) out(`${style.dim(key.padEnd(16))}  ${value}`);
 }

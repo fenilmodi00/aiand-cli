@@ -1633,6 +1633,29 @@ test("#147 compare --json keeps existing fields and adds ci95; clean rate Wilson
 });
 
 // ---------------------------------------------------------------------------
+// #155: TPS stays out of the harness scorecard JSON
+// ---------------------------------------------------------------------------
+
+test("#155 harness stats/compare --json carry no avgTps; TPS is dashboard-only", async () => {
+  const cfg = cfgDir("tps-json-excluded");
+  await seedBehavioralStore(cfg);
+  for (const args of [
+    ["harness", "stats", "--no-sync", "--json"],
+    ["harness", "compare", "--no-sync", "--json"],
+  ]) {
+    const run = await runCli(args, { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
+    assert.equal(run.code, 0, run.stderr);
+    const payload = JSON.parse(run.stdout);
+    assert.ok(payload.harnesses.length > 0, `${args[1]} returns rows`);
+    for (const harness of payload.harnesses) {
+      assert.ok(!("avgTps" in harness), `${args.join(" ")} row has no avgTps key`);
+    }
+    // The whole payload mentions no avgTps anywhere (no nested leak).
+    assert.ok(!run.stdout.includes("avgTps"), `${args.join(" ")} payload free of avgTps`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // #151 baseline regression watch (stateless two-window screen)
 // ---------------------------------------------------------------------------
 
