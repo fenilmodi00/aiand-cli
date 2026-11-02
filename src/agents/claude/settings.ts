@@ -55,7 +55,7 @@ export const FOREIGN_PROVIDER_KEYS = [
 // say which model suits which slot. Vision first for the main slots, since
 // pasting screenshots is routine in Claude Code.
 const MAIN_PREFERRED = ["moonshotai/kimi-k3", "qwen/qwen3.8-27b"];
-const FAST_PREFERRED = ["deepseek-ai/deepseek-v4.1-flash", "google/gemma-4-31b-it"];
+const FAST_PREFERRED = ["deepseek-ai/deepseek-v4.1-flash-1017", "google/gemma-4-31b-it"];
 
 export type Env = Record<string, string>;
 

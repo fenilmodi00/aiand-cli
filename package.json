@@ -1,6 +1,6 @@
 {
   "name": "@aiand/cli",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Command line interface for the ai& API.",
   "license": "Apache-2.0",
   "author": "ai&",
@@ -60,9 +60,9 @@
     "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95 test/*.test.mjs"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
-    "@types/node": "22.20.4",
-    "knip": "6.38.0",
+    "@biomejs/biome": "2.6.2",
+    "@types/node": "22.20.5",
+    "knip": "6.42.1",
     "typescript": "7.0.2"
   }
 }
