@@ -189,7 +189,7 @@ test("compare --out writes markdown with winners, n=, and coverage intact", asyn
   assert.match(run.stderr, /Wrote compare table \(markdown, 2 row\(s\)\)/);
   const md = readFileSync(file, "utf8");
   assert.match(md, /^\| harness \| .+ \|$/m);
-  assert.match(md, /▸ 10\.0% \(n=5\)/, "winner marker + n= survive the export");
+  assert.match(md, /▸ 10\.0% \[[^\]]+\] \(n=5\)/, "winner marker + n= survive the export");
   assert.match(md, /behavioral columns: envelopes \d+% of turns/, "coverage line preserved");
   assert.match(
     md,
@@ -211,7 +211,7 @@ test("compare --out --format csv round-trips the same columns", async () => {
   const lines = readFileSync(file, "utf8").trimEnd().split("\n");
   assert.match(lines[0], /^harness,cost\/session p50,ttft p50,hit,errors,/);
   assert.equal(lines.length, 3, "header + 2 harness rows");
-  assert.match(lines[1], /▸ 10\.0% \(n=5\)/, "winner + n= in csv");
+  assert.match(lines[1], /▸ 10\.0% \[[^\]]+\] \(n=5\)/, "winner + n= in csv");
   assert.ok(lines[2].includes("—"), "uncovered cell em-dash in csv");
   // Round-trip: each row has the same field count as the header.
   const fields = lines[0].split(",").length;
