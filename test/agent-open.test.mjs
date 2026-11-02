@@ -192,8 +192,11 @@ describe("aiand <agent> opens the agent", () => {
     const empty = mkdtempSync(join(box.dir, "nobin-"));
     const marker = join(state.home, "npm-ran");
     plantStub(empty, "npm", `touch "${marker}"`);
+    // node's own bin dir is not hermetic on CI: `npm install -g opencode-ai`
+    // drops the real agent next to node, so including it here would launch a
+    // real opencode/TUI instead of exercising the missing-agent path.
     const { code, stderr } = await cli(["opencode"], state, {
-      PATH: hermeticPath(empty, dirname(process.execPath)),
+      PATH: hermeticPath(empty),
     });
     assert.equal(code, 127);
     assert.match(stderr, /OpenCode is not installed/);
