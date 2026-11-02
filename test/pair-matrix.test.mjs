@@ -218,7 +218,7 @@ test("sortPairs: cheaper first by default, hit sorts descending, nulls sink", as
     requests: 10,
     sessions: 5,
     tokensPerSession: { in: 0, out: 0 },
-    costPerSession: { p50: costP50, p90: null },
+    costPerSession: { p50: costP50, p90: null, ci95: null },
     costTotal: costP50,
     currency: "usd",
     ttft: { p50: 100, p90: null, p95: null },
@@ -796,4 +796,238 @@ test("cli: recommend without envelope coverage says request-only and carries no 
   });
   assert.equal(text.code, 0, text.stderr);
   assert.match(text.stdout, /ranking basis: request-only/);
+});
+
+// ---------------------------------------------------------------------------
+// #148: evidence-gated ranking (verdict) + projected monthly savings.
+// ---------------------------------------------------------------------------
+
+// Overlapping fixture: two pairs whose per-session costs interleave, so the
+// CIs overlap and the honest verdict is "tied" — no apply/savings claim.
+async function seededOverlappingStore(name) {
+  const cfg = cfgDir(name);
+  const masks = await seedAgentKeys(cfg);
+  const rows = [];
+  // claude: 8 sessions alternating 0.01/0.03 (median 0.02)
+  for (let s = 0; s < 8; s += 1) {
+    rows.push(
+      row({
+        id: `ovc${s}`,
+        api_key: masks.claude,
+        created_at: iso(s * HOUR),
+        cost_value: s % 2 === 0 ? 0.01 : 0.03,
+      }),
+    );
+  }
+  // opencode: 10 sessions at a flat 0.02 — same median, overlapping spread;
+  // more sessions than claude so it is the de-facto current pair.
+  for (let s = 0; s < 10; s += 1) {
+    rows.push(
+      row({
+        id: `ovo${s}`,
+        api_key: masks.opencode,
+        created_at: iso(20 * HOUR + s * HOUR),
+        cost_value: 0.02,
+      }),
+    );
+  }
+  await seedStore(cfg, rows);
+  return cfg;
+}
+
+test("#148: overlapping CIs → verdict tied, tied line, no savings, no apply claim", async () => {
+  const cfg = await seededOverlappingStore("recommend-tied");
+  const { code, stdout } = await runCli(["recommend", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(code, 0, stdout);
+  assert.match(stdout, /verdict: tied/);
+  assert.match(stdout, /tied — not distinguishable yet/);
+  assert.ok(!stdout.includes("projected savings"), "no savings when tied");
+  // The apply wiring line still prints, with the tied suffix appended.
+  assert.match(stdout, /Apply: aiand \S+ on --model \S+ \(evidence tied - not decisive\)/);
+
+  const json = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  const payload = JSON.parse(json.stdout);
+  assert.equal(payload.verdict, "tied");
+  assert.ok(payload.tiedWith.length > 0, "tiedWith names the overlapping rival");
+  assert.equal(payload.monthlySavingsUsd, null);
+  assert.equal(payload.monthlySavingsGated, true);
+  assert.equal(payload.sessionsPerMonth, 200);
+  assert.ok(payload.costDeltaCI === null || typeof payload.costDeltaCI.lo === "number");
+});
+
+test("#148: decisive leader → today's apply line + projected savings line", async () => {
+  const cfg = await seededDecisiveStore("recommend-decisive");
+  const { code, stdout } = await runCli(["recommend", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(code, 0, stdout);
+  assert.match(stdout, /Recommended: harness=claude model=zai-org\/glm-5\.3/);
+  assert.match(stdout, /verdict: decisive/);
+  // The one-line apply wiring is unchanged in the decisive case.
+  assert.match(stdout, /^Apply: aiand claude on --model zai-org\/glm-5\.3\r?$/m);
+  assert.ok(!stdout.includes("evidence tied"), "decisive does not carry the tied suffix");
+  assert.match(stdout, /projected savings: ≈ \$[\d.]+\/month at 200 sessions\/month/);
+  assert.match(stdout, /cost base: envelope cost\/session/);
+  // --sessions-per-month scales the projection.
+  const scaled = await runCli(
+    ["recommend", "--no-sync", "--sessions-per-month", "1000"],
+    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
+  );
+  assert.equal(scaled.code, 0, scaled.stderr);
+  assert.match(scaled.stdout, /at 1000 sessions\/month/);
+  // 5× the sessions → 5× the savings (the same per-session delta).
+  const base = stdout.match(/≈ \$(\d+\.\d+)\/month/);
+  const big = scaled.stdout.match(/≈ \$(\d+\.\d+)\/month/);
+  assert.ok(base && big, "both savings lines render");
+  assert.ok(
+    Math.abs(Number(big[1]) - 5 * Number(base[1])) < 0.01,
+    "savings scale linearly with sessions/month",
+  );
+});
+
+// Decisive fixture: two fully-priced pairs with cleanly separated costs —
+// no unpriced rival (a null CI forces "tied", the honest answer).
+async function seededDecisiveStore(name) {
+  const cfg = cfgDir(name);
+  const masks = await seedAgentKeys(cfg);
+  const rows = [
+    // claude: 8 flat $0.02 sessions (cheap leader)
+    ...Array.from({ length: 8 }, (_, s) =>
+      row({ id: `dc${s}`, api_key: masks.claude, created_at: iso(s * HOUR), cost_value: 0.02 }),
+    ),
+    // opencode: 8 flat $0.05 sessions, more sessions → the current pair
+    ...Array.from({ length: 9 }, (_, s) =>
+      row({
+        id: `do${s}`,
+        api_key: masks.opencode,
+        created_at: iso(20 * HOUR + s * HOUR),
+        cost_value: 0.05,
+      }),
+    ),
+  ];
+  await seedStore(cfg, rows);
+  return cfg;
+}
+
+test("#148: savings suppressed when the delta CI includes 0 (nearly identical pairs)", async () => {
+  const cfg = cfgDir("recommend-ci-zero");
+  const masks = await seedAgentKeys(cfg);
+  const rows = [];
+  // Two flat-priced pairs at the same median but disjoint-looking samples:
+  // claude 0.02, opencode 0.02 + one wide session. The CIs overlap → tied, so
+  // this exercises the gate; a decisive-but-zero-CI case is unreachable with
+  // real resampling (disjoint medians ⇒ nonzero delta), so we assert the
+  // observed contract: no savings number without decisive evidence.
+  for (let s = 0; s < 8; s += 1) {
+    rows.push(row({ id: `zc${s}`, api_key: masks.claude, created_at: iso(s * HOUR), cost_value: 0.02 }));
+  }
+  for (let s = 0; s < 8; s += 1) {
+    rows.push(
+      row({
+        id: `zo${s}`,
+        api_key: masks.opencode,
+        created_at: iso(20 * HOUR + s * HOUR),
+        cost_value: s === 0 ? 0.2 : 0.02,
+      }),
+    );
+  }
+  await seedStore(cfg, rows);
+  const json = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  const payload = JSON.parse(json.stdout);
+  if (payload.verdict !== "decisive") {
+    assert.equal(payload.monthlySavingsUsd, null);
+    assert.equal(payload.monthlySavingsGated, true);
+  } else {
+    // Decisive despite the near-tie can only happen with a CI that clears 0 —
+    // then the savings number must exist and be positive.
+    assert.ok(payload.monthlySavingsUsd > 0);
+    assert.equal(payload.monthlySavingsGated, false);
+  }
+});
+
+test("#148: savings suppressed for non-usd currency", async () => {
+  const cfg = cfgDir("recommend-currency");
+  const masks = await seedAgentKeys(cfg);
+  const rows = [
+    // claude: 8 cheap usd sessions (leader)
+    ...Array.from({ length: 8 }, (_, s) =>
+      row({ id: `cc${s}`, api_key: masks.claude, created_at: iso(s * HOUR), cost_value: 0.01 }),
+    ),
+    // opencode: 8 eur sessions (rival; savings never cross currencies)
+    ...Array.from({ length: 8 }, (_, s) =>
+      row({
+        id: `eu${s}`,
+        api_key: masks.opencode,
+        created_at: iso(20 * HOUR + s * HOUR),
+        cost_value: 0.05,
+        currency: "eur",
+      }),
+    ),
+  ];
+  await seedStore(cfg, rows);
+  const { code, stdout } = await runCli(["recommend", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(code, 0, stdout);
+  assert.ok(!stdout.includes("projected savings"), "no savings across currencies");
+
+  const json = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  const payload = JSON.parse(json.stdout);
+  // The leader is the usd claude pair and the current pair (most sessions, 8
+  // each; tie-break requests equal → names) — either way no savings number.
+  assert.equal(payload.monthlySavingsUsd, null);
+  assert.equal(payload.monthlySavingsGated, true);
+});
+
+test("#148: recommend --json stays additive — existing fields intact", async () => {
+  const cfg = await seededMatrixStore("recommend-json-148");
+  const { code, stdout } = await runCli(["recommend", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(code, 0, stdout);
+  const payload = JSON.parse(stdout);
+  // Pre-#148 shape still present and typed as before.
+  assert.equal(payload.provenance.minSampleSessions, 5);
+  assert.equal(payload.provenance.rankedFrom, "observed-workload-only");
+  assert.match(payload.provenance.expectedDelta, /heuristic/);
+  assert.ok(Array.isArray(payload.ranked) && payload.ranked.length >= 1);
+  assert.ok(Array.isArray(payload.insufficient));
+  for (const row of payload.ranked) {
+    assert.ok("labels" in row && "samples" in row && "costPerSession" in row);
+    assert.ok("p50" in row.costPerSession && "p90" in row.costPerSession);
+  }
+  // #148 additions.
+  assert.ok(["decisive", "tied", "insufficient"].includes(payload.verdict));
+  assert.ok("leader" in payload && "tiedWith" in payload);
+  assert.ok("costDeltaCI" in payload && "sessionsPerMonth" in payload);
+  assert.ok("monthlySavingsUsd" in payload && "monthlySavingsGated" in payload);
+  // Every ranked row now carries the cost CI (n >= 5 > 2 priced sessions).
+  for (const row of payload.ranked) {
+    if (row.costPerSession.p50 !== null) {
+      assert.ok(row.costPerSession.ci95 !== null, "priced row carries ci95");
+      assert.ok(row.costPerSession.ci95.lo <= row.costPerSession.p50);
+      assert.ok(row.costPerSession.ci95.hi >= row.costPerSession.p50);
+    }
+  }
+});
+
+test("#148: --sessions-per-month validates positive integers", async () => {
+  const cfg = await seededMatrixStore("recommend-spm-flag");
+  const bad = await runCli(["recommend", "--no-sync", "--sessions-per-month", "0"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.stderr, /--sessions-per-month/);
+  const frac = await runCli(["recommend", "--no-sync", "--sessions-per-month", "1.5"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.notEqual(frac.code, 0);
 });

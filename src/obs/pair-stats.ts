@@ -1,6 +1,7 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { sessionizeRows } from "../store/sessions.js";
+import { type CI95, percentileBootstrap, seedFromString } from "./evidence.js";
 import {
   errorCount,
   type HarnessRequestRow,
@@ -39,7 +40,12 @@ export type PairStatsRow = {
   requests: number;
   sessions: number;
   tokensPerSession: { in: number; out: number };
-  costPerSession: { p50: number | null; p90: number | null };
+  costPerSession: {
+    p50: number | null;
+    p90: number | null;
+    /** #147/#148: 95% percentile-bootstrap CI on p50; null under 2 priced sessions. */
+    ci95: CI95 | null;
+  };
   costTotal: number | null;
   currency: string | null;
   ttft: { p50: number | null; p90: number | null; p95: number | null };
@@ -203,6 +209,12 @@ export function buildPairStats(
       costPerSession: {
         p50: percentile(sessionCosts, 0.5),
         p90: percentile(sessionCosts, 0.9),
+        // #148: per-pair seed (FNV-1a over harness/model) so adding a pair
+        // never shifts another's interval; needs >= 2 priced sessions.
+        ci95:
+          sessionCosts.length >= 2
+            ? percentileBootstrap(sessionCosts, 0.5, { seed: seedFromString(`${harness}/${model}`) })
+            : null,
       },
       costTotal,
       currency,

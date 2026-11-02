@@ -190,7 +190,7 @@ describe("harness-stats degenerate windows (#cov-obs)", () => {
 describe("compareVerdicts boundaries (#cov-obs)", () => {
   const covered = (harness, overrides = {}) => ({
     harness,
-    costPerSession: { p50: 0.5 },
+    costPerSession: { p50: 0.5, ci95: null },
     errorRate: 0.1,
     cacheHitRatio: 0.4,
     ttft: { p50: 100 },
@@ -295,7 +295,7 @@ describe("pair-stats coverage gating and sort order (#cov-obs)", () => {
     const mk = (harness, behavioral) => ({
       harness,
       model: "m",
-      costPerSession: { p50: 0.5 },
+      costPerSession: { p50: 0.5, ci95: null },
       errorRate: 0.1,
       cacheHitRatio: 0.4,
       ttft: { p50: 100 },
@@ -357,7 +357,7 @@ describe("pair-stats coverage gating and sort order (#cov-obs)", () => {
     const mk = (harness, model, sessions, errorRate) => ({
       harness,
       model,
-      costPerSession: { p50: 0.5 },
+      costPerSession: { p50: 0.5, ci95: null },
       errorRate,
       cacheHitRatio: 0.4,
       ttft: { p50: 100 },
