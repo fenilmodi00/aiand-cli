@@ -174,7 +174,7 @@ describe("pi adapter", () => {
 
   test("maxTokens is the catalog output cap, not the context window", () => {
     const entry = piModelEntry(
-      catalogModel("deepseek-ai/deepseek-v4.1-flash", {
+      catalogModel("deepseek-ai/deepseek-v4.1-flash-1017", {
         context_window: 1048576,
         max_output_tokens: 384000,
       }),

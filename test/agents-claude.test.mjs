@@ -17,7 +17,7 @@ const { buildClaudeSettings } = await import("../dist/agents/claude/settings.js"
 const { CliError } = await import("../dist/cli/errors.js");
 
 const MAIN = "moonshotai/kimi-k3";
-const FAST = "deepseek-ai/deepseek-v4.1-flash";
+const FAST = "deepseek-ai/deepseek-v4.1-flash-1017";
 const OTHER = "zai-org/glm-5.3";
 const CATALOG = [
   catalogModel(OTHER, { context_window: 1048576 }),
