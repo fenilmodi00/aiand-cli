@@ -71,6 +71,34 @@ the gateway (which would populate `request_id`) is a tracked gateway ask
   window. Three-way coverage split, never silently collapsed: **named-branch /
   pre-recording / no-branch**.
 
+## Imported behavioral markers (ticket #146)
+
+A second behavioral source lives beside the envelopes: the `imported_artifacts`
+table (`migration 0008`), written only by the opt-in `aiand harness import`
+command. It backfills **markers** from the harnesses' own session files —
+Claude projects JSONL, Codex rollouts, OpenCode SQLite — holding tool outcomes
+(name + ok), terminal states, and compaction counts per harness-local session.
+No prompt, completion, tool argument, or file content is ever read; a record
+that cannot be interpreted from markers alone is skipped. Re-importing is
+idempotent (`dedup_key` UNIQUE).
+
+What imported markers unlock, and what they cannot: with no edit targets and
+no model/api_key, they feed only **harness-level** tool-error rate, terminal
+outcome split (clean/aborted/errored), and compaction counts in
+`harness stats` / `harness compare` and in `efficiency`'s overall and
+by-harness sections. One-shot/retry, missed-catch, turns-to-success, per-model
+slices, task classification, and pair-level metrics remain envelope-only and
+render `—` for an import-only harness — null never becomes 0.
+
+Precedence is per harness, never summed: **captured envelopes win** when a
+harness has at least `MIN_BEHAVIORAL_TURNS` (5) envelope turns; otherwise
+imported markers apply when at least one session was imported; otherwise the
+cell is uncovered (`—`, with a `backfill with aiand harness import`
+instruction). Coverage output reports the two sources separately —
+`envelopes X/Y (Z%), imported N session(s)` — never merged. Every
+imported-derived number is labeled `heuristic(...)` per the provenance
+discipline: harness-local markers, not gateway-billed data.
+
 ## Coverage honesty
 
 Every envelope-derived report states what fraction of requests carry envelope

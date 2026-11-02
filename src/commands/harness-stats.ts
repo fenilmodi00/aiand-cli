@@ -19,12 +19,17 @@ import {
   compareWinners,
   type ExcludedMixedAggregate,
   type HarnessRequestRow,
+  type HarnessStats,
   type HarnessStatsOptions,
   type HarnessStatsRow,
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
+import {
+  type ImportedArtifactRow,
+  listImportedArtifactsFromDb,
+} from "../store/imported-artifacts.js";
 import {
   createdSince,
   createdUntilIncl,
@@ -71,6 +76,34 @@ export function windowEnvelopes(
       since: sinceMs === null ? undefined : new Date(sinceMs).toISOString(),
       until: untilMs === null ? undefined : new Date(untilMs).toISOString(),
     }).map((row) => ({ agent: row.agent, model: row.model, envelope: row.envelope }));
+  } catch {
+    return [];
+  } finally {
+    try {
+      opened.db.close();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+/**
+ * #146: behavioral markers imported by `aiand harness import` inside the
+ * window, read through the dedicated reader (fail-open — a missing table or
+ * an old store contributes zero markers, never an error). The window rides
+ * `COALESCE(at, imported_at)` inside the reader.
+ */
+export function windowImportedMarkers(
+  sinceMs: number | null,
+  untilMs: number | null,
+): ImportedArtifactRow[] {
+  const opened = openStore(storePath());
+  if (!opened.ok) return [];
+  try {
+    return listImportedArtifactsFromDb(opened.db, {
+      since: sinceMs === null ? undefined : new Date(sinceMs).toISOString(),
+      until: untilMs === null ? undefined : new Date(untilMs).toISOString(),
+    });
   } catch {
     return [];
   } finally {
@@ -255,6 +288,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
         ? undefined
         : (row) => cohortOf(rows, cohortCategory).has(row.id),
     envelopes: windowEnvelopes(sinceMs, untilMs),
+    importedMarkers: windowImportedMarkers(sinceMs, untilMs),
   });
 
   // #100: an empty (or entirely filtered-out) window is a clean empty answer,
@@ -346,6 +380,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     }
   } else {
     renderStats(harnesses, noCost);
+    out(style.dim(behavioralCoverageLine(stats.behavioralCoverage)));
   }
   if (bool(parsed, "samples")) renderSamples(harnesses);
 
@@ -482,7 +517,12 @@ function payload(
     provenance: stats.provenance,
     harnesses: harnesses.map((row) => ({
       ...row,
-      labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+      labels: {
+        behavioral:
+          row.behavioral.behavioralSource === "imported"
+            ? "heuristic(imported harness markers)"
+            : "heuristic(one-shot/retry envelope rule)",
+      },
     })),
     excluded: stats.excluded,
     excludedMixedSpend: stats.excludedMixed,
@@ -517,6 +557,42 @@ const statCostColumns: Column<HarnessStatsRow>[] = [
 ];
 
 function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
+  // #146: behavioral columns appear in stats mode too, when any harness's
+  // cell is covered (envelope or imported source). Same cells as compare.
+  const covered = rows.some(
+    (r) => r.behavioral.toolErrorRate !== null || r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
+  );
+  const behavioralColumns: Column<HarnessStatsRow>[] = covered
+    ? [
+        {
+          header: "tool-err",
+          // Imported cells count against toolCalls; envelope cells against
+          // envelope turns.
+          value: (r) => rateCell(r.behavioral.toolErrorRate, behavioralN(r)),
+          align: "right",
+        },
+        {
+          header: "one-shot",
+          value: (r) => rateCell(r.behavioral.oneShotRate, r.behavioral.envelopeTurns),
+          align: "right",
+        },
+        {
+          header: "clean",
+          value: (r) => rateCell(r.behavioral.cleanRate, terminalCount(r)),
+          align: "right",
+        },
+        {
+          header: "outcome",
+          value: (r) => outcomeCell(r.behavioral),
+          align: "right",
+        },
+        {
+          header: "compactions",
+          value: (r) => (r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions)),
+          align: "right",
+        },
+      ]
+    : [];
   table<HarnessStatsRow>(rows, [
     { header: "harness", value: (r) => r.harness },
     { header: "requests", value: (r) => num(r.requests), align: "right" },
@@ -546,8 +622,39 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
             ? style.red(r.verdict)
             : style.yellow(r.verdict),
     },
+    ...behavioralColumns,
   ]);
   out();
+}
+
+/** The rate cell with its n: em-dash when uncovered, never a fake zero. */
+function rateCell(value: number | null, n: number): string {
+  return value === null ? "—" : `${(value * 100).toFixed(1)}% (n=${n})`;
+}
+
+/** The n behind a tool-error cell: imported → tool calls, envelope → turns. */
+function behavioralN(row: HarnessStatsRow): number {
+  return row.behavioral.behavioralSource === "imported"
+    ? row.behavioral.toolCalls
+    : row.behavioral.envelopeTurns;
+}
+
+/** The n behind a clean-rate cell: terminal outcomes behind the split. */
+function terminalCount(row: HarnessStatsRow): number {
+  const s = row.behavioral.sessions;
+  return s === null ? 0 : s.clean + s.aborted + s.errored;
+}
+
+/**
+ * The clean/aborted/errored split: a v1 sequence has no terminal info
+ * (all-zero split, no success marker) — missing data, rendered as — not
+ * 0/0/0.
+ */
+function outcomeCell(b: HarnessStatsRow["behavioral"]): string {
+  if (b.sessions === null) return "—";
+  const s = b.sessions;
+  if (s.clean + s.aborted + s.errored === 0 && b.turnsToSuccess === null) return "—";
+  return `${s.clean}/${s.aborted}/${s.errored}`;
 }
 
 /**
@@ -560,17 +667,15 @@ function compareColumns(
   noCost: boolean,
 ): Column<HarnessStatsRow>[] {
   const w = compareWinners(rows);
-  const covered = rows.some((r) => r.behavioral.oneShotRate !== null);
-  const rate = (value: number | null, n: number): string =>
-    value === null ? "—" : `${(value * 100).toFixed(1)}% (n=${n})`;
-  const outcome = (b: HarnessStatsRow["behavioral"]): string => {
-    if (b.sessions === null) return "—";
-    // A v1 sequence has no terminal info (all-zero split, no success marker)
-    // — that's missing data, rendered as — not 0/0/0.
-    const s = b.sessions;
-    if (s.clean + s.aborted + s.errored === 0 && b.turnsToSuccess === null) return "—";
-    return `${s.clean}/${s.aborted}/${s.errored}`;
-  };
+  // #146: covered when any behavioral cell is computable — envelope rates or
+  // imported tool/clean data — not just oneShotRate anymore.
+  const covered = rows.some(
+    (r) =>
+      r.behavioral.oneShotRate !== null ||
+      r.behavioral.toolErrorRate !== null ||
+      r.behavioral.cleanRate !== null,
+  );
+  const rate = rateCell;
   const behavioralColumns: Column<HarnessStatsRow>[] = covered
     ? [
         {
@@ -578,7 +683,7 @@ function compareColumns(
           value: (r) =>
             maybeMark(
               w.toolErrorRate === r.harness,
-              rate(r.behavioral.toolErrorRate, r.behavioral.envelopeTurns),
+              rate(r.behavioral.toolErrorRate, behavioralN(r)),
             ),
           align: "right",
         },
@@ -611,7 +716,13 @@ function compareColumns(
         },
         {
           header: "outcome",
-          value: (r) => outcome(r.behavioral),
+          value: (r) => outcomeCell(r.behavioral),
+          align: "right",
+        },
+        {
+          header: "compactions",
+          value: (r) =>
+            r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions),
           align: "right",
         },
       ]
@@ -664,14 +775,14 @@ function compareFooterLines(covered: boolean): string[] {
         ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
         : "") +
       ")",
-    `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule)`,
+    `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule · imported harness markers)`,
   ];
 }
 
 function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
   const columns = compareColumns(rows, noCost);
   table<HarnessStatsRow>(rows, columns);
-  for (const line of compareFooterLines(rows.some((r) => r.behavioral.oneShotRate !== null))) {
+  for (const line of compareFooterLines(rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null))) {
     out(style.dim(line));
   }
   out();
@@ -687,7 +798,7 @@ function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
 function exportCompareTable(args: {
   rows: HarnessStatsRow[];
   noCost: boolean;
-  coverage: { covered: number; total: number; ratio: number | null };
+  coverage: HarnessStats["behavioralCoverage"];
   cohort: TaskCategory | undefined;
   range: string;
   timezone: string;
@@ -695,7 +806,9 @@ function exportCompareTable(args: {
   format: "markdown" | "csv" | "json";
 }): void {
   const columns = compareColumns(args.rows, args.noCost);
-  const covered = args.rows.some((r) => r.behavioral.oneShotRate !== null);
+  const covered = args.rows.some(
+    (r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
+  );
   const footers = compareFooterLines(covered).concat(
     behavioralCoverageLine(args.coverage),
     args.cohort === undefined
@@ -718,11 +831,17 @@ function exportCompareTable(args: {
           behavioralCoverage: args.coverage,
           cohort: args.cohort ?? null,
           missedCatchRule: MISSED_CATCH_RULE,
-          labels: "heuristic(one-shot/retry envelope rule)",
+          labels:
+            "heuristic(one-shot/retry envelope rule · imported harness markers)",
         },
         harnesses: args.rows.map((row) => ({
           ...row,
-          labels: { behavioral: "heuristic(one-shot/retry envelope rule)" },
+          labels: {
+            behavioral:
+              row.behavioral.behavioralSource === "imported"
+                ? "heuristic(imported harness markers)"
+                : "heuristic(one-shot/retry envelope rule)",
+          },
         })),
         notes: footers,
       },
@@ -752,17 +871,26 @@ function exportCompareTable(args: {
 }
 
 /**
- * The #130 coverage line: covered envelope turns / total in-scope requests —
- * honest math, uncovered cells render `—`, never a zero.
+ * The #130/#146 coverage line: covered envelope turns / total in-scope
+ * requests, plus the imported-marker side (distinct sessions) — the two
+ * sources reported separately, never summed. Zero imported sessions get one
+ * opt-in instruction line; uncovered cells render `—`, never a zero.
  */
 function behavioralCoverageLine(coverage: {
   covered: number;
   total: number;
   ratio: number | null;
+  envelopes: { covered: number; total: number };
+  imported: { sessions: number; harnesses: number };
 }): string {
   const pct =
     coverage.total > 0 && coverage.ratio !== null ? `${Math.round(coverage.ratio * 100)}%` : "n/a";
-  return `behavioral columns: envelopes ${pct} of turns (${coverage.covered}/${coverage.total}), uncovered → —`;
+  const base =
+    `behavioral columns: envelopes ${pct} of turns (${coverage.covered}/${coverage.total}), ` +
+    `imported ${coverage.imported.sessions} session(s) across ${coverage.imported.harnesses} harness(es), uncovered → —`;
+  return coverage.imported.sessions === 0
+    ? `${base} · backfill with \`aiand harness import\``
+    : base;
 }
 
 function maybeMark(isWinner: boolean, cell: string): string {
@@ -838,5 +966,11 @@ Sessions are the #66 time-gap heuristic; mixed-model sessions are excluded
 from every aggregate and counted explicitly — the footer also shows their
 gateway-billed spend (in --json under \`excludedMixedSpend\`) so totals
 reconcile with \`usage\`. Verdicts reuse the cache-report
-thresholds. Costs are gateway-billed store sums; ratios are estimated(derived).`;
+thresholds. Costs are gateway-billed store sums; ratios are estimated(derived).
+
+Behavioral columns (tool-err, one-shot, clean, outcome, compactions) read
+two opt-in local sources with envelope data winning per harness, never both
+summed: captured adapter envelopes, and the markers \`aiand harness import\`
+backfilled from the harnesses' own session files (tool outcomes, terminal
+states, compactions — no prompts or contents). Uncovered cells render \`—\`.`;
 }

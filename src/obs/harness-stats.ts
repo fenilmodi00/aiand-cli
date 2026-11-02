@@ -1,6 +1,7 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
+import { type ImportedArtifactRow } from "../store/imported-artifacts.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
 
 /** The input shape of the shared verdict function (its thresholds are law). */
@@ -44,6 +45,13 @@ export type SessionSample = {
  * v1 envelopes or no envelope data → null, rendered as `—`, never a zero.
  */
 type BehavioralStats = {
+  /**
+   * #146: which source fed this harness's behavioral cells — the envelope
+   walk, the imported artifact markers, or neither. Precedence: envelope
+   (≥ MIN_BEHAVIORAL_TURNS) > imported (≥ 1 session) > none; the two are
+   never summed.
+   */
+  behavioralSource: "envelope" | "imported" | "none";
   toolErrorRate: number | null;
   oneShotRate: number | null;
   retryRate: number | null;
@@ -52,10 +60,19 @@ type BehavioralStats = {
   sessions: { clean: number; aborted: number; errored: number } | null;
   /** Envelope turns behind the rates (the cell's n for coverage gating). */
   envelopeTurns: number;
+  /** #146: tool calls behind toolErrorRate (envelope toolOutcomes or imported tool markers). */
+  toolCalls: number;
+  /** #146: imported compaction-marker count; null for envelope (not captured) and none. */
+  compactions: number | null;
+  /** #146: distinct (harness, session) imported rows behind an imported cell. */
+  importedSessions: number;
+  /** #146: clean / (clean+aborted+errored); null when no terminal info. */
+  cleanRate: number | null;
 };
 
 /** The uncovered cell: nulls and a zero count — never fake zeros in rates. */
 const EMPTY_BEHAVIORAL: BehavioralStats = {
+  behavioralSource: "none",
   toolErrorRate: null,
   oneShotRate: null,
   retryRate: null,
@@ -63,6 +80,10 @@ const EMPTY_BEHAVIORAL: BehavioralStats = {
   turnsToSuccess: null,
   sessions: null,
   envelopeTurns: 0,
+  toolCalls: 0,
+  compactions: null,
+  importedSessions: 0,
+  cleanRate: null,
 };
 
 /**
@@ -152,6 +173,16 @@ export type HarnessStatsOptions = {
       terminal?: string | null;
     } | null;
   }[];
+
+  /**
+   * #146: behavioral markers imported by `aiand harness import` (table
+   * `imported_artifacts`, read via `src/store/imported-artifacts.ts`). Each
+   * entry is one marker row with its harness id. Absent/empty → imported
+   * contributes nothing. Imported markers carry no edit targets and no
+   * model/api_key, so they unlock only harness-level tool-error rate,
+   * terminal split, and compaction counts.
+   */
+  importedMarkers?: readonly ImportedArtifactRow[];
 };
 
 export type HarnessStats = {
@@ -172,8 +203,17 @@ export type HarnessStats = {
    * #130 behavioral coverage: covered envelope turns / total requests in
    * scope (the honest "envelopes N% of turns" denominator), null when there
    * are no requests. Zero turns → 0 coverage, columns all uncovered.
+   * #146 splits the sources: `envelopes` keeps the covered-turn math,
+   * `imported` counts the marker rows' distinct sessions and harnesses —
+   * never summed with the envelope side.
    */
-  behavioralCoverage: { covered: number; total: number; ratio: number | null };
+  behavioralCoverage: {
+    covered: number;
+    total: number;
+    ratio: number | null;
+    envelopes: { covered: number; total: number };
+    imported: { sessions: number; harnesses: number };
+  };
 };
 
 /**
@@ -228,6 +268,66 @@ function buildEfficiencyTurns(
     });
   }
   return turns;
+}
+
+/**
+ * #146: derive one harness's behavioral stats from its imported artifact
+ * markers, grouped per (harness, session_id). Tool markers → calls/errors;
+ * the LAST terminal marker in a session decides its outcome (the same rule
+ * `artifact-import.sessionStats` applies); compaction markers count.
+ * Markers carry no edit targets, so one-shot/retry, missed-catch, and
+ * turns-to-success stay null (never 0) and the envelope walk is not run.
+ */
+export function buildImportedBehavioral(
+  markers: readonly ImportedArtifactRow[],
+  harness: string,
+): BehavioralStats | null {
+  const bySession = new Map<string, ImportedArtifactRow[]>();
+  for (const marker of markers) {
+    if (marker.harness !== harness) continue;
+    const bucket = bySession.get(marker.session_id);
+    if (bucket) bucket.push(marker);
+    else bySession.set(marker.session_id, [marker]);
+  }
+  if (bySession.size === 0) return null;
+
+  let toolCalls = 0;
+  let toolErrors = 0;
+  let compactions = 0;
+  const sessions = { clean: 0, aborted: 0, errored: 0 };
+  let terminals = 0;
+  for (const bucket of bySession.values()) {
+    // Rows arrive ordered (harness, session_id, seq, at); the last terminal
+    // marker wins when a session logs several turns.
+    const lastTerminal = [...bucket].reverse().find((m) => m.kind === "terminal");
+    const outcome = lastTerminal?.outcome;
+    if (outcome === "clean" || outcome === "aborted" || outcome === "errored") {
+      terminals += 1;
+      sessions[outcome] += 1;
+    }
+    for (const marker of bucket) {
+      if (marker.kind === "tool") {
+        toolCalls += 1;
+        if (marker.outcome === "error") toolErrors += 1;
+      } else if (marker.kind === "compaction") {
+        compactions += 1;
+      }
+    }
+  }
+  return {
+    behavioralSource: "imported",
+    toolErrorRate: toolCalls > 0 ? toolErrors / toolCalls : null,
+    oneShotRate: null,
+    retryRate: null,
+    missedCatchRate: null,
+    turnsToSuccess: null,
+    sessions: terminals > 0 ? sessions : null,
+    envelopeTurns: 0,
+    toolCalls,
+    compactions,
+    importedSessions: bySession.size,
+    cleanRate: terminals > 0 ? sessions.clean / terminals : null,
+  };
 }
 
 /**
@@ -291,23 +391,49 @@ export function buildHarnessStats(
         .map((row) => row.ttft_ms)
         .filter((value): value is number => value !== null);
       const errors = errorCount(bucket.rows);
-      // #130: behavioral columns ride T2's walk over this harness's envelope
-      // turns (same join as efficiency.ts). Gated on MIN_BEHAVIORAL_TURNS —
-      // below it the cell is uncovered (nulls), never a small-n guess.
+      // #130/#146: behavioral columns ride T2's walk over this harness's
+      // envelope turns (same join as efficiency.ts). Gated on
+      // MIN_BEHAVIORAL_TURNS — below it the cell falls through to the
+      // imported markers (#146), and only then to uncovered (nulls, never a
+      // small-n guess). The two sources are never summed.
       const harnessTurns = buildEfficiencyTurns(options.envelopes, harness);
-      const behavioral: BehavioralStats =
+      const envelopeBehavioral: BehavioralStats | null =
         harnessTurns.length >= MIN_BEHAVIORAL_TURNS
           ? (() => {
               const walked = oneShotRetry(harnessTurns).stats.value;
               return {
+                behavioralSource: "envelope",
                 ...walked,
                 // retryRate = retries / (oneShots + retries) — the complement
                 // of oneShotRate over the same event set.
                 retryRate: walked.oneShotRate === null ? null : 1 - walked.oneShotRate,
                 envelopeTurns: harnessTurns.length,
+                // Envelope toolCalls: every captured tool outcome this window.
+                toolCalls: harnessTurns.reduce(
+                  (sum, turn) => sum + (turn.toolOutcomes?.length ?? 0),
+                  0,
+                ),
+                // Compaction events are not captured in envelopes — honest
+                // null, never a zero.
+                compactions: null,
+                importedSessions: 0,
+                cleanRate:
+                  walked.sessions === null
+                    ? null
+                    : (() => {
+                        const total =
+                          walked.sessions.clean +
+                          walked.sessions.aborted +
+                          walked.sessions.errored;
+                        return total > 0 ? walked.sessions.clean / total : null;
+                      })(),
               };
             })()
-          : EMPTY_BEHAVIORAL;
+          : null;
+      const behavioral: BehavioralStats =
+        envelopeBehavioral ??
+        buildImportedBehavioral(options.importedMarkers ?? [], harness) ??
+        EMPTY_BEHAVIORAL;
       // The verdict rides the EXISTING cacheVerdict thresholds — never re-derived.
       const verdictGroup: VerdictGroup = {
         key: harness,
@@ -340,15 +466,26 @@ export function buildHarnessStats(
 
   // #130 coverage math: how many of the in-scope requests an envelope turn
   // can plausibly explain (harness matches + turn window). Honest ratio —
-  // covered / total, not the share among covered harnesses.
+  // covered / total, not the share among covered harnesses. #146 adds the
+  // imported side: distinct sessions/harnesses that imported markers cover,
+  // reported separately — never folded into the envelope turns.
   const totalRequests = scoped.length;
   const covered = options.envelopes
     ? harnesses.reduce((sum, h) => sum + h.behavioral.envelopeTurns, 0)
     : 0;
+  const importedRows = options.importedMarkers ?? [];
+  const importedSessions = new Set(
+    importedRows.map((m) => `${m.harness}\u0000${m.session_id}`),
+  );
   const behavioralCoverage = {
     covered,
     total: totalRequests,
     ratio: totalRequests > 0 ? covered / totalRequests : null,
+    envelopes: { covered, total: totalRequests },
+    imported: {
+      sessions: importedSessions.size,
+      harnesses: new Set(importedRows.map((m) => m.harness)).size,
+    },
   };
 
   const labels: Record<string, string> = {
