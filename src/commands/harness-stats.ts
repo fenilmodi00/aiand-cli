@@ -26,6 +26,13 @@ import {
   type SessionSample,
   WINNER_MARKER,
 } from "../obs/harness-stats.js";
+import {
+  buildRegressionReport,
+  type RegressionMetric,
+  type RegressionReport,
+  type RegressionRow,
+  type RegressionVerdict,
+} from "../obs/regression.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
 import {
   type ImportedArtifactRow,
@@ -193,14 +200,19 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     "include-mixed": { type: "boolean", default: false },
     "no-cost": { type: "boolean", default: false },
     "no-sync": { type: "boolean", default: false },
+    // #151: stateless two-window screen — `--baseline` names the preceding
+    // window (previous | 30m | 12h | 1d | 7d | 30d | 4w); no snapshot is saved.
+    baseline: { type: "string" },
+    "fail-on-regression": { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(workloadHelp(mode));
-
   if (parsed.positionals.length > 0) {
     throw new CliError(`Unknown argument "${parsed.positionals[0]}".`, {
       hint: `Run \`aiand harness ${mode} --help\` to see the subcommands and flags.`,
     });
   }
+  const baselineToken = str(parsed, "baseline");
+  const failOnRegression = bool(parsed, "fail-on-regression");
 
   // #135: --out exports the compare table (--format markdown|csv|json, default
   // from the file extension). Only compare mode exports; stats stays stdout.
@@ -259,6 +271,25 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     models: list(parsed, "model"),
   });
   const storeInfo = getStoreInfo();
+
+  // #151: the regression screen rides compare mode only, needs a bounded
+  // current window (there is no edge otherwise), and has no table exporter.
+  if (mode !== "compare" && (baselineToken !== undefined || failOnRegression)) {
+    throw new CliError("--baseline and --fail-on-regression are harness compare flags.", {
+      hint: "Run `aiand harness compare --baseline previous` instead.",
+    });
+  }
+  if (baselineToken !== undefined && sinceMs === null) {
+    throw new CliError(
+      "compare --baseline needs a bounded current window (--last or --since/--until).",
+      { exitCode: EXIT.NO_DATA },
+    );
+  }
+  if (baselineToken !== undefined && outPath !== undefined) {
+    throw new CliError("--baseline cannot be combined with --out.", {
+      hint: "Use `--json` for machine-readable baseline rows.",
+    });
+  }
 
   // #130: cohort seam (C6) — a named classifier category narrows the rows to
   // "same kind of work" before sessionization. Excluded rows are counted in
@@ -326,7 +357,7 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     }
   }
 
-  if (mode === "compare" && harnesses.length < 2) {
+  if (mode === "compare" && harnesses.length < 2 && baselineToken === undefined) {
     throw new CliError(
       `harness compare needs at least 2 harnesses with requests in range — found ${harnesses.length}.`,
       {
@@ -334,6 +365,64 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
         exitCode: EXIT.ERROR,
       },
     );
+  }
+
+  // #151: the baseline window is the span immediately before the current one
+  // (equal length for `previous`, the token's own span otherwise). Stateless:
+  // no snapshot file, no extra state. Both windows read through the same
+  // filters, cohort predicate, markers, and gap.
+  let baselineWindow: { sinceMs: number; untilMs: number } | null = null;
+  let baselineReport: RegressionReport | null = null;
+  if (baselineToken !== undefined && sinceMs !== null) {
+    const until = untilMs ?? Date.now();
+    const token = baselineToken.trim();
+    if (token.length === 0) {
+      throw new CliError("--baseline needs a window token.", {
+        hint: "Use previous, 30m, 12h, 1d, 7d, 30d, or 4w.",
+      });
+    }
+    let span: number;
+    if (token === "previous") {
+      span = until - sinceMs;
+    } else {
+      try {
+        span = until - parseLast(token, new Date(until)).sinceMs;
+      } catch (error) {
+        throw new CliError(`Unknown baseline window "${token}".`, {
+          hint: `Use previous, 30m, 12h, 1d, 7d, 30d, or 4w (${error instanceof Error ? error.message : String(error)}).`,
+        });
+      }
+    }
+    if (!(span > 0)) {
+      throw new CliError(`Baseline window "${token}" resolves to an empty span.`, {
+        hint: "Use previous, 30m, 12h, 1d, 7d, 30d, or 4w.",
+      });
+    }
+    baselineWindow = { sinceMs: sinceMs - span, untilMs: sinceMs };
+    const filters = { agents: list(parsed, "agent"), models: list(parsed, "model") };
+    // The store reader's upper bound is inclusive (#92); the baseline must end
+    // where the current window starts, otherwise a request exactly on the edge
+    // is screened in both windows.
+    const baselineRows = readHarnessRows(baselineWindow, filters).filter(
+      (row) => Date.parse(row.created_at) < sinceMs,
+    );
+    if (baselineRows.length === 0) {
+      throw new CliError(
+        `compare --baseline: no requests in the baseline window (${describeRange(baselineWindow.sinceMs, baselineWindow.untilMs)}).`,
+        { exitCode: EXIT.NO_DATA },
+      );
+    }
+    const baselineCohort =
+      cohortCategory === undefined ? undefined : cohortOf(baselineRows, cohortCategory);
+    baselineReport = buildRegressionReport(rows, baselineRows, {
+      gapMinutes,
+      timezone,
+      cohort: baselineCohort === undefined ? undefined : (row) => baselineCohort.has(row.id),
+      envelopesCurrent: windowEnvelopes(sinceMs, untilMs),
+      envelopesBaseline: windowEnvelopes(baselineWindow.sinceMs, baselineWindow.untilMs),
+      importedCurrent: windowImportedMarkers(sinceMs, untilMs),
+      importedBaseline: windowImportedMarkers(baselineWindow.sinceMs, baselineWindow.untilMs),
+    });
   }
 
   // #135: --out exports the compare table (markdown/csv/json) and returns —
@@ -353,7 +442,31 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     return;
   }
 
-  if (bool(parsed, "json")) return json(payload(stats, harnesses));
+  if (bool(parsed, "json")) {
+    const base = payload(stats, harnesses) as Record<string, unknown>;
+    const withBaseline =
+      baselineReport === null || baselineWindow === null
+        ? base
+        : {
+            ...base,
+            baseline: {
+              range: {
+                since: new Date(baselineWindow.sinceMs).toISOString(),
+                until: new Date(baselineWindow.untilMs).toISOString(),
+              },
+              rows: baselineReport.rows,
+              insufficient: baselineReport.insufficient,
+              screened: baselineReport.screened,
+              regressions: baselineReport.regressions.length,
+              improvements: baselineReport.improvements.length,
+            },
+          };
+    json(withBaseline);
+    if (failOnRegression && baselineReport !== null && baselineReport.regressions.length > 0) {
+      process.exitCode = EXIT.ERROR;
+    }
+    return;
+  }
 
   out(
     style.bold(
@@ -384,6 +497,13 @@ export async function runHarnessWorkload(mode: "stats" | "compare", argv: string
     out(style.dim(behavioralCoverageLine(stats.behavioralCoverage)));
   }
   if (bool(parsed, "samples")) renderSamples(harnesses);
+
+  if (baselineReport !== null && baselineWindow !== null) {
+    renderRegression(baselineReport, baselineWindow, noCost);
+    if (failOnRegression && baselineReport.regressions.length > 0) {
+      process.exitCode = EXIT.ERROR;
+    }
+  }
 
   if (stats.provenance.excludedMixed > 0) {
     out(
@@ -1018,7 +1138,105 @@ function renderExcluded(excluded: SessionSample[], noCost: boolean): void {
   out();
 }
 
+// ---------------------------------------------------------------------------
+// #151 baseline regression watch
+// ---------------------------------------------------------------------------
+
+/** Money for cost metrics, percent for rates. */
+function regressionFormat(metric: RegressionMetric): (value: number) => string {
+  return metric === "costPerSession"
+    ? (value) => `${currencySymbol("usd")}${value.toFixed(4)}`
+    : pct;
+}
+
+/** The delta CI rendered with the metric's own formatter. */
+function regressionCi(row: RegressionRow): string {
+  const format = regressionFormat(row.metric);
+  return `[${format(row.ci95.lo)}–${format(row.ci95.hi)}]`;
+}
+
+/** The verdict word with its color; noise stays dim, never alarming. */
+function regressionVerdict(verdict: RegressionVerdict): string {
+  if (verdict === "regression") return style.red("regression");
+  if (verdict === "improvement") return style.green("improvement");
+  return style.dim(verdict);
+}
+
+/**
+ * The labeled `regression vs baseline` section: one row per
+ * (harness, model, metric) with both windows' values, the bootstrap delta CI,
+ * the per-window n, and the interval-gated verdict. A separate block — it is
+ * a different question from "which harness wins today".
+ */
+function renderRegression(
+  report: RegressionReport,
+  baseline: { sinceMs: number; untilMs: number },
+  noCost: boolean,
+): void {
+  const shown = noCost ? report.rows.filter((row) => row.metric !== "costPerSession") : report.rows;
+  heading("regression vs baseline");
+  out(
+    style.dim(
+      `  baseline ${describeRange(baseline.sinceMs, baseline.untilMs)} · screening, not proof · n>=5 both windows`,
+    ),
+  );
+  if (shown.length === 0) {
+    out(style.dim("  no metric has enough data in both windows to screen."));
+  } else {
+    table<RegressionRow>(shown, [
+      { header: "harness/model", value: (row) => `${row.harness}/${row.model}` },
+      { header: "metric", value: (row) => row.metric },
+      {
+        header: "current",
+        value: (row) => regressionFormat(row.metric)(row.current),
+        align: "right",
+      },
+      {
+        header: "baseline",
+        value: (row) => regressionFormat(row.metric)(row.baseline),
+        align: "right",
+      },
+      {
+        header: "delta",
+        value: (row) => `${row.delta >= 0 ? "+" : ""}${regressionFormat(row.metric)(row.delta)}`,
+        align: "right",
+      },
+      { header: "95% CI", value: regressionCi },
+      { header: "n", value: (row) => `${row.n.current}/${row.n.baseline}`, align: "right" },
+      { header: "verdict", value: (row) => regressionVerdict(row.verdict) },
+    ]);
+  }
+  if (report.regressions.length > 0) {
+    out(
+      style.red(
+        `regression: ${report.regressions.length} metric(s) worse — ` +
+          report.regressions.map((row) => `${row.harness}/${row.model}/${row.metric}`).join(", "),
+      ),
+    );
+  } else {
+    out(style.dim("regression: none"));
+  }
+  if (report.insufficient > 0) {
+    out(
+      style.dim(`${report.insufficient} pair(s) below n>=5 in one window — skipped, not screened`),
+    );
+  }
+  out();
+}
+
 function workloadHelp(mode: "stats" | "compare"): string {
+  const baselineOptions =
+    mode === "compare"
+      ? `  --baseline <window>  screen the preceding window (previous | 30m | 12h | 1d |
+                      7d | 30d | 4w) against the current one — a separate
+                      "regression vs baseline" section with per-metric deltas,
+                      95% CIs, and interval-gated verdicts (screening, not
+                      proof); needs a bounded current window (--last/--since);
+                      --json carries a \`baseline\` block
+  --fail-on-regression  with --baseline: exit 1 when any metric regressed
+
+`
+      : "";
   return `${style.bold(`aiand harness ${mode}`)} — real-workload ${mode === "stats" ? "stats per harness" : "side-by-side harness comparison"}
 
 Usage
@@ -1027,7 +1245,7 @@ Usage
   aiand harness ${mode} --json
 
 Options
-  --since <iso>       window start (interpreted in --timezone)
+${baselineOptions}  --since <iso>       window start (interpreted in --timezone)
   --until <iso>       window end
   --last <window>     30m, 12h, 1d, 7d, 30d, 4w (default: all stored history)
   --harness <name>    one harness only (stats)

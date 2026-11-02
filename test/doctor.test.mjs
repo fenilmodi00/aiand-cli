@@ -20,7 +20,7 @@ const env = withTestEnv("aiand-doctor-", (dir) => {
   delete process.env.AIAND_API_KEY;
 });
 
-const CHECK_IDS = ["gateway", "auth", "adapters", "agent-keys", "store", "lag"];
+const CHECK_IDS = ["gateway", "auth", "adapters", "agent-keys", "store", "lag", "regressions"];
 const STATUSES = new Set(["ok", "nothing-found", "errors", "skipped"]);
 
 function byId(checks) {
@@ -200,4 +200,63 @@ test("adapters verdict counts a fixture agent with a resolvable bakedKey", async
   assert.match(found.adapters.detail, /^OK \(1 wired: doctor-fixture\)/);
   assert.equal(found.adapters.wired[0], "doctor-fixture");
   assert.equal(process.exitCode, previousExit);
+});
+
+test("regression watch: a weekly cost regression is ERRORS and exits 1", async () => {
+  const cfg = join(env.dir, "regression-cfg");
+  mkdirSync(cfg, { recursive: true });
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const hour = 60 * 60 * 1000;
+  const now = Date.now();
+  const weekRows = (prefix, start, cost) =>
+    Array.from({ length: 10 }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      created_at: new Date(start + index * 20 * 60_000).toISOString(),
+      cost,
+    }));
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    const insert = opened.db.prepare(
+      "INSERT OR IGNORE INTO requests (id, model, api_key, status_code, ttft_ms, latency_ms, " +
+        "input_tokens, output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const seeded = [
+      ...weekRows("base", now - 13 * 24 * hour, 0.01),
+      ...weekRows("cur", now - 6 * 24 * hour, 0.02),
+    ];
+    for (const entry of seeded) {
+      insert.run(
+        entry.id,
+        "zai-org/glm-5.3",
+        null,
+        200,
+        300,
+        null,
+        1000,
+        100,
+        500,
+        String(entry.cost),
+        entry.cost,
+        "usd",
+        entry.created_at,
+        entry.created_at,
+      );
+    }
+    opened.db.close();
+  });
+
+  const result = await runCli(["doctor", "--json"], {
+    env: cliEnv({
+      AIAND_CONFIG_DIR: cfg,
+      AIAND_BASE_URL: CLOSED_URL,
+      AIAND_API_KEY: undefined,
+    }),
+  });
+  assert.equal(result.code, 1, result.stderr);
+  const found = byId(JSON.parse(result.stdout).checks);
+  assert.equal(found.regressions.status, "errors");
+  assert.match(found.regressions.detail, /regression/i);
+  assert.match(found.regressions.detail, /screening, not proof/);
 });

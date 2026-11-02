@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CLOSED_URL, cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";
@@ -1626,4 +1626,156 @@ test("#147 compare --json keeps existing fields and adds ci95; clean rate Wilson
   const opencode = payload.harnesses.find((h) => h.harness === "opencode");
   assert.equal(opencode.behavioral.cleanRate, null);
   assert.equal(opencode.ci95.cleanRate, null);
+});
+
+// ---------------------------------------------------------------------------
+// #151 baseline regression watch (stateless two-window screen)
+// ---------------------------------------------------------------------------
+
+/** N one-request sessions, spaced 20 min (distinct under the 10-min gap). */
+function windowRows(prefix, startIso, options = {}) {
+  const { n = 10, cost = 0.01, ttft = 300, status = 200 } = options;
+  const start = Date.parse(startIso);
+  return Array.from({ length: n }, (_, index) =>
+    row({
+      id: `${prefix}-${index}`,
+      created_at: new Date(start + index * 20 * 60_000).toISOString(),
+      cost_value: cost,
+      ttft_ms: ttft,
+      status_code: status,
+    }),
+  );
+}
+
+function terminalMarker(sessionId, outcome, at) {
+  return {
+    dedup_key: `marker-${sessionId}`,
+    harness: "unknown",
+    session_id: sessionId,
+    kind: "terminal",
+    tool_name: null,
+    outcome,
+    seq: 0,
+    at,
+    imported_at: at,
+  };
+}
+
+test("#151 unit: doubled cost over n>=10 is a regression, n=3 is skipped", async () => {
+  const { buildRegressionReport } = await import("../dist/obs/regression.js");
+  const baseline = windowRows("base", "2026-10-19T00:00:00.000Z", { cost: 0.01 });
+  const current = windowRows("cur", "2026-10-20T00:00:00.000Z", { cost: 0.02 });
+  const report = buildRegressionReport(current, baseline, { gapMinutes: 10 });
+
+  const cost = report.rows.find((r) => r.metric === "costPerSession");
+  assert.ok(cost, "cost row screened");
+  assert.equal(cost.verdict, "regression");
+  assert.equal(cost.delta.toFixed(4), "0.0100");
+  assert.ok(cost.ci95.lo > 0, "delta CI excludes 0");
+  assert.deepEqual(cost.n, { current: 10, baseline: 10 });
+  assert.equal(report.regressions.length, 1);
+  assert.equal(report.rows.find((r) => r.metric === "ttftP95").verdict, "no change");
+  assert.equal(report.rows.find((r) => r.metric === "errorRate").verdict, "no change");
+
+  const few = buildRegressionReport(
+    windowRows("cur", "2026-10-20T00:00:00.000Z", { n: 3, cost: 0.02 }),
+    windowRows("base", "2026-10-19T00:00:00.000Z", { n: 3, cost: 0.01 }),
+  );
+  assert.equal(few.insufficient, 1);
+  assert.equal(few.rows.length, 0);
+  assert.equal(few.regressions.length, 0);
+});
+
+test("#151 unit: imported clean rate improves only when both windows have coverage", async () => {
+  const { buildRegressionReport } = await import("../dist/obs/regression.js");
+  const baseline = windowRows("base", "2026-10-19T00:00:00.000Z", { n: 5 });
+  const current = windowRows("cur", "2026-10-20T00:00:00.000Z", { n: 5 });
+  const baselineMarkers = Array.from({ length: 5 }, (_, i) =>
+    terminalMarker(`b-${i}`, "errored", "2026-10-19T00:00:00.000Z"),
+  );
+  const currentMarkers = Array.from({ length: 5 }, (_, i) =>
+    terminalMarker(`c-${i}`, "clean", "2026-10-20T00:00:00.000Z"),
+  );
+  const report = buildRegressionReport(current, baseline, {
+    gapMinutes: 10,
+    importedCurrent: currentMarkers,
+    importedBaseline: baselineMarkers,
+  });
+  const clean = report.rows.find((r) => r.metric === "cleanRate");
+  assert.ok(clean, "clean rate screened");
+  assert.equal(clean.verdict, "improvement");
+  assert.equal(clean.delta, 1);
+  assert.equal(
+    report.rows.some((r) => r.metric === "toolErrorRate"),
+    false,
+  );
+});
+
+test("#151 compare --baseline previous: section, JSON, exit codes, empty baseline", async () => {
+  const cfg = cfgDir("baseline-two-window");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { maskKey, recordAgentKey } = await import("../dist/api/agent-keys.js");
+  const key = "sk-test-claude-super-secret-key-000";
+  let mask;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", key);
+    mask = maskKey(key);
+  });
+  const withMask = (rows) => rows.map((entry) => ({ ...entry, api_key: mask }));
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      ...withMask(windowRows("base", "2026-10-19T00:00:00.000Z", { cost: 0.01 })),
+      ...withMask(windowRows("cur", "2026-10-20T00:00:00.000Z", { cost: 0.02 })),
+    ]);
+    opened.db.close();
+  });
+
+  const envForCli = { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) };
+  const args = [
+    "harness",
+    "compare",
+    "--no-sync",
+    "--since",
+    "2026-10-20T00:00:00.000Z",
+    "--until",
+    "2026-10-21T00:00:00.000Z",
+    "--baseline",
+    "previous",
+  ];
+
+  const compared = await runCli(args, envForCli);
+  assert.equal(compared.code, 0, compared.stderr);
+  assert.match(compared.stdout, /regression vs baseline/);
+  assert.match(compared.stdout, /costPerSession/);
+  assert.match(compared.stdout, /regression: 1 metric\(s\) worse/);
+  assert.match(compared.stdout, /screening, not proof/);
+
+  const failed = await runCli([...args, "--fail-on-regression"], envForCli);
+  assert.equal(failed.code, 1, failed.stderr);
+
+  const jsoned = await runCli([...args, "--json"], envForCli);
+  assert.equal(jsoned.code, 0, jsoned.stderr);
+  const payload = JSON.parse(jsoned.stdout);
+  assert.equal(payload.baseline.range.until, "2026-10-20T00:00:00.000Z");
+  assert.ok(payload.baseline.regressions >= 1);
+  assert.ok(
+    payload.baseline.rows.some(
+      (entry) => entry.metric === "costPerSession" && entry.verdict === "regression",
+    ),
+  );
+
+  // No requests in the baseline hour → exit 30 with a clear message.
+  const empty = await runCli([...args.slice(0, 7), "--baseline", "1h"], envForCli);
+  assert.equal(empty.code, 30, empty.stderr);
+  assert.match(empty.stderr, /no requests in the baseline window/);
+
+  // Unbounded current window → exit 30 before reading rows.
+  const unbounded = await runCli(
+    ["harness", "compare", "--no-sync", "--baseline", "previous"],
+    envForCli,
+  );
+  assert.equal(unbounded.code, 30);
+  assert.match(unbounded.stderr, /bounded current window/);
 });
