@@ -80,6 +80,8 @@ type ReportRow = {
   endpoint: string | null;
   created_at: string;
   latency_ms: number | null;
+  /** #155: decode-throughput denominator (with latency_ms); null on old rows. */
+  ttft_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
@@ -100,6 +102,14 @@ type Mix = {
   outputTokens: number;
   cachedTokens: number;
   costs: Costs;
+  /**
+   * #155: sum(output_tokens) and sum(latency_ms − ttft_ms) over TPS-eligible
+   * rows only (null ttft/latency, latency ≤ ttft, or null/0 output skip) —
+   * the throughput-weighted avg-TPS numerator/denominator. Derived at render
+   * time; never a stored column.
+   */
+  tpsTokens: number;
+  tpsMs: number;
 };
 
 export type DayBucket = Mix & {
@@ -178,7 +188,11 @@ export type ReportData = {
     /** Present when savings could not be computed (no cached catalog). */
     savingsNote: string | null;
   };
-  totals: Mix & { savings: number | null };
+  totals: Mix & {
+    savings: number | null;
+    /** #155: avg TPS (system throughput) over the window; null without eligible rows. */
+    avgTps: number | null;
+  };
   byHarness: HarnessShare[];
   days: DayBucket[];
   harnessDays: { harness: string; day: string; costs: Costs; savings: number | null }[];
@@ -220,7 +234,7 @@ function storeLoadWith(
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, endpoint, created_at, latency_ms, input_tokens, output_tokens, " +
+        "SELECT id, model, api_key, endpoint, created_at, latency_ms, ttft_ms, input_tokens, output_tokens, " +
           "cached_tokens, cost_value, currency, attributed_agent FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -497,6 +511,8 @@ const emptyMix = (): Mix => ({
   outputTokens: 0,
   cachedTokens: 0,
   costs: {},
+  tpsTokens: 0,
+  tpsMs: 0,
 });
 
 /** A grouping plus the per-model detail its savings computation needs. */
@@ -509,6 +525,17 @@ function accMix(mix: Mix, row: ReportRow): void {
   mix.inputTokens += row.input_tokens ?? 0;
   mix.outputTokens += row.output_tokens ?? 0;
   mix.cachedTokens += row.cached_tokens ?? 0;
+  // #155: throughput-weighted sums over eligible rows only (null is never 0).
+  if (
+    row.ttft_ms !== null &&
+    row.latency_ms !== null &&
+    row.latency_ms > row.ttft_ms &&
+    row.output_tokens !== null &&
+    row.output_tokens > 0
+  ) {
+    mix.tpsTokens += row.output_tokens;
+    mix.tpsMs += row.latency_ms - row.ttft_ms;
+  }
   if (row.cost_value !== null) {
     // #89: casefold so mixed-case stored currencies stay in one lane.
     const currency = currencyKey(row.currency);
@@ -805,6 +832,8 @@ export function buildReportData(
     totals: {
       ...totals.mix,
       costs: sortedCosts(totals.mix.costs),
+      /** #155: sum(output_tokens)/sum(latency_ms − ttft_ms)*1000; null without eligible rows. */
+      avgTps: totals.mix.tpsMs > 0 ? (totals.mix.tpsTokens / totals.mix.tpsMs) * 1000 : null,
       savings: groupSavings(totals, prices),
     },
     byHarness: byHarnessRows,

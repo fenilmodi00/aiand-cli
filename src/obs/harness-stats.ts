@@ -31,6 +31,8 @@ export type HarnessRequestRow = SessionRequestRow & {
   model: string;
   status_code: number | null;
   ttft_ms: number | null;
+  /** #155: decode-throughput denominator (with ttft_ms); null on old rows. */
+  latency_ms: number | null;
 };
 
 /** One session behind the aggregates — the inspectable `--samples` entry. */
@@ -118,6 +120,8 @@ export type HarnessStatsRow = {
   currency: string | null;
   costPerSession: { p50: number | null; p90: number | null };
   ttft: { p50: number | null; p95: number | null };
+  /** #155: throughput-weighted avg TPS over this harness's requests; informational, never a verdict input. */
+  avgTps: number | null;
   cacheHitRatio: number;
   errorRate: number;
   verdict: "good" | "warn" | "bad";
@@ -475,6 +479,23 @@ export function buildHarnessStats(
       const ttfts = bucket.rows
         .map((row) => row.ttft_ms)
         .filter((value): value is number => value !== null);
+      // #155: throughput-weighted avg TPS over this harness's eligible rows —
+      // sum(output)/sum(latency − ttft)*1000; null without eligible rows
+      // (null never becomes 0).
+      let tpsTokens = 0;
+      let tpsMs = 0;
+      for (const row of bucket.rows) {
+        if (
+          row.latency_ms !== null &&
+          row.ttft_ms !== null &&
+          row.latency_ms > row.ttft_ms &&
+          row.output_tokens !== null &&
+          row.output_tokens > 0
+        ) {
+          tpsTokens += row.output_tokens;
+          tpsMs += row.latency_ms - row.ttft_ms;
+        }
+      }
       const errors = errorCount(bucket.rows);
       // #147: per-request cache vectors for the hit-ratio bootstrap — cached
       // rides with its own input denominator (paired resampling).
@@ -545,6 +566,7 @@ export function buildHarnessStats(
           p90: percentile(sessionCosts, 0.9),
         },
         ttft: { p50: percentile(ttfts, 0.5), p95: percentile(ttfts, 0.95) },
+        avgTps: tpsMs > 0 ? (tpsTokens / tpsMs) * 1000 : null,
         cacheHitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
         errorRate: requests > 0 ? errors / requests : 0,
         verdict: cacheVerdict(verdictGroup),
