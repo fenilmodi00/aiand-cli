@@ -566,7 +566,7 @@ export function readHarnessRows(
     const rows = db
       .prepare(
         "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
-          "cost, cost_value, currency, status_code, ttft_ms FROM requests" +
+          "cost, cost_value, currency, status_code, ttft_ms, latency_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
       )

@@ -129,7 +129,7 @@ function readCompareRows(window: { sinceMs: number | null; untilMs: number | nul
     const rows = db
       .prepare(
         "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
-          "cost, cost_value, currency, status_code, ttft_ms FROM requests" +
+          "cost, cost_value, currency, status_code, ttft_ms, latency_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
       )
@@ -683,6 +683,10 @@ function renderPanels(
     totalsLines.push(`requests      ${totals.requests}`);
     totalsLines.push(`tokens in     ${totals.inputTokens}  (cached ${totals.cachedTokens})`);
     totalsLines.push(`tokens out    ${totals.outputTokens}`);
+    // #155: avg TPS (system throughput) over the window; `-` without eligible rows.
+    totalsLines.push(
+      `tps           ${totals.avgTps === null ? "-" : `${totals.avgTps.toFixed(1)} tok/s`}`,
+    );
     if (view.showCost) {
       totalsLines.push(`cost          ${formatCosts(totals.costs)}`);
       if (totals.savings !== null) {
@@ -819,7 +823,10 @@ function renderCompare(
     return lines;
   }
   const winners = compareVerdicts(stats.harnesses);
-  lines.push(theme.muted("  harness        reqs  sess  cost/sess p50   cache%  err%  ttft p50"));
+  // #155: tps is informational (avg per-harness throughput) — never a winner input.
+  lines.push(
+    theme.muted("  harness        reqs  sess  cost/sess p50   cache%  err%  ttft p50     tps"),
+  );
   for (const row of stats.harnesses) {
     const cell = (value: string, winner: string | null): string =>
       winner === row.harness ? `${theme.bold(value)} ${WINNER_MARKER}` : ` ${value} `;
@@ -831,13 +838,17 @@ function renderCompare(
     const cache = `${Math.round(row.cacheHitRatio * 100)}`.padStart(3);
     const errRate = `${(row.errorRate * 100).toFixed(1)}`.padStart(4);
     const ttft = row.ttft.p50 === null ? "n/a" : `${Math.round(row.ttft.p50)}ms`;
+    const tps =
+      row.avgTps === null
+        ? "     -"
+        : (row.avgTps >= 10000 ? row.avgTps.toFixed(0) : row.avgTps.toFixed(1)).padStart(6);
     lines.push(
       clipToWidth(
         ` ${row.harness.padEnd(12)}  ${String(row.requests).padStart(5)}  ` +
           `${String(row.sessions).padStart(4)}  ` +
           `${cell(costP50, winners.costPerSessionP50.winner).padEnd(15)} ` +
           `${cache}     ${errRate}  ` +
-          cell(ttft, winners.ttftP50.winner),
+          `${cell(ttft, winners.ttftP50.winner)}  ${tps}`,
         width,
       ),
     );
