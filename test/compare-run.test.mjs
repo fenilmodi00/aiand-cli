@@ -424,3 +424,128 @@ test("table with no run rows is honest-empty with exit 0 (#132)", async () => {
   const res = await runCli(["compare", "table"], { env: cliEnv({ AIAND_CONFIG_DIR: dir }) });
   assert.match(res.stdout, /No task packs yet/);
 });
+
+// ---------------------------------------------------------------------------
+// #152 — --k pass@k / pass^k and --bootstrap alias through the CLI
+// ---------------------------------------------------------------------------
+
+/** Scaffold a task pack and write hand-rolled run rows (no gateway needed). */
+async function tableTaskWithRows(name, rows) {
+  const dir = cfg(name);
+  await addValidatedTask(dir, "kt");
+  mkdirSync(join(dir, "compare-runs"), { recursive: true });
+  writeFileSync(join(dir, "compare-runs", "kt.jsonl"), rows.map((r) => JSON.stringify(r)).join("\n"));
+  return dir;
+}
+
+const kwRow = (overrides = {}) => ({
+  run_id: "r",
+  ts: "2026-10-29T00:00:00Z",
+  harness: "agentA",
+  harness_version: "1.0",
+  model: "m1",
+  task: "t1",
+  success: false,
+  score: null,
+  failure_mode: null,
+  completed: true,
+  wall_ms: 1000,
+  turns: 3,
+  retries: 0,
+  tokens_in: 100,
+  tokens_cached: 0,
+  tokens_out: 50,
+  cost_usd: 0.01,
+  token_basis: "gateway",
+  cost_basis: "gateway",
+  request_ids: [],
+  verify_exit: 1,
+  ...overrides,
+});
+
+test("--k 3 JSON: pass@k/pass^k/ci95 + sample sizes, method labeled (#152)", async () => {
+  const dir = await tableTaskWithRows("k-json", [
+    // t1: 3 trials, 2 solves; t2: 3 trials, 3 solves → clustered, macro 1 / 0.5.
+    kwRow({ task: "t1", run_id: "a1", success: true }),
+    kwRow({ task: "t1", run_id: "a2", success: true }),
+    kwRow({ task: "t1", run_id: "a3", success: false }),
+    kwRow({ task: "t2", run_id: "b1", success: true }),
+    kwRow({ task: "t2", run_id: "b2", success: true }),
+    kwRow({ task: "t2", run_id: "b3", success: true }),
+  ]);
+  const res = await runCli(["compare", "table", "--k", "3", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
+  assert.equal(res.code, 0, res.stderr);
+  const [c] = JSON.parse(res.stdout).cells;
+  assert.equal(c.solveMethod, "clustered");
+  assert.equal(c.k, 3);
+  assert.equal(c.passAtK, 1);
+  assert.equal(c.passPowK, 0.5);
+  assert.equal(c.tasksBelowK, 0);
+  assert.deepEqual(c.solveCi95, { lo: 2 / 3, hi: 1 });
+  assert.ok(c.costPerSolveCi95 && c.costPerSolveCi95.lo <= c.costPerSolve && c.costPerSolve <= c.costPerSolveCi95.hi);
+});
+
+test("--k 3 human output renders pass line, method column, footer", async () => {
+  const dir = await tableTaskWithRows("k-human", [
+    kwRow({ task: "t1", run_id: "a1", success: true }),
+    kwRow({ task: "t1", run_id: "a2", success: true }),
+    kwRow({ task: "t1", run_id: "a3", success: false }),
+    kwRow({ task: "t2", run_id: "b1", success: true }),
+    kwRow({ task: "t2", run_id: "b2", success: true }),
+    kwRow({ task: "t2", run_id: "b3", success: true }),
+  ]);
+  const res = await runCli(["compare", "table", "--k", "3"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /clustered/);
+  assert.match(res.stdout, /pass\^3/);
+  assert.match(res.stdout, /macro-averaged over tasks \(k=3/);
+});
+
+test("--bootstrap is an alias for --k and requires run rows (#152)", async () => {
+  const empty = cfg("k-empty");
+  await addValidatedTask(empty, "kt");
+  const refused = await runCli(["compare", "table", "--bootstrap", "3"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: empty }),
+  });
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /needs run rows/);
+
+  const dir = await tableTaskWithRows("k-alias", [
+    kwRow({ task: "t1", run_id: "a1", success: true }),
+    kwRow({ task: "t1", run_id: "a2", success: true }),
+    kwRow({ task: "t1", run_id: "a3", success: false }),
+    kwRow({ task: "t2", run_id: "b1", success: true }),
+    kwRow({ task: "t2", run_id: "b2", success: true }),
+    kwRow({ task: "t2", run_id: "b3", success: true }),
+  ]);
+  const viaAlias = await runCli(["compare", "table", "--bootstrap", "3", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
+  const viaK = await runCli(["compare", "table", "--k", "3", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
+  assert.equal(viaAlias.code, 0, viaAlias.stderr);
+  assert.equal(viaK.code, 0, viaK.stderr);
+  assert.deepEqual(JSON.parse(viaAlias.stdout).cells, JSON.parse(viaK.stdout).cells);
+});
+
+test("--k 1 (default): JSON keeps solveCi95 and reports k=1 (#152)", async () => {
+  const dir = await tableTaskWithRows("k-one", [
+    kwRow({ success: true }),
+    kwRow({ run_id: "r2", success: true }),
+    kwRow({ run_id: "r3", success: false }),
+  ]);
+  const res = await runCli(["compare", "table", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
+  });
+  assert.equal(res.code, 0, res.stderr);
+  const [c] = JSON.parse(res.stdout).cells;
+  assert.equal(c.k, 1);
+  assert.equal(c.solveMethod, "wilson", "single-trial tasks → Wilson");
+  assert.equal(c.passAtK, c.solveRate);
+  assert.equal(c.passPowK, c.solveRate);
+});

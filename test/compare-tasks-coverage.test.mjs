@@ -700,8 +700,8 @@ describe("compare table (CLI)", () => {
     });
     assert.equal(res.code, 0, res.stderr);
     const md = readFileSync(outMd, "utf8");
-    assert.match(md, /\| harness \/ model \| solve \|/);
-    assert.match(md, /\|---\|---\|---:\|/);
+    assert.match(md, /\| harness \/ model \| solve \| method \|/);
+    assert.match(md, /\|---\|---:\|---:\|/);
     assert.match(md, /solve rate: tied/);
     assert.match(res.stdout, /exported to .*table\.md \(markdown\)/);
 

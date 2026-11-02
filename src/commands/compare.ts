@@ -1,5 +1,5 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { bool, parse, str } from "../cli/args.js";
+import { bool, int, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, heading, json, out, style, table } from "../cli/output.js";
 import { auditTask } from "../compare/audit.js";
@@ -41,7 +41,7 @@ Usage
   aiand compare validate [--golden <dir>]   fail-before + golden replay (both required to validate)
   aiand compare run  --task <id>            replay across harnesses (--dry-run = free)
   aiand compare audit [--task <id>]         rubric audit of suspicious successes (advisory)
-  aiand compare table [--task <id>] [--json] [--out <file>] [--format md|csv|json]
+  aiand compare table [--task <id>] [--k <n>] [--json] [--out <file>] [--format md|csv|json]
 
 Options
   --verify "<cmd>"    command the verify wrapper runs (scaffolded)
@@ -51,6 +51,10 @@ Options
   --json              machine-readable output
   --out <file>        export the table to a file (implies --format by extension)
   --format <fmt>      export format: md (default), csv, json
+  --k <n>             pass@k / pass^k estimators (positive whole number, default 1):
+                      pass@k = retries will save it; pass^k = unattended use will
+                      succeed; per task, macro-averaged; tasks with fewer trials
+                      than k are excluded and counted (--bootstrap <n> is an alias)
 
 A task pack is tasks/<id>/{instruction.md, workspace/, verify.sh} under the
 config dir. Verify discipline: on an untouched workspace verify must FAIL
@@ -383,6 +387,9 @@ const mark = (cell: string, isWinner: boolean): string =>
 const cellKey = (c: CellStats) => `${c.harness} / ${c.model}`;
 const solveCell = (c: CellStats) =>
   `${c.solves}/${c.trials} (${pct(c.solveLo)}–${pct(c.solveHi)}, n=${c.trials})${c.lowN ? " low n" : ""}`;
+/** pass@k / pass^k summary line; rendered when k > 1 (#152). */
+const passCell = (c: CellStats) =>
+  `${c.passAtK === null ? "—" : pct(c.passAtK)} · pass^${c.k} ${c.passPowK === null ? "—" : pct(c.passPowK)}`;
 const costCell = (c: CellStats) =>
   c.costPerSolve === null ? "—" : `${currencySymbol("usd")}${c.costPerSolve.toFixed(4)}`;
 const wallCell = (c: CellStats) => (c.meanWallMs === null ? "—" : `${Math.round(c.meanWallMs)}ms`);
@@ -406,14 +413,22 @@ type TableJsonCell = {
   solves: number;
   solveRate: number | null;
   solveCi95: { lo: number; hi: number } | null;
+  /** Which interval solveCi95 carries: "wilson" or "clustered" (#152). */
+  solveMethod: "wilson" | "clustered";
   lowN: boolean;
   costUsd: number | null;
   costPerSolve: number | null;
+  costPerSolveCi95: { lo: number; hi: number } | null;
   meanWallMs: number | null;
   turnsPerSolve: number | null;
   retryRate: number | null;
   failures: Partial<Record<FailureMode, number>>;
   infra: number;
+  /** The k pass@k/pass^k were computed for (#152). */
+  k: number;
+  passAtK: number | null;
+  passPowK: number | null;
+  tasksBelowK: number;
 };
 
 function cellToJson(c: CellStats): TableJsonCell {
@@ -425,14 +440,23 @@ function cellToJson(c: CellStats): TableJsonCell {
     solves: c.solves,
     solveRate: c.trials > 0 ? c.solves / c.trials : null,
     solveCi95: c.solveLo !== null && c.solveHi !== null ? { lo: c.solveLo, hi: c.solveHi } : null,
+    solveMethod: c.solveMethod,
     lowN: c.lowN,
     costUsd: c.costUsd,
     costPerSolve: c.costPerSolve,
+    costPerSolveCi95:
+      c.costPerSolveLo !== null && c.costPerSolveHi !== null
+        ? { lo: c.costPerSolveLo, hi: c.costPerSolveHi }
+        : null,
     meanWallMs: c.meanWallMs,
     turnsPerSolve: c.turnsPerSolve,
     retryRate: c.retryRate,
     failures: c.failures,
     infra: c.infra,
+    k: c.k,
+    passAtK: c.passAtK,
+    passPowK: c.passPowK,
+    tasksBelowK: c.tasksBelowK,
   };
 }
 
@@ -441,8 +465,18 @@ async function runTable(argv: string[]): Promise<void> {
     task: { type: "string" },
     out: { type: "string" },
     format: { type: "string" },
+    k: { type: "string" },
+    bootstrap: { type: "string" },
   });
   if (bool(parsed, "help")) return out(help);
+
+  // #152: --k is the canonical flag; --bootstrap K is an alias with the same
+  // meaning (cluster k over tasks, pass@k/pass^k).
+  const kRaw = int(parsed, "k") ?? int(parsed, "bootstrap") ?? 1;
+  if (kRaw < 1) {
+    throw new CliError("--k must be a positive whole number.", { hint: "Usage: --k 3" });
+  }
+  const k = kRaw;
 
   const ids = str(parsed, "task") ? [str(parsed, "task")!] : listTaskIds();
   if (ids.length === 0) {
@@ -455,7 +489,13 @@ async function runTable(argv: string[]): Promise<void> {
   }
 
   const rows = ids.flatMap((id) => readTaskRuns(id));
-  const cells = aggregateCells(rows);
+  if (kRaw > 1 && rows.filter((r) => !isRecordedRow(r)).length === 0) {
+    throw new CliError(
+      `--k ${kRaw} needs run rows — no live runs found.`,
+      { hint: "Run `aiand compare run --task <id>` first, or use the default --k 1." },
+    );
+  }
+  const cells = aggregateCells(rows, { k });
   const { winners, solveTied, tieNote } = tableWinners(cells);
   // Recorded-lane rows: their own <task>.recorded.jsonl (new layout) plus any
   // recorded-basis rows still mixed into the live JSONL (legacy) — separated,
@@ -503,6 +543,18 @@ async function runTable(argv: string[]): Promise<void> {
       value: (c) => mark(solveCell(c), w.solve === cellKey(c)),
     },
     {
+      header: "method",
+      value: (c) => (c.solveMethod === "clustered" ? "clustered" : "Wilson"),
+    },
+    ...(k > 1
+      ? [
+          {
+            header: "pass@k / pass^k",
+            value: (c: CellStats) => mark(passCell(c), false),
+          },
+        ]
+      : []),
+    {
       header: "cost/solve",
       value: (c) => mark(costCell(c), w.costPerSolve === cellKey(c)),
     },
@@ -521,6 +573,14 @@ async function runTable(argv: string[]): Promise<void> {
     { header: "failures", value: histogramCell },
   ]);
   if (tieNote !== null) out(style.dim(tieNote));
+  const tasksBelowK = cells.reduce((s, c) => s + c.tasksBelowK, 0);
+  if (k > 1) {
+    out(
+      style.dim(
+        `pass@k / pass^k are macro-averaged over tasks (k=${k}; ${tasksBelowK} task(s) below k excluded)`,
+      ),
+    );
+  }
   const infraTotal = cells.reduce((s, c) => s + c.infra, 0);
   if (infraTotal > 0) out(style.dim(`infra runs excluded from solve rate: ${infraTotal}`));
   if (recorded.length > 0) {
@@ -530,25 +590,35 @@ async function runTable(argv: string[]): Promise<void> {
       ),
     );
   }
-  out(style.dim("▸ marks the per-column winner; — = not metered; CIs are Wilson 95%."));
+  out(
+    style.dim(
+      k > 1
+        ? "▸ marks the per-column winner; — = not metered; solve CIs are task-clustered bootstrap 95% when any task repeats, else Wilson 95%."
+        : "▸ marks the per-column winner; — = not metered; CIs are Wilson 95%.",
+    ),
+  );
 
   // Export reuses the shared serializers, preserving winners, n=, CIs, ties.
   const outPath = str(parsed, "out");
   if (outPath !== undefined) {
     const format = inferExportFormat(outPath, str(parsed, "format"));
-    const aligns = ["left", "left", "right", "right", "right", "right", "left"] as const;
     const headers = [
       "harness / model",
       "solve",
+      "method",
+      ...(k > 1 ? ["pass@k / pass^k"] : []),
       "cost/solve",
       "wall",
       "turns/solve",
       "retries/solve",
       "failures",
     ];
+    const aligns = headers.map((_, i) => (i >= 1 && i < headers.length - 1 ? "right" : "left"));
     const body = cells.map((c) => [
       cellKey(c),
       solveCell(c),
+      c.solveMethod === "clustered" ? "clustered" : "Wilson",
+      ...(k > 1 ? [passCell(c)] : []),
       costCell(c),
       wallCell(c),
       num2(c.turnsPerSolve),
@@ -568,6 +638,12 @@ async function runTable(argv: string[]): Promise<void> {
       const lines = [
         ...toMarkdownTable(headers, [...aligns], body),
         ...(tieNote !== null ? ["", tieNote] : []),
+        ...(k > 1
+          ? [
+              "",
+              `pass@k / pass^k are macro-averaged over tasks (k=${k}; ${tasksBelowK} task(s) below k excluded)`,
+            ]
+          : []),
       ];
       payload = lines.join("\n");
     }

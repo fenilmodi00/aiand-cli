@@ -154,3 +154,57 @@ export function bootstrapDelta(
   }
   return ciOfResamples(deltas);
 }
+
+/**
+ * Binomial coefficient C(n, k) by the multiplicative loop — exact in doubles
+ * for the n <= 1000 range pass@k sees (interleaved divide keeps the running
+ * product integral and far from overflow). k > n or k < 0 → 0; never NaN.
+ */
+export function choose(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  const take = Math.min(k, n - k);
+  let result = 1;
+  for (let i = 1; i <= take; i += 1) {
+    result = (result * (n - take + i)) / i;
+  }
+  return result;
+}
+
+/**
+ * Task-clustered percentile bootstrap (#152): resample whole task groups with
+ * replacement, recompute pooled solve rate and cost/solve per resample, and
+ * take 2.5/97.5 percentiles. One `groups[i]` element is `{solves, trials,
+ * cost}` for that task's live rows; a resample with zero solves is undefined
+ * for both statistics, and fewer than 95% defined resamples → null (the
+ * interval would be a guess over a mostly-empty distribution).
+ */
+export function taskClusteredBootstrap(
+  groups: readonly { solves: number; trials: number; cost: number | null }[],
+  opts: BootstrapOptions = {},
+): { solve: CI95 | null; costPerSolve: CI95 | null } {
+  if (groups.length < 2) return { solve: null, costPerSolve: null };
+  const B = opts.B ?? DEFAULT_B;
+  const rand = mulberry32(opts.seed ?? 0);
+  const n = groups.length;
+  const solveRates: number[] = [];
+  const costs: number[] = [];
+  for (let b = 0; b < B; b += 1) {
+    let solves = 0;
+    let trials = 0;
+    let cost = 0;
+    for (let i = 0; i < n; i += 1) {
+      const g = groups[Math.floor(rand() * n)]!;
+      solves += g.solves;
+      trials += g.trials;
+      cost += g.cost ?? 0;
+    }
+    if (solves === 0 || trials === 0) continue;
+    solveRates.push(solves / trials);
+    if (cost > 0) costs.push(cost / solves);
+  }
+  const enough = B * 0.95;
+  return {
+    solve: solveRates.length >= enough ? ciOfResamples(solveRates) : null,
+    costPerSolve: costs.length >= enough ? ciOfResamples(costs) : null,
+  };
+}
