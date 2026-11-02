@@ -193,7 +193,7 @@ test("compare --out writes markdown with winners, n=, and coverage intact", asyn
   assert.match(md, /behavioral columns: envelopes \d+% of turns/, "coverage line preserved");
   assert.match(
     md,
-    /provenance: heuristic\(one-shot\/retry envelope rule\)/,
+    /provenance: heuristic\(one-shot\/retry envelope rule · imported harness markers\)/,
     "provenance preserved",
   );
   assert.match(md, /—/, "uncovered cells stay em-dashes");

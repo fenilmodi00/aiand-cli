@@ -865,7 +865,7 @@ test("#130 behavioral columns are gated on envelope coverage; covered cells carr
   const run = await runCli(["harness", "compare", "--no-sync"], base);
   assert.equal(run.code, 0, run.stderr);
   // Coverage line: 10 covered turns / 12 requests.
-  assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), uncovered → —/);
+  assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
   // claude (v2): tool-err with n=; opencode (v1): v2-gated cells are —,
   // one-shot still computable from the edit walk — cells, never zeros.
   assert.match(run.stdout, /▸ 10\.0% \(n=5\)/, "covered tool-err cell with n and winner");
@@ -899,7 +899,7 @@ test("#130 compare without any envelope data degrades to the coverage line only"
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   assert.equal(run.code, 0, run.stderr);
-  assert.match(run.stdout, /behavioral columns: envelopes 0% of turns \(0\/12\), uncovered → —/);
+  assert.match(run.stdout, /behavioral columns: envelopes 0% of turns \(0\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
   // No behavioral column headers at all when nothing is covered.
   assert.ok(!run.stdout.includes("TOOL-ERR"));
   assert.ok(!run.stdout.includes("tool-err"));
@@ -1000,4 +1000,235 @@ test("#130 --cohort narrows to the classifier category and states the exclusion"
   });
   assert.notEqual(bad.code, 0);
   assert.match(bad.stderr, /Unknown cohort/);
+});
+
+// #146: imported behavioral markers — precedence, stats columns, coverage
+// split, JSON shape. No import → `—` plus the backfill instruction.
+// ---------------------------------------------------------------------------
+
+/** Insert one imported marker row directly (the reader round-trips it). */
+async function seedImportedMarker(cfg, overrides) {
+  return withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { openStore, storePath } = await import("../dist/store/index.js");
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    const row = {
+      dedup_key: `k${overrides.dedup_key ?? Math.random()}`,
+      harness: "claude",
+      session_id: "imported-ses-1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T10:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+      ...overrides,
+    };
+    opened.db
+      .prepare(
+        "INSERT OR IGNORE INTO imported_artifacts " +
+          "(dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        row.dedup_key,
+        row.harness,
+        row.session_id,
+        row.kind,
+        row.tool_name,
+        row.outcome,
+        row.seq,
+        row.at,
+        row.imported_at,
+      );
+    opened.db.close();
+  });
+}
+
+test("#146 buildHarnessStats derives imported behavioral stats with envelope precedence", async () => {
+  const { buildHarnessStats, MIN_BEHAVIORAL_TURNS } = await loadEngine();
+  const imported = [
+    // claude: 2 sessions; 3 tool calls (1 error), compaction, terminals.
+    { dedup_key: "c1", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T10:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    { dedup_key: "c2", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "error", seq: 1, at: "2026-10-29T10:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    { dedup_key: "c3", harness: "claude", session_id: "s1", kind: "compaction", tool_name: null, outcome: null, seq: null, at: null, imported_at: "2026-10-30T00:00:00.000Z" },
+    { dedup_key: "c4", harness: "claude", session_id: "s1", kind: "terminal", tool_name: null, outcome: "clean", seq: null, at: "2026-10-29T10:02:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    { dedup_key: "c5", harness: "claude", session_id: "s2", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T11:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    { dedup_key: "c6", harness: "claude", session_id: "s2", kind: "terminal", tool_name: null, outcome: "errored", seq: null, at: "2026-10-29T11:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    // codex: session with terminals but no tools → toolErrorRate null.
+    { dedup_key: "x1", harness: "codex", session_id: "t1", kind: "terminal", tool_name: null, outcome: "aborted", seq: null, at: "2026-10-29T12:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+  ];
+  // Rows attributed through a wired key map (the same discipline the CLI
+  // tests use), so request rows and imported markers share the harness id.
+  const stats = await withEnv({ AIAND_CONFIG_DIR: cfgDir("engine-precedence") }, async () => {
+    const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    const claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+    return buildHarnessStats(
+      [
+        row({ id: "i1", api_key: claudeMask, created_at: iso(0) }),
+        row({ id: "i2", api_key: claudeMask, created_at: iso(HOUR) }),
+      ],
+      { importedMarkers: imported },
+    );
+  });
+  const claude = stats.harnesses.find((h) => h.harness === "claude");
+  assert.ok(claude, "claude harness row exists");
+
+  // claude: 3 tool calls, 1 error → 1/3; 2 terminals (clean + errored) →
+  // cleanRate 1/2; compactions 1; 2 imported sessions.
+  assert.equal(claude.behavioral.behavioralSource, "imported");
+  assert.ok(Math.abs(claude.behavioral.toolErrorRate - 1 / 3) < 1e-9);
+  assert.equal(claude.behavioral.toolCalls, 3);
+  assert.equal(claude.behavioral.compactions, 1);
+  assert.equal(claude.behavioral.importedSessions, 2);
+  assert.deepEqual(claude.behavioral.sessions, { clean: 1, aborted: 0, errored: 1 });
+  assert.ok(Math.abs(claude.behavioral.cleanRate - 0.5) < 1e-9);
+  // Import-only: one-shot/retry/missed-catch/turns-to-success stay null.
+  assert.equal(claude.behavioral.oneShotRate, null);
+  assert.equal(claude.behavioral.retryRate, null);
+  assert.equal(claude.behavioral.missedCatchRate, null);
+  assert.equal(claude.behavioral.turnsToSuccess, null);
+  assert.equal(claude.behavioral.envelopeTurns, 0);
+  // codex (terminal-only import, no codex requests → tested via the coverage
+  // split; per-harness derivation of a terminal-only session is asserted in
+  // the CLI test below with a wired key map).
+
+  // Coverage split: imported side counts sessions/harnesses, never summed
+  // into the envelope turns.
+  assert.deepEqual(stats.behavioralCoverage.imported, { sessions: 3, harnesses: 2 });
+  assert.equal(stats.behavioralCoverage.envelopes.covered, 0);
+
+  // Precedence: with ≥ MIN_BEHAVIORAL_TURNS envelope turns, envelopes win and
+  // imports add nothing (no double count); below the gate, imported applies.
+  const envelopes = (n) =>
+    Array.from({ length: n }, (_, i) => ({
+      agent: "claude",
+      model: null,
+      envelope: {
+        tools: ["Bash", "Edit"],
+        edit_targets: [],
+        toolOutcomes: [{ name: "Bash", ok: true }],
+        terminal: "clean",
+      },
+    }));
+  const build = async (cfg, turnCount) =>
+    withEnv({ AIAND_CONFIG_DIR: cfgDir(cfg) }, async () => {
+      const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+      await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+      const claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+      return buildHarnessStats(
+        [
+          row({ id: "i1", api_key: claudeMask, created_at: iso(0) }),
+          row({ id: "i2", api_key: claudeMask, created_at: iso(HOUR) }),
+        ],
+        { envelopes: envelopes(turnCount), importedMarkers: imported },
+      );
+    });
+  const both = await build("engine-both", MIN_BEHAVIORAL_TURNS);
+  const bothClaude = both.harnesses.find((h) => h.harness === "claude");
+  assert.equal(bothClaude.behavioral.behavioralSource, "envelope");
+  assert.equal(bothClaude.behavioral.envelopeTurns, MIN_BEHAVIORAL_TURNS);
+  assert.equal(bothClaude.behavioral.toolCalls, 5);
+  assert.equal(bothClaude.behavioral.compactions, null);
+  assert.equal(bothClaude.behavioral.importedSessions, 0);
+  // ...but the imported coverage split still reports the rows.
+  assert.deepEqual(both.behavioralCoverage.imported, { sessions: 3, harnesses: 2 });
+  // And a harness BELOW the envelope gate falls through to imported.
+  const fallback = await build("engine-fallback", MIN_BEHAVIORAL_TURNS - 1);
+  assert.equal(
+    fallback.harnesses.find((h) => h.harness === "claude").behavioral.behavioralSource,
+    "imported",
+  );
+});
+
+test("#146 harness stats shows imported tool-error + terminal split; one-shot stays —", async () => {
+  const cfg2 = cfgDir("imported-stats2");
+  await withEnv({ AIAND_CONFIG_DIR: cfg2 }, async () => {
+    const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    const claudeMask = maskKey("sk-test-claude-super-secret-key-000");
+    const opened = (await import("../dist/store/index.js")).openStore(
+      (await import("../dist/store/index.js")).storePath(),
+    );
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      ...Array.from({ length: 6 }, (_, i) =>
+        row({ id: `is${i}`, api_key: claudeMask, created_at: iso(i * 60_000) }),
+      ),
+    ]);
+    opened.db.close();
+  });
+  // claude imported markers: 3 tool calls (m1..m3), 1 error, clean terminal.
+  await seedImportedMarker(cfg2, { dedup_key: "m1", harness: "claude", session_id: "a", kind: "tool", outcome: "error", seq: 0, tool_name: "Bash" });
+  await seedImportedMarker(cfg2, { dedup_key: "m2", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 1 });
+  await seedImportedMarker(cfg2, { dedup_key: "m3", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 2 });
+  await seedImportedMarker(cfg2, { dedup_key: "m4", harness: "claude", session_id: "a", kind: "compaction" });
+  await seedImportedMarker(cfg2, { dedup_key: "m5", harness: "claude", session_id: "a", kind: "terminal", outcome: "clean", at: "2026-10-29T10:05:00.000Z" });
+
+  const run = await runCli(["harness", "stats", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg2 }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  // Tool-error 33.3% (1 of 3 tool calls, n=3 by toolCalls), clean 100% (n=1 terminal).
+  assert.match(run.stdout, /33\.3% \(n=3\)/);
+  assert.match(run.stdout, /100\.0% \(n=1\)/);
+  assert.match(run.stdout, /1\/0\/0/); // outcome split
+  assert.match(run.stdout, /imported 1 session\(s\) across 1 harness\(es\)/);
+  // One-shot column renders — for the import-only harness (never a zero).
+  const jsonRun = await runCli(["harness", "stats", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg2 }),
+  });
+  assert.equal(jsonRun.code, 0, jsonRun.stderr);
+  const jsonPayload = JSON.parse(jsonRun.stdout);
+  const jsonClaude = jsonPayload.harnesses.find((h) => h.harness === "claude");
+  assert.equal(jsonClaude.behavioral.behavioralSource, "imported");
+  assert.equal(jsonClaude.behavioral.oneShotRate, null);
+  assert.equal(jsonClaude.behavioral.retryRate, null);
+  assert.equal(jsonClaude.behavioral.missedCatchRate, null);
+  assert.equal(jsonClaude.behavioral.turnsToSuccess, null);
+  assert.ok(Math.abs(jsonClaude.behavioral.toolErrorRate - 1 / 3) < 1e-9);
+  assert.equal(jsonClaude.behavioral.toolCalls, 3);
+  assert.equal(jsonClaude.behavioral.compactions, 1);
+  assert.equal(jsonClaude.behavioral.importedSessions, 1);
+  assert.equal(jsonClaude.behavioral.cleanRate, 1);
+  assert.equal(jsonClaude.labels.behavioral, "heuristic(imported harness markers)");
+});
+
+test("#146 no imported markers: coverage line carries the backfill instruction", async () => {
+  const cfg = cfgDir("imported-none");
+  await seedBehavioralStore(cfg);
+  const run = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  assert.match(run.stdout, /imported 0 session\(s\) across 0 harness\(es\)/);
+  assert.match(run.stdout, /backfill with `aiand harness import`/);
+});
+
+test("#146 envelope + imported for the same harness: envelope count wins, no double count", async () => {
+  const cfg = cfgDir("imported-both");
+  await seedBehavioralStore(cfg); // claude already has 5 v2 envelopes
+  await seedImportedMarker(cfg, { dedup_key: "b1", harness: "claude", session_id: "b", kind: "tool", outcome: "error", seq: 0 });
+  await seedImportedMarker(cfg, { dedup_key: "b2", harness: "claude", session_id: "b", kind: "terminal", outcome: "errored", at: "2026-10-29T10:06:00.000Z" });
+  const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  const claude = payload.harnesses.find((h) => h.harness === "claude");
+  assert.equal(claude.behavioral.behavioralSource, "envelope");
+  // Envelope numbers unchanged: 10 tool calls (5 turns × 2), 5 turns.
+  assert.equal(claude.behavioral.toolCalls, 10);
+  assert.equal(claude.behavioral.envelopeTurns, 5);
+  assert.equal(claude.behavioral.compactions, null);
+  assert.equal(claude.behavioral.importedSessions, 0);
+  // Coverage keeps the split without summing.
+  assert.equal(payload.behavioralCoverage.envelopes.covered, 10);
+  assert.equal(payload.behavioralCoverage.imported.sessions, 1);
+  assert.equal(payload.behavioralCoverage.imported.harnesses, 1);
+  // Compare wins still work: imported-covered harness competes on tool-err.
+  const winners = (await import("../dist/obs/harness-stats.js")).compareWinners(payload.harnesses);
+  assert.equal(winners.toolErrorRate, "claude");
 });

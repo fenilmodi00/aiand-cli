@@ -19,6 +19,10 @@ import {
 import { CLASSIFICATION_NOTE, classifyEnvelopes, TASK_CATEGORIES } from "../obs/classifier.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
 import {
+  type ImportedArtifactRow,
+  listImportedArtifactsFromDb,
+} from "../store/imported-artifacts.js";
+import {
   createdSince,
   createdUntilExcl,
   noSyncRequested,
@@ -60,6 +64,93 @@ docs/observability/adapter-envelope.md) — coverage is reported per section.`;
 
 type Window = { sinceMs: number | null; untilMs: number | null };
 
+// ---------------------------------------------------------------------------
+// Imported behavioral markers as a second source (#146)
+// ---------------------------------------------------------------------------
+
+/** One behavioral slice built from one harness's imported markers. */
+function importedSlice(key: string, markers: readonly ImportedArtifactRow[]): EfficiencySlice {
+  const sessions = new Map<string, ImportedArtifactRow[]>();
+  for (const marker of markers) {
+    const bucket = sessions.get(marker.session_id);
+    if (bucket) bucket.push(marker);
+    else sessions.set(marker.session_id, [marker]);
+  }
+  let toolCalls = 0;
+  let toolErrors = 0;
+  let compactions = 0;
+  const split = { clean: 0, aborted: 0, errored: 0 };
+  let terminals = 0;
+  for (const bucket of sessions.values()) {
+    // Rows arrive ordered (harness, session_id, seq, at); last terminal wins.
+    const lastTerminal = [...bucket].reverse().find((m) => m.kind === "terminal");
+    const outcome = lastTerminal?.outcome;
+    if (outcome === "clean" || outcome === "aborted" || outcome === "errored") {
+      terminals += 1;
+      split[outcome] += 1;
+    }
+    for (const marker of bucket) {
+      if (marker.kind === "tool") {
+        toolCalls += 1;
+        if (marker.outcome === "error") toolErrors += 1;
+      } else if (marker.kind === "compaction") {
+        compactions += 1;
+      }
+    }
+  }
+  return {
+    key,
+    envelopes: markers.length,
+    stats: {
+      editTurns: 0,
+      oneShots: 0,
+      retries: 0,
+      oneShotRate: null,
+      toolErrorRate: toolCalls > 0 ? toolErrors / toolCalls : null,
+      missedCatches: 0,
+      missedCatchRate: null,
+      turnsToSuccess: null,
+      sessions: terminals > 0 ? split : { clean: 0, aborted: 0, errored: 0 },
+    },
+  };
+}
+
+type ImportedRollup = {
+  toolCalls: number;
+  toolErrors: number;
+  compactions: number;
+  terminalCount: number;
+  sessions: { clean: number; aborted: number; errored: number };
+};
+
+/** Combine every imported marker in the window into one overall rollup. */
+function combineImported(markers: readonly ImportedArtifactRow[]): ImportedRollup {
+  let toolCalls = 0;
+  let toolErrors = 0;
+  let compactions = 0;
+  const sessions = { clean: 0, aborted: 0, errored: 0 };
+  // Last terminal per session, then summed across sessions.
+  const bySession = new Map<string, string | null>();
+  for (const marker of markers) {
+    if (marker.kind === "tool") {
+      toolCalls += 1;
+      if (marker.outcome === "error") toolErrors += 1;
+    } else if (marker.kind === "compaction") {
+      compactions += 1;
+    } else if (marker.kind === "terminal") {
+      bySession.set(marker.session_id, marker.outcome);
+    }
+  }
+  let terminalCount = 0;
+  for (const outcome of bySession.values()) {
+    if (outcome === "clean" || outcome === "aborted" || outcome === "errored") {
+      terminalCount += 1;
+      sessions[outcome] += 1;
+    }
+  }
+  return { toolCalls, toolErrors, compactions, terminalCount, sessions };
+}
+
 function resolveWindow(parsed: ReturnType<typeof parse>, now: Date): Window {
   const since = str(parsed, "since");
   const until = str(parsed, "until");
@@ -95,6 +186,8 @@ type EfficiencyPayload = {
   missedCatchRule: string;
   taskMix: ReturnType<typeof classifyEnvelopes>;
   attribution: ReturnType<typeof attributeBranchSpend>["value"];
+  /** #146: imported-marker coverage, reported separately from envelopes. */
+  importedCoverage: { sessions: number; harnesses: number };
 };
 
 export async function run(argv: string[]): Promise<void> {
@@ -166,6 +259,59 @@ export async function run(argv: string[]): Promise<void> {
     const overall: ReturnType<typeof oneShotRetry>["stats"] = overallStats.stats;
     const byHarness = efficiencyByHarness(effTurns);
     const byModel = efficiencyByModel(effTurns);
+
+    // #146: imported markers as a second behavioral source. Read from the
+    // SAME db handle (fail-open reader), windowed on COALESCE(at,
+    // imported_at). Per harness: the envelope slice wins when it carries >=
+    // MIN_ENVELOPE_TURNS turns; otherwise the imported markers supply the
+    // harness's tool-error rate, terminal split, and compactions. The two
+    // sources are never summed for one harness.
+    const importedMarkers = listImportedArtifactsFromDb(opened.db, {
+      since: sinceIso,
+      until: untilIso,
+    });
+    const importedByHarness = new Map<string, ImportedArtifactRow[]>();
+    for (const marker of importedMarkers) {
+      const bucket = importedByHarness.get(marker.harness);
+      if (bucket) bucket.push(marker);
+      else importedByHarness.set(marker.harness, [marker]);
+    }
+    const MIN_ENVELOPE_TURNS = 5;
+    const envelopeSlices = new Map(byHarness.map((slice) => [slice.key, slice]));
+    const harnessKeys = [
+      ...new Set([...envelopeSlices.keys(), ...importedByHarness.keys()]),
+    ].sort();
+    const byHarnessMerged: EfficiencySlice[] = harnessKeys.map((key) => {
+      const envelopeSlice = envelopeSlices.get(key);
+      if (envelopeSlice && envelopeSlice.envelopes >= MIN_ENVELOPE_TURNS) return envelopeSlice;
+      const imported = importedByHarness.get(key) ?? [];
+      return imported.length > 0 ? importedSlice(key, imported) : envelopeSlice!;
+    });
+    // Overall behavioral: combine the CHOSEN harnesses' counts (tool
+    // calls/errors, terminal split, compactions) — one number per source of
+    // truth, no double counting. oneShotRate stays envelope-only: imported
+    // markers have no edit targets, so the envelope walk keeps its own rate.
+    const overallImported = combineImported(importedMarkers);
+    const behavioral: OneShotRetryStats = {
+      ...overall.value,
+      toolErrorRate:
+        overall.value.toolErrorRate !== null
+          ? overall.value.toolErrorRate
+          : overallImported.toolCalls > 0
+            ? overallImported.toolErrors / overallImported.toolCalls
+            : null,
+      sessions:
+        overall.value.sessions.clean +
+          overall.value.sessions.aborted +
+          overall.value.sessions.errored >
+          0 || overallImported.terminalCount === 0
+          ? overall.value.sessions
+          : overallImported.sessions,
+    };
+    const importedCoverage = {
+      sessions: new Set(importedMarkers.map((m) => `${m.harness}\u0000${m.session_id}`)).size,
+      harnesses: importedByHarness.size,
+    };
     const mix = classifyEnvelopes(envelopeV1s);
     const attribution = attributeBranchSpend(requests, envelopes);
     const coverage = efficiencyCoverage(envelopes.length, requests.length);
@@ -174,11 +320,12 @@ export async function run(argv: string[]): Promise<void> {
       window,
       coverage: coverage.value,
       coverageNote: efficiencyCoverageNote(envelopes.length, requests.length),
-      oneShotRetry: { overall: overall.value, byHarness, byModel },
-      behavioral: overallStats.stats.value,
+      oneShotRetry: { overall: overall.value, byHarness: byHarnessMerged, byModel },
+      behavioral,
       missedCatchRule: MISSED_CATCH_RULE,
       taskMix: mix,
       attribution: attribution.value,
+      importedCoverage,
     };
   } finally {
     try {
@@ -202,6 +349,7 @@ export async function run(argv: string[]): Promise<void> {
       },
       taskMix: payload.taskMix,
       attribution: payload.attribution,
+      importedCoverage: payload.importedCoverage,
       notes: { classification: CLASSIFICATION_NOTE, attribution: ATTRIBUTION_NOTE },
     });
   }
@@ -276,6 +424,16 @@ function render(payload: EfficiencyPayload): void {
     `  turns to success: ${b.turnsToSuccess ?? "n/a"}  ` +
       `outcomes: clean ${b.sessions.clean}, aborted ${b.sessions.aborted}, errored ${b.sessions.errored}`,
   );
+  // #146: the imported-marker side, reported separately from envelopes.
+  const imported = payload.importedCoverage;
+  out(
+    imported.sessions === 0
+      ? style.dim(
+          "  imported markers: none in this window — backfill with `aiand harness import`",
+        )
+      : `  imported markers: ${imported.sessions} session(s) across ${imported.harnesses} harness(es) ` +
+        "(opt-in backfill of the harnesses' own session files; tool errors, terminals, compactions)",
+  );
   out("");
 
   heading("Task mix");
@@ -321,7 +479,14 @@ function render(payload: EfficiencyPayload): void {
 type SliceRow = {
   key: string;
   envelopes: number;
-  stats: { oneShotRate: number | null; oneShots: number; retries: number; editTurns: number };
+  stats: {
+    oneShotRate: number | null;
+    oneShots: number;
+    retries: number;
+    editTurns: number;
+    /** #146: shown for imported-marker slices (one-shot stays n/a there). */
+    toolErrorRate?: number | null;
+  };
 };
 
 function renderSlices(label: string, slices: SliceRow[]): void {
@@ -329,9 +494,15 @@ function renderSlices(label: string, slices: SliceRow[]): void {
   out(`  ${label}:`);
   for (const slice of slices) {
     const stats = slice.stats;
-    out(
-      `    ${slice.key.padEnd(24)} ${percent(stats.oneShotRate)} one-shot ` +
-        `(${stats.oneShots}/${stats.oneShots + stats.retries} edits)`,
-    );
+    const oneShot =
+      ` ${percent(stats.oneShotRate)} one-shot ` +
+      `(${stats.oneShots}/${stats.oneShots + stats.retries} edits)`;
+    // #146: an imported-marker slice has no edit targets — its one-shot
+    // rate is honestly n/a; the tool-error rate is what it does carry.
+    const toolErr =
+      stats.oneShotRate === null && stats.toolErrorRate != null
+        ? ` · tool errors ${percent(stats.toolErrorRate)} (imported markers)`
+        : "";
+    out(`    ${slice.key.padEnd(24)}${oneShot}${toolErr}`);
   }
 }

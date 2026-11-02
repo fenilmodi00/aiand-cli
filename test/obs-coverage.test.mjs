@@ -131,7 +131,13 @@ describe("harness-stats degenerate windows (#cov-obs)", () => {
     assert.equal(behavioral.toolErrorRate, null);
     assert.equal(behavioral.envelopeTurns, 0);
     // Coverage counts the honest zero, not the null cell.
-    assert.deepEqual(stats.behavioralCoverage, { covered: 0, total: 1, ratio: 0 });
+    assert.deepEqual(stats.behavioralCoverage, {
+      covered: 0,
+      total: 1,
+      ratio: 0,
+      envelopes: { covered: 0, total: 1 },
+      imported: { sessions: 0, harnesses: 0 },
+    });
   });
 
   test("at the threshold: the cell walks the T2 rule and retries complement one-shots", () => {

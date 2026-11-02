@@ -19,6 +19,11 @@ store receives markers only — tool outcomes (name + ok), terminal states,
 compaction counts. No prompts, completions, or tool arguments are ever
 imported. Re-running is idempotent: the same files import zero new rows.
 
+Once imported, the rows are read by \`aiand harness stats\`,
+\`aiand harness compare\`, and \`aiand efficiency\` (per-harness tool-error
+rate, terminal split, compactions; envelopes win when both sources cover a
+harness — see docs/observability/adapter-envelope.md).
+
 Reported rates derived from these rows are labeled heuristic(...) per the
 provenance discipline (src/obs/provenance.ts) — harness markers, not
 gateway-billed data.`;

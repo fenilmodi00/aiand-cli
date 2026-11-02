@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import { FAKE_API_KEY, runCli, withTestEnv } from "./helpers.mjs";
+import { FAKE_API_KEY, runCli, withEnv, withTestEnv } from "./helpers.mjs";
 
 // OBS-P3-6 (#78): `aiand efficiency` — the CLI surface of the envelope-derived
 // metrics. The report must print the coverage note and the "local-capture
@@ -205,6 +205,164 @@ test("efficiency --last window and failed-sync warning", async () => {
       AIAND_BASE_URL: "http://127.0.0.1:9",
     },
   });
-  assert.equal(warned.code, 0, warned.stdout);
+  assert.equal(warned.code, 0, warned.stderr);
   assert.match(warned.stderr, /store sync failed/);
+});
+
+// #146: imported markers as a second behavioral source in `efficiency`.
+// ---------------------------------------------------------------------------
+
+/** Seed imported markers for a harness with no envelopes (import-only). */
+function seedImported(db, rows) {
+  const insert = db.prepare(
+    "INSERT OR IGNORE INTO imported_artifacts " +
+      "(dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const r of rows) {
+    insert.run(
+      r.dedup_key,
+      r.harness,
+      r.session_id,
+      r.kind,
+      r.tool_name ?? null,
+      r.outcome ?? null,
+      r.seq ?? null,
+      r.at ?? null,
+      r.imported_at ?? "2026-10-25T00:00:00.000Z",
+    );
+  }
+}
+
+describe("aiand efficiency — imported markers (#146)", () => {
+  test("import-only harness appears by-harness with tool errors; overall combines without double counting", async () => {
+    const dir = join(box.dir, "imported");
+    seedStore(dir); // opencode envelopes (3 turns — below the envelope gate)
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const opened = openStore(storePath());
+      assert.ok(opened.ok);
+      // codex: import-only harness — 4 tool calls, 1 error, 2 clean terminals.
+      seedImported(opened.db, [
+        { dedup_key: "x1", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 0, at: "2026-10-25T09:00:00.000Z" },
+        { dedup_key: "x2", harness: "codex", session_id: "s1", kind: "tool", outcome: "error", seq: 1, at: "2026-10-25T09:01:00.000Z" },
+        { dedup_key: "x3", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 2, at: "2026-10-25T09:02:00.000Z" },
+        { dedup_key: "x4", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 3, at: "2026-10-25T09:03:00.000Z" },
+        { dedup_key: "x5", harness: "codex", session_id: "s1", kind: "terminal", outcome: "clean", at: "2026-10-25T09:04:00.000Z" },
+        { dedup_key: "x6", harness: "codex", session_id: "s2", kind: "terminal", outcome: "clean", at: "2026-10-25T09:10:00.000Z" },
+        { dedup_key: "x7", harness: "codex", session_id: "s2", kind: "compaction", at: null },
+      ]);
+      opened.db.close();
+    });
+    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"], {
+      env: cliEnvFor(dir),
+    });
+    assert.equal(code, 0, stdout);
+    const payload = JSON.parse(stdout);
+
+    // By-harness: codex (imported) joins opencode (envelope), sorted by key.
+    assert.deepEqual(
+      payload.oneShotRetry.byHarness.map((s) => s.key),
+      ["codex", "opencode"],
+    );
+    const codex = payload.oneShotRetry.byHarness[0].stats;
+    assert.equal(codex.oneShotRate, null, "import-only one-shot stays null");
+    assert.ok(Math.abs(codex.toolErrorRate - 0.25) < 1e-9);
+    assert.deepEqual(codex.sessions, { clean: 2, aborted: 0, errored: 0 });
+
+    // Overall: envelope behavioral (v1 envelopes → null toolErrorRate, no
+    // terminals) falls through to imported: 1/4 errors, 2 clean terminals.
+    assert.ok(Math.abs(payload.behavioral.toolErrorRate - 0.25) < 1e-9);
+    assert.equal(payload.behavioral.sessions.clean, 2);
+    // Overall one-shot stays envelope-only (1/2 from the v1 walk).
+    assert.equal(payload.behavioral.oneShotRate, 0.5);
+
+    // Coverage: split reported, never summed.
+    assert.deepEqual(payload.importedCoverage, { sessions: 2, harnesses: 1 });
+
+    // By-model is unchanged: envelope-only, no codex row.
+    assert.deepEqual(
+      payload.oneShotRetry.byModel.map((s) => s.key),
+      ["zai-org/glm-5.3"],
+    );
+  });
+
+  test("envelope slice with >= 5 turns wins over imported for the same harness", async () => {
+    const dir = join(box.dir, "imported-both");
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const opened = openStore(storePath());
+      assert.ok(opened.ok);
+      const insert = opened.db.prepare(
+        "INSERT INTO requests (id, model, api_key, status_code, input_tokens, output_tokens, " +
+          "cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (let i = 0; i < 5; i += 1) {
+        insert.run(`rb${i}`, "zai-org/glm-5.3", "sk-abcd…1234", 200, 100, 50, 0, "0.1", 0.1, "USD", `2026-10-25T10:0${i}:00.000Z`, `2026-10-25T10:0${i}:00.000Z`);
+        insertEnvelope(opened.db, {
+          id: `eb${i}`,
+          agent: "claude",
+          model: "zai-org/glm-5.3",
+          apiKey: "sk-abcd…1234",
+          createdAt: `2026-10-25T10:0${i}:30.000Z`,
+          envelope: normalizeEnvelope({
+            tools: ["Bash", "Edit"],
+            editTargets: ["/repo/src/a.ts"],
+            toolOutcomes: [
+              { name: "Bash", ok: true },
+              { name: "Edit", ok: false },
+            ],
+            terminal: "clean",
+            projectRoot: "/repo",
+          }),
+        });
+      }
+      // Same harness imported: must NOT change claude's slice.
+      seedImported(opened.db, [
+        { dedup_key: "ib1", harness: "claude", session_id: "z", kind: "tool", outcome: "error", seq: 0, at: "2026-10-25T11:00:00.000Z" },
+      ]);
+      opened.db.close();
+    });
+    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"], {
+      env: cliEnvFor(dir),
+    });
+    assert.equal(code, 0, stdout);
+    const payload = JSON.parse(stdout);
+    const claude = payload.oneShotRetry.byHarness.find((s) => s.key === "claude");
+    // Envelope slice: 5 turns, each with 2 tool outcomes (1 error each).
+    assert.equal(claude.envelopes, 5);
+    assert.ok(Math.abs(claude.stats.toolErrorRate - 0.5) < 1e-9, "envelope rate, not imported");
+    assert.deepEqual(claude.stats.sessions, { clean: 5, aborted: 0, errored: 0 });
+    // Overall: envelope covers → its rates stand (0.5 tool errors), imported
+    // error adds nothing.
+    assert.ok(Math.abs(payload.behavioral.toolErrorRate - 0.5) < 1e-9);
+  });
+
+  test("human output carries the imported-markers line and the backfill instruction", async () => {
+    const dir = join(box.dir, "imported-human");
+    seedStore(dir);
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const opened = openStore(storePath());
+      assert.ok(opened.ok);
+      seedImported(opened.db, [
+        { dedup_key: "h1", harness: "codex", session_id: "s1", kind: "tool", outcome: "error", seq: 0, at: "2026-10-25T09:00:00.000Z" },
+      ]);
+      opened.db.close();
+    });
+    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"], {
+      env: cliEnvFor(dir),
+    });
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /imported markers: 1 session\(s\) across 1 harness\(es\)/);
+    assert.match(stdout, /tool errors 100% \(imported markers\)/);
+  });
+
+  test("no imported markers: the human line instructs the backfill", async () => {
+    const dir = join(box.dir, "imported-empty");
+    seedStore(dir);
+    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"], {
+      env: cliEnvFor(dir),
+    });
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /imported markers: none in this window — backfill with `aiand harness import`/);
+  });
 });

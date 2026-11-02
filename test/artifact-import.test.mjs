@@ -402,3 +402,128 @@ describe("artifact import (migration 0008, #133)", () => {
     );
   });
 });
+
+// -- reader (#146): listImportedArtifactsFromDb / listImportedArtifacts -------
+const { listImportedArtifactsFromDb, listImportedArtifacts } = await import(
+  "../dist/store/imported-artifacts.js"
+);
+
+describe("imported-artifacts reader (#146)", () => {
+
+  function seedMarker(db, overrides) {
+    const row = {
+      dedup_key: `k${Math.random()}`,
+      harness: "claude",
+      session_id: "s1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T10:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+      ...overrides,
+    };
+    db.prepare(
+      "INSERT OR IGNORE INTO imported_artifacts " +
+        "(dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      row.dedup_key,
+      row.harness,
+      row.session_id,
+      row.kind,
+      row.tool_name,
+      row.outcome,
+      row.seq,
+      row.at,
+      row.imported_at,
+    );
+    return row;
+  }
+
+  test("returns rows ordered by (harness, session_id, seq, at)", async () => {
+    await withEnv({ AIAND_CONFIG_DIR: cfgDir("reader-order") }, async () => {
+      const opened = openStore(storePathOf("reader-order"));
+      seedMarker(opened.db, { dedup_key: "b", harness: "codex", seq: null });
+      seedMarker(opened.db, { dedup_key: "a", harness: "claude", seq: 1 });
+      seedMarker(opened.db, { dedup_key: "c", harness: "claude", seq: 0 });
+      const rows = listImportedArtifactsFromDb(opened.db);
+      assert.deepEqual(
+        rows.map((r) => r.dedup_key),
+        ["c", "a", "b"],
+      );
+      // Contract shape: exactly the nine columns.
+      assert.deepEqual(Object.keys(rows[0]).sort(), [
+        "at",
+        "dedup_key",
+        "harness",
+        "imported_at",
+        "kind",
+        "outcome",
+        "seq",
+        "session_id",
+        "tool_name",
+      ]);
+    });
+  });
+
+  test("window filter rides COALESCE(at, imported_at)", async () => {
+    await withEnv({ AIAND_CONFIG_DIR: cfgDir("reader-window") }, async () => {
+      const opened = openStore(storePathOf("reader-window"));
+      // Marker with its own timestamp inside the window.
+      seedMarker(opened.db, { dedup_key: "w1", at: "2026-10-29T10:00:00.000Z" });
+      // Marker with NO timestamp: falls back to imported_at inside the window.
+      seedMarker(opened.db, {
+        dedup_key: "w2",
+        at: null,
+        imported_at: "2026-10-29T12:00:00.000Z",
+      });
+      // Marker whose own timestamp is outside the window.
+      seedMarker(opened.db, { dedup_key: "w3", at: "2026-11-01T00:00:00.000Z" });
+      const rows = listImportedArtifactsFromDb(opened.db, {
+        since: "2026-10-29T00:00:00.000Z",
+        until: "2026-10-30T00:00:00.000Z",
+      });
+      assert.deepEqual(
+        rows.map((r) => r.dedup_key).sort(),
+        ["w1", "w2"],
+      );
+      // Unwindowed reads see all three.
+      assert.equal(listImportedArtifactsFromDb(opened.db).length, 3);
+    });
+  });
+
+  test("defensively dedups by dedup_key and fails open", async () => {
+    await withEnv({ AIAND_CONFIG_DIR: cfgDir("reader-dedup") }, async () => {
+      const opened = openStore(storePathOf("reader-dedup"));
+      seedMarker(opened.db, { dedup_key: "dup" });
+      // The DDL makes a second insert a no-op, but the reader must still
+      // guard a caller that hands it a fresh handle with a duplicate present.
+      assert.equal(listImportedArtifactsFromDb(opened.db).length, 1);
+      opened.db.close();
+      // Fail-open: a db without the table yields no rows, never a throw.
+      const raw = new (await import("node:sqlite")).DatabaseSync(
+        join(box.dir, "reader-dedup-nosuch-table.sqlite"),
+      );
+      raw.exec("CREATE TABLE unrelated (x TEXT)");
+      assert.deepEqual(listImportedArtifactsFromDb(raw), []);
+      raw.close();
+    });
+  });
+
+  test("convenience wrapper opens the default store (and fail-opens)", async () => {
+    await withEnv({ AIAND_CONFIG_DIR: cfgDir("reader-wrapper") }, async () => {
+      assert.deepEqual(listImportedArtifacts(), []); // fresh store, empty table
+      const { openStore, storePath } = await import("../dist/store/index.js");
+      const opened = openStore(storePath());
+      assert.ok(opened.ok);
+      seedMarker(opened.db, { dedup_key: "wrap1" });
+      opened.db.close();
+      assert.equal(listImportedArtifacts().length, 1);
+      assert.equal(
+        listImportedArtifacts({ since: "2030-01-01T00:00:00.000Z" }).length,
+        0,
+      );
+    });
+  });
+});
