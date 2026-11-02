@@ -79,6 +79,62 @@ Gateway upstream model ids map to well-known providers; first match wins:
 A model matching nothing maps to its **family string** (the segment before
 `/`, or the whole id) — never a per-name guess.
 
+### `aiand.harness.*` gauges (per harness, ticket #149)
+
+One series **per harness**, with `agent.name` as the **only** attribute —
+no masked key, no model, no session id: a gauge per harness is the
+aggregation `aiand harness compare` already shows, and a stable label set
+keeps the series foldable. These are point-in-time readings over the
+export window, not monotonic sums (Prometheus `# TYPE ... gauge`):
+
+| Metric | Meaning | Omitted when |
+| --- | --- | --- |
+| `aiand.harness.sessions` | Heuristic time-gap sessions attributed to the harness (#66 sessionization). | Never (0 is a real count). |
+| `aiand.harness.cost_per_session_usd` | Median (p50) cost per session, USD. | No cost rows, or the store's cost rows carry a non-USD currency. |
+| `aiand.harness.ttft_p95_ms` | 95th-percentile time to first token (ms). | No ttft samples. |
+| `aiand.harness.cache_hit_ratio` | `cached_tokens / input_tokens` (estimated). | No requests. |
+| `aiand.harness.error_rate` | Non-2xx excluding 429 / requests (estimated). | No requests. |
+| `aiand.harness.clean_rate` | Clean terminal sessions / all terminal sessions. | No terminal information (behavioral source uncovered). |
+| `aiand.harness.tool_error_rate` | Errored tool outcomes / captured tool outcomes. | Behavioral source does not cover tool outcomes. |
+| `aiand.harness.behavioral_coverage_ratio` | Behaviorally covered requests / total requests in the window. | No requests in the window. |
+
+Behavioral cells ride the same source precedence as `aiand harness stats`
+(#146): envelope turns (≥ `MIN_BEHAVIORAL_TURNS`), else imported markers
+(`aiand harness import`), else the gauge is **omitted — never a fabricated
+zero** for an uncovered cell. The same emit-only-where-data-exists rule as
+the gen_ai family applies throughout: absent data is omitted, zeros are
+only emitted when the store genuinely measured zero.
+
+### `aiand.store.*` gauges (no attributes, ticket #149)
+
+| Metric | Meaning | Omitted when |
+| --- | --- | --- |
+| `aiand.store.sync_lag_seconds` | Seconds since the local store's **last successful sync** (`now − last_sync_at`). | The store has never synced (`last_sync_at` null) — never zeroed. |
+| `aiand.store.requests_total` | Request rows the local store holds in the export window. | Never (emitted whenever the store opened; 0 rows is a measurement). |
+
+**Sync-lag semantics:** `aiand.store.sync_lag_seconds` measures **local
+store freshness** — how long ago *this machine's* store last completed a
+successful sync (its `last_sync_at` watermark). It says nothing about how
+fresh the gateway's data is: a store that synced a minute ago can still
+hold hours-old data if the gateway lags, and `--no-sync` exports make the
+lag grow until the next successful sync.
+
+## Metric families at a glance
+
+| Family | Kind | HELP / TYPE / UNIT |
+| --- | --- | --- |
+| `gen_ai.client.inference.usage.{input,output,cache_read}_tokens` | counter (`sum`) | Yes / `counter` / `{token}` |
+| `gen_ai.client.inference.usage.cost` | counter (`sum`) | Yes / `counter` / `USD` |
+| `gen_ai.client.inference.operation.{input,output}_tokens` | histogram | Yes / `histogram` / `{token}` |
+| `gen_ai.client.inference.duration`, `gen_ai.server.request.duration`, `gen_ai.server.time_to_first_token` | histogram | Yes / `histogram` / `s` |
+| `aiand.harness.*` (table above) | gauge | Yes / `gauge` / varies (`{session}`, `USD`, `ms`, `1`) |
+| `aiand.store.sync_lag_seconds` | gauge | Yes / `gauge` / `s` |
+| `aiand.store.requests_total` | gauge | Yes / `gauge` / `{request}` |
+
+Every emitted family carries a **`# HELP` line printed before its `# TYPE`**
+line; `# UNIT` is kept (except for ratio unit `1`, which Prometheus exposes
+without a unit line). A test pins that no emitted metric lacks HELP.
+
 ## Honesty notes
 
 - **Session ids are heuristic.** The gateway provides no server-side session
@@ -88,6 +144,10 @@ A model matching nothing maps to its **family string** (the segment before
 - **Cache-write and reasoning tokens are not emitted.** The gateway exposes
   no cache-write split and the store has no reasoning-token column; the
   exporter emits only where data exists.
+- **Harness gauges carry `agent.name` only.** The gen_ai counters need the
+  masked key + model + session labels for concurrent-export collision
+  safety; the gauges do not — they are per-harness aggregates, and extra
+  labels would shatter them into unfoldable fragments.
 - **No content, ever.** Attributes are metadata only (masked keys, agent ids,
   model ids). The store holds no prompt/completion content and the exporter
   cannot emit any.
