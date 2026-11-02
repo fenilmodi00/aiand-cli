@@ -62,7 +62,7 @@ export async function run(argv: string[]): Promise<void> {
     limit: Math.max(1, int(parsed, "limit") ?? DEFAULT_LIMIT),
   });
 
-  if (bool(parsed, "json")) return json(entries);
+  if (bool(parsed, "json")) return json(entries.map((e) => ({ ...e, tps: perRequestTps(e) })));
 
   if (entries.length === 0) {
     out(style.dim(`No ${errorsOnly ? "failed " : ""}requests in the last ${range}.`));
@@ -113,9 +113,27 @@ function printTable(entries: LogEntry[]): void {
       value: (e) => (e.latency_ms === null ? "-" : `${e.latency_ms}ms`),
       align: "right",
     },
+    {
+      header: "tok/s",
+      value: (e) => {
+        const tps = perRequestTps(e);
+        return tps === null ? "-" : tps.toFixed(1);
+      },
+      align: "right",
+    },
     { header: "cost", value: (e) => costCell(e), align: "right" },
     { header: "key", value: (e) => style.dim(e.api_key) },
   ]);
+}
+
+// #155: per-request TPS = output_tokens / ((latency_ms - ttft_ms) / 1000);
+// null when either latency input is null, latency <= ttft, or output is null/0.
+function perRequestTps(entry: LogEntry): number | null {
+  if (entry.ttft_ms === null || entry.latency_ms === null) return null;
+  if (!entry.output_tokens) return null;
+  const seconds = (entry.latency_ms - entry.ttft_ms) / 1000;
+  if (seconds <= 0) return null;
+  return entry.output_tokens / seconds;
 }
 
 function statusCell(status: number): string {

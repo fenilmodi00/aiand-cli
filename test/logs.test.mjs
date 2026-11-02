@@ -190,3 +190,57 @@ describe("logs --follow", () => {
     });
   });
 });
+
+describe("logs tok/s (#155)", () => {
+  test("JSON tps: happy path, null ttft, null latency, zero output, latency <= ttft", async () => {
+    requests.length = 0;
+    // #155 default entry: ttft 10ms, latency 100ms, 7 out → 7 / 0.09 ≈ 77.78 tok/s
+    handler = () => ({
+      data: [
+        entry("happy"),
+        entry("no-ttft", { ttft_ms: null }),
+        entry("no-latency", { latency_ms: null }),
+        entry("zero-out", { output_tokens: 0 }),
+        entry("ttft-ge-latency", { ttft_ms: 100, latency_ms: 100 }),
+      ],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const { code, stdout } = await cli(["logs", "--json"]);
+    assert.equal(code, 0);
+    const rows = JSON.parse(stdout);
+    assert.equal(rows.length, 5);
+    assert.ok(Math.abs(rows[0].tps - 77.77777777777777) < 1e-9, `tps ${rows[0].tps}`);
+    assert.equal(rows[1].tps, null);
+    assert.equal(rows[2].tps, null);
+    assert.equal(rows[3].tps, null);
+    assert.equal(rows[4].tps, null);
+  });
+
+  test("text table renders tok/s value and '-' for null", async () => {
+    requests.length = 0;
+    handler = () => ({
+      data: [entry("happy")],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const { code, stdout } = await cli(["logs"]);
+    assert.equal(code, 0);
+    assert.match(stdout, /TOK\/S/);
+    // 7 tokens over (100ms - 10ms) = 77.8 tok/s after latency
+    assert.match(stdout, /100ms\s+77\.8\s+\$0\.001/);
+
+    handler = () => ({
+      data: [entry("no-ttft", { ttft_ms: null })],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const nullRow = await cli(["logs"]);
+    assert.equal(nullRow.code, 0);
+    // #155 cached '-' then null ttft '-' then tok/s '-'
+    assert.match(nullRow.stdout, /7\s+-\s+-\s+100ms\s+-\s+\$0\.001/);
+  });
+});
