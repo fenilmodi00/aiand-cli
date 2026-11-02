@@ -1,5 +1,5 @@
 import { modelLabel } from "../api/models.js";
-import { currencySymbol, num, style } from "../cli/output.js";
+import { clipToWidth, currencySymbol, num, style } from "../cli/output.js";
 import { formatMoneyFixed } from "../pricing/currency.js";
 import {
   type Costs,
@@ -123,11 +123,21 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
 
   // -- top models ------------------------------------------------------------
   if (wants.has("models") && data.topModels.length > 0) {
-    lines.push(style.bold(`Top models (by cost, top ${OVERVIEW_TOP_N})`));
+    lines.push(style.bold(`Top models (by cost, top ${OVERVIEW_TOP_N}; tok/s avg)`));
     for (const model of data.topModels) {
       const cost = view.showCost ? `  ${costCell(model.costs)}` : "";
+      // TPS rides the section header (the `tok/s avg` suffix, like the other
+      // numeric columns), clipped so a 5-digit value can't push the cost
+      // column out of shape.
+      const tpsRaw =
+        model.avgTps === null
+          ? "-"
+          : model.avgTps >= 10000
+            ? model.avgTps.toFixed(0)
+            : model.avgTps.toFixed(1);
+      const tps = clipToWidth(tpsRaw, 6).padStart(6);
       lines.push(
-        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 6)}${cost}`,
+        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 6)}${tps}${cost}`,
       );
     }
     lines.push("");

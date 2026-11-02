@@ -14,8 +14,21 @@ export function requestTps(
   ttftMs: number | null,
   latencyMs: number | null,
 ): number | null {
-  if (ttftMs === null || latencyMs === null || latencyMs <= ttftMs) return null;
-  if (outputTokens === null || outputTokens === 0) return null;
+  // Defensive at the formula boundary: a missing column (undefined from a
+  // synthetic loader) must behave like null, never slip past the checks as
+  // NaN.
+  if (
+    ttftMs === null ||
+    ttftMs === undefined ||
+    latencyMs === null ||
+    latencyMs === undefined ||
+    !Number.isFinite(ttftMs) ||
+    !Number.isFinite(latencyMs) ||
+    latencyMs <= ttftMs
+  ) {
+    return null;
+  }
+  if (outputTokens === null || outputTokens === 0 || !Number.isFinite(outputTokens)) return null;
   return outputTokens / ((latencyMs - ttftMs) / 1000);
 }
 

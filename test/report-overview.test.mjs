@@ -156,6 +156,7 @@ async function buildFixtureData(dir, overrides = {}) {
       api_key: r.api_key,
       created_at: r.created_at,
       latency_ms: r.latency_ms,
+      ttft_ms: r.ttft_ms,
       input_tokens: r.input_tokens,
       output_tokens: r.output_tokens,
       cached_tokens: r.cached_tokens,
@@ -337,8 +338,8 @@ describe("overview text", () => {
         "  claude       █████████████·······  67%  $0.0084",
         "  opencode     ███████·············  33%  $0.0042",
         "",
-        "Top models (by cost, top 5)",
-        "  glm-5.3                           3  $0.0126",
+        "Top models (by cost, top 5; tok/s avg)",
+        "  glm-5.3                           3 666.7  $0.0126",
         "",
         "Busiest days (by cost)",
         "  2026-10-20       2  $0.0084",
@@ -361,6 +362,72 @@ describe("overview text", () => {
     for (const line of text.split("\n")) {
       assert.ok(line.length <= 80, `line over 80 cols: ${line}`);
     }
+  });
+
+  // #155: per-model TPS — value, null propagation, column render, 80-col budget.
+  test("top models: per-model avg TPS column, null rules, width (#155)", async () => {
+    const dir = freshDir("model-tps");
+    await seedStore(dir, [
+      ...FIXTURE_ROWS,
+      // A second model, all rows TPS-ineligible (latency <= ttft): its cell is `-`.
+      row("2026-10-20T11:00:00.000Z", {
+        id: "x1",
+        model: "openai/gpt-5.2",
+        latency_ms: 200,
+        ttft_ms: 300,
+      }),
+      row("2026-10-20T11:30:00.000Z", {
+        id: "x2",
+        model: "openai/gpt-5.2",
+        latency_ms: null,
+      }),
+      // A fast model (5-digit tok/s): its cell clips to the fixed width.
+      row("2026-10-20T12:00:00.000Z", {
+        id: "fast1",
+        model: "fast/model",
+        ttft_ms: 100,
+        latency_ms: 1_100,
+        output_tokens: 100_000,
+      }),
+    ]);
+    seedKeysAndCatalog(dir);
+    const text = await runCli(
+      ["overview", "--since", "2026-10-19", "--until", "2026-10-22", "--sections", "models"],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(text.code, 0);
+    const lines = text.stdout.split("\n");
+    const glm = lines.find((l) => l.includes("glm-5.3"));
+    const gpt = lines.find((l) => l.includes("gpt-5.2") && !l.includes("glm"));
+    assert.match(glm, /3\s+666\.7\s+\$/, "eligible model renders its avg TPS cell");
+    assert.match(gpt, /\s-\s/, "ineligible model renders - (latency<=ttft and null latency)");
+    assert.ok(!gpt.includes("tok/s"), "no fabricated tok/s for an ineligible model");
+    const fast = lines.find((l) => l.includes("model") && l.includes("100000"));
+    assert.match(fast, /100000/, "5-digit tok/s renders in integer form, cell width held");
+    assert.ok(fast.indexOf("$") > fast.indexOf("100000"), "cost column survives the wide value");
+    for (const line of lines) assert.ok(line.length <= 80, `line over 80 cols: ${line}`);
+
+    const js = await runCli(
+      [
+        "overview",
+        "--since",
+        "2026-10-19",
+        "--until",
+        "2026-10-22",
+        "--sections",
+        "models",
+        "--json",
+      ],
+      { env: reportEnv(dir) },
+    );
+    assert.equal(js.code, 0);
+    const payload = JSON.parse(js.stdout);
+    const byKey = Object.fromEntries(payload.topModels.map((m) => [m.key, m.avgTps]));
+    assert.ok(Math.abs(byKey["zai-org/glm-5.3"] - 800 / 1.2) < 1e-9);
+    assert.equal(byKey["openai/gpt-5.2"], null, "no eligible rows → null, never 0");
+    const serialized = JSON.stringify(payload);
+    assert.ok(!serialized.includes("tpsTokens"), "tpsTokens accumulator never leaks to JSON");
+    assert.ok(!serialized.includes("tpsMs"), "tpsMs accumulator never leaks to JSON");
   });
 
   test("piped CLI output has zero ANSI escapes and the full layout", async () => {

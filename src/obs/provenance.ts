@@ -162,6 +162,14 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
       "sum of output_tokens / sum of latency_ms − ttft_ms over the window's rows",
     ),
   },
+  // #155: per-model system throughput in overview's top-models list
+  {
+    report: "overview",
+    field: "topModels[].avgTps",
+    provenance: estimated(
+      "sum of output_tokens / sum of latency_ms − ttft_ms over the model's rows",
+    ),
+  },
   // cache
   {
     report: "cache",

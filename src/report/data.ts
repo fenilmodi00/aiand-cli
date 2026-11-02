@@ -189,7 +189,11 @@ export type ReportData = {
   byHarness: HarnessShare[];
   days: DayBucket[];
   harnessDays: { harness: string; day: string; costs: Costs; savings: number | null }[];
-  topModels: (Mix & { key: string; savings: number | null })[];
+  topModels: (Mix & {
+    key: string;
+    savings: number | null /** #155: per-model system throughput; null without eligible rows. */;
+    avgTps: number | null;
+  })[];
   matrix: MatrixRow[];
   sessions: SessionRow[];
   budget: BudgetBlock;
@@ -506,10 +510,21 @@ const emptyMix = (): Mix => ({
   costs: {},
 });
 
-/** A grouping plus the per-model detail its savings computation needs. */
-type Group = { mix: Mix; models: Map<string, Mix> };
+/**
+ * A grouping plus the per-model detail its savings computation needs.
+ * `tpsTokens`/`tpsMs` are the #155 throughput-weighted avg-TPS
+ * numerator/denominator over TPS-eligible rows (see {@link windowAvgTps});
+ * they are internal accumulators — every JSON projection below maps fields
+ * explicitly, so they never leak into a payload.
+ */
+type Group = {
+  mix: Mix;
+  models: Map<string, Mix>;
+  tpsTokens: number;
+  tpsMs: number;
+};
 
-const emptyGroup = (): Group => ({ mix: emptyMix(), models: new Map() });
+const emptyGroup = (): Group => ({ mix: emptyMix(), models: new Map(), tpsTokens: 0, tpsMs: 0 });
 
 function accMix(mix: Mix, row: ReportRow): void {
   mix.requests += 1;
@@ -528,6 +543,9 @@ function accGroup(group: Group, row: ReportRow): void {
   const perModel = group.models.get(row.model) ?? emptyMix();
   accMix(perModel, row);
   group.models.set(row.model, perModel);
+  if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) return;
+  group.tpsTokens += row.output_tokens ?? 0;
+  group.tpsMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
 }
 
 function groupSavings(group: Group, prices: Record<string, Price> | null): number | null {
@@ -576,6 +594,11 @@ function windowAvgTps(rows: readonly ReportRow[]): number | null {
     decodeMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
   }
   return avgTps(tokens, decodeMs);
+}
+
+/** #155: the group's throughput-weighted avg TPS; null without eligible rows. */
+function groupAvgTps(group: Group): number | null {
+  return avgTps(group.tpsTokens, group.tpsMs);
 }
 
 const MATRIX_NOTE =
@@ -721,6 +744,7 @@ export function buildReportData(
       ...group.mix,
       costs: sortedCosts(group.mix.costs),
       savings: groupSavings(group, prices),
+      avgTps: groupAvgTps(group),
     }));
 
   const matrix: MatrixRow[] = [...byHarnessModel.entries()]
