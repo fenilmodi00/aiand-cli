@@ -784,7 +784,14 @@ describe("otel export: harness + store gauges (#149)", () => {
       const doc = JSON.parse(s, (key, value) => (/UnixNano$/.test(key) ? "<ts>" : value));
       for (const metric of doc.resourceMetrics[0].scopeMetrics[0].metrics) {
         if (metric.name === "aiand.store.sync_lag_seconds") {
-          for (const point of metric.gauge.dataPoints) point.asDouble = "<lag>";
+          for (const point of metric.gauge.dataPoints) {
+            // Delete then re-add in a fixed order: an integer lag serializes
+            // as asInt, a fractional one as asDouble, and replacing in place
+            // would leave the two payloads' key order different.
+            delete point.asInt;
+            delete point.asDouble;
+            point.asDouble = "<lag>";
+          }
         }
       }
       return JSON.stringify(doc);
