@@ -7,7 +7,7 @@ import { createTheme, type Theme } from "../cli/ui/theme.js";
 import { resolveProfile } from "../config.js";
 import {
   buildHarnessStats,
-  compareWinners,
+  compareVerdicts,
   type HarnessRequestRow,
   type HarnessStats,
   WINNER_MARKER,
@@ -818,7 +818,7 @@ function renderCompare(
     lines.push(theme.muted("  no harness sessions in this window"));
     return lines;
   }
-  const winners = compareWinners(stats.harnesses);
+  const winners = compareVerdicts(stats.harnesses);
   lines.push(theme.muted("  harness        reqs  sess  cost/sess p50   cache%  err%  ttft p50"));
   for (const row of stats.harnesses) {
     const cell = (value: string, winner: string | null): string =>
@@ -835,9 +835,9 @@ function renderCompare(
       clipToWidth(
         ` ${row.harness.padEnd(12)}  ${String(row.requests).padStart(5)}  ` +
           `${String(row.sessions).padStart(4)}  ` +
-          `${cell(costP50, winners.costPerSessionP50).padEnd(15)} ` +
+          `${cell(costP50, winners.costPerSessionP50.winner).padEnd(15)} ` +
           `${cache}     ${errRate}  ` +
-          cell(ttft, winners.ttftP50),
+          cell(ttft, winners.ttftP50.winner),
         width,
       ),
     );

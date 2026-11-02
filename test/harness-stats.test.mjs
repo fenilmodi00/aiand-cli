@@ -43,6 +43,11 @@ function row(overrides) {
   };
 }
 
+import {
+  WINNER_MARKER,
+  buildHarnessStats,
+} from "../dist/obs/harness-stats.js";
+
 async function loadEngine() {
   return import("../dist/obs/harness-stats.js");
 }
@@ -231,49 +236,91 @@ test("cohort seam narrows rows without touching the aggregation", async () => {
   assert.equal(narrowed.harnesses[0].requests, 1);
 });
 
-test("compare winners pick the right harness per metric", async () => {
-  const { compareWinners } = await loadEngine();
-  const rows = [
-    {
-      harness: "a",
-      requests: 10,
-      sessions: 2,
-      tokens: { in: 1, out: 1, cached: 1 },
-      cost: 1,
-      currency: "usd",
-      costPerSession: { p50: 0.5, p90: 1 },
-      ttft: { p50: 400, p95: 900 },
-      cacheHitRatio: 0.8,
-      errorRate: 0.1,
-      verdict: "good",
-      samples: [],
+test("compare verdicts gate on CI separation (#147)", async () => {
+  const { compareVerdicts } = await loadEngine();
+  const make = (harness, over = {}) => ({
+    harness,
+    requests: 10,
+    sessions: 2,
+    tokens: { in: 1, out: 1, cached: 1 },
+    cost: 1,
+    currency: "usd",
+    costPerSession: { p50: 0.5, p90: 1 },
+    ttft: { p50: 400, p95: 900 },
+    cacheHitRatio: 0.8,
+    errorRate: 0.1,
+    verdict: "good",
+    ci95: {
+      costPerSessionP50: { lo: 0.3, hi: 0.7 },
+      ttftP50: { lo: 300, hi: 500 },
+      ttftP95: null,
+      cacheHitRatio: { lo: 0.7, hi: 0.9 },
+      errorRate: { lo: 0.05, hi: 0.2 },
+      cleanRate: null,
+      toolErrorRate: null,
     },
-    {
-      harness: "b",
-      requests: 10,
-      sessions: 2,
-      tokens: { in: 1, out: 1, cached: 1 },
-      cost: 2,
-      currency: "usd",
+    samples: [],
+    ...over,
+  });
+  // Disjoint CIs → decisive winners.
+  const rows = [
+    make("a", {
+      errorRate: 0.15,
+      ci95: {
+        costPerSessionP50: { lo: 0.45, hi: 0.7 },
+        ttftP50: { lo: 300, hi: 500 },
+        ttftP95: null,
+        cacheHitRatio: { lo: 0.7, hi: 0.9 },
+        errorRate: { lo: 0.09, hi: 0.25 },
+        cleanRate: null,
+        toolErrorRate: null,
+      },
+    }),
+    make("b", {
       costPerSession: { p50: 0.2, p90: 1 },
       ttft: { p50: 200, p95: 500 },
       cacheHitRatio: 0.4,
-      errorRate: 0.05,
-      verdict: "warn",
-      samples: [],
-    },
+      errorRate: 0.03,
+      ci95: {
+        costPerSessionP50: { lo: 0.05, hi: 0.35 },
+        ttftP50: { lo: 150, hi: 250 },
+        ttftP95: null,
+        cacheHitRatio: { lo: 0.2, hi: 0.6 },
+        errorRate: { lo: 0.005, hi: 0.08 },
+        cleanRate: null,
+        toolErrorRate: null,
+      },
+    }),
   ];
-  const winners = compareWinners(rows);
-  assert.equal(winners.costPerSessionP50, "b");
-  assert.equal(winners.errorRate, "b");
-  assert.equal(winners.cacheHitRatio, "a");
-  assert.equal(winners.ttftP50, "b");
-  // All-null metric → no winner.
-  const nulls = compareWinners([
-    { ...rows[0], ttft: { p50: null, p95: null } },
-    { ...rows[1], ttft: { p50: null, p95: null } },
+  const verdicts = compareVerdicts(rows);
+  assert.equal(verdicts.costPerSessionP50.winner, "b");
+  assert.deepEqual(verdicts.costPerSessionP50.tied, []);
+  assert.equal(verdicts.errorRate.winner, "b");
+  assert.equal(verdicts.cacheHitRatio.winner, "a");
+  assert.equal(verdicts.ttftP50.winner, "b");
+  // Overlapping CIs → no winner, tied = both harnesses, sorted.
+  const overlap = compareVerdicts([
+    make("y", { ci95: { ...make("y").ci95, costPerSessionP50: { lo: 0.1, hi: 0.6 } } }),
+    make("x", {
+      costPerSession: { p50: 0.2, p90: 1 },
+      ci95: { ...make("x").ci95, costPerSessionP50: { lo: 0.05, hi: 0.55 } },
+    }),
   ]);
-  assert.equal(nulls.ttftP50, null);
+  assert.equal(overlap.costPerSessionP50.winner, null);
+  assert.deepEqual(overlap.costPerSessionP50.tied, ["x", "y"]);
+  // All-null metric → no winner, empty tie.
+  const nulls = compareVerdicts([
+    { ...rows[0], ttft: { p50: null, p95: null }, ci95: { ...rows[0].ci95, ttftP50: null } },
+    { ...rows[1], ttft: { p50: null, p95: null }, ci95: { ...rows[1].ci95, ttftP50: null } },
+  ]);
+  assert.equal(nulls.ttftP50.winner, null);
+  assert.deepEqual(nulls.ttftP50.tied, []);
+  // No rows at all → all verdicts empty.
+  const none = compareVerdicts([]);
+  for (const v of Object.values(none)) {
+    assert.equal(v.winner, null);
+    assert.deepEqual(v.tied, []);
+  }
 });
 
 test("cli: stats --json schema, attribution, and mixed exclusion on a seeded store", async () => {
@@ -866,9 +913,9 @@ test("#130 behavioral columns are gated on envelope coverage; covered cells carr
   assert.equal(run.code, 0, run.stderr);
   // Coverage line: 10 covered turns / 12 requests.
   assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
-  // claude (v2): tool-err with n=; opencode (v1): v2-gated cells are —,
-  // one-shot still computable from the edit walk — cells, never zeros.
-  assert.match(run.stdout, /▸ 10\.0% \(n=5\)/, "covered tool-err cell with n and winner");
+  // claude (v2): tool-err with bracket + n=; opencode (v1): v2-gated cells are
+  // —, one-shot still computable from the edit walk — cells, never zeros.
+  assert.match(run.stdout, /▸ 10\.0% \[[\d.]+%–[\d.]+%\] \(n=5\)/, "covered tool-err cell with CI bracket and n");
   assert.match(run.stdout, /▸ 100\.0% \(n=5\)/, "one-shot computable from v1 envelopes");
   assert.ok(run.stdout.includes("—"), "uncovered cells render em-dashes");
 });
@@ -938,7 +985,16 @@ test("#130 compare --json carries behavioral fields, provenance label, and cover
 });
 
 test("#130 behavioral winner eligibility: uncovered harness never wins", async () => {
-  const { compareWinners } = await loadEngine();
+  const { compareVerdicts } = await loadEngine();
+  const ci95 = {
+    costPerSessionP50: { lo: 0.3, hi: 0.7 },
+    ttftP50: { lo: 300, hi: 500 },
+    ttftP95: null,
+    cacheHitRatio: { lo: 0.7, hi: 0.9 },
+    errorRate: { lo: 0.05, hi: 0.2 },
+    cleanRate: null,
+    toolErrorRate: null,
+  };
   const covered = {
     harness: "covered",
     requests: 10,
@@ -951,6 +1007,7 @@ test("#130 behavioral winner eligibility: uncovered harness never wins", async (
     cacheHitRatio: 0.8,
     errorRate: 0.1,
     verdict: "good",
+    ci95,
     behavioral: {
       toolErrorRate: 0.2,
       oneShotRate: 0.5,
@@ -965,6 +1022,7 @@ test("#130 behavioral winner eligibility: uncovered harness never wins", async (
   const uncovered = {
     ...covered,
     harness: "uncovered",
+    ci95: { ...ci95, toolErrorRate: null },
     behavioral: {
       toolErrorRate: null,
       oneShotRate: null,
@@ -975,15 +1033,16 @@ test("#130 behavioral winner eligibility: uncovered harness never wins", async (
       envelopeTurns: 0,
     },
   };
-  const winners = compareWinners([covered, uncovered]);
-  assert.equal(winners.toolErrorRate, "covered");
-  assert.equal(winners.oneShotRate, "covered");
-  assert.equal(winners.missedCatchRate, "covered");
-  assert.equal(winners.turnsToSuccess, "covered");
+  const verdicts = compareVerdicts([covered, uncovered]);
+  // No tool-error CI on either side (n < 5 outcomes) → point-estimate rule.
+  assert.equal(verdicts.toolErrorRate.winner, "covered");
+  assert.equal(verdicts.oneShotRate.winner, "covered");
+  assert.equal(verdicts.missedCatchRate.winner, "covered");
+  assert.equal(verdicts.turnsToSuccess.winner, "covered");
   // No covered cells at all → no behavioral winners.
-  const none = compareWinners([uncovered, { ...uncovered, harness: "also-none" }]);
-  assert.equal(none.toolErrorRate, null);
-  assert.equal(none.oneShotRate, null);
+  const none = compareVerdicts([uncovered, { ...uncovered, harness: "also-none" }]);
+  assert.equal(none.toolErrorRate.winner, null);
+  assert.equal(none.oneShotRate.winner, null);
 });
 
 test("#130 --cohort narrows to the classifier category and states the exclusion", async () => {
@@ -1229,6 +1288,202 @@ test("#146 envelope + imported for the same harness: envelope count wins, no dou
   assert.equal(payload.behavioralCoverage.imported.sessions, 1);
   assert.equal(payload.behavioralCoverage.imported.harnesses, 1);
   // Compare wins still work: imported-covered harness competes on tool-err.
-  const winners = (await import("../dist/obs/harness-stats.js")).compareWinners(payload.harnesses);
-  assert.equal(winners.toolErrorRate, "claude");
+  const verdicts = (await import("../dist/obs/harness-stats.js")).compareVerdicts(
+    payload.harnesses,
+  );
+  assert.equal(verdicts.toolErrorRate.winner, "claude");
+});
+
+// ---------------------------------------------------------------------------
+// #147: confidence intervals + evidence-gated verdicts
+// ---------------------------------------------------------------------------
+
+test("#147 evidence module: deterministic CIs, null semantics, no deps", async () => {
+  const ev = await import("../dist/obs/evidence.js");
+  // Wilson known values (same fixture as compare-table's).
+  const ci = ev.wilson95(8, 10);
+  assert.ok(Math.abs(ci.lo - 0.4901) < 0.001 && Math.abs(ci.hi - 0.9433) < 0.001);
+  assert.equal(ev.wilson95(0, 0), null);
+  // < 2 values → null for every bootstrap.
+  assert.equal(ev.percentileBootstrap([5], 0.5), null);
+  assert.equal(ev.percentileBootstrap([], 0.5), null);
+  assert.equal(ev.bootstrapRatio([1], [1]), null);
+  assert.equal(ev.bootstrapDelta([1], [2], "mean"), null);
+  // Deterministic per seed: same seed → byte-identical; different seed → likely different.
+  const values = [1.1, 2.3, 0.7, 3.9, 2.8, 1.5, 4.2, 2.2];
+  const a = ev.percentileBootstrap(values, 0.5, { seed: 42 });
+  const b = ev.percentileBootstrap(values, 0.5, { seed: 42 });
+  assert.deepEqual(a, b);
+  const c = ev.percentileBootstrap(values, 0.5, { seed: 43 });
+  assert.notDeepEqual(a, c);
+  // The interval brackets the point estimate's neighborhood and never throws on zeros.
+  const p50 = 2.25; // linear-interpolated p50 of values
+  assert.ok(a.lo <= p50 && p50 <= a.hi, `CI [${a.lo}, ${a.hi}] covers p50 ${p50}`);
+  assert.equal(ev.bootstrapRatio([0, 0, 0, 0, 0], [0, 0, 0, 0, 0], { seed: 1 }), null);
+  // seedFromString is FNV-1a, unsigned, deterministic.
+  assert.equal(ev.seedFromString("claude"), ev.seedFromString("claude"));
+  assert.equal(ev.seedFromString("claude"), 0xe1fc8517); // FNV-1a("claude")
+  // mulberry32 determinism: fresh generators with the same seed emit the same sequence.
+  const seq = (seed) => {
+    const r = ev.mulberry32(seed);
+    return [r(), r(), r()];
+  };
+  assert.deepEqual(seq(7), seq(7));
+  assert.notDeepEqual(seq(7), seq(8));
+});
+
+test("#147 harness rows carry ci95 only at n >= 5; below it every field is null", async () => {
+  const { buildHarnessStats } = await loadEngine();
+  const seed = (n, id) =>
+    Array.from({ length: n }, (_, i) =>
+      row({ id: `${id}${i}`, created_at: iso(i * 20 * 60_000), ttft_ms: 300 + i * 10 }),
+    );
+  const few = buildHarnessStats(seed(4, "f"));
+  assert.equal(few.harnesses.length, 1);
+  assert.deepEqual(few.harnesses[0].ci95, {
+    costPerSessionP50: null,
+    ttftP50: null,
+    ttftP95: null,
+    cacheHitRatio: null,
+    errorRate: null,
+    cleanRate: null,
+    toolErrorRate: null,
+  });
+  const many = buildHarnessStats(seed(6, "m"));
+  const ci = many.harnesses[0].ci95;
+  assert.ok(ci.costPerSessionP50 && ci.ttftP50 && ci.ttftP95 && ci.cacheHitRatio && ci.errorRate);
+  assert.equal(ci.cleanRate, null, "no terminal info → null clean-rate CI");
+  assert.equal(ci.toolErrorRate, null, "no behavioral source → null tool-err CI");
+  // Deterministic across calls: same store shape → identical intervals.
+  const again = buildHarnessStats(seed(6, "m"));
+  assert.deepEqual(again.harnesses[0].ci95, ci);
+});
+
+test("#147 compare: overlapping fixture → no ▸ and the exact tie line; disjoint → one ▸", async () => {
+  const cfg = cfgDir("ci-overlap");
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey, maskKey } = await import("../dist/api/agent-keys.js");
+  let maskA;
+  let maskB;
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    maskA = maskKey("sk-test-claude-super-secret-key-000");
+    maskB = maskKey("sk-test-opencode-super-secret-0001");
+  });
+  // Nearly identical workloads → every bootstrap CI overlaps. Sessions spaced
+  // 20 min apart so each harness has 6 real session costs to bootstrap over;
+  // per-session cost jitter keeps the intervals wide enough to cross.
+  const mk = (id, mask, drift) =>
+    Array.from({ length: 6 }, (_, i) =>
+      row({
+        id: `${id}${i}`,
+        api_key: mask,
+        created_at: iso(i * 20 * 60_000),
+        cost_value: 0.01 + drift + (i % 2 === 0 ? 0.004 : -0.003),
+        ttft_ms: 300 + drift * 1000 + (i % 2 === 0 ? 40 : -30),
+        cached_tokens: 500,
+        input_tokens: 1000,
+      }),
+    );
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      ...mk("oa", maskA, 0),
+      ...mk("ob", maskB, 0.0005),
+    ]);
+    opened.db.close();
+  });
+  const overlap = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(overlap.code, 0, overlap.stderr);
+  // No ▸ on any cell — the only marker is the legend line's own.
+  const withoutLegend = overlap.stdout
+    .split("\n")
+    .filter((line) => !line.includes(`${WINNER_MARKER} =`))
+    .join("\n");
+  assert.ok(!withoutLegend.includes("▸"), "no winner marker when every CI overlaps");
+  assert.ok(
+    overlap.stdout.includes("cost/session: tied — not distinguishable yet (claude, opencode)"),
+    `tie footer present:\n${overlap.stdout}`,
+  );
+  // Repeated runs: byte-identical output.
+  const repeat = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(repeat.stdout, overlap.stdout, "repeated runs are byte-identical");
+
+  // Disjoint: wildly different workloads → at least one decisive ▸ and no tie line.
+  const cfg2 = cfgDir("ci-disjoint");
+  await withEnv({ AIAND_CONFIG_DIR: cfg2 }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    await recordAgentKey("opencode", "sk-test-opencode-super-secret-0001");
+    maskA = maskKey("sk-test-claude-super-secret-key-000");
+    maskB = maskKey("sk-test-opencode-super-secret-0001");
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    seedRequests(opened.db, [
+      ...mk("da", maskA, 0),
+      ...mk("db", maskB, 0.5),
+    ]);
+    opened.db.close();
+  });
+  const disjoint = await runCli(["harness", "compare", "--no-sync"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg2 }),
+  });
+  assert.equal(disjoint.code, 0, disjoint.stderr);
+  // Cost and ttft CIs are disjoint → exactly those two cells carry ▸.
+  const cellLines = disjoint.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("claude") || line.startsWith("opencode"));
+  assert.ok(cellLines.some((line) => line.includes("▸ 0.0105")), "cost winner marked");
+  assert.ok(cellLines.some((line) => line.includes("▸ 305ms")), "ttft winner marked");
+  assert.ok(
+    !disjoint.stdout.includes("cost/session: tied"),
+    "no cost tie when CIs are disjoint",
+  );
+  assert.ok(
+    disjoint.stdout.includes("errors: tied — not distinguishable yet (claude, opencode)"),
+    "identical error-free workloads honestly tie",
+  );
+});
+
+test("#147 compare --json keeps existing fields and adds ci95; clean rate Wilson over terminals", async () => {
+  const cfg = cfgDir("ci-json");
+  await seedBehavioralStore(cfg);
+  await seedImportedMarker(cfg, { dedup_key: "t1", harness: "claude", session_id: "x", kind: "tool", outcome: "error", seq: 0 });
+  const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
+  assert.equal(run.code, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  for (const harness of payload.harnesses) {
+    assert.ok(harness.ci95, "ci95 present");
+    assert.deepEqual(Object.keys(harness.ci95).sort(), [
+      "cacheHitRatio",
+      "cleanRate",
+      "costPerSessionP50",
+      "errorRate",
+      "toolErrorRate",
+      "ttftP50",
+      "ttftP95",
+    ]);
+    assert.ok(harness.requests !== undefined && harness.behavioral !== undefined);
+  }
+  const claude = payload.harnesses.find((h) => h.harness === "claude");
+  // 6 requests → Wilson CI on the error rate; envelope terminals = 5 → clean CI.
+  assert.ok(claude.ci95.errorRate && claude.ci95.errorRate.lo <= claude.errorRate && claude.errorRate <= claude.ci95.errorRate.hi);
+  // Envelope terminals: 4 clean of 5 → n=5 qualifies; point estimate 0.8.
+  assert.ok(claude.behavioral.cleanRate !== null);
+  assert.ok(claude.ci95.cleanRate && Math.abs(claude.ci95.cleanRate.hi - 0.9637768390302125) < 1e-9, "Wilson upper at 4/5");
+  // Envelope source wins: 10 tool outcomes (1 error) → toolErrorRate 0.1,
+  // n=10 → CI exists; the imported marker contributes nothing (never summed).
+  assert.ok(Math.abs(claude.behavioral.toolErrorRate - 0.1) < 1e-9);
+  assert.ok(claude.ci95.toolErrorRate && claude.ci95.toolErrorRate.lo < 0.1 && 0.1 < claude.ci95.toolErrorRate.hi);
+  // v1 harness: no terminals → cleanRate null, no CI, never 0.
+  const opencode = payload.harnesses.find((h) => h.harness === "opencode");
+  assert.equal(opencode.behavioral.cleanRate, null);
+  assert.equal(opencode.ci95.cleanRate, null);
 });

@@ -2,6 +2,13 @@ import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
 import { type ImportedArtifactRow } from "../store/imported-artifacts.js";
+import {
+  bootstrapRatio,
+  percentileBootstrap,
+  seedFromString,
+  wilson95,
+  type CI95,
+} from "./evidence.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
 
 /** The input shape of the shared verdict function (its thresholds are law). */
@@ -68,6 +75,13 @@ type BehavioralStats = {
   importedSessions: number;
   /** #146: clean / (clean+aborted+errored); null when no terminal info. */
   cleanRate: number | null;
+  /**
+   * #147: the 0/1 tool-error outcomes behind toolErrorRate (1 = error) — the
+   * bootstrap sample for its CI. null when the cell is uncovered (the CI must
+   * not exist where the rate doesn't); kept on the BehavioralStats that
+   * already carries the rate's n.
+   */
+  toolOutcomes: readonly number[] | null;
 };
 
 /** The uncovered cell: nulls and a zero count — never fake zeros in rates. */
@@ -84,6 +98,7 @@ const EMPTY_BEHAVIORAL: BehavioralStats = {
   compactions: null,
   importedSessions: 0,
   cleanRate: null,
+  toolOutcomes: null,
 };
 
 /**
@@ -106,6 +121,22 @@ export type HarnessStatsRow = {
   cacheHitRatio: number;
   errorRate: number;
   verdict: "good" | "warn" | "bad";
+  /**
+   * #147: 95% confidence intervals behind the point estimates — null when the
+   * n is below 5 (a small-n interval is a guess, never displayed). cost/ttft
+   * ride the percentile bootstrap over session costs / ttft rows; hit and
+   * error ride bootstrap/Wilson over requests; behavioral CIs ride the
+   * behavioral source's own n.
+   */
+  ci95: {
+    costPerSessionP50: CI95 | null;
+    ttftP50: CI95 | null;
+    ttftP95: CI95 | null;
+    cacheHitRatio: CI95 | null;
+    errorRate: CI95 | null;
+    cleanRate: CI95 | null;
+    toolErrorRate: CI95 | null;
+  };
   /** Behavioral columns (#130): null when envelope data doesn't cover the harness. */
   behavioral: BehavioralStats;
   /** Every non-mixed session that fed the aggregates (the --samples list). */
@@ -294,6 +325,7 @@ export function buildImportedBehavioral(
   let toolCalls = 0;
   let toolErrors = 0;
   let compactions = 0;
+  const toolOutcomes: number[] = [];
   const sessions = { clean: 0, aborted: 0, errored: 0 };
   let terminals = 0;
   for (const bucket of bySession.values()) {
@@ -308,7 +340,9 @@ export function buildImportedBehavioral(
     for (const marker of bucket) {
       if (marker.kind === "tool") {
         toolCalls += 1;
-        if (marker.outcome === "error") toolErrors += 1;
+        const errored = marker.outcome === "error" ? 1 : 0;
+        toolErrors += errored;
+        toolOutcomes.push(errored);
       } else if (marker.kind === "compaction") {
         compactions += 1;
       }
@@ -327,6 +361,52 @@ export function buildImportedBehavioral(
     compactions,
     importedSessions: bySession.size,
     cleanRate: terminals > 0 ? sessions.clean / terminals : null,
+    toolOutcomes: toolCalls > 0 ? toolOutcomes : null,
+  };
+}
+
+/** Below this many observations, no CI is computed — an interval needs an n. */
+const MIN_CI_N = 5;
+
+/**
+ * #147: the per-harness 95% CIs behind the point estimates. Seed =
+ * seedFromString(harness), so one harness's interval never shifts when another
+ * joins the table; same store + flags → identical output. Each metric null
+ * below 5 observations (session costs / ttft rows / requests / terminals /
+ * tool outcomes) — and behavioral CIs ride the behavioral source's own n.
+ */
+function buildCi95(
+  harness: string,
+  sessionCosts: readonly number[],
+  ttfts: readonly number[],
+  cachedPerRequest: readonly number[],
+  inputPerRequest: readonly number[],
+  errors: number,
+  requests: number,
+  behavioral: BehavioralStats,
+  toolValues: readonly number[] | null,
+): HarnessStatsRow["ci95"] {
+  const seed = seedFromString(harness);
+  const terminals = behavioral.sessions;
+  const terminalN = terminals === null ? 0 : terminals.clean + terminals.aborted + terminals.errored;
+  return {
+    costPerSessionP50:
+      sessionCosts.length >= MIN_CI_N ? percentileBootstrap(sessionCosts, 0.5, { seed }) : null,
+    ttftP50: ttfts.length >= MIN_CI_N ? percentileBootstrap(ttfts, 0.5, { seed }) : null,
+    ttftP95: ttfts.length >= MIN_CI_N ? percentileBootstrap(ttfts, 0.95, { seed }) : null,
+    cacheHitRatio:
+      inputPerRequest.length >= MIN_CI_N
+        ? bootstrapRatio(cachedPerRequest, inputPerRequest, { seed })
+        : null,
+    errorRate: requests >= MIN_CI_N ? wilson95(errors, requests) : null,
+    cleanRate:
+      behavioral.cleanRate === null || terminalN < MIN_CI_N
+        ? null
+        : wilson95(terminals?.clean ?? 0, terminalN),
+    toolErrorRate:
+      toolValues !== null && toolValues.length >= MIN_CI_N
+        ? bootstrapRatio(toolValues, toolValues.map(() => 1), { seed })
+        : null,
   };
 }
 
@@ -391,6 +471,10 @@ export function buildHarnessStats(
         .map((row) => row.ttft_ms)
         .filter((value): value is number => value !== null);
       const errors = errorCount(bucket.rows);
+      // #147: per-request cache vectors for the hit-ratio bootstrap — cached
+      // rides with its own input denominator (paired resampling).
+      const cachedPerRequest = bucket.rows.map((r) => r.cached_tokens ?? 0);
+      const inputPerRequest = bucket.rows.map((r) => r.input_tokens ?? 0);
       // #130/#146: behavioral columns ride T2's walk over this harness's
       // envelope turns (same join as efficiency.ts). Gated on
       // MIN_BEHAVIORAL_TURNS — below it the cell falls through to the
@@ -401,6 +485,11 @@ export function buildHarnessStats(
         harnessTurns.length >= MIN_BEHAVIORAL_TURNS
           ? (() => {
               const walked = oneShotRetry(harnessTurns).stats.value;
+              // #147: every captured tool outcome this window, as 0/1 error
+              // flags — the bootstrap sample behind toolErrorRate's CI.
+              const toolOutcomes = harnessTurns.flatMap((turn) =>
+                (turn.toolOutcomes ?? []).map((o) => (o.ok ? 0 : 1)),
+              );
               return {
                 behavioralSource: "envelope",
                 ...walked,
@@ -409,10 +498,7 @@ export function buildHarnessStats(
                 retryRate: walked.oneShotRate === null ? null : 1 - walked.oneShotRate,
                 envelopeTurns: harnessTurns.length,
                 // Envelope toolCalls: every captured tool outcome this window.
-                toolCalls: harnessTurns.reduce(
-                  (sum, turn) => sum + (turn.toolOutcomes?.length ?? 0),
-                  0,
-                ),
+                toolCalls: toolOutcomes.length,
                 // Compaction events are not captured in envelopes — honest
                 // null, never a zero.
                 compactions: null,
@@ -427,6 +513,7 @@ export function buildHarnessStats(
                           walked.sessions.errored;
                         return total > 0 ? walked.sessions.clean / total : null;
                       })(),
+                toolOutcomes: toolOutcomes.length > 0 ? toolOutcomes : null,
               };
             })()
           : null;
@@ -458,6 +545,17 @@ export function buildHarnessStats(
         cacheHitRatio: inputTokens > 0 ? cachedTokens / inputTokens : 0,
         errorRate: requests > 0 ? errors / requests : 0,
         verdict: cacheVerdict(verdictGroup),
+        ci95: buildCi95(
+          harness,
+          sessionCosts,
+          ttfts,
+          cachedPerRequest,
+          inputPerRequest,
+          errors,
+          requests,
+          behavioral,
+          behavioral.toolOutcomes,
+        ),
         behavioral,
         samples: bucket.sessions,
       };
@@ -515,83 +613,153 @@ export function buildHarnessStats(
   };
 }
 
-/** Per-metric winners for `aiand harness compare` (deterministic markers). */
-export type CompareWinners = {
-  costPerSessionP50: string | null;
-  errorRate: string | null;
-  cacheHitRatio: string | null;
-  ttftP50: string | null;
-  /** #130 behavioral winners: only harnesses with covered cells compete. */
-  toolErrorRate: string | null;
-  oneShotRate: string | null;
-  missedCatchRate: string | null;
-  turnsToSuccess: string | null;
-};
-
 /** The winner marker used in the compare table — deterministic, works without color. */
 export const WINNER_MARKER = "▸";
 
-export function compareWinners(rows: readonly HarnessStatsRow[]): CompareWinners {
-  const best = <T>(
-    candidates: readonly HarnessStatsRow[],
-    value: (row: HarnessStatsRow) => T | null,
-    better: (a: T, b: T) => boolean,
-  ): string | null => {
-    let winner: HarnessStatsRow | null = null;
-    let winnerValue: T | null = null;
+/**
+ * Per-metric evidence-gated verdicts for `aiand harness compare` (#147).
+ * A metric's `winner` is the harness whose best-value CI is disjoint from
+ * EVERY other candidate's CI; when intervals overlap, `winner` is null and
+ * `tied` lists the harnesses whose CIs overlap the anchor's (sorted) —
+ * the decision is "not distinguishable yet", never a point-estimate crown.
+ */
+export type CompareVerdicts = {
+  [M in keyof CompareMetrics]: { winner: string | null; tied: string[] };
+};
+
+/** The compared metrics and their "better" direction (thresholds stay here). */
+type CompareMetrics = {
+  costPerSessionP50: "lower";
+  errorRate: "lower";
+  cacheHitRatio: "higher";
+  ttftP50: "lower";
+  toolErrorRate: "lower";
+  oneShotRate: "higher";
+  missedCatchRate: "lower";
+  turnsToSuccess: "lower";
+};
+
+/** One compared metric: its extractor, its CI extractor, the better direction. */
+type MetricSpec = {
+  value: (row: HarnessStatsRow) => number | null;
+  ci: (row: HarnessStatsRow) => CI95 | null;
+  better: "lower" | "higher";
+};
+
+const COMPARE_METRICS: { [M in keyof CompareMetrics]: MetricSpec } = {
+  costPerSessionP50: {
+    value: (r) => r.costPerSession.p50,
+    ci: (r) => r.ci95.costPerSessionP50,
+    better: "lower",
+  },
+  errorRate: {
+    value: (r) => r.errorRate,
+    ci: (r) => r.ci95.errorRate,
+    better: "lower",
+  },
+  cacheHitRatio: {
+    value: (r) => r.cacheHitRatio,
+    ci: (r) => r.ci95.cacheHitRatio,
+    better: "higher",
+  },
+  ttftP50: {
+    value: (r) => r.ttft.p50,
+    ci: (r) => r.ci95.ttftP50,
+    better: "lower",
+  },
+  // #130/#147 behavioral verdicts: a harness competes only when its cell has
+  // coverage (rate non-null ⇒ envelope turns ≥ MIN_BEHAVIORAL_TURNS or
+  // imported markers) AND a CI (n ≥ 5 outcomes).
+  toolErrorRate: {
+    value: (r) => r.behavioral?.toolErrorRate ?? null,
+    ci: (r) => r.ci95.toolErrorRate,
+    better: "lower",
+  },
+  oneShotRate: {
+    value: (r) => r.behavioral?.oneShotRate ?? null,
+    ci: () => null,
+    better: "higher",
+  },
+  missedCatchRate: {
+    value: (r) => r.behavioral?.missedCatchRate ?? null,
+    ci: () => null,
+    better: "lower",
+  },
+  turnsToSuccess: {
+    value: (r) => r.behavioral?.turnsToSuccess ?? null,
+    ci: () => null,
+    better: "lower",
+  },
+};
+
+const ciOverlaps = (a: CI95, b: CI95): boolean => a.lo <= b.hi && b.lo <= a.hi;
+
+/**
+ * #147: evidence-gated per-metric verdicts. The anchor is the best value among
+ * candidates that have BOTH a value and a CI; `▸` appears only when the
+ * anchor's CI is disjoint from every other candidate CI. Behavioral metrics
+ * without a CI surface (one-shot, missed-catch, turns-to-success) keep the
+ * #130 point-estimate rule: the anchor wins outright — there is no interval
+ * to gate on, so no tied list either.
+ */
+export function compareVerdicts(rows: readonly HarnessStatsRow[]): CompareVerdicts {
+  const verdicts = {} as CompareVerdicts;
+  const entries = Object.entries(COMPARE_METRICS) as [keyof CompareMetrics, MetricSpec][];
+  for (const [metric, spec] of entries) {
+    const candidates = rows.filter((row) => {
+      const value = spec.value(row);
+      const ci = spec.ci(row);
+      return value !== null && ci !== null;
+    });
+    if (candidates.length === 0) {
+      // No CI evidence: fall back to the pre-#147 point-estimate rule so the
+      // metric still renders a deterministic winner (behavioral metrics with
+      // no interval surface; never a fake tie).
+      const any = rows.filter((row) => spec.value(row) !== null);
+      let winner: HarnessStatsRow | null = null;
+      let winnerValue: number | null = null;
+      for (const row of any) {
+        const current = spec.value(row);
+        if (current === null) continue;
+        if (
+          winnerValue === null ||
+          (spec.better === "lower" ? current < winnerValue : current > winnerValue)
+        ) {
+          winner = row;
+          winnerValue = current;
+        }
+      }
+      verdicts[metric] = { winner: winner?.harness ?? null, tied: [] };
+      continue;
+    }
+    const lower = spec.better === "lower";
+    let anchor: HarnessStatsRow | null = null;
+    let anchorValue: number | null = null;
     for (const row of candidates) {
-      const current = value(row);
+      const current = spec.value(row);
       if (current === null) continue;
-      if (winnerValue === null || better(current, winnerValue)) {
-        winner = row;
-        winnerValue = current;
+      if (anchorValue === null || (lower ? current < anchorValue : current > anchorValue)) {
+        anchor = row;
+        anchorValue = current;
       }
     }
-    return winner?.harness ?? null;
-  };
-
-  return {
-    costPerSessionP50: best(
-      rows,
-      (r) => r.costPerSession.p50,
-      (a, b) => a < b,
-    ),
-    errorRate: best(
-      rows,
-      (r) => r.errorRate,
-      (a, b) => a < b,
-    ),
-    cacheHitRatio: best(
-      rows,
-      (r) => r.cacheHitRatio,
-      (a, b) => a > b,
-    ),
-    ttftP50: best(
-      rows,
-      (r) => r.ttft.p50,
-      (a, b) => a < b,
-    ),
-    // #130 behavioral winners: a harness competes only when its cell has
-    // coverage (rate non-null ⇒ envelope turns ≥ MIN_BEHAVIORAL_TURNS).
-    toolErrorRate: best(
-      rows,
-      (r) => r.behavioral?.toolErrorRate ?? null,
-      (a, b) => a < b,
-    ),
-    oneShotRate: best(
-      rows,
-      (r) => r.behavioral?.oneShotRate ?? null,
-      (a, b) => a > b,
-    ),
-    missedCatchRate: best(
-      rows,
-      (r) => r.behavioral?.missedCatchRate ?? null,
-      (a, b) => a < b,
-    ),
-    turnsToSuccess: best(
-      rows,
-      (r) => r.behavioral?.turnsToSuccess ?? null,
-      (a, b) => a < b,
-    ),
-  };
+    if (anchor === null || anchorValue === null) {
+      verdicts[metric] = { winner: null, tied: [] };
+      continue;
+    }
+    const anchorCi = spec.ci(anchor)!;
+    const overlapping = candidates
+      .filter((row) => row.harness !== anchor.harness)
+      .filter((row) => {
+        const ci = spec.ci(row);
+        return ci !== null && ciOverlaps(anchorCi, ci);
+      })
+      .map((row) => row.harness)
+      .sort();
+    verdicts[metric] = {
+      winner: overlapping.length === 0 ? anchor.harness : null,
+      tied: overlapping.length === 0 ? [] : [anchor.harness, ...overlapping].sort(),
+    };
+  }
+  return verdicts;
 }

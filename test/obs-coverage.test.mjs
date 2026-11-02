@@ -55,7 +55,7 @@ function withEnv(overrides, fn) {
 
 const cfgDir = (name) => join(box.dir, name);
 
-const { buildHarnessStats, compareWinners, MIN_BEHAVIORAL_TURNS } = await import(
+const { buildHarnessStats, compareVerdicts, MIN_BEHAVIORAL_TURNS } = await import(
   "../dist/obs/harness-stats.js"
 );
 const { buildPairStats, sortPairs } = await import("../dist/obs/pair-stats.js");
@@ -187,41 +187,66 @@ describe("harness-stats degenerate windows (#cov-obs)", () => {
   });
 });
 
-describe("compareWinners boundaries (#cov-obs)", () => {
+describe("compareVerdicts boundaries (#cov-obs)", () => {
   const covered = (harness, overrides = {}) => ({
     harness,
     costPerSession: { p50: 0.5 },
     errorRate: 0.1,
     cacheHitRatio: 0.4,
     ttft: { p50: 100 },
+    ci95: {
+      costPerSessionP50: { lo: 0.4, hi: 0.6 },
+      ttftP50: { lo: 80, hi: 120 },
+      ttftP95: null,
+      cacheHitRatio: { lo: 0.3, hi: 0.5 },
+      errorRate: { lo: 0.05, hi: 0.15 },
+      cleanRate: null,
+      toolErrorRate: null,
+    },
     behavioral: { toolErrorRate: 0.2, oneShotRate: 0.3, missedCatchRate: 0.1, turnsToSuccess: 2 },
     ...overrides,
   });
 
   test("no rows: every winner is null", () => {
-    const winners = compareWinners([]);
-    for (const value of Object.values(winners)) assert.equal(value, null);
+    const verdicts = compareVerdicts([]);
+    for (const value of Object.values(verdicts)) {
+      assert.equal(value.winner, null);
+      assert.deepEqual(value.tied, []);
+    }
   });
 
-  test("null values cannot win; ties keep the first harness deterministically", () => {
+  test("null values cannot win; the CI-disjoint leader is the winner", () => {
     const a = covered("a", { costPerSession: { p50: null }, ttft: { p50: null } });
-    const b = covered("b");
-    const winners = compareWinners([a, b]);
-    assert.equal(winners.costPerSessionP50, "b");
-    assert.equal(winners.ttftP50, "b");
-    assert.equal(winners.errorRate, "a");
-    assert.equal(winners.cacheHitRatio, "a");
-    assert.equal(winners.toolErrorRate, "a");
-    assert.equal(winners.oneShotRate, "a");
-    assert.equal(winners.missedCatchRate, "a");
-    assert.equal(winners.turnsToSuccess, "a");
+    // b's CIs sit strictly worse and disjoint from a's — a wins on evidence.
+    const b = covered("b", {
+      errorRate: 0.3,
+      cacheHitRatio: 0.1,
+      ci95: {
+        costPerSessionP50: { lo: 0.7, hi: 0.9 },
+        ttftP50: { lo: 150, hi: 180 },
+        ttftP95: null,
+        cacheHitRatio: { lo: 0.05, hi: 0.2 },
+        errorRate: { lo: 0.25, hi: 0.35 },
+        cleanRate: null,
+        toolErrorRate: null,
+      },
+    });
+    const verdicts = compareVerdicts([a, b]);
+    assert.equal(verdicts.costPerSessionP50.winner, "b");
+    assert.equal(verdicts.ttftP50.winner, "b");
+    assert.equal(verdicts.errorRate.winner, "a");
+    assert.equal(verdicts.cacheHitRatio.winner, "a");
+    assert.equal(verdicts.toolErrorRate.winner, "a");
+    assert.equal(verdicts.oneShotRate.winner, "a");
+    assert.equal(verdicts.missedCatchRate.winner, "a");
+    assert.equal(verdicts.turnsToSuccess.winner, "a");
   });
 
   test("a null behavioral cell (undefined) never competes against a covered one", () => {
     const uncovered = covered("u", { behavioral: undefined });
-    const winners = compareWinners([uncovered, covered("c")]);
-    assert.equal(winners.toolErrorRate, "c");
-    assert.equal(winners.oneShotRate, "c");
+    const verdicts = compareVerdicts([uncovered, covered("c")]);
+    assert.equal(verdicts.toolErrorRate.winner, "c");
+    assert.equal(verdicts.oneShotRate.winner, "c");
   });
 });
 

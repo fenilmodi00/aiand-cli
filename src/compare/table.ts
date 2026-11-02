@@ -1,3 +1,4 @@
+import { wilson95 } from "../obs/evidence.js";
 import { type CompareRunRow, isRecordedRow } from "./run-rows.js";
 
 /**
@@ -10,17 +11,8 @@ import { type CompareRunRow, isRecordedRow } from "./run-rows.js";
  * reported separately. Nulls mean "not metered", never 0.
  */
 
-/** Wilson score interval at 95% (z = 1.96), no dependencies. */
-export function wilson95(successes: number, trials: number): { lo: number; hi: number } | null {
-  if (trials <= 0) return null;
-  const z = 1.96;
-  const p = successes / trials;
-  const z2 = z * z;
-  const denom = 1 + z2 / trials;
-  const center = (p + z2 / (2 * trials)) / denom;
-  const half = (z / denom) * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials));
-  return { lo: Math.max(0, center - half), hi: Math.min(1, center + half) };
-}
+/** #147: the implementation moved to the shared evidence module; unchanged. */
+export { wilson95 };
 
 /** The failure-mode taxonomy: the single source for every histogram surface. */
 const FAILURE_MODES = [
