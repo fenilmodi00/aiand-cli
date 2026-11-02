@@ -15,6 +15,12 @@
  * Stored numbers stay raw here; the compare surface labels them `heuristic`
  * via `src/obs/provenance.ts` when it reports rates over them (markers are a
  * heuristic read of harness-local files, not gateway-billed data).
+ *
+ * Usage readers (ticket #150): the same file walks also feed the correlation
+ * pass — `claudeUsageRecords()` / `codexUsageRecords()` extract per-request
+ * token usage (model, input/output/cached tokens, timestamp) for
+ * `src/store/local-usage.ts`. Metadata only: usage objects and timestamps
+ * are read, never message or tool content.
  */
 
 import { createHash } from "node:crypto";
@@ -96,6 +102,62 @@ function safeSessionId(value: unknown): string | null {
   const trimmed = value.trim();
   // Session ids are opaque identifiers, bounded like the hashes we store.
   return trimmed !== "" && trimmed.length <= 128 ? trimmed : null;
+}
+
+// ---------------------------------------------------------------------------
+// Shared artifact walks (markers #133, usage #150) + usage record type
+// ---------------------------------------------------------------------------
+
+/** One per-request token usage record extracted from a harness artifact. */
+export type ArtifactUsage = {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  /** Epoch ms of the record's own timestamp. */
+  at: number;
+};
+
+/** A finite, non-negative integer-ish token count; anything else → null. */
+function finiteToken(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Every Claude Code session JSONL under the projects root — the one shared
+ * walk both the marker reader (#133) and the usage reader (#150) consume.
+ * Date-free layout: `<root>/<project>/<session>.jsonl`.
+ */
+function claudeJsonlFiles(): string[] {
+  const root = claudeProjectsRoot();
+  if (root === null) return [];
+  const files: string[] = [];
+  for (const project of safeReaddir(root)) {
+    for (const file of safeReaddir(join(root, project))) {
+      if (file.endsWith(".jsonl")) files.push(join(root, project, file));
+    }
+  }
+  return files;
+}
+
+/**
+ * Every Codex rollout JSONL under the sessions root — the one shared walk
+ * both marker and usage readers consume. Recurse date-shaped subdirs
+ * (`<root>/<year>/<month>/<day>/<file>.jsonl`), capped like the marker walk.
+ */
+function codexJsonlFiles(): string[] {
+  const root = codexSessionsRoot();
+  if (root === null) return [];
+  const files: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    for (const entry of safeReaddir(dir)) {
+      const full = join(dir, entry);
+      if (entry.endsWith(".jsonl")) files.push(full);
+      else if (depth < 4) walk(full, depth + 1); // date-shaped subdirs
+    }
+  };
+  walk(root, 0);
+  return files;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,17 +252,78 @@ function claudeMarkersFromFile(path: string, sessionKey: string): ArtifactMarker
 }
 
 function claudeMarkers(): ArtifactMarker[] {
-  const root = claudeProjectsRoot();
-  if (root === null) return [];
   const markers: ArtifactMarker[] = [];
-  for (const project of safeReaddir(root)) {
-    const projectDir = join(root, project);
-    for (const file of safeReaddir(projectDir)) {
-      if (!file.endsWith(".jsonl")) continue;
-      markers.push(...claudeMarkersFromFile(join(projectDir, file), file.replace(/\.jsonl$/, "")));
-    }
+  for (const path of claudeJsonlFiles()) {
+    markers.push(
+      ...claudeMarkersFromFile(path, path.split(/[\\/]/).pop()?.replace(/\.jsonl$/, "") ?? ""),
+    );
   }
   return markers;
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code usage records (#150): message.usage token counts per line
+// ---------------------------------------------------------------------------
+
+type ClaudeUsageLine = {
+  timestamp?: unknown;
+  message?: {
+    model?: unknown;
+    usage?: {
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      cache_read_input_tokens?: unknown;
+    };
+  };
+};
+
+/**
+ * Usage records from one Claude Code JSONL file: per line an assistant
+ * `message.model` string and `message.usage` object with finite
+ * `input_tokens` / `output_tokens` (`cache_read_input_tokens` missing → 0).
+ * Claude's input EXCLUDES cached tokens (the matcher adds cacheRead back).
+ * A line without a usable model, usage, or timestamp is skipped; content
+ * fields are never read.
+ */
+function claudeUsageFromFile(path: string): ArtifactUsage[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const records: ArtifactUsage[] = [];
+  for (const line of text.split("\n")) {
+    let parsed: ClaudeUsageLine;
+    try {
+      parsed = JSON.parse(line ?? "") as ClaudeUsageLine;
+    } catch {
+      continue;
+    }
+    const { timestamp, message } = parsed;
+    const usage = message?.usage;
+    if (typeof message?.model !== "string" || message.model === "") continue;
+    if (typeof usage !== "object" || usage === null) continue;
+    const at = Date.parse(typeof timestamp === "string" ? timestamp : "");
+    if (Number.isNaN(at)) continue;
+    const input = finiteToken(usage.input_tokens);
+    const output = finiteToken(usage.output_tokens);
+    if (input === null || output === null) continue;
+    const cached = finiteToken(usage.cache_read_input_tokens) ?? 0;
+    records.push({ model: message.model, inputTokens: input, outputTokens: output, cachedTokens: cached, at });
+  }
+  return records;
+}
+
+/**
+ * Every Claude Code per-request usage record under the projects root, via
+ * the shared {@link claudeJsonlFiles} walk (no second traversal). Fail-open:
+ * a missing directory or unreadable/corrupt file contributes nothing.
+ */
+export function claudeUsageRecords(): ArtifactUsage[] {
+  const records: ArtifactUsage[] = [];
+  for (const path of claudeJsonlFiles()) records.push(...claudeUsageFromFile(path));
+  return records;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,18 +409,120 @@ function codexMarkersFromFile(path: string): ArtifactMarker[] {
 }
 
 function codexMarkers(): ArtifactMarker[] {
-  const root = codexSessionsRoot();
-  if (root === null) return [];
   const markers: ArtifactMarker[] = [];
-  const walk = (dir: string, depth: number) => {
-    for (const entry of safeReaddir(dir)) {
-      const full = join(dir, entry);
-      if (entry.endsWith(".jsonl")) markers.push(...codexMarkersFromFile(full));
-      else if (depth < 4) walk(full, depth + 1); // date-shaped subdirs
-    }
-  };
-  walk(root, 0);
+  for (const path of codexJsonlFiles()) markers.push(...codexMarkersFromFile(path));
   return markers;
+}
+
+// ---------------------------------------------------------------------------
+// Codex usage records (#150): rollout token usage per line
+// ---------------------------------------------------------------------------
+
+type CodexUsageLine = {
+  timestamp?: unknown;
+  payload?: {
+    type?: unknown;
+    model?: unknown;
+    created_at?: unknown;
+    info?: {
+      last_token_usage?: unknown;
+      created_at?: unknown;
+    } | null;
+    usage?: unknown;
+  } | null;
+  usage?: unknown;
+};
+
+type CodexUsageShape = {
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  cached_input_tokens?: unknown;
+  cache_read?: unknown;
+};
+
+/**
+ * Pick one request-scoped usage object for a rollout line:
+ * `payload.info.last_token_usage` first, then `payload.usage`, then the
+ * top-level `usage`. `total_token_usage` is deliberately never consulted —
+ * it is CUMULATIVE across the session and would over-count every request.
+ */
+function codexLineUsage(parsed: CodexUsageLine): CodexUsageShape | null {
+  const candidates = [
+    parsed.payload?.info?.last_token_usage,
+    parsed.payload?.usage,
+    parsed.usage,
+  ] as const;
+  for (const candidate of candidates) {
+    if (typeof candidate === "object" && candidate !== null) return candidate as CodexUsageShape;
+  }
+  return null;
+}
+
+/**
+ * Usage records from one Codex rollout file. Rollout usage lines do not
+ * carry the model id — it sits on `session_meta` / `turn_context` lines
+ * (`payload.model`, current model wins) — so the model is tracked per file
+ * and attached to each usage line. OpenAI's `input_tokens` INCLUDES cached
+ * tokens, so the record reports `inputTokens = max(0, input_tokens -
+ * cachedTokens)` — the matcher's convention (agent input excludes cached).
+ * Timestamp: `parsed.timestamp`, then `payload.created_at`, then
+ * `payload.info.created_at`; a line with no parseable timestamp, no known
+ * model, or non-finite tokens is skipped. Content fields are never read.
+ */
+function codexUsageFromFile(path: string): ArtifactUsage[] {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const records: ArtifactUsage[] = [];
+  let model: string | null = null;
+  for (const line of text.split("\n")) {
+    let parsed: CodexUsageLine;
+    try {
+      parsed = JSON.parse(line ?? "") as CodexUsageLine;
+    } catch {
+      continue;
+    }
+    if (
+      (parsed.payload?.type === "session_meta" || parsed.payload?.type === "turn_context") &&
+      typeof parsed.payload.model === "string" &&
+      parsed.payload.model !== ""
+    ) {
+      model = parsed.payload.model;
+    }
+    const usage = codexLineUsage(parsed);
+    if (usage === null || model === null) continue;
+    const inputRaw = finiteToken(usage.input_tokens);
+    const output = finiteToken(usage.output_tokens);
+    if (inputRaw === null || output === null) continue;
+    const cached =
+      finiteToken(usage.cached_input_tokens) ?? finiteToken(usage.cache_read) ?? 0;
+    const at = [parsed.timestamp, parsed.payload?.created_at, parsed.payload?.info?.created_at]
+      .map((value) => (typeof value === "string" ? Date.parse(value) : Number.NaN))
+      .find((ms) => !Number.isNaN(ms));
+    if (at === undefined) continue;
+    records.push({
+      model,
+      inputTokens: Math.max(0, inputRaw - cached),
+      outputTokens: output,
+      cachedTokens: cached,
+      at,
+    });
+  }
+  return records;
+}
+
+/**
+ * Every Codex per-request usage record under the sessions root, via the
+ * shared {@link codexJsonlFiles} walk (no second traversal). Fail-open: a
+ * missing directory or unreadable/corrupt file contributes nothing.
+ */
+export function codexUsageRecords(): ArtifactUsage[] {
+  const records: ArtifactUsage[] = [];
+  for (const path of codexJsonlFiles()) records.push(...codexUsageFromFile(path));
+  return records;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,35 +737,12 @@ export async function importArtifacts(
 
 let claudeFileCount = 0;
 function countClaudeFiles(): number {
-  if (claudeFileCount === 0) {
-    const root = claudeProjectsRoot();
-    if (root !== null) {
-      for (const project of safeReaddir(root)) {
-        claudeFileCount += safeReaddir(join(root, project)).filter((f) =>
-          f.endsWith(".jsonl"),
-        ).length;
-      }
-    }
-  }
+  if (claudeFileCount === 0) claudeFileCount = claudeJsonlFiles().length;
   return claudeFileCount;
 }
 
 let codexFileCount = 0;
 function countCodexFiles(): number {
-  if (codexFileCount === 0) {
-    const root = codexSessionsRoot();
-    if (root !== null) {
-      const walk = (dir: string, depth: number): number => {
-        let count = 0;
-        for (const entry of safeReaddir(dir)) {
-          const full = join(dir, entry);
-          if (entry.endsWith(".jsonl")) count += 1;
-          else if (depth < 4) count += walk(full, depth + 1);
-        }
-        return count;
-      };
-      codexFileCount = walk(root, 0);
-    }
-  }
+  if (codexFileCount === 0) codexFileCount = codexJsonlFiles().length;
   return codexFileCount;
 }
