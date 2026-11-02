@@ -140,6 +140,13 @@ async function buildFixturePayload(dir, { extraRows = [] } = {}) {
 }
 
 const EXPECTED_METRICS = [
+  "aiand.harness.behavioral_coverage_ratio",
+  "aiand.harness.cache_hit_ratio",
+  "aiand.harness.cost_per_session_usd",
+  "aiand.harness.error_rate",
+  "aiand.harness.sessions",
+  "aiand.harness.ttft_p95_ms",
+  "aiand.store.requests_total",
   "gen_ai.client.inference.duration",
   "gen_ai.client.inference.operation.input_tokens",
   "gen_ai.client.inference.operation.output_tokens",
@@ -542,8 +549,296 @@ describe("otel export: --endpoint push (#72)", () => {
         },
       );
       assert.equal(calls[0].init.headers["content-type"], "text/plain; version=0.0.4");
-      assert.match(calls[0].init.body, /^# TYPE /);
+      assert.match(calls[0].init.body, /^# (HELP|TYPE) /);
     });
+  });
+});
+
+// #149: export harness gauges, store sync gauges, Prometheus # HELP.
+describe("otel export: harness + store gauges (#149)", () => {
+  let dir;
+  let payload;
+
+  test.before(async () => {
+    // Two harnesses (two masked keys → two agents), one with imported
+    // behavioral markers. Window: fixed instants, 30days range.
+    dir = freshDir("gauges-store");
+    seedAgentKey(dir);
+    await seedStore(dir, [
+      row(T0),
+      row(T1, { cost: "0.0010", cost_value: 0.001 }),
+      row("2026-10-24T11:00:00.000Z", { api_key: "sk-ffff...9999" }),
+    ]);
+    await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
+      const { openStore, storePath: sp } = await import("../dist/store/index.js");
+      const { insertEnvelope } = await import("../dist/store/envelopes.js");
+      const { normalizeEnvelope } = await import("../dist/agents/envelope.js");
+      const opened = openStore(sp());
+      assert.ok(opened.ok);
+      try {
+        // Behavioral coverage for harness `claude`: 5 turns with tool outcomes
+        // (MIN_BEHAVIORAL_TURNS) — 1 error of 5 calls, terminal clean.
+        for (let i = 0; i < 5; i += 1) {
+          insertEnvelope(opened.db, {
+            agent: "claude",
+            envelope: normalizeEnvelope({
+              tools: ["Read"],
+              toolOutcomes: i === 0 ? [{ name: "Read", ok: false }] : [{ name: "Read", ok: true }],
+              terminal: i === 4 ? "clean" : null,
+            }),
+            createdAt: T0,
+          });
+        }
+        // Imported markers for the second harness: one terminal errored.
+        opened.db
+          .prepare(
+            "INSERT OR IGNORE INTO imported_artifacts (dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at) " +
+              "VALUES ('dedup-1', 'unknown', 'sess-1', 'terminal', NULL, 'errored', 1, ?, ?)",
+          )
+          .run(T0, T0);
+        // A sync watermark so aiand.store.sync_lag_seconds is emitted (the
+        // never-synced omission case is its own test below).
+        opened.db
+          .prepare("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_sync_at', ?)")
+          .run(T0);
+      } finally {
+        opened.db.close();
+      }
+    });
+    payload = await withStoreEnv(dir, async () => {
+      const otel = await import("../dist/obs/otel.js");
+      return otel.buildExportPayload({ range: "30days" });
+    });
+  });
+
+  test("metricNames include the harness and store gauges", () => {
+    for (const name of [
+      "aiand.harness.sessions",
+      "aiand.harness.cost_per_session_usd",
+      "aiand.harness.ttft_p95_ms",
+      "aiand.harness.cache_hit_ratio",
+      "aiand.harness.error_rate",
+      "aiand.harness.behavioral_coverage_ratio",
+      "aiand.store.sync_lag_seconds",
+      "aiand.store.requests_total",
+    ]) {
+      assert.ok(payload.metricNames.includes(name), `${name} in metricNames`);
+    }
+  });
+
+  test("uncovered behavioral cells are omitted, covered ones present", () => {
+    const doc = JSON.parse(payload.otlp);
+    const metrics = doc.resourceMetrics[0].scopeMetrics[0].metrics;
+    const agentsOf = (name) => {
+      const metric = metrics.find((m) => m.name === name);
+      if (!metric) return [];
+      return metric.gauge.dataPoints.map(
+        (p) => p.attributes.find((a) => a.key === "agent.name")?.value.stringValue,
+      );
+    };
+    // claude has 5 envelope turns with tool outcomes + terminal → covered.
+    assert.ok(agentsOf("aiand.harness.clean_rate").includes("claude"));
+    assert.ok(agentsOf("aiand.harness.tool_error_rate").includes("claude"));
+    // The imported-marker harness (`unknown`) has only an errored terminal —
+    // clean_rate IS emitted (terminals exist) but… it is: 0/1. The omission
+    // discipline shows on the harness WITHOUT any behavioral source.
+    const cleanAgents = agentsOf("aiand.harness.clean_rate");
+    assert.ok(cleanAgents.includes("unknown"), "imported terminal markers feed clean_rate");
+    // tool_error_rate for `unknown`: imported markers carry no tool markers →
+    // toolErrorRate null → omitted, never a fabricated 0.
+    assert.ok(!agentsOf("aiand.harness.tool_error_rate").includes("unknown"));
+    const toolErr = metrics.find((m) => m.name === "aiand.harness.tool_error_rate");
+    const claudePoint = toolErr.gauge.dataPoints.find((p) =>
+      p.attributes.some((a) => a.key === "agent.name" && a.value.stringValue === "claude"),
+    );
+    assert.equal(Number(claudePoint.asDouble ?? claudePoint.asInt), 0.2, "1 error / 5 calls");
+    // clean_rate for claude: 1 clean / 1 terminal.
+    const clean = metrics.find((m) => m.name === "aiand.harness.clean_rate");
+    const claudeClean = clean.gauge.dataPoints.find((p) =>
+      p.attributes.some((a) => a.key === "agent.name" && a.value.stringValue === "claude"),
+    );
+    assert.equal(Number(claudeClean.asDouble ?? claudeClean.asInt), 1);
+    // Uncovered harness (`unknown` has 1 imported session but envelope side
+    // uncovered): clean_rate present from imported source (0 of 1 clean).
+    const unknownClean = clean.gauge.dataPoints.find((p) =>
+      p.attributes.some((a) => a.key === "agent.name" && a.value.stringValue === "unknown"),
+    );
+    assert.equal(Number(unknownClean.asDouble ?? unknownClean.asInt), 0);
+  });
+
+  test("gauge names and values from known harness rows", () => {
+    const doc = JSON.parse(payload.otlp);
+    const metrics = doc.resourceMetrics[0].scopeMetrics[0].metrics;
+    const gauge = (name) => {
+      const metric = metrics.find((m) => m.name === name);
+      assert.ok(metric, `${name} emitted`);
+      assert.ok(metric.gauge, `${name} is an OTLP gauge (no sum/histogram)`);
+      assert.ok(metric.gauge.dataPoints.length >= 1);
+      return metric.gauge.dataPoints;
+    };
+    // Two harnesses (claude + the unkeyed row → unknown), 2 sessions for
+    // claude (T0/T1 same session, 11:00 is a separate unkeyed harness)…
+    const sessions = gauge("aiand.harness.sessions");
+    const byAgent = Object.fromEntries(
+      sessions.map((p) => [
+        p.attributes.find((a) => a.key === "agent.name")?.value.stringValue,
+        Number(p.asInt),
+      ]),
+    );
+    assert.equal(byAgent["claude"], 1, "claude: one session (T0+T1 within the gap)");
+    assert.equal(byAgent["unknown"], 1, "unkeyed row attributes to unknown");
+    // attrs agent.name ONLY.
+    for (const p of sessions) assert.equal(p.attributes.length, 1);
+    // requests_total: 3 window rows, no attrs.
+    const total = metrics.find((m) => m.name === "aiand.store.requests_total");
+    assert.equal(total.gauge.dataPoints[0].asInt, "3");
+    assert.equal(total.gauge.dataPoints[0].attributes.length, 0);
+    // sync lag: present, non-negative (the fixture store has a last_sync_at
+    // from seeding; its exact value is wall-clock dependent).
+    const lag = metrics.find((m) => m.name === "aiand.store.sync_lag_seconds");
+    assert.ok(lag, "sync_lag_seconds emitted when lastSyncAt exists");
+    const lagValue = Number(lag.gauge.dataPoints[0].asDouble ?? lag.gauge.dataPoints[0].asInt);
+    assert.ok(lagValue >= 0, "lag is a non-negative number of seconds");
+  });
+
+  test("OTLP gauge shape: dataPoints only — no temporality, no isMonotonic", () => {
+    const doc = JSON.parse(payload.otlp);
+    const metric = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
+      (m) => m.name === "aiand.harness.sessions",
+    );
+    assert.ok(metric.gauge, "gauge block");
+    for (const point of metric.gauge.dataPoints) {
+      assert.ok(point.asInt !== undefined || point.asDouble !== undefined);
+      assert.ok(point.timeUnixNano, "point timestamp");
+      assert.equal(point.attributes.length, 1, "agent.name only");
+    }
+    assert.equal(metric.sum, undefined);
+    assert.equal(metric.histogram, undefined);
+    assert.equal(metric.gauge.aggregationTemporality, undefined);
+    assert.equal(metric.gauge.isMonotonic, undefined);
+  });
+
+  test("Prometheus exposition parses: every family has HELP and TYPE, HELP before TYPE", () => {
+    const lines = payload.prometheus.trimEnd().split("\n");
+    const helpIdx = new Map();
+    const typeIdx = new Map();
+    for (const [i, line] of lines.entries()) {
+      let m = /^# HELP ([a-zA-Z_:][a-zA-Z0-9_:]*) /.exec(line);
+      if (m) helpIdx.set(m[1], i);
+      m = /^# TYPE ([a-zA-Z_:][a-zA-Z0-9_:]*) ([a-z]+)/.exec(line);
+      if (m) typeIdx.set(m[1], i);
+    }
+    // Every sample-line metric name (strip _bucket/_sum/_count suffixes) has
+    // both HELP and TYPE; HELP always precedes TYPE.
+    const families = new Set();
+    for (const line of lines) {
+      if (line.startsWith("#")) continue;
+      let name = /^([a-zA-Z_:][a-zA-Z0-9_:]*)/.exec(line)[1];
+      name = name.replace(/_(bucket|sum|count)$/, "");
+      families.add(name);
+    }
+    assert.ok(families.size >= 9, `families present: ${[...families].join(", ")}`);
+    for (const family of families) {
+      const h = helpIdx.get(family);
+      const t = typeIdx.get(family);
+      assert.ok(h !== undefined, `# HELP ${family}`);
+      assert.ok(t !== undefined, `# TYPE ${family}`);
+      assert.ok(h < t, `HELP before TYPE for ${family}`);
+    }
+    assert.ok(typeIdx.get("aiand_harness_sessions") !== undefined);
+    assert.match(
+      lines.find((l) => l.startsWith("# TYPE aiand_harness_sessions")),
+      / gauge$/,
+    );
+    // Counters stay counters, histograms stay histograms.
+    assert.match(lines.find((l) => l.startsWith("# TYPE gen_ai_client_inference_usage_cost")), / counter$/);
+    assert.match(lines.find((l) => l.startsWith("# TYPE gen_ai_server_time_to_first_token")), / histogram$/);
+    // Gauge sample lines: name{agent_name="..."} value.
+    assert.match(
+      lines.find((l) => l.startsWith("aiand_harness_sessions{")),
+      /^aiand_harness_sessions\{agent_name="[^"]*"\} \d+$/,
+    );
+  });
+
+  test("HELP map covers every emitted metric name (no family without HELP)", async () => {
+    const { HELP } = await import("../dist/obs/otel.js");
+    for (const name of payload.metricNames) {
+      assert.ok(
+        typeof HELP[name] === "string" && HELP[name].length > 0,
+        `HELP entry missing for ${name}`,
+      );
+    }
+  });
+
+  test("deterministic: same store + flags → identical payload modulo timestamps", async () => {
+    // Strip UnixNano timestamps AND the wall-clock-derived sync lag (a
+    // function of Date.now(), not of the store).
+    const strip = (s) => {
+      const doc = JSON.parse(s, (key, value) => (/UnixNano$/.test(key) ? "<ts>" : value));
+      for (const metric of doc.resourceMetrics[0].scopeMetrics[0].metrics) {
+        if (metric.name === "aiand.store.sync_lag_seconds") {
+          for (const point of metric.gauge.dataPoints) point.asDouble = "<lag>";
+        }
+      }
+      return JSON.stringify(doc);
+    };
+    const stripProm = (text) =>
+      text
+        .split("\n")
+        .map((line) =>
+          line.startsWith("aiand_store_sync_lag_seconds")
+            ? line.replace(/ [\d.e+-]+$/, " <lag>")
+            : line,
+        )
+        .join("\n");
+    const again = await withStoreEnv(dir, async () => {
+      const otel = await import("../dist/obs/otel.js");
+      return otel.buildExportPayload({ range: "30days" });
+    });
+    assert.equal(strip(payload.otlp), strip(again.otlp));
+    assert.equal(stripProm(payload.prometheus), stripProm(again.prometheus));
+    assert.deepEqual(payload.metricNames, again.metricNames);
+  });
+
+  test("missing lastSyncAt omits sync_lag_seconds; empty store omits harness gauges", async () => {
+    const bare = freshDir("gauges-bare");
+    await withEnv({ AIAND_CONFIG_DIR: bare }, async () => {
+      const { openStore, storePath: sp } = await import("../dist/store/index.js");
+      const opened = openStore(sp());
+      assert.ok(opened.ok);
+      opened.db.close();
+    });
+    const payload2 = await withStoreEnv(bare, async () => {
+      const otel = await import("../dist/obs/otel.js");
+      return otel.buildExportPayload({ range: "30days" });
+    });
+    assert.ok(
+      !payload2.metricNames.includes("aiand.store.sync_lag_seconds"),
+      "never-synced store omits lag — never zeroed",
+    );
+    assert.ok(
+      !payload2.metricNames.includes("aiand.harness.sessions"),
+      "no harness rows → no harness gauges",
+    );
+    // Store opened → requests_total is a real measurement of 0.
+    assert.ok(payload2.metricNames.includes("aiand.store.requests_total"));
+    const doc = JSON.parse(payload2.otlp);
+    const total = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
+      (m) => m.name === "aiand.store.requests_total",
+    );
+    assert.equal(total.gauge.dataPoints[0].asInt, "0");
+  });
+
+  test("cost gauge follows currency discipline; behavioral coverage counts", async () => {
+    const doc = JSON.parse(payload.otlp);
+    const metrics = doc.resourceMetrics[0].scopeMetrics[0].metrics;
+    const cost = metrics.find((m) => m.name === "aiand.harness.cost_per_session_usd");
+    assert.ok(cost, "cost gauge emitted (fixture rows are usd)");
+    for (const p of cost.gauge.dataPoints) {
+      assert.ok(Number(p.asDouble ?? p.asInt) >= 0);
+    }
+    const coverage = metrics.find((m) => m.name === "aiand.harness.behavioral_coverage_ratio");
+    assert.ok(coverage, "coverage gauge emitted (window has requests)");
   });
 });
 
@@ -587,6 +882,6 @@ describe("otel export: sync fail-open arms (#91)", () => {
     );
     assert.equal(code, 0, stderr);
     assert.match(stderr, /Warning: sync failed/);
-    assert.match(stdout, /^# TYPE /);
+    assert.match(stdout, /^# (HELP|TYPE) /);
   });
 });

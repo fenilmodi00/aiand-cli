@@ -1,8 +1,16 @@
 import { agentForMaskedKey } from "../api/agent-keys.js";
 import { VERSION } from "../api/client.js";
 import { LOG_RANGES } from "../api/logs.js";
-import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
+import { listEnvelopesFromDb } from "../store/envelopes.js";
+import { listImportedArtifactsFromDb } from "../store/imported-artifacts.js";
+import {
+  createdSince,
+  createdUntilIncl,
+  openStore,
+  storePath,
+} from "../store/index.js";
 import { listSessions, type SessionRow } from "../store/sessions.js";
+import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
 
 /**
@@ -110,6 +118,7 @@ type RequestRow = {
   cached_tokens: number | null;
   cost: string | null;
   cost_value: number | null;
+  currency: string | null;
   created_at: string;
 };
 
@@ -123,7 +132,7 @@ function costOf(row: RequestRow): number | null {
 /** One metric series with its OTel identity: name + sorted attributes. */
 type Series = {
   name: string;
-  kind: "sum" | "histogram";
+  kind: "sum" | "gauge" | "histogram";
   unit: string;
   attrs: [string, string][]; // sorted by key, insertion-stable order
   value?: number;
@@ -385,6 +394,153 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
 }
 
 // ---------------------------------------------------------------------------
+// # HELP text (ticket #149): every emitted family gets one, printed before
+// its # TYPE. Canonical metric name → help text.
+// ---------------------------------------------------------------------------
+
+export const HELP: Record<string, string> = {
+  "gen_ai.client.inference.duration":
+    "Time per inference operation (server latency), in seconds — gateway latency_ms.",
+  "gen_ai.client.inference.operation.input_tokens":
+    "Distribution of input tokens per inference operation (gateway-verbatim sums; input includes cached).",
+  "gen_ai.client.inference.operation.output_tokens":
+    "Distribution of output tokens per inference operation.",
+  "gen_ai.client.inference.usage.cache_read_tokens":
+    "Cache-read (cached) tokens summed over the window — its own series per semconv, never subtracted from input.",
+  "gen_ai.client.inference.usage.cost":
+    "Gateway-computed per-request cost summed over the window (USD).",
+  "gen_ai.client.inference.usage.input_tokens":
+    "Input tokens summed over the window — verbatim gateway sum, INCLUDES cached tokens.",
+  "gen_ai.client.inference.usage.output_tokens":
+    "Output tokens summed over the window.",
+  "gen_ai.server.request.duration":
+    "Server-side request duration in seconds — the gateway's latency_ms.",
+  "gen_ai.server.time_to_first_token":
+    "Time to first token in seconds — the gateway's ttft_ms; rows without ttft are excluded from the histogram, not zeroed.",
+  "aiand.harness.sessions":
+    "Number of heuristic time-gap sessions attributed to the harness in the window (#66 sessionization).",
+  "aiand.harness.cost_per_session_usd":
+    "Median (p50) cost per session in USD — only when the store's cost rows are USD or currency-less.",
+  "aiand.harness.ttft_p95_ms":
+    "95th percentile time to first token in milliseconds across the harness's window rows.",
+  "aiand.harness.cache_hit_ratio":
+    "cached_tokens / input_tokens for the harness's window rows (estimated heuristic).",
+  "aiand.harness.error_rate":
+    "Non-2xx excluding 429 requests / all requests for the harness (estimated heuristic).",
+  "aiand.harness.clean_rate":
+    "Clean-terminal sessions / all terminal sessions (clean+aborted+errored); omitted when no terminal information.",
+  "aiand.harness.tool_error_rate":
+    "Errored tool outcomes / captured tool outcomes; omitted when the behavioral source does not cover tool outcomes.",
+  "aiand.harness.behavioral_coverage_ratio":
+    "Behaviorally covered requests / total requests in the window; omitted when there are no requests.",
+  "aiand.store.sync_lag_seconds":
+    "Seconds since the local store's last successful sync (local store freshness, NOT gateway freshness); omitted when the store has never synced.",
+  "aiand.store.requests_total":
+    "Request rows in the export window held by the local store.",
+};
+
+// ---------------------------------------------------------------------------
+// Harness + store gauges (#149)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-harness and store-level gauges: point-in-time readings from one
+ * store read, NOT windowed sums. Attributes are `agent.name` only — the
+ * collision safety the gen_ai counters need (masked key + model + session)
+ * does not apply: a gauge per harness is the aggregation the compare surface
+ * already shows, and a stable label set keeps the series foldable in
+ * Prometheus. Absent data is omitted (no cost → no cost gauge; no terminal
+ * info → no clean-rate gauge); zeros are never fabricated for uncovered
+ * cells. Non-finite values (p95 over an empty set) are likewise omitted.
+ */
+function buildGauges(stats: HarnessStats): Series[] {
+  const series: Series[] = [];
+
+  for (const harness of stats.harnesses) {
+    const attrs: [string, string][] = [["agent.name", harness.harness]];
+
+    series.push({ name: "aiand.harness.sessions", kind: "gauge", unit: "{session}", attrs, value: harness.sessions });
+
+    // Cost gauge: emit-only-where-data-exists, and only in the store's
+    // single currency (usd or currency-less).
+    if (
+      harness.costPerSession.p50 !== null &&
+      (harness.currency === null || harness.currency.toLowerCase() === "usd")
+    ) {
+      series.push({
+        name: "aiand.harness.cost_per_session_usd",
+        kind: "gauge",
+        unit: "USD",
+        attrs,
+        value: harness.costPerSession.p50,
+      });
+    }
+
+    if (harness.ttft.p95 !== null) {
+      series.push({ name: "aiand.harness.ttft_p95_ms", kind: "gauge", unit: "ms", attrs, value: harness.ttft.p95 });
+    }
+
+    if (harness.requests > 0) {
+      series.push({ name: "aiand.harness.cache_hit_ratio", kind: "gauge", unit: "1", attrs, value: harness.cacheHitRatio });
+      series.push({ name: "aiand.harness.error_rate", kind: "gauge", unit: "1", attrs, value: harness.errorRate });
+    }
+
+    // Behavioral cells ride the #146 source precedence: envelope turns ≥
+    // MIN_BEHAVIORAL_TURNS, else imported markers, else uncovered (omitted).
+    const behavioral = harness.behavioral;
+    if (behavioral.cleanRate !== null) {
+      series.push({ name: "aiand.harness.clean_rate", kind: "gauge", unit: "1", attrs, value: behavioral.cleanRate });
+    }
+    if (behavioral.toolErrorRate !== null) {
+      series.push({
+        name: "aiand.harness.tool_error_rate",
+        kind: "gauge",
+        unit: "1",
+        attrs,
+        value: behavioral.toolErrorRate,
+      });
+    }
+  }
+
+  // Window-level behavioral coverage: covered requests / total requests;
+  // a requestless window omits the gauge rather than asserting 0.
+  const coverage = stats.behavioralCoverage;
+  if (coverage.total > 0) {
+    series.push({
+      name: "aiand.harness.behavioral_coverage_ratio",
+      kind: "gauge",
+      unit: "1",
+      attrs: [],
+      value: coverage.ratio ?? 0,
+    });
+  }
+
+  return series;
+}
+
+/**
+ * Store freshness gauges, no attributes. sync_lag is local store freshness
+ * (now − last_sync_at) — NOT gateway freshness — and is omitted entirely when
+ * the store has never synced, never zeroed.
+ */
+function buildStoreGauges(lastSyncAt: string | null): Series[] {
+  const series: Series[] = [];
+  if (lastSyncAt !== null) {
+    const parsed = Date.parse(lastSyncAt);
+    if (!Number.isNaN(parsed)) {
+      series.push({
+        name: "aiand.store.sync_lag_seconds",
+        kind: "gauge",
+        unit: "s",
+        attrs: [],
+        value: Math.max(0, (Date.now() - parsed) / 1000),
+      });
+    }
+  }
+  return series;
+}
+
+// ---------------------------------------------------------------------------
 // Serialization: OTLP/HTTP JSON (protobuf-JSON shape)
 // ---------------------------------------------------------------------------
 
@@ -410,6 +566,19 @@ function serializeOtlp(series: readonly Series[], temporality: Temporality): unk
   const metricJson = [...metrics.entries()].map(([name, list]) => {
     const first = list[0];
     if (!first) return {};
+    if (first.kind === "gauge") {
+      return {
+        name,
+        unit: first.unit,
+        gauge: {
+          dataPoints: list.map((s) => ({
+            attributes: attrJson(s.attrs),
+            ...valuePoint(s.value ?? 0),
+            timeUnixNano: nowNs,
+          })),
+        },
+      };
+    }
     if (first.kind === "sum") {
       return {
         name,
@@ -493,10 +662,19 @@ function serializePrometheus(series: readonly Series[]): string {
     if (!first) continue;
     if (!seen.has(metric)) {
       seen.add(metric);
-      lines.push(`# TYPE ${metric} ${first.kind === "sum" ? "counter" : "histogram"}`);
+      // #149: every emitted family carries a HELP line, before its TYPE.
+      const help = HELP[name];
+      if (help !== undefined) lines.push(`# HELP ${metric} ${help}`);
+      const type =
+        first.kind === "sum" ? "counter" : first.kind === "gauge" ? "gauge" : "histogram";
+      lines.push(`# TYPE ${metric} ${type}`);
       if (first.unit !== "1") lines.push(`# UNIT ${metric} ${first.unit}`);
     }
     if (first.kind === "sum") {
+      for (const s of list) {
+        lines.push(`${metric}${promLabels(s.attrs)} ${s.value ?? 0}`);
+      }
+    } else if (first.kind === "gauge") {
       for (const s of list) {
         lines.push(`${metric}${promLabels(s.attrs)} ${s.value ?? 0}`);
       }
@@ -527,8 +705,9 @@ function serializePrometheus(series: readonly Series[]): string {
 
 /**
  * Read the window's rows from the local store in one pass, sessionize, build
- * the gen_ai family, and serialize both wire formats. Never throws at the caller
- * for a degraded store — an unavailable store exports an empty payload.
+ * the gen_ai family plus the #149 harness/store gauges, and serialize both
+ * wire formats. Never throws at the caller for a degraded store — an
+ * unavailable store exports an empty payload.
  */
 export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
   const temporality = opts.temporality ?? "delta";
@@ -537,27 +716,57 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
   const sinceMs = opts.since !== undefined ? Date.parse(opts.since) : defaultSince;
   const untilMs = opts.until !== undefined ? Date.parse(opts.until) : now;
 
+  const sinceIso = new Date(sinceMs).toISOString();
+  const untilIso = new Date(untilMs).toISOString();
+
   const opened = openStore(storePath());
   let rows: RequestRow[] = [];
   let sessions: readonly SessionRow[] = [];
+  let harnessStats: HarnessStats | null = null;
+  let lastSyncAt: string | null = null;
   if (opened.ok) {
     const db = opened.db;
     try {
       rows = db
         .prepare(
           "SELECT id, model, api_key, endpoint, status_code, ttft_ms, latency_ms, input_tokens, " +
-            "output_tokens, cached_tokens, cost, cost_value, created_at FROM requests " +
+            "output_tokens, cached_tokens, cost, cost_value, currency, created_at FROM requests " +
             `WHERE ${createdSince()} AND ${createdUntilIncl()} ORDER BY created_at, id`,
         )
-        .all(
-          new Date(sinceMs).toISOString(),
-          new Date(untilMs).toISOString(),
-        ) as unknown as RequestRow[];
+        .all(sinceIso, untilIso) as unknown as RequestRow[];
       const listed = listSessions({
-        since: new Date(sinceMs).toISOString(),
-        until: new Date(untilMs).toISOString(),
+        since: sinceIso,
+        until: untilIso,
       });
       sessions = listed.sessions;
+
+      // #149: the behavioral sources ride the SAME db handle — envelopes and
+      // imported markers join the one-read discipline; obs never imports
+      // from commands/, the window mapping happens here.
+      const envelopes = listEnvelopesFromDb(db, { since: sinceIso, until: untilIso }).map(
+        (row) => ({ agent: row.agent, model: row.model, envelope: row.envelope }),
+      );
+      const importedMarkers = listImportedArtifactsFromDb(db, {
+        since: sinceIso,
+        until: untilIso,
+      });
+      // Harness gauges read the same rows the gen_ai family reads; the
+      // window's range/gap default (10-minute time-gap sessionization) and
+      // the store watermark ride along for provenance.
+      harnessStats = buildHarnessStats(rows, {
+        gapMinutes: 10,
+        storeWatermark: null,
+        range: { since: sinceIso, until: untilIso },
+        envelopes,
+        importedMarkers,
+      });
+      // Local store freshness (not gateway freshness) for sync_lag_seconds —
+      // read inside the SAME handle; a missing sync_meta row means the store
+      // has never synced and the gauge is omitted, never zeroed.
+      const syncRow = db
+        .prepare("SELECT value FROM sync_meta WHERE key = 'last_sync_at'")
+        .get() as Record<string, unknown> | undefined;
+      lastSyncAt = typeof syncRow?.value === "string" ? syncRow.value : null;
     } finally {
       try {
         db.close();
@@ -572,11 +781,25 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
   // until/since clips mid-session — cost/token series then cover only the
   // window's rows, which is the documented window semantics.
   const series = buildSeries(rows, sessions);
+  if (harnessStats !== null) {
+    series.push(...buildGauges(harnessStats));
+    series.push(...buildStoreGauges(lastSyncAt));
+    // requests_total: window rows the store holds — a gauge reading, present
+    // whenever the store opened (even at zero rows: the store answered, 0 is
+    // a measurement, not a fabrication).
+    series.push({
+      name: "aiand.store.requests_total",
+      kind: "gauge",
+      unit: "{request}",
+      attrs: [],
+      value: rows.length,
+    });
+  }
   const otlp = serializeOtlp(series, temporality);
   return {
     temporality,
-    windowStart: new Date(sinceMs).toISOString(),
-    windowEnd: new Date(untilMs).toISOString(),
+    windowStart: sinceIso,
+    windowEnd: untilIso,
     rows: rows.length,
     otlp: `${JSON.stringify(otlp, null, 2)}\n`,
     prometheus: serializePrometheus(series),
