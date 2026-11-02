@@ -1093,4 +1093,290 @@ describe("local-usage correlation", () => {
     assert.equal(listed.sessions.length, 1);
     assert.equal(listed.sessions[0].agent, "shared");
   });
+
+  // -- Claude Code / Codex local usage readers (#150) ------------------------
+
+  /**
+   * One Claude Code project JSONL under `<home>/.claude/projects/<proj>/`.
+   * The assistant line mirrors the live schema: `message.usage.input_tokens`
+   * EXCLUDES cached tokens — gateway input = input + cacheRead, gateway
+   * cached = cache_read_input_tokens.
+   */
+  function writeClaudeSession(home, projDir, lines) {
+    const projects = join(home, ".claude", "projects", projDir);
+    mkdirSync(projects, { recursive: true });
+    writeFileSync(join(projects, "2026-10-20T10-00-00_s1.jsonl"), lines.join("\n"));
+  }
+
+  function claudeLine({ ts, model = "zai-org/glm-5.3", input, output, cacheRead = 0 }) {
+    return JSON.stringify({
+      type: "assistant",
+      sessionId: "claude-ses-1",
+      timestamp: ts,
+      message: {
+        role: "assistant",
+        model,
+        usage: {
+          input_tokens: input,
+          output_tokens: output,
+          cache_read_input_tokens: cacheRead,
+        },
+      },
+    });
+  }
+
+  /** A Claude record matching `storeRow()`'s defaults. */
+  function matchingClaudeLine(overrides = {}) {
+    return claudeLine({
+      ts: "2026-10-20T10:00:03.000Z",
+      input: 1200,
+      output: 300,
+      cacheRead: 200,
+      ...overrides,
+    });
+  }
+
+  /**
+   * One Codex rollout under `<home>/.codex/sessions/<year>/<month>/<day>/`.
+   * OpenAI usage: `input_tokens` INCLUDES cached tokens; the reader
+   * subtracts them (`gateway cached = cached_input_tokens`).
+   */
+  function writeCodexRollout(home, lines) {
+    const sessions = join(home, ".codex", "sessions", "2026", "10", "20");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(join(sessions, "rollout-2026-10-20T10-00-00.jsonl"), lines.join("\n"));
+  }
+
+  function codexSessionMetaLine({ model = "zai-org/glm-5.3" } = {}) {
+    return JSON.stringify({
+      timestamp: "2026-10-20T09:59:00.000Z",
+      type: "session_meta",
+      payload: { type: "session_meta", model },
+    });
+  }
+
+  function codexUsageLine({ ts, input, output, cached, shape = "last_token_usage" }) {
+    const usage = { input_tokens: input, output_tokens: output, cached_input_tokens: cached };
+    if (shape === "last_token_usage") {
+      return JSON.stringify({
+        timestamp: ts,
+        type: "event_msg",
+        payload: { type: "event_msg", info: { last_token_usage: usage } },
+      });
+    }
+    if (shape === "payload") {
+      return JSON.stringify({ timestamp: ts, type: "event_msg", payload: { usage } });
+    }
+    return JSON.stringify({ timestamp: ts, type: "event_msg", usage });
+  }
+
+  /** A Codex record matching `storeRow()`'s defaults (OpenAI semantics). */
+  function matchingCodexLine(overrides = {}) {
+    return codexUsageLine({
+      ts: "2026-10-20T10:00:03.000Z",
+      input: 1400, // INCLUDES cached 200; the reader reports input 1200
+      output: 300,
+      cached: 200,
+      ...overrides,
+    });
+  }
+
+  test("a Claude Code session record refines shared -> claude", async () => {
+    const dir = join(box.dir, "claude-usage");
+    const home = join(box.dir, "home-claude-usage");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeClaudeSession(home, "--D--proj--", [
+      // A content line that must never be read into any record:
+      JSON.stringify({ type: "user", timestamp: "2026-10-20T09:59:00.000Z", message: { role: "user", content: "SECRET-CLAUDE-PROMPT" } }),
+      matchingClaudeLine(),
+    ]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.claude, 1);
+    assert.equal(byHarness.shared, undefined);
+    const db = await openStoreFor(dir);
+    const stored = db.prepare("SELECT attributed_agent FROM requests WHERE id = 'row-1'").get();
+    db.close();
+    assert.equal(stored.attributed_agent, "claude");
+  });
+
+  test("a Codex rollout record refines shared -> codex (input excludes cached)", async () => {
+    const dir = join(box.dir, "codex-usage");
+    const home = join(box.dir, "home-codex-usage");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeCodexRollout(home, [codexSessionMetaLine(), matchingCodexLine()]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.codex, 1);
+    assert.equal(byHarness.shared, undefined);
+    const db = await openStoreFor(dir);
+    const stored = db.prepare("SELECT attributed_agent FROM requests WHERE id = 'row-1'").get();
+    db.close();
+    assert.equal(stored.attributed_agent, "codex");
+  });
+
+  test("codex usage falls back to payload.usage then top-level usage", async () => {
+    const { collectLocalUsageRecords } = await import("../dist/store/local-usage.js");
+    const home = join(box.dir, "home-codex-shapes");
+    mkdirSync(home, { recursive: true });
+    writeCodexRollout(home, [
+      codexSessionMetaLine(),
+      codexUsageLine({ ts: "2026-10-20T10:00:03.000Z", input: 1400, output: 300, cached: 200, shape: "payload" }),
+      codexUsageLine({ ts: "2026-10-20T10:05:03.000Z", input: 1400, output: 300, cached: 200, shape: "top" }),
+      // total_token_usage is cumulative and must NEVER yield a record:
+      JSON.stringify({
+        timestamp: "2026-10-20T10:06:03.000Z",
+        type: "event_msg",
+        payload: { type: "event_msg", info: { total_token_usage: { input_tokens: 99000, output_tokens: 300 } } },
+      }),
+    ]);
+    const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
+    const codex = records.filter((r) => r.agent === "codex");
+    assert.equal(codex.length, 2);
+    for (const record of codex) {
+      assert.deepEqual(
+        {
+          model: record.model,
+          inputTokens: record.inputTokens,
+          outputTokens: record.outputTokens,
+          cachedTokens: record.cachedTokens,
+        },
+        { model: "zai-org/glm-5.3", inputTokens: 1200, outputTokens: 300, cachedTokens: 200 },
+      );
+    }
+  });
+
+  test("claude + codex records refine their own rows in one store", async () => {
+    const dir = join(box.dir, "claude-codex-both");
+    const home = join(box.dir, "home-both");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeClaudeSession(home, "--D--proj--", [matchingClaudeLine()]);
+    writeCodexRollout(home, [
+      codexSessionMetaLine(),
+      // Different token shape from the claude record, so each row matches
+      // exactly one candidate (output tokens are the matcher's exact gate).
+      codexUsageLine({ ts: "2026-10-20T10:00:04.000Z", input: 1100, output: 250, cached: 100 }),
+    ]);
+    await insertRows(dir, [
+      storeRow({ id: "row-claude", endpoint: "/v1/messages" }),
+      storeRow({
+        id: "row-codex",
+        endpoint: "/v1/responses",
+        output_tokens: 250,
+        input_tokens: 1100,
+        cached_tokens: 100,
+        created_at: "2026-10-20T10:00:12.000Z",
+      }),
+    ]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.claude, 1);
+    assert.equal(byHarness.codex, 1);
+    assert.equal(byHarness.shared, undefined);
+  });
+
+  test("claude and codex records agreeing on one row stay shared", async () => {
+    const dir = join(box.dir, "claude-codex-ambiguous");
+    const home = join(box.dir, "home-ambiguous-cc");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    // Both harnesses log an identical record for the same request — the
+    // evidence cannot pick one, so the row keeps its honest shared label.
+    writeClaudeSession(home, "--D--proj--", [matchingClaudeLine()]);
+    writeCodexRollout(home, [codexSessionMetaLine(), matchingCodexLine()]);
+    await insertRows(dir, [storeRow()]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.shared, 1);
+    assert.equal(byHarness.claude, undefined);
+    assert.equal(byHarness.codex, undefined);
+  });
+
+  test("missing claude/codex directories contribute nothing and do not throw", async () => {
+    const { collectLocalUsageRecords } = await import("../dist/store/local-usage.js");
+    const home = join(box.dir, "home-no-cc");
+    mkdirSync(home, { recursive: true }); // no .claude, no .codex
+    const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
+    assert.equal(records.filter((r) => r.agent === "claude" || r.agent === "codex").length, 0);
+  });
+
+  test("corrupt and usage-less lines are skipped without throwing", async () => {
+    const { collectLocalUsageRecords } = await import("../dist/store/local-usage.js");
+    const home = join(box.dir, "home-corrupt-cc");
+    mkdirSync(home, { recursive: true });
+    writeClaudeSession(home, "--D--proj--", [
+      "not json at all",
+      JSON.stringify({ type: "assistant", timestamp: "2026-10-20T10:00:03.000Z", message: { role: "assistant", model: "zai-org/glm-5.3" } }),
+      matchingClaudeLine({ input: Number.NaN }),
+    ]);
+    writeCodexRollout(home, [
+      codexSessionMetaLine(),
+      "garbage {",
+      // no timestamp anywhere parseable:
+      JSON.stringify({ type: "event_msg", payload: { info: { last_token_usage: { input_tokens: 10, output_tokens: 5 } } } }),
+    ]);
+    const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
+    assert.equal(records.filter((r) => r.agent === "claude" || r.agent === "codex").length, 0);
+  });
 });

@@ -3,6 +3,9 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHARED_AGENT } from "../api/agent-keys.js";
+// Zero-copy reuse of the marker readers' file walks (#150): the usage
+// extraction lives next to the markers it shares traversal with.
+import { claudeUsageRecords, codexUsageRecords } from "./artifact-import.js";
 import { agentHome } from "../fsutil.js";
 
 /**
@@ -79,7 +82,9 @@ export const TIME_TOLERANCE_MS = 2 * 60 * 1000;
 export const INPUT_TOLERANCE_RATIO = 0.05;
 
 /** The standing caveat paired with any correlation coverage report. */
-export const CORRELATION_NOTE = "harness refinement also reads the agents' own local usage records";
+export const CORRELATION_NOTE =
+  "harness refinement also reads the agents' own local usage records " +
+  "(omp, pi, Claude Code, Codex, opencode)";
 
 // ---------------------------------------------------------------------------
 // Readers — one per agent's local store, all fail-open
@@ -389,6 +394,39 @@ function parseOpencodeRow(row: {
   };
 }
 
+/**
+ * Claude Code records from the shared marker-reader walk
+ * (`claudeUsageRecords` in src/store/artifact-import.ts): the agent's
+ * `input_tokens` EXCLUDES cached tokens, matching the matcher's convention
+ * directly. Fail-open: a missing directory contributes nothing.
+ */
+function claudeCodeRecords(): LocalUsageRecord[] {
+  return claudeUsageRecords().map((usage) => ({
+    agent: "claude",
+    model: usage.model,
+    at: usage.at,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedTokens: usage.cachedTokens,
+  }));
+}
+
+/**
+ * Codex records from the same shared walk (`codexUsageRecords`): the
+ * OpenAI input INCLUDES cached tokens, so the extraction already subtracted
+ * them (`max(0, input_tokens - cached)`) — this mapper is a straight lift.
+ */
+function codexRecords(): LocalUsageRecord[] {
+  return codexUsageRecords().map((usage) => ({
+    agent: "codex",
+    model: usage.model,
+    at: usage.at,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedTokens: usage.cachedTokens,
+  }));
+}
+
 function toMs(value: string | number): number | null {
   if (typeof value === "number" && Number.isFinite(value))
     return value > 1e12 ? value : value * 1000;
@@ -408,14 +446,19 @@ function safeReaddir(dir: string): string[] {
 }
 
 /**
- * Every local record from every consulted agent's store. A source with no
- * local directory (the agent never ran here) contributes nothing.
+ * Every local record from every consulted agent's store — omp/pi session
+ * JSONL, opencode's SQLite store, Claude Code project JSONL, and Codex
+ * rollout JSONL (the latter two via the shared marker-reader walks). A
+ * source with no local directory (the agent never ran here) contributes
+ * nothing.
  */
 export function collectLocalUsageRecords(): LocalUsageRecord[] {
   return [
     ...chatJsonlRecords(ompSessionsRoot(), "omp"),
     ...chatJsonlRecords(piSessionsRoot(), "pi"),
     ...opencodeRecords(),
+    ...claudeCodeRecords(),
+    ...codexRecords(),
   ];
 }
 

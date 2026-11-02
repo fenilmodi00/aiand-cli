@@ -401,4 +401,171 @@ describe("artifact import (migration 0008, #133)", () => {
       },
     );
   });
+
+  // -- usage readers (#150) ----------------------------------------------------
+
+  /** Claude usage JSONL: usage lines + skip cases + a secret content line. */
+  function writeClaudeUsageFixture(dir) {
+    mkdirSync(dir, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:00:00.000Z",
+        message: {
+          role: "assistant",
+          model: "zai-org/glm-5.3",
+          usage: { input_tokens: 1200, output_tokens: 300, cache_read_input_tokens: 200 },
+        },
+      }),
+      // missing usage object — skipped
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:01:00.000Z",
+        message: { role: "assistant", model: "zai-org/glm-5.3" },
+      }),
+      // missing model — skipped
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:02:00.000Z",
+        message: { role: "assistant", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+      // missing timestamp — skipped
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+      // non-finite tokens — skipped; cache_read missing → 0
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:03:00.000Z",
+        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 5, output_tokens: "many" } },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:04:00.000Z",
+        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 7, output_tokens: 2 } },
+      }),
+      // The content line the reader must never interpret as a record.
+      JSON.stringify({
+        type: "user",
+        sessionId: "ses-u1",
+        timestamp: "2026-10-29T10:05:00.000Z",
+        message: { role: "user", content: "SECRET-USAGE-PROMPT-XYZZY" },
+      }),
+      "not json at all",
+    ];
+    writeFileSync(join(dir, "ses-u1.jsonl"), `${lines.join("\n")}\n`);
+  }
+
+  test("claudeUsageRecords: per-line usage, skip rules, cached default 0", async () => {
+    const claudeDir = join(box.dir, "usage-claude-home", ".claude", "projects", "proj");
+    writeClaudeUsageFixture(claudeDir);
+    await withEnv(
+      {
+        AIAND_CLAUDE_DIR: join(box.dir, "usage-claude-home", ".claude", "projects"),
+        AIAND_CODEX_DIR: undefined,
+      },
+      async () => {
+        const { claudeUsageRecords } = await import("../dist/store/artifact-import.js");
+        const records = claudeUsageRecords();
+        assert.equal(records.length, 2);
+        assert.deepEqual(records[0], {
+          model: "zai-org/glm-5.3",
+          inputTokens: 1200,
+          outputTokens: 300,
+          cachedTokens: 200,
+          at: Date.parse("2026-10-29T10:00:00.000Z"),
+        });
+        assert.deepEqual(
+          { in: records[1].inputTokens, out: records[1].outputTokens, cached: records[1].cachedTokens },
+          { in: 7, out: 2, cached: 0 },
+        );
+      },
+    );
+  });
+
+  test("codexUsageRecords: last_token_usage, payload/top fallbacks, cached subtraction", async () => {
+    const codexDir = join(box.dir, "usage-codex-home", ".codex", "sessions", "2026", "10", "29");
+    mkdirSync(codexDir, { recursive: true });
+    const model = JSON.stringify({
+      timestamp: "2026-10-29T11:00:00.000Z",
+      type: "session_meta",
+      payload: { type: "session_meta", model: "zai-org/glm-5.3" },
+    });
+    // payload.info.last_token_usage wins; OpenAI input INCLUDES cached.
+    const ltu = JSON.stringify({
+      timestamp: "2026-10-29T11:01:00.000Z",
+      type: "event_msg",
+      payload: {
+        type: "event_msg",
+        info: { last_token_usage: { input_tokens: 1400, output_tokens: 300, cached_input_tokens: 200 } },
+      },
+    });
+    // fallback payload.usage; cache_read fallback name
+    const pu = JSON.stringify({
+      timestamp: "2026-10-29T11:02:00.000Z",
+      type: "event_msg",
+      payload: { usage: { input_tokens: 500, output_tokens: 50, cache_read: 100 } },
+    });
+    // fallback top-level usage; created_at timestamp fallback on payload
+    const tu = JSON.stringify({
+      type: "event_msg",
+      payload: { created_at: "2026-10-29T11:03:00.000Z", usage: { input_tokens: 30, output_tokens: 5 } },
+    });
+    // total_token_usage is cumulative and must never yield a record
+    const ttu = JSON.stringify({
+      timestamp: "2026-10-29T11:04:00.000Z",
+      type: "event_msg",
+      payload: { info: { total_token_usage: { input_tokens: 99000, output_tokens: 950 } } },
+    });
+    writeFileSync(join(codexDir, "rollout-u1.jsonl"), [model, ltu, pu, tu, ttu, "garbage {"].join("\n"));
+    await withEnv(
+      {
+        AIAND_CODEX_DIR: join(box.dir, "usage-codex-home", ".codex", "sessions"),
+        AIAND_CLAUDE_DIR: undefined,
+      },
+      async () => {
+        const { codexUsageRecords } = await import("../dist/store/artifact-import.js");
+        const records = codexUsageRecords();
+        assert.equal(records.length, 3);
+        assert.deepEqual(records[0], {
+          model: "zai-org/glm-5.3",
+          inputTokens: 1200, // 1400 - 200 cached
+          outputTokens: 300,
+          cachedTokens: 200,
+          at: Date.parse("2026-10-29T11:01:00.000Z"),
+        });
+        assert.deepEqual(
+          { in: records[1].inputTokens, cached: records[1].cachedTokens, at: records[1].at },
+          { in: 400, cached: 100, at: Date.parse("2026-10-29T11:02:00.000Z") },
+        );
+        assert.deepEqual(
+          { in: records[2].inputTokens, cached: records[2].cachedTokens, at: records[2].at },
+          { in: 30, cached: 0, at: Date.parse("2026-10-29T11:03:00.000Z") },
+        );
+      },
+    );
+  });
+
+  test("usage readers fail open on missing directories", async () => {
+    await withEnv(
+      {
+        AIAND_CLAUDE_DIR: join(box.dir, "usage-nowhere-claude"),
+        AIAND_CODEX_DIR: join(box.dir, "usage-nowhere-codex"),
+      },
+      async () => {
+        const { claudeUsageRecords, codexUsageRecords } = await import(
+          "../dist/store/artifact-import.js"
+        );
+        assert.deepEqual(claudeUsageRecords(), []);
+        assert.deepEqual(codexUsageRecords(), []);
+      },
+    );
+  });
 });
