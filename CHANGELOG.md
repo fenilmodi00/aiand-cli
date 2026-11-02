@@ -181,7 +181,7 @@ breaking changes while the command surface settles.
   their harness when the model and usage match uniquely, without changing
   the ambiguity rules.
 - `harness compare --bootstrap <k>` reports task-clustered bootstrap
-  intervals and pass@k/pass^k for runs of the same task.
+  intervals and pass@k and pass^k for runs of the same task.
 
 ### Changed (UX)
 - Comparisons at small n no longer crown a point-estimate winner: when 95%

@@ -57,7 +57,7 @@ export type CellStats = {
   infra: number;
   /** Fewer than 3 trials — the result is not distinguishable yet. */
   lowN: boolean;
-  /** The k pass@k/pass^k were computed for (1 when not requested) (#152). */
+  /** The k pass@k and pass^k were computed for (1 when not requested) (#152). */
   k: number;
   /** Macro-averaged unbiased pass@k = 1 − C(n−c,k)/C(n,k); null when no
    * task has n ≥ k or 0 solves make it undefined (#152). */

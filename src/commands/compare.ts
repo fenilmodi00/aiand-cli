@@ -424,7 +424,7 @@ type TableJsonCell = {
   retryRate: number | null;
   failures: Partial<Record<FailureMode, number>>;
   infra: number;
-  /** The k pass@k/pass^k were computed for (#152). */
+  /** The k pass@k and pass^k were computed for (#152). */
   k: number;
   passAtK: number | null;
   passPowK: number | null;
@@ -471,7 +471,7 @@ async function runTable(argv: string[]): Promise<void> {
   if (bool(parsed, "help")) return out(help);
 
   // #152: --k is the canonical flag; --bootstrap K is an alias with the same
-  // meaning (cluster k over tasks, pass@k/pass^k).
+  // meaning (cluster k over tasks, pass@k and pass^k).
   const kRaw = int(parsed, "k") ?? int(parsed, "bootstrap") ?? 1;
   if (kRaw < 1) {
     throw new CliError("--k must be a positive whole number.", { hint: "Usage: --k 3" });

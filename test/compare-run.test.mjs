@@ -466,7 +466,7 @@ const kwRow = (overrides = {}) => ({
   ...overrides,
 });
 
-test("--k 3 JSON: pass@k/pass^k/ci95 + sample sizes, method labeled (#152)", async () => {
+test("--k 3 JSON: pass@k and pass^k/ci95 + sample sizes, method labeled (#152)", async () => {
   const dir = await tableTaskWithRows("k-json", [
     // t1: 3 trials, 2 solves; t2: 3 trials, 3 solves → clustered, macro 1 / 0.5.
     kwRow({ task: "t1", run_id: "a1", success: true }),
