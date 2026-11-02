@@ -116,8 +116,10 @@ export type SessionRequestRow = {
 
 /**
  * One derived session. `agent` is resolved per member row via the key + wire
- * dialect (`endpoint`): the sole distinct label wins, "shared" when members
- * mix dialects, `unknown` for a null or unmapped key — never guessed.
+ * dialect (`endpoint`): the sole distinct evidence-backed label wins, and a
+ * member with no local evidence inherits it when a same-dialect sibling
+ * carries one. `shared` means members carry two or more distinct specific
+ * labels, `unknown` a null or unmapped key — never guessed.
  */
 export type SessionRow = {
   session_id: string;
@@ -194,76 +196,132 @@ function sessionRefinements(rows: readonly { id: string }[]): Map<string, string
   }
 }
 
+/** The columns grouping and consensus need — report rows carry these too. */
+type SessionGroupingRow = Pick<SessionRequestRow, "id" | "api_key" | "endpoint" | "created_at">;
+
+/**
+ * The session grouping primitive shared by `walkSessions` and
+ * `sessionConsensusLabels`: per masked key, ordered by (`created_at`, `id`),
+ * split when the gap between consecutive requests reaches `gapMinutes`.
+ */
+function groupBySession<T extends SessionGroupingRow>(
+  rows: readonly T[],
+  gapMinutes: number,
+): T[][] {
+  const gapMs = gapMinutes * 60_000;
+  const sorted = [...rows].sort(
+    (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+  );
+  const byKey = new Map<string, T[]>();
+  for (const row of sorted) {
+    const key = row.api_key ?? "";
+    const group = byKey.get(key);
+    if (group) group.push(row);
+    else byKey.set(key, [row]);
+  }
+  const groups: T[][] = [];
+  for (const requests of byKey.values()) {
+    let current: T[] = [];
+    let previous: T | null = null;
+    for (const row of requests) {
+      if (previous && Date.parse(row.created_at) - Date.parse(previous.created_at) >= gapMs) {
+        groups.push(current);
+        current = [];
+      }
+      current.push(row);
+      previous = row;
+    }
+    if (current.length > 0) groups.push(current);
+  }
+  return groups;
+}
+
+/**
+ * Session-consensus labels: a request's own label can be `shared`/`unknown`
+ * for lack of evidence — a local usage record that never landed (omp's
+ * ephemeral title/recap turns, a client-aborted 499) — while every other
+ * request in its time-gap session is the same harness. Those two facts are
+ * not a conflict: the session's sole evidence-backed label settles the row
+ * for display, but only when an evidence row shares the row's wire dialect
+ * (`endpoint`), so a claude-dialect row cannot relabel a chat-dialect
+ * sibling. Returns inheritance-only entries; callers keep their own label as
+ * the fallback. Nothing is written to `attributed_agent`: the honest NULL
+ * stays, so late local evidence can still heal the row.
+ */
+export function sessionConsensusLabels<T extends SessionGroupingRow>(
+  rows: readonly T[],
+  gapMinutes: number,
+  labelOf: (row: T) => string,
+): Map<string, string> {
+  const inherited = new Map<string, string>();
+  for (const group of groupBySession(rows, gapMinutes)) {
+    const evidence: { label: string; endpoint: string | null }[] = [];
+    const evidenceLabels = new Set<string>();
+    for (const row of group) {
+      const label = labelOf(row);
+      if (label === SHARED_AGENT || label === "unknown") continue;
+      evidence.push({ label, endpoint: row.endpoint ?? null });
+      evidenceLabels.add(label);
+    }
+    if (evidenceLabels.size !== 1) continue;
+    const sole = evidence[0]?.label;
+    if (sole === undefined) continue;
+    for (const row of group) {
+      const label = labelOf(row);
+      if (label !== SHARED_AGENT && label !== "unknown") continue;
+      const endpoint = row.endpoint ?? null;
+      if (!evidence.some((entry) => entry.endpoint === endpoint)) continue;
+      inherited.set(row.id, sole);
+    }
+  }
+  return inherited;
+}
+
 /** The shared boundary walk: same rule as `sessionize`, members retained. */
 function walkSessions<T extends SessionRequestRow>(
   rows: readonly T[],
   gapMinutes: number,
 ): SessionDetail<T>[] {
-  const gapMs = gapMinutes * 60_000;
-  const sorted = [...rows].sort(
-    (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
-  );
-
-  type Group = { apiKey: string | null; requests: T[] };
-  const groups = new Map<string, Group>();
-  for (const row of sorted) {
-    const key = row.api_key ?? "";
-    const group = groups.get(key);
-    if (group) group.requests.push(row);
-    else groups.set(key, { apiKey: row.api_key, requests: [row] });
-  }
-
   const harnessIndex = buildHarnessIndex();
   const refinements = sessionRefinements(rows);
+  // Correlation precedence: the persisted attributed_agent wins when
+  // present — it either agrees with the base (the pass settled the row on
+  // its base, no matching local record) or carries a unique local match,
+  // and unique local-usage evidence outranks a stale key-map settlement
+  // (the map can misattribute when a harness's data lives outside the swept
+  // homes). The base label stands only for rows the column cannot refine.
+  // A row that never found local evidence inherits the session's sole
+  // same-dialect evidence label instead of vetoing it as a second harness.
+  const labelOf = (row: T): string =>
+    refinements.get(row.id) ?? resolveHarness(harnessIndex, row.api_key, row.endpoint);
+  const consensus = sessionConsensusLabels(rows, gapMinutes, labelOf);
   const sessions: SessionDetail<T>[] = [];
-  for (const group of groups.values()) {
-    let current: T[] = [];
-    const flush = (): void => {
-      if (current.length === 0) return;
-      const first = current[0];
-      if (!first) return;
-      const last = current[current.length - 1];
-      const labels = new Set<string>();
-      for (const row of current) {
-        const base = resolveHarness(harnessIndex, row.api_key, row.endpoint);
-        // Correlation precedence: the persisted attributed_agent wins when
-        // present — it either agrees with the base (the pass settled the
-        // row on its base, no matching local record) or carries a unique
-        // local match, and unique local-usage evidence outranks a stale
-        // key-map settlement (the map can misattribute when a harness's
-        // data lives outside the swept homes). The base label stands only
-        // for rows the column cannot refine.
-        labels.add(refinements.get(row.id) ?? base);
-      }
-      const agent = labels.size === 1 ? (labels.values().next().value ?? "unknown") : SHARED_AGENT;
-      sessions.push({
-        session_id: sessionId(group.apiKey, first.created_at),
-        agent,
-        api_key: group.apiKey,
-        started_at: first.created_at,
-        ended_at: last?.created_at ?? first.created_at,
-        turns: current.length,
-        input_tokens: current.reduce((sum, r) => sum + (r.input_tokens ?? 0), 0),
-        output_tokens: current.reduce((sum, r) => sum + (r.output_tokens ?? 0), 0),
-        cached_tokens: current.reduce((sum, r) => sum + (r.cached_tokens ?? 0), 0),
-        cost: current.some((r) => costOf(r) !== null)
-          ? current.reduce((sum, r) => sum + (costOf(r) ?? 0), 0)
-          : null,
-        currency: current.find((r) => r.currency !== null)?.currency ?? null,
-        confidence: current.length === 1 ? "single-request" : "gap",
-        rows: current,
-      });
-      current = [];
-    };
-    let previous: T | null = null;
-    for (const row of group.requests) {
-      if (previous && Date.parse(row.created_at) - Date.parse(previous.created_at) >= gapMs) {
-        flush();
-      }
-      current.push(row);
-      previous = row;
+  for (const current of groupBySession(rows, gapMinutes)) {
+    const first = current[0];
+    if (!first) continue;
+    const last = current[current.length - 1];
+    const labels = new Set<string>();
+    for (const row of current) {
+      labels.add(consensus.get(row.id) ?? labelOf(row));
     }
-    flush();
+    const agent = labels.size === 1 ? (labels.values().next().value ?? "unknown") : SHARED_AGENT;
+    sessions.push({
+      session_id: sessionId(first.api_key, first.created_at),
+      agent,
+      api_key: first.api_key,
+      started_at: first.created_at,
+      ended_at: last?.created_at ?? first.created_at,
+      turns: current.length,
+      input_tokens: current.reduce((sum, r) => sum + (r.input_tokens ?? 0), 0),
+      output_tokens: current.reduce((sum, r) => sum + (r.output_tokens ?? 0), 0),
+      cached_tokens: current.reduce((sum, r) => sum + (r.cached_tokens ?? 0), 0),
+      cost: current.some((r) => costOf(r) !== null)
+        ? current.reduce((sum, r) => sum + (costOf(r) ?? 0), 0)
+        : null,
+      currency: current.find((r) => r.currency !== null)?.currency ?? null,
+      confidence: current.length === 1 ? "single-request" : "gap",
+      rows: current,
+    });
   }
 
   return sessions.sort(
@@ -413,8 +471,13 @@ export function bakeStale(db: DatabaseSync): boolean {
  * old rule sealed with a wrong specific base (the key map never learned the
  * harness, e.g. its data lives outside the swept homes) re-bake with the
  * healed labels.
+ *
+ * v5: session consensus labels — a row with no local evidence inherits the
+ * session's sole same-dialect evidence label instead of vetoing it, so one
+ * unlogged ephemeral turn no longer relabels an otherwise single-harness
+ * session `shared`.
  */
-export const SESSIONIZE_RULES_VERSION = 4;
+export const SESSIONIZE_RULES_VERSION = 5;
 
 /**
  * The correlation pass behind `rebuildSessions`: refine rows from the

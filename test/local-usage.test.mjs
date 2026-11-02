@@ -998,4 +998,99 @@ describe("local-usage correlation", () => {
     const third = await read();
     assert.equal(third.length, 2, "changed mtime: file re-parsed with new content");
   });
+
+  test("an unlogged ephemeral turn joins its session's evidence-backed harness", async () => {
+    // Live shape: omp's auto-title turn (gateway 499 on client teardown) and
+    // idle recap turn are ephemeral — the harness writes no session JSONL
+    // line for either — so their gateway rows have no local record. The rest
+    // of the session is unique omp matches. Two evidence-less rows must not
+    // relabel the whole session "shared".
+    const dir = join(box.dir, "session-consensus");
+    const home = join(box.dir, "home-session-consensus");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir);
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await insertRows(dir, [
+      storeRow({ id: "row-omp" }),
+      storeRow({
+        id: "row-title",
+        output_tokens: 777,
+        status_code: 499,
+        created_at: "2026-10-20T10:04:10.000Z",
+      }),
+      storeRow({ id: "row-recap", output_tokens: 778, created_at: "2026-10-20T10:05:10.000Z" }),
+    ]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.deepEqual(byHarness, { omp: 3 });
+    const { listSessions } = await import("../dist/store/sessions.js");
+    const listed = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => listSessions());
+    assert.equal(listed.sessions.length, 1);
+    assert.equal(listed.sessions[0].agent, "omp");
+    assert.equal(listed.sessions[0].turns, 3);
+    // Render-only: the two rows keep the honest NULL, so late local evidence
+    // can still heal them.
+    const db = await openStoreFor(dir);
+    const stored = db.prepare("SELECT id, attributed_agent FROM requests").all();
+    db.close();
+    const byId = new Map(stored.map((row) => [row.id, row.attributed_agent]));
+    assert.equal(byId.get("row-omp"), "omp");
+    assert.equal(byId.get("row-title"), null);
+    assert.equal(byId.get("row-recap"), null);
+  });
+
+  test("a genuinely mixed session keeps its unresolved row shared", async () => {
+    const dir = join(box.dir, "session-consensus-mixed");
+    const home = join(box.dir, "home-session-consensus-mixed");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    seedSharedKey(dir, ["claude", "omp", "pi"]);
+    writeOmpSession(home, "--D--proj--", [matchingOmpLine()]);
+    await insertRows(dir, [
+      storeRow({ id: "row-omp" }),
+      storeRow({
+        id: "row-claude",
+        endpoint: "/v1/messages",
+        output_tokens: 777,
+        created_at: "2026-10-20T10:04:10.000Z",
+      }),
+      storeRow({ id: "row-stuck", output_tokens: 778, created_at: "2026-10-20T10:05:10.000Z" }),
+    ]);
+    const { buildReportData } = await import("../dist/report/data.js");
+    const data = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () =>
+      buildReportData({
+        timezone: "UTC",
+        sinceMs: Date.parse("2026-10-19T00:00:00Z"),
+        untilMs: Date.parse("2026-10-22T00:00:00Z") - 1,
+        harnesses: [],
+        models: [],
+        sections: ["by-harness"],
+        top: 20,
+        sync: { skipped: true },
+        now: PINNED_NOW,
+      }),
+    );
+    const byHarness = Object.fromEntries(data.byHarness.map((h) => [h.harness, h.requests]));
+    assert.equal(byHarness.omp, 1);
+    assert.equal(byHarness.claude, 1);
+    assert.equal(byHarness.shared, 1);
+    const { listSessions } = await import("../dist/store/sessions.js");
+    const listed = await withEnv({ AIAND_CONFIG_DIR: dir, AIAND_HOME: home }, () => listSessions());
+    assert.equal(listed.sessions.length, 1);
+    assert.equal(listed.sessions[0].agent, "shared");
+  });
 });

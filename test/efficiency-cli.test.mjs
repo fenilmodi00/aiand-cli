@@ -92,7 +92,11 @@ describe("aiand efficiency", () => {
   test("--json payload: one-shot/retry, task mix, attribution, coverage notes", async () => {
     const dir = join(box.dir, "json");
     seedStore(dir);
-    const { code, stdout } = await runCli(["efficiency", "--json"], { env: cliEnvFor(dir) });
+    // Pinned fixture dates: widen the window so the 7-day default cannot age
+    // the seeded rows out of view.
+    const { code, stdout } = await runCli(["efficiency", "--last", "30d", "--json"], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0);
     const payload = JSON.parse(stdout);
 
@@ -135,7 +139,9 @@ describe("aiand efficiency", () => {
   test("human output renders all sections with the coverage note", async () => {
     const dir = join(box.dir, "human");
     seedStore(dir);
-    const { code, stdout } = await runCli(["efficiency"], { env: cliEnvFor(dir) });
+    const { code, stdout } = await runCli(["efficiency", "--last", "30d"], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0);
     assert.match(stdout, /One-shot \/ retry/);
     assert.match(stdout, /50% one-shot/);

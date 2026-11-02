@@ -43,6 +43,16 @@ breaking changes while the command surface settles.
   staying wrong until `store reset`. Rows with no matching local record
   still settle to their base label, and `correlationsPending` still reaches
   false (materialized sessions re-bake once, rules version 3 → 4).
+- `aiand dashboard`/`overview`/`sessions` no longer label an omp-only session
+  `shared` because an auxiliary request in it never reached the harness's
+  local usage log: omp's auto-title generation (gateway-logged as a 499 when
+  the client tears the stream down) and idle recap turn are ephemeral turns
+  that write no session JSONL, so those gateway rows had no local record to
+  match. A row with no local evidence now inherits its time-gap session's sole
+  evidence-backed harness when a same-dialect sibling carries one; the request
+  row itself keeps its honest NULL, so late local evidence still heals it.
+  Sessions with two genuinely different harnesses still report `shared`
+  (sessionization rules version 4 → 5).
 
 ### Added
 - `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across

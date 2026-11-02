@@ -53,7 +53,9 @@ function entry(n) {
     cached_tokens: 400,
     cost: "0.0042",
     currency: "usd",
-    created_at: new Date(Date.UTC(2026, 9, 1, 10, 0, 0) + n * 60_000).toISOString(),
+    // Relative to now: the sync pulls a trailing window, so a pinned date
+    // ages out of it and the test has nothing to reset.
+    created_at: new Date(Date.now() - (4 - n) * 60_000).toISOString(),
   };
 }
 

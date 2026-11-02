@@ -29,6 +29,7 @@ import {
   type SessionizationMeta,
   type SessionRequestRow,
   type SessionRow,
+  sessionConsensusLabels,
   sessionGapMinutes,
   sessionizationAnnotation,
   sessionize,
@@ -390,19 +391,24 @@ function globToRegExp(glob: string): RegExp {
 type KeyIndex = HarnessIndex;
 
 /**
- * Harness precedence, refined by local-usage correlation: the key+endpoint
- * rule first, then the persisted `attributed_agent` refinement when the
- * column carries one. A specific base label (claude via /v1/messages, …)
- * wins only when no refinement exists: the column either agrees with it (the
- * pass settled the row on its base, no matching local record) or carries a
- * unique local match — and unique local-usage evidence outranks the key-map
- * label, which can be stale (e.g. a harness's data lives outside the swept
- * homes, so the map never learned it and the dialect intersection
- * misattributes to a sibling agent).
+ * Harness precedence, refined by local-usage correlation: the session
+ * consensus first (a row with no local evidence inherits its time-gap
+ * session's sole same-dialect evidence label), then the persisted
+ * `attributed_agent` refinement, then the key+endpoint rule. A specific base
+ * label (claude via /v1/messages, …) wins only when neither stronger source
+ * applies: the column either agrees with it (the pass settled the row on its
+ * base, no matching local record) or carries a unique local match — and
+ * unique local-usage evidence outranks the key-map label, which can be stale
+ * (e.g. a harness's data lives outside the swept homes, so the map never
+ * learned it and the dialect intersection misattributes to a sibling agent).
  */
-function harnessOf(row: ReportRow, keyIndex: KeyIndex): string {
+function harnessOf(
+  row: ReportRow,
+  keyIndex: KeyIndex,
+  sessionAgent?: ReadonlyMap<string, string>,
+): string {
   const base = resolveHarness(keyIndex, row.api_key, row.endpoint);
-  return row.attributed_agent ?? base;
+  return sessionAgent?.get(row.id) ?? row.attributed_agent ?? base;
 }
 
 // ---------------------------------------------------------------------------
@@ -591,11 +597,13 @@ export function buildReportData(
   const wants = new Set<string>(options.sections);
 
   const keyIndex: KeyIndex = buildHarnessIndex();
-  const rows = filterRows(
-    load({ sinceMs: options.sinceMs, untilMs: options.untilMs }),
-    options,
-    keyIndex,
+  const loaded = load({ sinceMs: options.sinceMs, untilMs: options.untilMs });
+  // Computed before the harness filter: a consensus row must still match
+  // `--harness` even though its own base label is `shared`.
+  const sessionAgent = sessionConsensusLabels(loaded, sessionGapMinutes(), (row) =>
+    harnessOf(row, keyIndex),
   );
+  const rows = filterRows(loaded, options, keyIndex, sessionAgent);
   const prices = readCachedPrices();
 
   // -- the one accumulation walk --------------------------------------------
@@ -610,7 +618,7 @@ export function buildReportData(
 
   for (const row of rows) {
     const day = tzDay(Date.parse(row.created_at), options.timezone);
-    const harness = harnessOf(row, keyIndex);
+    const harness = harnessOf(row, keyIndex, sessionAgent);
     accGroup(totals, row);
     accGroup(byDay.get(day) ?? byDay.set(day, emptyGroup()).get(day)!, row);
     const dhKey = `${day}\0${harness}`;
@@ -813,11 +821,12 @@ function filterRows(
   rows: readonly ReportRow[],
   options: BuildDataOptions,
   keyIndex: KeyIndex,
+  sessionAgent?: ReadonlyMap<string, string>,
 ): ReportRow[] {
   const harnessWanted = options.harnesses.length > 0 ? new Set(options.harnesses) : null;
   const modelMatchers = options.models.map(globToRegExp);
   return rows.filter((row) => {
-    if (harnessWanted && !harnessWanted.has(harnessOf(row, keyIndex))) return false;
+    if (harnessWanted && !harnessWanted.has(harnessOf(row, keyIndex, sessionAgent))) return false;
     if (modelMatchers.length > 0 && !modelMatchers.some((re) => re.test(row.model))) return false;
     return true;
   });
@@ -844,7 +853,11 @@ function buildBudgetRows(
   if (loadBudget().monthly === null) return rows;
   const { startMs } = monthWindow(now);
   if (options.sinceMs === null || options.sinceMs <= startMs) return rows;
-  return filterRows(load({ sinceMs: startMs, untilMs: options.untilMs }), options, keyIndex);
+  const monthRows = load({ sinceMs: startMs, untilMs: options.untilMs });
+  const monthAgent = sessionConsensusLabels(monthRows, sessionGapMinutes(), (row) =>
+    harnessOf(row, keyIndex),
+  );
+  return filterRows(monthRows, options, keyIndex, monthAgent);
 }
 
 function buildBudget(

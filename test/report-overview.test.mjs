@@ -743,15 +743,17 @@ describe("requested window honored (#97)", () => {
       Math.abs(now.getTime() - 24 * 3_600_000 - sinceMs) < 120_000,
       `meta.range.since ${payload.meta.range.since} is the trailing 24h, not month-start`,
     );
-    // The HTML footer's range label matches the requested window too.
+    // The HTML footer's range label matches the requested window too. Compare
+    // against the resolved window, not the month-start literal: on the 1st/2nd
+    // of a month a trailing 24h window legitimately starts on day 01.
     const html = readFileSync(outPath, "utf8");
-    assert.ok(!html.includes(`range ${now.toISOString().slice(0, 7)}-01 to`));
+    const footerSince = /range (\d{4}-\d{2}-\d{2}) to/.exec(html)?.[1];
+    assert.equal(footerSince, payload.meta.range.since.slice(0, 10));
   });
 
   test("explicit --since inside the month is honored verbatim on every surface", async () => {
     const dir = freshDir("since-inside");
     const now = new Date();
-    const monthPrefix = now.toISOString().slice(0, 7);
     const inside = new Date(now.getTime() - 3 * 24 * 3_600_000).toISOString().slice(0, 10);
     await seedStore(dir, [
       row(new Date(now.getTime() - 3_600_000).toISOString(), {
@@ -759,7 +761,13 @@ describe("requested window honored (#97)", () => {
         cost_value: 0.01,
         cost: "0.01",
       }),
-      row(`${monthPrefix}-05T10:00:00.000Z`, { id: "old", cost_value: 0.02, cost: "0.02" }),
+      // Outside the requested window regardless of the day of month — a fixed
+      // `-05` lands in the FUTURE on the 1st-5th and re-enters the window.
+      row(new Date(now.getTime() - 5 * 24 * 3_600_000).toISOString(), {
+        id: "old",
+        cost_value: 0.02,
+        cost: "0.02",
+      }),
     ]);
     const expectedSince = `${inside}T00:00:00.000Z`;
     for (const [cmd, args, read] of [

@@ -268,7 +268,14 @@ describe("forecast CLI · command", () => {
     r = await cli(["forecast", "--last", "1", "--json"]);
     assert.equal(JSON.parse(r.stdout).current_spend.value, 20);
     r = await cli(["forecast", "--last", "2", "--json"]);
-    assert.equal(JSON.parse(r.stdout).current_spend.value, 30);
+    // `current_spend` is month-to-date, so the 30h row only counts once the
+    // calendar month covers it; on the 1st-2nd it is still last month. The
+    // narrower windows above prove the row filter; this pins the correct
+    // month-cap behavior on either side of the boundary.
+    assert.equal(
+      JSON.parse(r.stdout).current_spend.value,
+      Date.parse(hoursAgo(30)) >= Date.parse(monthStart()) ? 30 : 20,
+    );
     r = await cli(["forecast", "--since", hoursAgo(2), "--json"]);
     assert.equal(JSON.parse(r.stdout).current_spend.value, 10);
     r = await cli(["forecast", "--range", "nonsense", "--json"]);

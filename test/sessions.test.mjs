@@ -406,3 +406,56 @@ describe("listSessions()", () => {
     });
   });
 });
+
+// -- session consensus (the missing-local-record case) ----------------------------
+
+describe("sessionConsensusLabels() — absence of evidence is not a conflict", () => {
+  const chat = "/v1/chat/completions";
+
+  function row(id, minutes, overrides = {}) {
+    return {
+      id,
+      api_key: "sk-abcd...1234",
+      endpoint: chat,
+      created_at: new Date(BASE + minutes * MINUTE).toISOString(),
+      ...overrides,
+    };
+  }
+
+  async function inherit(rows, labels, gapMinutes = 10) {
+    const { sessionConsensusLabels } = await sessions();
+    return sessionConsensusLabels(rows, gapMinutes, (entry) => labels.get(entry.id) ?? "shared");
+  }
+
+  test("an unresolved same-dialect row inherits the session's sole evidence label", async () => {
+    const rows = [row("a", 0), row("b", 4)];
+    const inherited = await inherit(rows, new Map([["a", "omp"]]));
+    assert.equal(inherited.get("b"), "omp");
+    // The evidence row keeps its own label; inheritance is only for the gap.
+    assert.equal(inherited.get("a"), undefined);
+  });
+
+  test("two distinct evidence labels leave the unresolved row alone", async () => {
+    const rows = [row("a", 0), row("b", 1), row("c", 2)];
+    const inherited = await inherit(
+      rows,
+      new Map([
+        ["a", "omp"],
+        ["b", "pi"],
+      ]),
+    );
+    assert.equal(inherited.size, 0);
+  });
+
+  test("a different wire dialect cannot relabel a chat row", async () => {
+    const rows = [row("a", 0, { endpoint: "/v1/messages" }), row("b", 1)];
+    const inherited = await inherit(rows, new Map([["a", "claude"]]));
+    assert.equal(inherited.size, 0);
+  });
+
+  test("evidence in a different time-gap session does not inherit", async () => {
+    const rows = [row("a", 0), row("b", 11)];
+    const inherited = await inherit(rows, new Map([["a", "omp"]]));
+    assert.equal(inherited.size, 0);
+  });
+});

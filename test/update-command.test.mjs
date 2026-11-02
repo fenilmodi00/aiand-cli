@@ -172,8 +172,10 @@ describe("aiand update --yes", () => {
     assert.doesNotMatch(stderr, /Unknown option/);
     assert.match(stdout, /→/);
     // Past the confirmation: the flow got as far as running the install
-    // child, which cannot succeed without a real npm on PATH.
-    assert.equal(code, 1);
+    // child, which cannot succeed without a real npm on PATH. The exact
+    // failure code is platform-dependent (Node's ENOENT path exits 127 on
+    // Windows); the point is that it is not the flag-parsing rejection.
+    assert.notEqual(code, 0);
   });
 });
 
