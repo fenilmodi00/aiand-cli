@@ -82,12 +82,7 @@ function decisionVerdict(
   // costs. No per-session vectors → no fabricated interval.
   const runnerUp = rivals[0];
   const costDeltaCI = runnerUp
-    ? bootstrapDelta(
-        sessionCosts(leader),
-        sessionCosts(runnerUp),
-        "p50",
-        { seed: 42 },
-      )
+    ? bootstrapDelta(sessionCosts(leader), sessionCosts(runnerUp), "p50", { seed: 42 })
     : null;
   const excludesZero = costDeltaCI !== null && (costDeltaCI.lo > 0 || costDeltaCI.hi < 0);
   if (leaderCi.lo <= 0 || !excludesZero) {
@@ -295,12 +290,7 @@ export async function run(argv: string[]): Promise<void> {
   const currentRow = currentPair(eligible.length > 0 ? eligible : pairs);
   const savings =
     gate !== null
-      ? expectedMonthlySavings(
-          ranked[0]!,
-          currentRow,
-          gate.verdict,
-          sessionsPerMonth,
-        )
+      ? expectedMonthlySavings(ranked[0]!, currentRow, gate.verdict, sessionsPerMonth)
       : null;
 
   if (bool(parsed, "json")) {
@@ -321,8 +311,7 @@ export async function run(argv: string[]): Promise<void> {
         reason: `insufficient data (${row.sessions} session(s) < ${MIN_SAMPLE_SESSIONS})`,
       })),
       verdict: gate?.verdict ?? "insufficient",
-      leader:
-        ranked.length > 0 ? { harness: ranked[0]!.harness, model: ranked[0]!.model } : null,
+      leader: ranked.length > 0 ? { harness: ranked[0]!.harness, model: ranked[0]!.model } : null,
       tiedWith: gate?.tiedWith ?? [],
       costDeltaCI: gate?.costDeltaCI ?? null,
       sessionsPerMonth,

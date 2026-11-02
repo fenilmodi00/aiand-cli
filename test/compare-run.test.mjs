@@ -434,7 +434,10 @@ async function tableTaskWithRows(name, rows) {
   const dir = cfg(name);
   await addValidatedTask(dir, "kt");
   mkdirSync(join(dir, "compare-runs"), { recursive: true });
-  writeFileSync(join(dir, "compare-runs", "kt.jsonl"), rows.map((r) => JSON.stringify(r)).join("\n"));
+  writeFileSync(
+    join(dir, "compare-runs", "kt.jsonl"),
+    rows.map((r) => JSON.stringify(r)).join("\n"),
+  );
   return dir;
 }
 
@@ -484,7 +487,11 @@ test("--k 3 JSON: pass@k/pass^k/ci95 + sample sizes, method labeled (#152)", asy
   assert.equal(c.passPowK, 0.5);
   assert.equal(c.tasksBelowK, 0);
   assert.deepEqual(c.solveCi95, { lo: 2 / 3, hi: 1 });
-  assert.ok(c.costPerSolveCi95 && c.costPerSolveCi95.lo <= c.costPerSolve && c.costPerSolve <= c.costPerSolveCi95.hi);
+  assert.ok(
+    c.costPerSolveCi95 &&
+      c.costPerSolveCi95.lo <= c.costPerSolve &&
+      c.costPerSolve <= c.costPerSolveCi95.hi,
+  );
 });
 
 test("--k 3 human output renders pass line, method column, footer", async () => {

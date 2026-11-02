@@ -302,9 +302,7 @@ describe("aggregateCells k option (#152)", () => {
   });
 
   test("k=3: both estimators, clustered CI differs from naive Wilson width", () => {
-    const naive = aggregateCells(
-      Array.from({ length: 6 }, (_, i) => row({ success: i < 5 })),
-    )[0];
+    const naive = aggregateCells(Array.from({ length: 6 }, (_, i) => row({ success: i < 5 })))[0];
     const [clustered] = aggregateCells(twoTaskRows(), { k: 3 });
     assert.equal(clustered.solveMethod, "clustered");
     assert.equal(naive.solveMethod, "wilson", "no task repeats → Wilson even with 6 trials");
@@ -325,7 +323,9 @@ describe("aggregateCells k option (#152)", () => {
     // t1: 2/6 solves; t2: 7/9 solves.
     const rows = [
       ...[1, 1, 0, 0, 0, 0].map((s, i) => row({ task: "t1", run_id: `a${i}`, success: !!s })),
-      ...[1, 1, 1, 1, 1, 1, 1, 0, 0].map((s, i) => row({ task: "t2", run_id: `b${i}`, success: !!s })),
+      ...[1, 1, 1, 1, 1, 1, 1, 0, 0].map((s, i) =>
+        row({ task: "t2", run_id: `b${i}`, success: !!s }),
+      ),
     ];
     let prevAt = 0;
     let prevPow = 1;

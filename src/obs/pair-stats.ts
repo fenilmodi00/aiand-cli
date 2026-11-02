@@ -213,7 +213,9 @@ export function buildPairStats(
         // never shifts another's interval; needs >= 2 priced sessions.
         ci95:
           sessionCosts.length >= 2
-            ? percentileBootstrap(sessionCosts, 0.5, { seed: seedFromString(`${harness}/${model}`) })
+            ? percentileBootstrap(sessionCosts, 0.5, {
+                seed: seedFromString(`${harness}/${model}`),
+              })
             : null,
       },
       costTotal,

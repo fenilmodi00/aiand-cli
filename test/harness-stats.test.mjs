@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CLOSED_URL, cliEnv, runCli, withEnv, withTestEnv } from "./helpers.mjs";

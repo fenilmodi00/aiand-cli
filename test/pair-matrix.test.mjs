@@ -873,10 +873,9 @@ test("#148: decisive leader → today's apply line + projected savings line", as
   assert.match(stdout, /projected savings: ≈ \$[\d.]+\/month at 200 sessions\/month/);
   assert.match(stdout, /cost base: envelope cost\/session/);
   // --sessions-per-month scales the projection.
-  const scaled = await runCli(
-    ["recommend", "--no-sync", "--sessions-per-month", "1000"],
-    { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) },
-  );
+  const scaled = await runCli(["recommend", "--no-sync", "--sessions-per-month", "1000"], {
+    env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
+  });
   assert.equal(scaled.code, 0, scaled.stderr);
   assert.match(scaled.stdout, /at 1000 sessions\/month/);
   // 5× the sessions → 5× the savings (the same per-session delta).
@@ -923,7 +922,9 @@ test("#148: savings suppressed when the delta CI includes 0 (nearly identical pa
   // real resampling (disjoint medians ⇒ nonzero delta), so we assert the
   // observed contract: no savings number without decisive evidence.
   for (let s = 0; s < 8; s += 1) {
-    rows.push(row({ id: `zc${s}`, api_key: masks.claude, created_at: iso(s * HOUR), cost_value: 0.02 }));
+    rows.push(
+      row({ id: `zc${s}`, api_key: masks.claude, created_at: iso(s * HOUR), cost_value: 0.02 }),
+    );
   }
   for (let s = 0; s < 8; s += 1) {
     rows.push(

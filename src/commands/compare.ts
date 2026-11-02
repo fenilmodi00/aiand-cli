@@ -490,10 +490,9 @@ async function runTable(argv: string[]): Promise<void> {
 
   const rows = ids.flatMap((id) => readTaskRuns(id));
   if (kRaw > 1 && rows.filter((r) => !isRecordedRow(r)).length === 0) {
-    throw new CliError(
-      `--k ${kRaw} needs run rows — no live runs found.`,
-      { hint: "Run `aiand compare run --task <id>` first, or use the default --k 1." },
-    );
+    throw new CliError(`--k ${kRaw} needs run rows — no live runs found.`, {
+      hint: "Run `aiand compare run --task <id>` first, or use the default --k 1.",
+    });
   }
   const cells = aggregateCells(rows, { k });
   const { winners, solveTied, tieNote } = tableWinners(cells);

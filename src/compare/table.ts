@@ -166,7 +166,10 @@ export function aggregateCells(
         [...taskGroups.values()].map((g) => ({
           solves: g.filter((r) => r.success === true).length,
           trials: g.length,
-          cost: g.map((r) => r.cost_usd).filter(num).reduce((s, c) => s + c, 0),
+          cost: g
+            .map((r) => r.cost_usd)
+            .filter(num)
+            .reduce((s, c) => s + c, 0),
         })),
         { B: 2000, seed: 42 },
       );

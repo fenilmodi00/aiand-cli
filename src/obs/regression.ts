@@ -73,7 +73,7 @@ export type RegressionOptions = {
 };
 
 /** Both windows need this many samples behind a value before it is screened. */
-export const MIN_REGRESSION_SAMPLES = 5;
+const MIN_REGRESSION_SAMPLES = 5;
 
 type Slice = {
   harness: string;
