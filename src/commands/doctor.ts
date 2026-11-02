@@ -6,6 +6,8 @@ import { bool, parse, str } from "../cli/args.js";
 import { ApiError, CliError, EXIT, NotLoggedInError, SYNTHETIC_STATUS } from "../cli/errors.js";
 import { json, out, relativeTime, style } from "../cli/output.js";
 import { type ResolvedProfile, resolveProfile } from "../config.js";
+import { buildRegressionReport } from "../obs/regression.js";
+import { readHarnessRows, windowEnvelopes, windowImportedMarkers } from "./harness-stats.js";
 
 /**
  * `aiand doctor` — observability health checks.
@@ -33,6 +35,7 @@ Checks (one line each, all run even when earlier ones fail)
   agent-keys   how many key→agent mappings exist?
   store        local store open, migrated, and recently synced?
   lag          how far stored data lags the newest request?
+  regressions  harness metrics vs the previous 7d (baseline watch, #151)
 
 Verdicts read as OK (n) / NOTHING FOUND / ERRORS, plus SKIPPED when a
 dependency (the store, or the gateway) is absent.
@@ -45,7 +48,7 @@ type CheckStatus = "ok" | "nothing-found" | "errors" | "skipped";
 
 type CheckResult = {
   /** Stable id scripts rely on. */
-  check: "gateway" | "auth" | "adapters" | "agent-keys" | "store" | "lag";
+  check: "gateway" | "auth" | "adapters" | "agent-keys" | "store" | "lag" | "regressions";
   status: CheckStatus;
   /** Human line; starts with the verdict word (OK (n), NOTHING FOUND, …). */
   detail: string;
@@ -113,6 +116,7 @@ export async function run(argv: string[]): Promise<void> {
     agentKeysCheck(),
     storeCheck(storeModule),
     await lagCheck(storeModule),
+    regressionsCheck(storeModule),
   ];
 
   if (bool(parsed, "json")) {
@@ -388,4 +392,84 @@ async function lagCheck(store: StoreModule | null): Promise<CheckResult> {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * #151: the regression watch as a doctor line — the last 7 days against the
+ * previous 7, straight from the store (no saved baseline needed; the rolling
+ * window IS the baseline). Fail-open: any store/compare problem degrades to
+ * SKIPPED with the reason, never a crash and never a false alarm.
+ */
+function regressionsCheck(store: StoreModule | null): CheckResult {
+  if (!store) {
+    return { check: "regressions", status: "skipped", detail: NO_STORE_DETAIL };
+  }
+  let info: StoreInfo;
+  try {
+    info = store.getStoreInfo();
+  } catch (error) {
+    return {
+      check: "regressions",
+      status: "skipped",
+      detail: `SKIPPED — store probe failed: ${messageOf(error)}`,
+    };
+  }
+  if (info.status === "missing" || info.status === "unavailable") {
+    return { check: "regressions", status: "skipped", detail: "SKIPPED — no store to measure" };
+  }
+  try {
+    const now = Date.now();
+    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+    const currentRows = readHarnessRows(
+      { sinceMs: now - WEEK_MS, untilMs: now },
+      { agents: [], models: [] },
+    );
+    // Inclusive upper bound in the reader (#92): strip the row on the shared
+    // edge so it cannot be screened in both weeks.
+    const baselineRows = readHarnessRows(
+      { sinceMs: now - 2 * WEEK_MS, untilMs: now - WEEK_MS },
+      { agents: [], models: [] },
+    ).filter((row) => Date.parse(row.created_at) < now - WEEK_MS);
+    if (currentRows.length === 0 || baselineRows.length === 0) {
+      return {
+        check: "regressions",
+        status: "nothing-found",
+        detail: "NOTHING FOUND — not enough sessions in both weeks",
+      };
+    }
+    const report = buildRegressionReport(currentRows, baselineRows, {
+      gapMinutes: 10,
+      envelopesCurrent: windowEnvelopes(now - WEEK_MS, now),
+      envelopesBaseline: windowEnvelopes(now - 2 * WEEK_MS, now - WEEK_MS),
+      importedCurrent: windowImportedMarkers(now - WEEK_MS, now),
+      importedBaseline: windowImportedMarkers(now - 2 * WEEK_MS, now - WEEK_MS),
+    });
+    if (report.regressions.length === 0) {
+      return {
+        check: "regressions",
+        status: "ok",
+        detail: "OK — none",
+        screened: report.rows.length,
+      };
+    }
+    const names = report.regressions
+      .map(
+        (r) =>
+          `${r.harness}/${r.model}/${r.metric} (${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(3)})`,
+      )
+      .join(", ");
+    return {
+      check: "regressions",
+      status: "errors",
+      detail: `ERRORS — ${report.regressions.length} regression(s): ${names} · screening, not proof`,
+      regressions: report.regressions,
+      screened: report.rows.length,
+    };
+  } catch (error) {
+    return {
+      check: "regressions",
+      status: "skipped",
+      detail: `SKIPPED — regression check failed: ${messageOf(error)}`,
+    };
+  }
 }
