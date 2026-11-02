@@ -1231,7 +1231,9 @@ function renderRegression(
     out(
       style.red(
         `regression: ${report.regressions.length} metric(s) worse — ` +
-          report.regressions.map((row) => `${row.harness}/${modelLabel(row.model)}/${row.metric}`).join(", "),
+          report.regressions
+            .map((row) => `${row.harness}/${modelLabel(row.model)}/${row.metric}`)
+            .join(", "),
       ),
     );
   } else {

@@ -1,6 +1,6 @@
 import { saveCatalogCache, visionLabel } from "../agents/catalog.js";
 import { openSession } from "../api/client.js";
-import { listModels, modelLabel, type Model } from "../api/models.js";
+import { listModels, type Model, modelLabel } from "../api/models.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { currencySymbol, json, num, out, style, table } from "../cli/output.js";

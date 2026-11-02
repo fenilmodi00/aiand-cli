@@ -517,7 +517,11 @@ type SliceRow = {
   };
 };
 
-function renderSlices(label: string, slices: SliceRow[], formatKey: (key: string) => string = (key) => key): void {
+function renderSlices(
+  label: string,
+  slices: SliceRow[],
+  formatKey: (key: string) => string = (key) => key,
+): void {
   if (slices.length === 0) return;
   out(`  ${label}:`);
   for (const slice of slices) {

@@ -2,12 +2,12 @@ import { installIfMissing, runAgentBinary } from "../agents/launch.js";
 import { AGENTS } from "../agents/registry.js";
 import { agentOff, agentOn, agentSession, agentStatus } from "../agents/setup.js";
 import type { AgentAdapter, Verb } from "../agents/types.js";
+import { modelLabel } from "../api/models.js";
 import { requireSessionKey } from "../auth/session.js";
 import { bool, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, fields, json, out, spinner, style } from "../cli/output.js";
 import { agentHome, resolveProfile } from "../config.js";
-import { modelLabel } from "../api/models.js";
 
 const VERBS: Verb[] = ["on", "off", "status"];
 

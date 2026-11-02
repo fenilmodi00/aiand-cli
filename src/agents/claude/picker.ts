@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { modelLabel, type Model } from "../../api/models.js";
+import { type Model, modelLabel } from "../../api/models.js";
 import { visionLabel } from "../catalog.js";
 import { jsoncDelete, jsoncSet } from "../managed-file.js";
 

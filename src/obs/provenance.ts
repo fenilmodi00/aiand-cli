@@ -200,6 +200,11 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
   },
   {
     report: "cache",
+    field: "savedUsd",
+    provenance: estimated("costIfUncached minus the gateway-billed cost"),
+  },
+  {
+    report: "cache",
     field: "avgTps",
     provenance: estimated("sum(output_tokens)/sum(latency_ms - ttft_ms)*1000 over eligible rows"),
   },

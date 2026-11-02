@@ -335,7 +335,7 @@ test("cli: harness matrix renders columns, hides unpriced by default, shows with
     assert.ok(stdout.includes(cell), `column ${cell} present`);
   }
   // Unpriced rows hidden by default: gpt-5.2 on claude is unpriced.
-  assert.ok(!stdout.includes("openai/gpt-5.2"), "unpriced pair hidden without --unpriced");
+  assert.ok(!stdout.includes("gpt-5.2"), "unpriced pair hidden without --unpriced");
   // Cheapest pair first (opencode/glm at 0.05/req → sessions ~0.15 vs claude 0.03/sess... just check opencode present).
   assert.ok(stdout.includes("opencode"));
   // Mixed sessions are attributed per model now — no exclusion footer.
@@ -345,7 +345,7 @@ test("cli: harness matrix renders columns, hides unpriced by default, shows with
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   assert.equal(priced.code, 0);
-  assert.ok(priced.stdout.includes("openai/gpt-5.2"), "--unpriced shows the pair");
+  assert.ok(priced.stdout.includes("gpt-5.2"), "--unpriced shows the pair");
   assert.ok(priced.stdout.includes("—"), "unpriced cost renders as em-dash");
 });
 
@@ -483,8 +483,8 @@ test("cli: recommend ranks observed pairs, guards min samples, ties when a rival
   assert.ok(!stdout.includes("insufficient data (fewer than"), "all pairs have enough sessions");
   // claude/glm-5.3 (6 sessions, $0.02/sess) is cheapest → recommended;
   // opencode/glm-5.3 has the most sessions (7) → the de-facto current pair.
-  assert.match(stdout, /Recommended: harness=claude model=zai-org\/glm-5\.3/);
-  assert.match(stdout, /Current:\s+harness=opencode model=zai-org\/glm-5\.3/);
+  assert.match(stdout, /Recommended: harness=claude model=glm-5\.3/);
+  assert.match(stdout, /Current:\s+harness=opencode model=glm-5\.3/);
   assert.match(stdout, /Expected delta: .*heuristic/);
   // The third pair (claude/openai) is unpriced, so its interval is unknown:
   // the gate cannot separate the leader from every rival → no wiring line.
@@ -596,7 +596,7 @@ test("cli: matrix --format markdown --synthetic renders the markdown synthetic b
   );
   assert.equal(run.code, 0, run.stderr);
   assert.match(run.stdout, /synthetic sweep \(fixed scenario replay/);
-  assert.match(run.stdout, /\| omp \| zai-org\/glm-5\.3 \| 4 \|/);
+  assert.match(run.stdout, /\| omp \| glm-5\.3 \| 4 \|/);
 });
 
 test("cli: matrix auto-sync failure warns (network code) and still renders (#85)", async () => {
@@ -872,7 +872,7 @@ test("#148: decisive leader → today's apply line + projected savings line", as
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   assert.equal(code, 0, stdout);
-  assert.match(stdout, /Recommended: harness=claude model=zai-org\/glm-5\.3/);
+  assert.match(stdout, /Recommended: harness=claude model=glm-5\.3/);
   assert.match(stdout, /verdict: best/);
   // The one-line apply wiring is unchanged in the decisive case.
   assert.match(stdout, /^Apply: aiand claude on --model zai-org\/glm-5\.3\r?$/m);

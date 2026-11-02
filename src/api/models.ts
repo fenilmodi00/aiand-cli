@@ -21,6 +21,16 @@ export type Model = {
 
 type ModelList = { object: "list"; data: Model[] };
 
+/**
+ * Bare terminal label for a model id: `zai-org/glm-5.3` renders as `glm-5.3`
+ * (and `aiand/zai-org/glm-5.3` as `glm-5.3`). Display only -- API bodies,
+ * config writes, catalog lookups, filters, and store keys keep the full id.
+ */
+export function modelLabel(id: string): string {
+  const bare = id.slice(id.lastIndexOf("/") + 1);
+  return bare || id;
+}
+
 export async function listModels(session: Session | null, apiUrl: string): Promise<Model[]> {
   const body = session
     ? await requestJson<ModelList>(session, { path: "/v1/models" })

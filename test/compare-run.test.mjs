@@ -152,6 +152,7 @@ const RUN_SHAPE = [
   "tokens_in",
   "tokens_cached",
   "tokens_out",
+  "tps",
   "cost_usd",
   "token_basis",
   "cost_basis",

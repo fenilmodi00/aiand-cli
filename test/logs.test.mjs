@@ -131,7 +131,10 @@ describe("logs footer and paging", () => {
     const { code, stdout } = await cli(["logs", "--limit", "2", "--json"]);
     assert.equal(code, 0);
     assert.equal(JSON.parse(stdout).length, 2);
-    assert.equal(JSON.parse(stdout).every((r) => r.model === "test/model"), true);
+    assert.equal(
+      JSON.parse(stdout).every((r) => r.model === "test/model"),
+      true,
+    );
 
     const table = await cli(["logs", "--limit", "2"]);
     assert.equal(table.code, 0);

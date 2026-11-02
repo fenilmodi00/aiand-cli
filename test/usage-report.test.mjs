@@ -535,7 +535,7 @@ describe("report UX conventions", () => {
     assert.doesNotMatch(noTotals.stdout, /\btotal\b/);
     const breakdown = await runCli(["usage", "--by", "day", "-b"], { env: reportEnv(DIRTY_DIR) });
     assert.match(breakdown.stdout, /MODEL/);
-    assert.match(breakdown.stdout, /zai-org\/glm-5\.3/);
+    assert.match(breakdown.stdout, /glm-5\.3/);
   });
 
   test("flag errors are clear", async () => {

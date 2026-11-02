@@ -40,6 +40,14 @@ breaking changes while the command surface settles.
     (unit `{token}/s`, explicit bucket family mirroring `time_to_first_token`'s
     shape), in Prometheus and OTLP JSON, emitted only where TPS samples exist.
 
+### Changed
+- Terminal output shows the bare model name (`glm-5.3`) instead of the
+  org-qualified id (`zai-org/glm-5.3`), so model columns no longer inflate
+  every table. Applies to `models`, `logs`, `sessions`, `status`, `agent`,
+  `chat`/`run`, `dashboard`, `overview`, `wrapped`, `usage`, `harness`,
+  `compare`, `efficiency`, and the Claude picker. Full ids are unchanged in
+  `--json`, config writes, filters, and the `recommend` apply command.
+
 ### Fixed
 - The installer's post-install check and login offer address the launcher by
   its install name: a side-by-side preview install (`aiand-v2`) exited 1 after

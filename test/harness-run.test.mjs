@@ -80,7 +80,7 @@ describe("aiand harness — benchmark run", () => {
         url,
       );
       assert.equal(code, 0, stderr);
-      assert.match(stdout, /Debug a failing test · deepseek-ai\/deepseek-v4-flash/);
+      assert.match(stdout, /Debug a failing test · deepseek-v4-flash/);
       assert.match(stdout, /HARNESS\s+DIALECT\s+TURNS\s+HIT\s+CACHED\s+COST\s+SAVED/);
       assert.match(stdout, /0\.0%/);
       assert.match(stdout, /cached per turn: miss, miss/);

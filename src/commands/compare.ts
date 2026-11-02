@@ -541,7 +541,10 @@ async function runTable(argv: string[]): Promise<void> {
 
   const w = winners;
   table<CellStats>(cells, [
-    { header: "harness / model", value: (c) => mark(`${c.harness} / ${modelLabel(c.model)}`, false) },
+    {
+      header: "harness / model",
+      value: (c) => mark(`${c.harness} / ${modelLabel(c.model)}`, false),
+    },
     {
       header: "solve",
       value: (c) => mark(solveCell(c), w.solve === cellKey(c)),

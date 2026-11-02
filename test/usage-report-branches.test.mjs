@@ -138,8 +138,8 @@ describe("usage report: filters, currency, breakdown", () => {
     const withBd = await runCli(["usage", "--by", "day", "-b"], { env: reportEnv(dir) });
     assert.equal(withBd.code, 0, withBd.stderr);
     assert.match(withBd.stdout, /2026-10-20/);
-    assert.match(withBd.stdout, /zai-org\/glm-5\.3/);
-    assert.match(withBd.stdout, /openai\/gpt-5\.2/);
+    assert.match(withBd.stdout, /glm-5\.3/);
+    assert.match(withBd.stdout, /gpt-5\.2/);
 
     const off = await runCli(["usage", "--by", "day", "-b", "--no-breakdown"], {
       env: reportEnv(dir),

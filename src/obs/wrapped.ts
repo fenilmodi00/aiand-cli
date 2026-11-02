@@ -1,5 +1,5 @@
-import { currencySymbol, num, style } from "../cli/output.js";
 import { modelLabel } from "../api/models.js";
+import { currencySymbol, num, style } from "../cli/output.js";
 import { formatMoneyFixed } from "../pricing/currency.js";
 import type { Costs, ReportData } from "../report/data.js";
 

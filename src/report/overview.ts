@@ -1,5 +1,5 @@
-import { currencySymbol, num, style } from "../cli/output.js";
 import { modelLabel } from "../api/models.js";
+import { currencySymbol, num, style } from "../cli/output.js";
 import { formatMoneyFixed } from "../pricing/currency.js";
 import {
   type Costs,
@@ -126,7 +126,9 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
     lines.push(style.bold(`Top models (by cost, top ${OVERVIEW_TOP_N})`));
     for (const model of data.topModels) {
       const cost = view.showCost ? `  ${costCell(model.costs)}` : "";
-      lines.push(`  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 6)}${cost}`);
+      lines.push(
+        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 6)}${cost}`,
+      );
     }
     lines.push("");
   }

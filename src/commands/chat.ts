@@ -7,12 +7,12 @@ import {
   type Usage,
   withModelHint,
 } from "../api/inference.js";
+import { modelLabel } from "../api/models.js";
 import { bool, float, int, parse, str } from "../cli/args.js";
 import { CANCELLED_MESSAGE, CliError, EXIT } from "../cli/errors.js";
 import { err, out, style } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { inferenceModel } from "./run.js";
-import { modelLabel } from "../api/models.js";
 
 export const help = `${style.bold("aiand chat")} -- interactive conversation
 
