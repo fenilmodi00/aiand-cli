@@ -464,7 +464,7 @@ test("cli: --synthetic renders the saved sweep in a labeled block, separate from
   assert.ok(payload.pairs.every((p) => p.harness !== "claude-code"));
 });
 
-test("cli: recommend ranks observed pairs, guards min samples, prints the apply line", async () => {
+test("cli: recommend ranks observed pairs, guards min samples, ties when a rival lacks a CI", async () => {
   const cfg = await seededMatrixStore("recommend-basic");
 
   const stray = await runCli(["recommend", "nope", "--no-sync"], {
@@ -486,7 +486,10 @@ test("cli: recommend ranks observed pairs, guards min samples, prints the apply 
   assert.match(stdout, /Recommended: harness=claude model=zai-org\/glm-5\.3/);
   assert.match(stdout, /Current:\s+harness=opencode model=zai-org\/glm-5\.3/);
   assert.match(stdout, /Expected delta: .*heuristic/);
-  assert.match(stdout, /Apply: aiand claude on --model zai-org\/glm-5\.3/);
+  // The third pair (claude/openai) is unpriced, so its interval is unknown:
+  // the gate cannot separate the leader from every rival → no wiring line.
+  assert.match(stdout, /tied — not distinguishable yet/);
+  assert.ok(!/^Apply: /m.test(stdout), "tied recommendation prints no wiring line");
   // Synthetic data never leaks in (none saved here anyway; the line must be absent).
   assert.ok(!stdout.includes("synthetic sweep"));
 });
@@ -844,8 +847,8 @@ test("#148: overlapping CIs → verdict tied, tied line, no savings, no apply cl
   assert.match(stdout, /verdict: tied/);
   assert.match(stdout, /tied — not distinguishable yet/);
   assert.ok(!stdout.includes("projected savings"), "no savings when tied");
-  // The apply wiring line still prints, with the tied suffix appended.
-  assert.match(stdout, /Apply: aiand \S+ on --model \S+ \(evidence tied - not decisive\)/);
+  assert.ok(!/^Apply: /m.test(stdout), "tied prints no single wiring line");
+  assert.match(stdout, /to separate: ~\d+ sessions \(heuristic/);
 
   const json = await runCli(["recommend", "--no-sync", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -857,6 +860,10 @@ test("#148: overlapping CIs → verdict tied, tied line, no savings, no apply cl
   assert.equal(payload.monthlySavingsGated, true);
   assert.equal(payload.sessionsPerMonth, 200);
   assert.ok(payload.costDeltaCI === null || typeof payload.costDeltaCI.lo === "number");
+  assert.ok(
+    typeof payload.requiredSessions === "number" && payload.requiredSessions <= 5000,
+    "requiredSessions is a capped heuristic projection",
+  );
 });
 
 test("#148: decisive leader → today's apply line + projected savings line", async () => {
@@ -866,7 +873,7 @@ test("#148: decisive leader → today's apply line + projected savings line", as
   });
   assert.equal(code, 0, stdout);
   assert.match(stdout, /Recommended: harness=claude model=zai-org\/glm-5\.3/);
-  assert.match(stdout, /verdict: decisive/);
+  assert.match(stdout, /verdict: best/);
   // The one-line apply wiring is unchanged in the decisive case.
   assert.match(stdout, /^Apply: aiand claude on --model zai-org\/glm-5\.3\r?$/m);
   assert.ok(!stdout.includes("evidence tied"), "decisive does not carry the tied suffix");
@@ -941,7 +948,7 @@ test("#148: savings suppressed when the delta CI includes 0 (nearly identical pa
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   const payload = JSON.parse(json.stdout);
-  if (payload.verdict !== "decisive") {
+  if (payload.verdict !== "best") {
     assert.equal(payload.monthlySavingsUsd, null);
     assert.equal(payload.monthlySavingsGated, true);
   } else {

@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 // node:sqlite is platform-gated (absent before Node 22.5) — the lazy
 // createRequire bridge below matches src/store/local-usage.ts.
 import { createRequire } from "node:module";
@@ -284,6 +284,30 @@ type ClaudeUsageLine = {
 };
 
 /**
+ * Unchanged session files are served from memory: the correlation pass runs on
+ * every dashboard refresh and re-parsing hundreds of MB of Claude/Codex logs
+ * synchronously is the same hang the chat readers' cache exists to prevent.
+ * Keyed by path + mtime, so an updated file is always re-read.
+ * ponytail: unbounded Map — one entry per session file in a short-lived process.
+ */
+const usageRecordsCache = new Map<string, { mtime: number; records: ArtifactUsage[] }>();
+
+function cachedUsage(path: string, parse: (path: string) => ArtifactUsage[]): ArtifactUsage[] {
+  let mtime: number;
+  try {
+    mtime = statSync(path).mtimeMs;
+  } catch {
+    usageRecordsCache.delete(path);
+    return [];
+  }
+  const cached = usageRecordsCache.get(path);
+  if (cached !== undefined && cached.mtime === mtime) return cached.records;
+  const records = parse(path);
+  usageRecordsCache.set(path, { mtime, records });
+  return records;
+}
+
+/**
  * Usage records from one Claude Code JSONL file: per line an assistant
  * `message.model` string and `message.usage` object with finite
  * `input_tokens` / `output_tokens` (`cache_read_input_tokens` missing → 0).
@@ -334,7 +358,7 @@ function claudeUsageFromFile(path: string): ArtifactUsage[] {
  */
 export function claudeUsageRecords(): ArtifactUsage[] {
   const records: ArtifactUsage[] = [];
-  for (const path of claudeJsonlFiles()) records.push(...claudeUsageFromFile(path));
+  for (const path of claudeJsonlFiles()) records.push(...cachedUsage(path, claudeUsageFromFile));
   return records;
 }
 
@@ -532,7 +556,7 @@ function codexUsageFromFile(path: string): ArtifactUsage[] {
  */
 export function codexUsageRecords(): ArtifactUsage[] {
   const records: ArtifactUsage[] = [];
-  for (const path of codexJsonlFiles()) records.push(...codexUsageFromFile(path));
+  for (const path of codexJsonlFiles()) records.push(...cachedUsage(path, codexUsageFromFile));
   return records;
 }
 

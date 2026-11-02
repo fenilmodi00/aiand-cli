@@ -49,7 +49,7 @@ const DEFAULT_SESSIONS_PER_MONTH = 200;
 /**
  * #148: the decision-quality gate on the recommendation itself. Ranking picks
  * a leader on point estimates; `verdict` says whether the evidence actually
- * separates it: "decisive" only when the leader's cost/session CI is disjoint
+ * separates it: "best" only when the leader's cost/session CI is disjoint
  * from every rival's AND excludes 0 ($/session is strictly nonzero). An
  * overlapping interval — or no interval at all — means the data cannot yet
  * tell the pairs apart, and the honest answer is "tied".
@@ -58,7 +58,7 @@ function decisionVerdict(
   leader: PairStatsRow,
   rivals: readonly PairStatsRow[],
 ): {
-  verdict: "decisive" | "tied";
+  verdict: "best" | "tied";
   costDeltaCI: CI95 | null;
   tiedWith: string[];
 } {
@@ -88,7 +88,7 @@ function decisionVerdict(
   if (leaderCi.lo <= 0 || !excludesZero) {
     return { verdict: "tied", costDeltaCI, tiedWith };
   }
-  return { verdict: "decisive", costDeltaCI, tiedWith: [] };
+  return { verdict: "best", costDeltaCI, tiedWith: [] };
 }
 
 function pairName(row: PairStatsRow): string {
@@ -103,6 +103,23 @@ function sessionCosts(row: PairStatsRow): number[] {
 }
 
 /**
+ * #148: project the session count needed for the leader's cost/session CI
+ * half-width to shrink to 10% of its median: n * (half / target)^2, rounded
+ * up and capped at 5000. Heuristic — a projection, not a promise.
+ */
+function requiredSessionsForLeader(leader: PairStatsRow): number | null {
+  const ci = leader.costPerSession.ci95;
+  const median = leader.costPerSession.p50;
+  if (ci === null || median === null || median <= 0) return null;
+  const half = (ci.hi - ci.lo) / 2;
+  const target = 0.1 * median;
+  if (target <= 0) return null;
+  const observed = sessionCosts(leader).length;
+  if (observed === 0) return null;
+  return Math.min(5000, Math.max(1, Math.ceil(observed * (half / target) ** 2)));
+}
+
+/**
  * #148: projected monthly savings when switching to the leader. Heuristic
  * point estimate × sessions/month, gated: decisive verdict, usd currency,
  * and a delta CI that excludes 0 — otherwise null (no number is printed,
@@ -111,13 +128,13 @@ function sessionCosts(row: PairStatsRow): number[] {
 function expectedMonthlySavings(
   best: PairStatsRow,
   current: PairStatsRow,
-  verdict: "decisive" | "tied",
+  verdict: "best" | "tied",
   sessionsPerMonth: number,
 ): { usdPerMonth: number; ci95: CI95; sessionsPerMonth: number; label: string } | null {
   const currencyUsd = (current.currency ?? "usd").toLowerCase() === "usd";
   const bestCost = best.costPerSession.p50;
   const curCost = current.costPerSession.p50;
-  if (verdict !== "decisive" || !currencyUsd || bestCost === null || curCost === null) return null;
+  if (verdict !== "best" || !currencyUsd || bestCost === null || curCost === null) return null;
   const perSession = curCost - bestCost;
   if (perSession <= 0) return null; // switching would not save money
   // Delta CI on the per-session SAVINGS (current − leader) resampled from the
@@ -161,7 +178,7 @@ Options
   --session-gap <min> session gap override (default 10, or sessionGapMinutes)
   --sessions-per-month <n>  sessions/month for the projected-savings line
                       (default 200); savings print only when the verdict is
-                      decisive AND the delta CI excludes 0 AND currency is usd
+                      best AND the delta CI excludes 0 AND currency is usd
   --no-sync           read the local store without syncing (AIAND_NO_SYNC=1)
   --json              machine-readable output
 
@@ -170,12 +187,14 @@ tie-break cache hit-ratio desc, then ttft p50 asc. Pairs with fewer than
 ${MIN_SAMPLE_SESSIONS} sessions land in the "insufficient data" block with their
 sample count and are excluded from the ranking. The expected delta is a
 median of PAST traffic labeled heuristic — a hint, not a guarantee. The
-recommendation itself is evidence-gated: "decisive" only when the leader's
+recommendation itself is evidence-gated: verdict "best" only when the leader's
 cost/session 95% CI is disjoint from every rival's and excludes 0; otherwise
-"tied" and no savings are projected. Only
+the verdict is "tied", no savings are projected, no wiring line prints, and
+the JSON carries a heuristic requiredSessions projection. Only
 observed workload is ranked; synthetic sweeps never enter this command.
 
-Apply prints a one-line wiring change; aiand never switches anything itself.`;
+Apply prints a one-line wiring change on a "best" verdict; aiand never
+switches anything itself.`;
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
@@ -314,6 +333,7 @@ export async function run(argv: string[]): Promise<void> {
       leader: ranked.length > 0 ? { harness: ranked[0]!.harness, model: ranked[0]!.model } : null,
       tiedWith: gate?.tiedWith ?? [],
       costDeltaCI: gate?.costDeltaCI ?? null,
+      requiredSessions: ranked.length > 0 ? requiredSessionsForLeader(ranked[0]!) : null,
       sessionsPerMonth,
       monthlySavingsUsd: savings?.usdPerMonth ?? null,
       monthlySavingsGated: savings === null,
@@ -358,8 +378,16 @@ export async function run(argv: string[]): Promise<void> {
       `(${costLabel(best)}, n=${best.sessions} sessions)`,
   );
   out(`verdict: ${gate!.verdict}`);
-  if (gate!.verdict !== "decisive") {
+  if (gate!.verdict !== "best") {
     out(style.yellow("tied — not distinguishable yet"));
+    const needed = requiredSessionsForLeader(best);
+    if (needed !== null) {
+      out(
+        style.dim(
+          `to separate: ~${needed} sessions (heuristic: current interval half-width vs 10% of the median; capped at 5000)`,
+        ),
+      );
+    }
   }
   if (current.harness === best.harness && current.model === best.model) {
     out(
@@ -371,21 +399,16 @@ export async function run(argv: string[]): Promise<void> {
         `(${costLabel(current)}, n=${current.sessions} sessions)`,
     );
     out(`Expected delta: ${deltaLine(best, current)} (heuristic)`);
-    if (gate!.verdict !== "decisive") {
-      out(
-        style.yellow(
-          `Apply: aiand ${best.harness} on --model ${best.model}` +
-            " (evidence tied - not decisive)",
-        ),
-      );
-    } else if (best.harness === "unknown") {
-      out(
-        style.yellow(
-          "Apply: (recommended harness attribution is unknown — map the api key first, e.g. re-run the agent through `aiand <agent>`)",
-        ),
-      );
-    } else {
-      out(`Apply: aiand ${best.harness} on --model ${best.model}`);
+    if (gate!.verdict === "best") {
+      if (best.harness === "unknown") {
+        out(
+          style.yellow(
+            "Apply: (recommended harness attribution is unknown — map the api key first, e.g. re-run the agent through `aiand <agent>`)",
+          ),
+        );
+      } else {
+        out(`Apply: aiand ${best.harness} on --model ${best.model}`);
+      }
     }
   }
   if (savings !== null) {

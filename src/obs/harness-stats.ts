@@ -696,41 +696,28 @@ const COMPARE_METRICS: { [M in keyof CompareMetrics]: MetricSpec } = {
 const ciOverlaps = (a: CI95, b: CI95): boolean => a.lo <= b.hi && b.lo <= a.hi;
 
 /**
- * #147: evidence-gated per-metric verdicts. The anchor is the best value among
- * candidates that have BOTH a value and a CI; `▸` appears only when the
- * anchor's CI is disjoint from every other candidate CI. Behavioral metrics
- * without a CI surface (one-shot, missed-catch, turns-to-success) keep the
- * #130 point-estimate rule: the anchor wins outright — there is no interval
- * to gate on, so no tied list either.
+ * #147: evidence-gated per-metric verdicts. `▸` appears only when the leader's
+ * CI is disjoint from EVERY rival's CI. Any candidate without an interval
+ * (n < 5, or a metric with no CI surface such as one-shot/missed-catch/turns)
+ * makes separation unprovable: no winner, and the candidates are listed as
+ * tied. Small-n point estimates never crown a harness.
  */
 export function compareVerdicts(rows: readonly HarnessStatsRow[]): CompareVerdicts {
   const verdicts = {} as CompareVerdicts;
   const entries = Object.entries(COMPARE_METRICS) as [keyof CompareMetrics, MetricSpec][];
   for (const [metric, spec] of entries) {
-    const candidates = rows.filter((row) => {
-      const value = spec.value(row);
-      const ci = spec.ci(row);
-      return value !== null && ci !== null;
-    });
+    const candidates = rows.filter((row) => spec.value(row) !== null);
     if (candidates.length === 0) {
-      // No CI evidence: fall back to the pre-#147 point-estimate rule so the
-      // metric still renders a deterministic winner (behavioral metrics with
-      // no interval surface; never a fake tie).
-      const any = rows.filter((row) => spec.value(row) !== null);
-      let winner: HarnessStatsRow | null = null;
-      let winnerValue: number | null = null;
-      for (const row of any) {
-        const current = spec.value(row);
-        if (current === null) continue;
-        if (
-          winnerValue === null ||
-          (spec.better === "lower" ? current < winnerValue : current > winnerValue)
-        ) {
-          winner = row;
-          winnerValue = current;
-        }
-      }
-      verdicts[metric] = { winner: winner?.harness ?? null, tied: [] };
+      verdicts[metric] = { winner: null, tied: [] };
+      continue;
+    }
+    const withCi = candidates.filter((row) => spec.ci(row) !== null);
+    if (withCi.length < candidates.length) {
+      // At least one rival has no interval → the data cannot prove separation.
+      verdicts[metric] = {
+        winner: null,
+        tied: candidates.length > 1 ? candidates.map((row) => row.harness).sort() : [],
+      };
       continue;
     }
     const lower = spec.better === "lower";

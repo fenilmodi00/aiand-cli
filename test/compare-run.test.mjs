@@ -512,32 +512,14 @@ test("--k 3 human output renders pass line, method column, footer", async () => 
   assert.match(res.stdout, /macro-averaged over tasks \(k=3/);
 });
 
-test("--bootstrap is an alias for --k and requires run rows (#152)", async () => {
+test("--k requires run rows (#152)", async () => {
   const empty = cfg("k-empty");
   await addValidatedTask(empty, "kt");
-  const refused = await runCli(["compare", "table", "--bootstrap", "3"], {
+  const refused = await runCli(["compare", "table", "--k", "3"], {
     env: cliEnv({ AIAND_CONFIG_DIR: empty }),
   });
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /needs run rows/);
-
-  const dir = await tableTaskWithRows("k-alias", [
-    kwRow({ task: "t1", run_id: "a1", success: true }),
-    kwRow({ task: "t1", run_id: "a2", success: true }),
-    kwRow({ task: "t1", run_id: "a3", success: false }),
-    kwRow({ task: "t2", run_id: "b1", success: true }),
-    kwRow({ task: "t2", run_id: "b2", success: true }),
-    kwRow({ task: "t2", run_id: "b3", success: true }),
-  ]);
-  const viaAlias = await runCli(["compare", "table", "--bootstrap", "3", "--json"], {
-    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
-  });
-  const viaK = await runCli(["compare", "table", "--k", "3", "--json"], {
-    env: cliEnv({ AIAND_CONFIG_DIR: dir }),
-  });
-  assert.equal(viaAlias.code, 0, viaAlias.stderr);
-  assert.equal(viaK.code, 0, viaK.stderr);
-  assert.deepEqual(JSON.parse(viaAlias.stdout).cells, JSON.parse(viaK.stdout).cells);
 });
 
 test("--k 1 (default): JSON keeps solveCi95 and reports k=1 (#152)", async () => {

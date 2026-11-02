@@ -920,7 +920,9 @@ test("#130 behavioral columns are gated on envelope coverage; covered cells carr
     /▸ 10\.0% \[[\d.]+%–[\d.]+%\] \(n=5\)/,
     "covered tool-err cell with CI bracket and n",
   );
-  assert.match(run.stdout, /▸ 100\.0% \(n=5\)/, "one-shot computable from v1 envelopes");
+  // one-shot has no CI surface, so it never carries a winner marker.
+  assert.ok(!/▸ 100\.0%/.test(run.stdout), "one-shot without a CI gets no ▸");
+  assert.match(run.stdout, / 100\.0% \(n=5\)/, "one-shot still renders honestly");
   assert.ok(run.stdout.includes("—"), "uncovered cells render em-dashes");
 });
 
@@ -1041,11 +1043,13 @@ test("#130 behavioral winner eligibility: uncovered harness never wins", async (
     },
   };
   const verdicts = compareVerdicts([covered, uncovered]);
-  // No tool-error CI on either side (n < 5 outcomes) → point-estimate rule.
-  assert.equal(verdicts.toolErrorRate.winner, "covered");
-  assert.equal(verdicts.oneShotRate.winner, "covered");
-  assert.equal(verdicts.missedCatchRate.winner, "covered");
-  assert.equal(verdicts.turnsToSuccess.winner, "covered");
+  // No interval on the covered side (n < 5 outcomes) and none on the
+  // uncovered side, and one-shot/missed-catch/turns have no CI surface at
+  // all: separation is unprovable, so no metric crowns a winner.
+  assert.equal(verdicts.toolErrorRate.winner, null);
+  assert.equal(verdicts.oneShotRate.winner, null);
+  assert.equal(verdicts.missedCatchRate.winner, null);
+  assert.equal(verdicts.turnsToSuccess.winner, null);
   // No covered cells at all → no behavioral winners.
   const none = compareVerdicts([uncovered, { ...uncovered, harness: "also-none" }]);
   assert.equal(none.toolErrorRate.winner, null);

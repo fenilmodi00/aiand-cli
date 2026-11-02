@@ -115,14 +115,14 @@ export function aggregateCells(
   for (const row of rows) {
     if (isRecordedRow(row)) continue;
     if (typeof row.harness !== "string" || typeof row.model !== "string") continue;
-    const k2 = key(row.harness, row.model);
-    const bucket = groups.get(k2);
+    const cellKey = key(row.harness, row.model);
+    const bucket = groups.get(cellKey);
     if (bucket) bucket.push(row);
-    else groups.set(k2, [row]);
+    else groups.set(cellKey, [row]);
   }
 
   const cells: CellStats[] = [];
-  for (const [k2, all] of groups) {
+  for (const [cellKey, all] of groups) {
     const trials = all.filter((r) => r.failure_mode !== "infra");
     const infra = all.length - trials.length;
     const solves = trials.filter((r) => r.success === true);
@@ -213,7 +213,7 @@ export function aggregateCells(
       qualifying = 1;
     }
 
-    const [harness, model] = k2.split("\u0000");
+    const [harness, model] = cellKey.split("\u0000");
     cells.push({
       harness: harness ?? "",
       model: model ?? "",

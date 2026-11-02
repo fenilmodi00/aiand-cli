@@ -236,17 +236,21 @@ describe("compareVerdicts boundaries (#cov-obs)", () => {
     assert.equal(verdicts.ttftP50.winner, "b");
     assert.equal(verdicts.errorRate.winner, "a");
     assert.equal(verdicts.cacheHitRatio.winner, "a");
-    assert.equal(verdicts.toolErrorRate.winner, "a");
-    assert.equal(verdicts.oneShotRate.winner, "a");
-    assert.equal(verdicts.missedCatchRate.winner, "a");
-    assert.equal(verdicts.turnsToSuccess.winner, "a");
+    // No CI surface for these metrics (toolErrorRate has no interval in this
+    // fixture; one-shot/missed-catch/turns never do): no evidence-gated winner.
+    assert.equal(verdicts.toolErrorRate.winner, null);
+    assert.equal(verdicts.oneShotRate.winner, null);
+    assert.equal(verdicts.missedCatchRate.winner, null);
+    assert.equal(verdicts.turnsToSuccess.winner, null);
   });
 
   test("a null behavioral cell (undefined) never competes against a covered one", () => {
     const uncovered = covered("u", { behavioral: undefined });
     const verdicts = compareVerdicts([uncovered, covered("c")]);
-    assert.equal(verdicts.toolErrorRate.winner, "c");
-    assert.equal(verdicts.oneShotRate.winner, "c");
+    // The uncovered harness is not a candidate; the covered one still has no
+    // interval behind its behavioral rates, so no winner is claimed.
+    assert.equal(verdicts.toolErrorRate.winner, null);
+    assert.equal(verdicts.oneShotRate.winner, null);
   });
 });
 

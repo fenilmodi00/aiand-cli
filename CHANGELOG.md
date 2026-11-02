@@ -167,12 +167,12 @@ breaking changes while the command surface settles.
 - `harness compare` and the dashboard show 95% intervals — Wilson for rates,
   seeded percentile bootstrap for cost and latency — and mark `▸` only when
   the leader's interval is disjoint from every rival; `recommend` gates its
-  wiring hint the same way and prints projected monthly savings
-  (`--sessions-per-month`, default 200) only when the interval is decisive
-  and excludes zero.
-- `harness compare --save-baseline` / `--baseline` store a local,
-  metadata-only scorecard and compare the current window against it; the
-  `doctor` baseline line reports regressions over the last 7 days.
+  wiring hint the same way (no wiring line when tied) and prints projected
+  monthly savings (`--sessions-per-month`, default 200) only when the
+  interval is decisive and excludes zero.
+- `harness compare --baseline <previous|30m|12h|1d|7d|30d|4w>` screens the
+  preceding window of the same length against the current one (no saved
+  state); the `doctor` line reports regressions over the last 7 days.
 - `aiand export` emits per-harness scorecard gauges (cost/session, TTFT p95,
   cache hit, error/clean/tool-error rates, behavioral coverage), store sync
   lag, and Prometheus `# HELP` lines for every metric; uncovered gauges are
@@ -180,8 +180,8 @@ breaking changes while the command surface settles.
 - Claude Code and Codex local usage readers refine `shared` gateway rows to
   their harness when the model and usage match uniquely, without changing
   the ambiguity rules.
-- `harness compare --bootstrap <k>` reports task-clustered bootstrap
-  intervals and pass@k and pass^k for runs of the same task.
+- `aiand compare table --k <n>` reports task-clustered bootstrap intervals
+  and pass@k and pass^k for runs of the same task.
 
 ### Changed (UX)
 - Comparisons at small n no longer crown a point-estimate winner: when 95%

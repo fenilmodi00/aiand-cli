@@ -54,7 +54,7 @@ Options
   --k <n>             pass@k / pass^k estimators (positive whole number, default 1):
                       pass@k = retries will save it; pass^k = unattended use will
                       succeed; per task, macro-averaged; tasks with fewer trials
-                      than k are excluded and counted (--bootstrap <n> is an alias)
+                      than k are excluded and counted
 
 A task pack is tasks/<id>/{instruction.md, workspace/, verify.sh} under the
 config dir. Verify discipline: on an untouched workspace verify must FAIL
@@ -466,13 +466,11 @@ async function runTable(argv: string[]): Promise<void> {
     out: { type: "string" },
     format: { type: "string" },
     k: { type: "string" },
-    bootstrap: { type: "string" },
   });
   if (bool(parsed, "help")) return out(help);
 
-  // #152: --k is the canonical flag; --bootstrap K is an alias with the same
-  // meaning (cluster k over tasks, pass@k and pass^k).
-  const kRaw = int(parsed, "k") ?? int(parsed, "bootstrap") ?? 1;
+  // #152: k clusters the task-level estimators; --k is the only spelling.
+  const kRaw = int(parsed, "k") ?? 1;
   if (kRaw < 1) {
     throw new CliError("--k must be a positive whole number.", { hint: "Usage: --k 3" });
   }

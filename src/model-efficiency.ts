@@ -217,6 +217,8 @@ export function oneShotRetry(turns: readonly EfficiencyTurn[]): {
 export type EfficiencySlice = {
   key: string;
   envelopes: number;
+  /** #146: which source produced the behavioral fields (default envelope). */
+  source?: "envelope" | "imported";
   stats: OneShotRetryStats;
 };
 
@@ -277,6 +279,7 @@ function finishAggregate(groups: Map<string, EfficiencyTurn[]>): EfficiencySlice
     .map(([key, turns]) => ({
       key,
       envelopes: turns.length,
+      source: "envelope" as const,
       stats: oneShotRetry(turns).stats.value,
     }));
 }

@@ -667,7 +667,8 @@ const statCostColumns: Column<HarnessStatsRow>[] = [
   { header: "cost", value: (r) => costCell(r), align: "right" },
   {
     header: "cost/session p50",
-    value: (r) => (r.costPerSession.p50 === null ? "—" : r.costPerSession.p50.toFixed(4)),
+    value: (r) =>
+      bracketCell(r.costPerSession.p50, r.ci95.costPerSessionP50, (value) => value.toFixed(4)),
     align: "right",
   },
   {
@@ -692,7 +693,7 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
           header: "tool-err",
           // Imported cells count against toolCalls; envelope cells against
           // envelope turns.
-          value: (r) => rateCell(r.behavioral.toolErrorRate, behavioralN(r)),
+          value: (r) => rateCell(r.behavioral.toolErrorRate, behavioralN(r), r.ci95.toolErrorRate),
           align: "right",
         },
         {
@@ -702,7 +703,7 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
         },
         {
           header: "clean",
-          value: (r) => rateCell(r.behavioral.cleanRate, terminalCount(r)),
+          value: (r) => rateCell(r.behavioral.cleanRate, terminalCount(r), r.ci95.cleanRate),
           align: "right",
         },
         {
@@ -728,16 +729,24 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
     ...(noCost ? [] : statCostColumns),
     {
       header: "ttft p50",
-      value: (r) => (r.ttft.p50 === null ? "—" : `${r.ttft.p50.toFixed(0)}ms`),
+      value: (r) => bracketCell(r.ttft.p50, r.ci95.ttftP50, (value) => `${value.toFixed(0)}ms`),
       align: "right",
     },
     {
       header: "p95",
-      value: (r) => (r.ttft.p95 === null ? "—" : `${r.ttft.p95.toFixed(0)}ms`),
+      value: (r) => bracketCell(r.ttft.p95, r.ci95.ttftP95, (value) => `${value.toFixed(0)}ms`),
       align: "right",
     },
-    { header: "hit", value: (r) => `${(r.cacheHitRatio * 100).toFixed(1)}%`, align: "right" },
-    { header: "errors", value: (r) => `${(r.errorRate * 100).toFixed(1)}%`, align: "right" },
+    {
+      header: "hit",
+      value: (r) => bracketCell(r.cacheHitRatio, r.ci95.cacheHitRatio, pct),
+      align: "right",
+    },
+    {
+      header: "errors",
+      value: (r) => bracketCell(r.errorRate, r.ci95.errorRate, pct),
+      align: "right",
+    },
     {
       header: "verdict",
       value: (r) =>
@@ -753,8 +762,12 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
 }
 
 /** The rate cell with its n: em-dash when uncovered, never a fake zero. */
-function rateCell(value: number | null, n: number): string {
-  return value === null ? "—" : `${(value * 100).toFixed(1)}% (n=${n})`;
+function rateCell(
+  value: number | null,
+  n: number,
+  ci: { lo: number; hi: number } | null = null,
+): string {
+  return value === null ? "—" : `${bracketCell(value, ci, pct)} (n=${n})`;
 }
 
 /** The n behind a tool-error cell: imported → tool calls, envelope → turns. */

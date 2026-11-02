@@ -97,7 +97,8 @@ function importedSlice(key: string, markers: readonly ImportedArtifactRow[]): Ef
   }
   return {
     key,
-    envelopes: markers.length,
+    envelopes: 0,
+    source: "imported",
     stats: {
       editTurns: 0,
       oneShots: 0,
@@ -284,26 +285,57 @@ export async function run(argv: string[]): Promise<void> {
       const imported = importedByHarness.get(key) ?? [];
       return imported.length > 0 ? importedSlice(key, imported) : envelopeSlice!;
     });
-    // Overall behavioral: combine the CHOSEN harnesses' counts (tool
-    // calls/errors, terminal split, compactions) — one number per source of
-    // truth, no double counting. oneShotRate stays envelope-only: imported
-    // markers have no edit targets, so the envelope walk keeps its own rate.
-    const overallImported = combineImported(importedMarkers);
+    // Overall behavioral: sum the CHOSEN source per harness (envelope when it
+    // clears MIN_ENVELOPE_TURNS, imported otherwise) — never both, and never
+    // an all-or-nothing fallback that would hide a covered imported harness
+    // whenever some unrelated envelope outcome exists.
+    type SourceCounts = {
+      toolCalls: number;
+      toolErrors: number;
+      terminalCount: number;
+      sessions: { clean: number; aborted: number; errored: number };
+    };
+    const emptyCounts = (): SourceCounts => ({
+      toolCalls: 0,
+      toolErrors: 0,
+      terminalCount: 0,
+      sessions: { clean: 0, aborted: 0, errored: 0 },
+    });
+    const envelopeCounts = new Map<string, SourceCounts>();
+    for (const row of envelopes) {
+      const bucket = envelopeCounts.get(row.agent) ?? emptyCounts();
+      for (const outcome of row.envelope?.toolOutcomes ?? []) {
+        bucket.toolCalls += 1;
+        if (!outcome.ok) bucket.toolErrors += 1;
+      }
+      const terminal = row.envelope?.terminal;
+      if (terminal === "clean" || terminal === "aborted" || terminal === "errored") {
+        bucket.terminalCount += 1;
+        bucket.sessions[terminal] += 1;
+      }
+      envelopeCounts.set(row.agent, bucket);
+    }
+    const overallMerged = emptyCounts();
+    for (const key of harnessKeys) {
+      const envelopeSlice = envelopeSlices.get(key);
+      const counts =
+        envelopeSlice && envelopeSlice.envelopes >= MIN_ENVELOPE_TURNS
+          ? (envelopeCounts.get(key) ?? emptyCounts())
+          : combineImported(importedByHarness.get(key) ?? []);
+      overallMerged.toolCalls += counts.toolCalls;
+      overallMerged.toolErrors += counts.toolErrors;
+      overallMerged.terminalCount += counts.terminalCount;
+      for (const outcome of ["clean", "aborted", "errored"] as const) {
+        overallMerged.sessions[outcome] += counts.sessions[outcome];
+      }
+    }
     const behavioral: OneShotRetryStats = {
       ...overall.value,
       toolErrorRate:
-        overall.value.toolErrorRate !== null
-          ? overall.value.toolErrorRate
-          : overallImported.toolCalls > 0
-            ? overallImported.toolErrors / overallImported.toolCalls
-            : null,
-      sessions:
-        overall.value.sessions.clean +
-          overall.value.sessions.aborted +
-          overall.value.sessions.errored >
-          0 || overallImported.terminalCount === 0
-          ? overall.value.sessions
-          : overallImported.sessions,
+        overallMerged.toolCalls > 0
+          ? overallMerged.toolErrors / overallMerged.toolCalls
+          : overall.value.toolErrorRate,
+      sessions: overallMerged.terminalCount > 0 ? overallMerged.sessions : overall.value.sessions,
     };
     const importedCoverage = {
       sessions: new Set(importedMarkers.map((m) => `${m.harness}\u0000${m.session_id}`)).size,

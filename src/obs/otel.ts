@@ -4,7 +4,7 @@ import { LOG_RANGES } from "../api/logs.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
 import { listImportedArtifactsFromDb } from "../store/imported-artifacts.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
-import { listSessions, type SessionRow } from "../store/sessions.js";
+import { listSessions, resolveGapMinutes, type SessionRow } from "../store/sessions.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
 import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
 
@@ -774,10 +774,10 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
         until: untilIso,
       });
       // Harness gauges read the same rows the gen_ai family reads; the
-      // window's range/gap default (10-minute time-gap sessionization) and
+      // configured time-gap sessionization (the same value the CLI uses) and
       // the store watermark ride along for provenance.
       harnessStats = buildHarnessStats(rows, {
-        gapMinutes: 10,
+        gapMinutes: resolveGapMinutes(),
         storeWatermark: null,
         range: { since: sinceIso, until: untilIso },
         envelopes,
