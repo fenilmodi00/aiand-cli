@@ -230,7 +230,16 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
   if (meta.correlationNote) notes.push(meta.correlationNote);
   if (notes.length > 0) {
     lines.push(style.dim(rule("-")));
-    for (const note of notes) lines.push(style.dim(`note: ${note}`));
+    for (const note of notes) {
+      let line = `note: ${note}`;
+      while (line.length > 80) {
+        const cut = line.lastIndexOf(" ", 80);
+        const at = cut > 0 ? cut : 80;
+        lines.push(style.dim(line.slice(0, at)));
+        line = line.slice(at + 1);
+      }
+      lines.push(style.dim(line));
+    }
   }
   return lines.join("\n");
 }

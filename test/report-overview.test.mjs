@@ -354,7 +354,8 @@ describe("overview text", () => {
         "note: sessions are time-gap groups (10 min), not confirmed agent sessions",
         // Correlation caveat (v6 refinement): the fixture seeds no local
         // agent stores, so every row keeps its key/endpoint label.
-        "note: harness refinement also reads the agents' own local usage records",
+        "note: harness refinement also reads the agents' own local usage records (omp,",
+        "pi, Claude Code, Codex, opencode)",
       ].join("\n"),
     );
     for (const line of text.split("\n")) {
