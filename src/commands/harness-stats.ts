@@ -561,7 +561,10 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
   // #146: behavioral columns appear in stats mode too, when any harness's
   // cell is covered (envelope or imported source). Same cells as compare.
   const covered = rows.some(
-    (r) => r.behavioral.toolErrorRate !== null || r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
+    (r) =>
+      r.behavioral.toolErrorRate !== null ||
+      r.behavioral.oneShotRate !== null ||
+      r.behavioral.cleanRate !== null,
   );
   const behavioralColumns: Column<HarnessStatsRow>[] = covered
     ? [
@@ -589,7 +592,8 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
         },
         {
           header: "compactions",
-          value: (r) => (r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions)),
+          value: (r) =>
+            r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions),
           align: "right",
         },
       ]
@@ -745,11 +749,7 @@ function compareColumns(
       value: (r) =>
         maybeMark(
           w.costPerSessionP50.winner === r.harness,
-          bracketCell(
-            r.costPerSession.p50,
-            r.ci95.costPerSessionP50,
-            (v) => v.toFixed(4),
-          ),
+          bracketCell(r.costPerSession.p50, r.ci95.costPerSessionP50, (v) => v.toFixed(4)),
         ),
       align: "right",
     },
@@ -762,11 +762,7 @@ function compareColumns(
       value: (r) =>
         maybeMark(
           w.ttftP50.winner === r.harness,
-          bracketCell(
-            r.ttft.p50,
-            r.ci95.ttftP50,
-            (v) => `${v.toFixed(0)}ms`,
-          ),
+          bracketCell(r.ttft.p50, r.ci95.ttftP50, (v) => `${v.toFixed(0)}ms`),
         ),
       align: "right",
     },
@@ -782,7 +778,10 @@ function compareColumns(
     {
       header: "errors",
       value: (r) =>
-        maybeMark(w.errorRate.winner === r.harness, bracketCell(r.errorRate, r.ci95.errorRate, pct)),
+        maybeMark(
+          w.errorRate.winner === r.harness,
+          bracketCell(r.errorRate, r.ci95.errorRate, pct),
+        ),
       align: "right",
     },
     ...behavioralColumns,
@@ -842,7 +841,9 @@ function compareFooterLines(covered: boolean, rows: readonly HarnessStatsRow[]):
 function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
   const columns = compareColumns(rows, noCost);
   table<HarnessStatsRow>(rows, columns);
-  const covered = rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null);
+  const covered = rows.some(
+    (r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
+  );
   for (const line of compareFooterLines(covered, rows)) {
     out(style.dim(line));
   }
@@ -892,8 +893,7 @@ function exportCompareTable(args: {
           behavioralCoverage: args.coverage,
           cohort: args.cohort ?? null,
           missedCatchRule: MISSED_CATCH_RULE,
-          labels:
-            "heuristic(one-shot/retry envelope rule · imported harness markers)",
+          labels: "heuristic(one-shot/retry envelope rule · imported harness markers)",
         },
         harnesses: args.rows.map((row) => ({
           ...row,

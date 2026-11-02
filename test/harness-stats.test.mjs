@@ -43,10 +43,7 @@ function row(overrides) {
   };
 }
 
-import {
-  WINNER_MARKER,
-  buildHarnessStats,
-} from "../dist/obs/harness-stats.js";
+import { buildHarnessStats, WINNER_MARKER } from "../dist/obs/harness-stats.js";
 
 async function loadEngine() {
   return import("../dist/obs/harness-stats.js");
@@ -912,10 +909,17 @@ test("#130 behavioral columns are gated on envelope coverage; covered cells carr
   const run = await runCli(["harness", "compare", "--no-sync"], base);
   assert.equal(run.code, 0, run.stderr);
   // Coverage line: 10 covered turns / 12 requests.
-  assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
+  assert.match(
+    run.stdout,
+    /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/,
+  );
   // claude (v2): tool-err with bracket + n=; opencode (v1): v2-gated cells are
   // —, one-shot still computable from the edit walk — cells, never zeros.
-  assert.match(run.stdout, /▸ 10\.0% \[[\d.]+%–[\d.]+%\] \(n=5\)/, "covered tool-err cell with CI bracket and n");
+  assert.match(
+    run.stdout,
+    /▸ 10\.0% \[[\d.]+%–[\d.]+%\] \(n=5\)/,
+    "covered tool-err cell with CI bracket and n",
+  );
   assert.match(run.stdout, /▸ 100\.0% \(n=5\)/, "one-shot computable from v1 envelopes");
   assert.ok(run.stdout.includes("—"), "uncovered cells render em-dashes");
 });
@@ -946,7 +950,10 @@ test("#130 compare without any envelope data degrades to the coverage line only"
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   assert.equal(run.code, 0, run.stderr);
-  assert.match(run.stdout, /behavioral columns: envelopes 0% of turns \(0\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
+  assert.match(
+    run.stdout,
+    /behavioral columns: envelopes 0% of turns \(0\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/,
+  );
   // No behavioral column headers at all when nothing is covered.
   assert.ok(!run.stdout.includes("TOOL-ERR"));
   assert.ok(!run.stdout.includes("tool-err"));
@@ -1108,14 +1115,84 @@ test("#146 buildHarnessStats derives imported behavioral stats with envelope pre
   const { buildHarnessStats, MIN_BEHAVIORAL_TURNS } = await loadEngine();
   const imported = [
     // claude: 2 sessions; 3 tool calls (1 error), compaction, terminals.
-    { dedup_key: "c1", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T10:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c2", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "error", seq: 1, at: "2026-10-29T10:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c3", harness: "claude", session_id: "s1", kind: "compaction", tool_name: null, outcome: null, seq: null, at: null, imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c4", harness: "claude", session_id: "s1", kind: "terminal", tool_name: null, outcome: "clean", seq: null, at: "2026-10-29T10:02:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c5", harness: "claude", session_id: "s2", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T11:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c6", harness: "claude", session_id: "s2", kind: "terminal", tool_name: null, outcome: "errored", seq: null, at: "2026-10-29T11:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    {
+      dedup_key: "c1",
+      harness: "claude",
+      session_id: "s1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T10:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c2",
+      harness: "claude",
+      session_id: "s1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "error",
+      seq: 1,
+      at: "2026-10-29T10:01:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c3",
+      harness: "claude",
+      session_id: "s1",
+      kind: "compaction",
+      tool_name: null,
+      outcome: null,
+      seq: null,
+      at: null,
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c4",
+      harness: "claude",
+      session_id: "s1",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "clean",
+      seq: null,
+      at: "2026-10-29T10:02:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c5",
+      harness: "claude",
+      session_id: "s2",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T11:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c6",
+      harness: "claude",
+      session_id: "s2",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "errored",
+      seq: null,
+      at: "2026-10-29T11:01:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
     // codex: session with terminals but no tools → toolErrorRate null.
-    { dedup_key: "x1", harness: "codex", session_id: "t1", kind: "terminal", tool_name: null, outcome: "aborted", seq: null, at: "2026-10-29T12:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    {
+      dedup_key: "x1",
+      harness: "codex",
+      session_id: "t1",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "aborted",
+      seq: null,
+      at: "2026-10-29T12:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
   ];
   // Rows attributed through a wired key map (the same discipline the CLI
   // tests use), so request rows and imported markers share the harness id.
@@ -1220,11 +1297,45 @@ test("#146 harness stats shows imported tool-error + terminal split; one-shot st
     opened.db.close();
   });
   // claude imported markers: 3 tool calls (m1..m3), 1 error, clean terminal.
-  await seedImportedMarker(cfg2, { dedup_key: "m1", harness: "claude", session_id: "a", kind: "tool", outcome: "error", seq: 0, tool_name: "Bash" });
-  await seedImportedMarker(cfg2, { dedup_key: "m2", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 1 });
-  await seedImportedMarker(cfg2, { dedup_key: "m3", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 2 });
-  await seedImportedMarker(cfg2, { dedup_key: "m4", harness: "claude", session_id: "a", kind: "compaction" });
-  await seedImportedMarker(cfg2, { dedup_key: "m5", harness: "claude", session_id: "a", kind: "terminal", outcome: "clean", at: "2026-10-29T10:05:00.000Z" });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m1",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "error",
+    seq: 0,
+    tool_name: "Bash",
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m2",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "ok",
+    seq: 1,
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m3",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "ok",
+    seq: 2,
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m4",
+    harness: "claude",
+    session_id: "a",
+    kind: "compaction",
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m5",
+    harness: "claude",
+    session_id: "a",
+    kind: "terminal",
+    outcome: "clean",
+    at: "2026-10-29T10:05:00.000Z",
+  });
 
   const run = await runCli(["harness", "stats", "--no-sync"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg2 }),
@@ -1269,8 +1380,22 @@ test("#146 no imported markers: coverage line carries the backfill instruction",
 test("#146 envelope + imported for the same harness: envelope count wins, no double count", async () => {
   const cfg = cfgDir("imported-both");
   await seedBehavioralStore(cfg); // claude already has 5 v2 envelopes
-  await seedImportedMarker(cfg, { dedup_key: "b1", harness: "claude", session_id: "b", kind: "tool", outcome: "error", seq: 0 });
-  await seedImportedMarker(cfg, { dedup_key: "b2", harness: "claude", session_id: "b", kind: "terminal", outcome: "errored", at: "2026-10-29T10:06:00.000Z" });
+  await seedImportedMarker(cfg, {
+    dedup_key: "b1",
+    harness: "claude",
+    session_id: "b",
+    kind: "tool",
+    outcome: "error",
+    seq: 0,
+  });
+  await seedImportedMarker(cfg, {
+    dedup_key: "b2",
+    harness: "claude",
+    session_id: "b",
+    kind: "terminal",
+    outcome: "errored",
+    at: "2026-10-29T10:06:00.000Z",
+  });
   const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
@@ -1389,10 +1514,7 @@ test("#147 compare: overlapping fixture → no ▸ and the exact tie line; disjo
   await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
     const opened = openStore(storePath());
     assert.ok(opened.ok);
-    seedRequests(opened.db, [
-      ...mk("oa", maskA, 0),
-      ...mk("ob", maskB, 0.0005),
-    ]);
+    seedRequests(opened.db, [...mk("oa", maskA, 0), ...mk("ob", maskB, 0.0005)]);
     opened.db.close();
   });
   const overlap = await runCli(["harness", "compare", "--no-sync"], {
@@ -1424,10 +1546,7 @@ test("#147 compare: overlapping fixture → no ▸ and the exact tie line; disjo
     maskB = maskKey("sk-test-opencode-super-secret-0001");
     const opened = openStore(storePath());
     assert.ok(opened.ok);
-    seedRequests(opened.db, [
-      ...mk("da", maskA, 0),
-      ...mk("db", maskB, 0.5),
-    ]);
+    seedRequests(opened.db, [...mk("da", maskA, 0), ...mk("db", maskB, 0.5)]);
     opened.db.close();
   });
   const disjoint = await runCli(["harness", "compare", "--no-sync"], {
@@ -1438,12 +1557,15 @@ test("#147 compare: overlapping fixture → no ▸ and the exact tie line; disjo
   const cellLines = disjoint.stdout
     .split("\n")
     .filter((line) => line.startsWith("claude") || line.startsWith("opencode"));
-  assert.ok(cellLines.some((line) => line.includes("▸ 0.0105")), "cost winner marked");
-  assert.ok(cellLines.some((line) => line.includes("▸ 305ms")), "ttft winner marked");
   assert.ok(
-    !disjoint.stdout.includes("cost/session: tied"),
-    "no cost tie when CIs are disjoint",
+    cellLines.some((line) => line.includes("▸ 0.0105")),
+    "cost winner marked",
   );
+  assert.ok(
+    cellLines.some((line) => line.includes("▸ 305ms")),
+    "ttft winner marked",
+  );
+  assert.ok(!disjoint.stdout.includes("cost/session: tied"), "no cost tie when CIs are disjoint");
   assert.ok(
     disjoint.stdout.includes("errors: tied — not distinguishable yet (claude, opencode)"),
     "identical error-free workloads honestly tie",
@@ -1453,7 +1575,14 @@ test("#147 compare: overlapping fixture → no ▸ and the exact tie line; disjo
 test("#147 compare --json keeps existing fields and adds ci95; clean rate Wilson over terminals", async () => {
   const cfg = cfgDir("ci-json");
   await seedBehavioralStore(cfg);
-  await seedImportedMarker(cfg, { dedup_key: "t1", harness: "claude", session_id: "x", kind: "tool", outcome: "error", seq: 0 });
+  await seedImportedMarker(cfg, {
+    dedup_key: "t1",
+    harness: "claude",
+    session_id: "x",
+    kind: "tool",
+    outcome: "error",
+    seq: 0,
+  });
   const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
@@ -1474,14 +1603,25 @@ test("#147 compare --json keeps existing fields and adds ci95; clean rate Wilson
   }
   const claude = payload.harnesses.find((h) => h.harness === "claude");
   // 6 requests → Wilson CI on the error rate; envelope terminals = 5 → clean CI.
-  assert.ok(claude.ci95.errorRate && claude.ci95.errorRate.lo <= claude.errorRate && claude.errorRate <= claude.ci95.errorRate.hi);
+  assert.ok(
+    claude.ci95.errorRate &&
+      claude.ci95.errorRate.lo <= claude.errorRate &&
+      claude.errorRate <= claude.ci95.errorRate.hi,
+  );
   // Envelope terminals: 4 clean of 5 → n=5 qualifies; point estimate 0.8.
   assert.ok(claude.behavioral.cleanRate !== null);
-  assert.ok(claude.ci95.cleanRate && Math.abs(claude.ci95.cleanRate.hi - 0.9637768390302125) < 1e-9, "Wilson upper at 4/5");
+  assert.ok(
+    claude.ci95.cleanRate && Math.abs(claude.ci95.cleanRate.hi - 0.9637768390302125) < 1e-9,
+    "Wilson upper at 4/5",
+  );
   // Envelope source wins: 10 tool outcomes (1 error) → toolErrorRate 0.1,
   // n=10 → CI exists; the imported marker contributes nothing (never summed).
   assert.ok(Math.abs(claude.behavioral.toolErrorRate - 0.1) < 1e-9);
-  assert.ok(claude.ci95.toolErrorRate && claude.ci95.toolErrorRate.lo < 0.1 && 0.1 < claude.ci95.toolErrorRate.hi);
+  assert.ok(
+    claude.ci95.toolErrorRate &&
+      claude.ci95.toolErrorRate.lo < 0.1 &&
+      0.1 < claude.ci95.toolErrorRate.hi,
+  );
   // v1 harness: no terminals → cleanRate null, no CI, never 0.
   const opencode = payload.harnesses.find((h) => h.harness === "opencode");
   assert.equal(opencode.behavioral.cleanRate, null);

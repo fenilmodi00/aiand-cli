@@ -1,13 +1,13 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
+import type { ImportedArtifactRow } from "../store/imported-artifacts.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
-import { type ImportedArtifactRow } from "../store/imported-artifacts.js";
 import {
   bootstrapRatio,
+  type CI95,
   percentileBootstrap,
   seedFromString,
   wilson95,
-  type CI95,
 } from "./evidence.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
 
@@ -388,7 +388,8 @@ function buildCi95(
 ): HarnessStatsRow["ci95"] {
   const seed = seedFromString(harness);
   const terminals = behavioral.sessions;
-  const terminalN = terminals === null ? 0 : terminals.clean + terminals.aborted + terminals.errored;
+  const terminalN =
+    terminals === null ? 0 : terminals.clean + terminals.aborted + terminals.errored;
   return {
     costPerSessionP50:
       sessionCosts.length >= MIN_CI_N ? percentileBootstrap(sessionCosts, 0.5, { seed }) : null,
@@ -405,7 +406,11 @@ function buildCi95(
         : wilson95(terminals?.clean ?? 0, terminalN),
     toolErrorRate:
       toolValues !== null && toolValues.length >= MIN_CI_N
-        ? bootstrapRatio(toolValues, toolValues.map(() => 1), { seed })
+        ? bootstrapRatio(
+            toolValues,
+            toolValues.map(() => 1),
+            { seed },
+          )
         : null,
   };
 }
@@ -508,9 +513,7 @@ export function buildHarnessStats(
                     ? null
                     : (() => {
                         const total =
-                          walked.sessions.clean +
-                          walked.sessions.aborted +
-                          walked.sessions.errored;
+                          walked.sessions.clean + walked.sessions.aborted + walked.sessions.errored;
                         return total > 0 ? walked.sessions.clean / total : null;
                       })(),
                 toolOutcomes: toolOutcomes.length > 0 ? toolOutcomes : null,
@@ -572,9 +575,7 @@ export function buildHarnessStats(
     ? harnesses.reduce((sum, h) => sum + h.behavioral.envelopeTurns, 0)
     : 0;
   const importedRows = options.importedMarkers ?? [];
-  const importedSessions = new Set(
-    importedRows.map((m) => `${m.harness}\u0000${m.session_id}`),
-  );
+  const importedSessions = new Set(importedRows.map((m) => `${m.harness}\u0000${m.session_id}`));
   const behavioralCoverage = {
     covered,
     total: totalRequests,
