@@ -16,7 +16,8 @@ import {
 } from "../obs/classifier.js";
 import {
   buildHarnessStats,
-  compareWinners,
+  type CompareVerdicts,
+  compareVerdicts,
   type ExcludedMixedAggregate,
   type HarnessRequestRow,
   type HarnessStats,
@@ -560,10 +561,7 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
   // #146: behavioral columns appear in stats mode too, when any harness's
   // cell is covered (envelope or imported source). Same cells as compare.
   const covered = rows.some(
-    (r) =>
-      r.behavioral.toolErrorRate !== null ||
-      r.behavioral.oneShotRate !== null ||
-      r.behavioral.cleanRate !== null,
+    (r) => r.behavioral.toolErrorRate !== null || r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
   );
   const behavioralColumns: Column<HarnessStatsRow>[] = covered
     ? [
@@ -591,8 +589,7 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
         },
         {
           header: "compactions",
-          value: (r) =>
-            r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions),
+          value: (r) => (r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions)),
           align: "right",
         },
       ]
@@ -663,14 +660,17 @@ function outcomeCell(b: HarnessStatsRow["behavioral"]): string {
 
 /**
  * The compare-table columns, pure: the terminal renderer and every export
- * format build from this one definition so winners (▸), n= counts, em-dash
- * uncovered cells, and provenance survive into markdown/csv/json unchanged.
+ * format build from this one definition so verdicts (▸), CI brackets, n=
+ * counts, em-dash uncovered cells, and provenance survive into
+ * markdown/csv/json unchanged. #147: `▸` rides the evidence-gated verdicts —
+ * only a CI-disjoint leader is marked, and every metric cell carries its
+ * bracket when the n supports one.
  */
 function compareColumns(
   rows: readonly HarnessStatsRow[],
   noCost: boolean,
 ): Column<HarnessStatsRow>[] {
-  const w = compareWinners(rows);
+  const w = compareVerdicts(rows);
   // #146: covered when any behavioral cell is computable — envelope rates or
   // imported tool/clean data — not just oneShotRate anymore.
   const covered = rows.some(
@@ -686,8 +686,9 @@ function compareColumns(
           header: "tool-err",
           value: (r) =>
             maybeMark(
-              w.toolErrorRate === r.harness,
-              rate(r.behavioral.toolErrorRate, behavioralN(r)),
+              w.toolErrorRate.winner === r.harness,
+              bracketCell(r.behavioral.toolErrorRate, r.ci95.toolErrorRate, pct) +
+                rateSuffix(r.behavioral.toolErrorRate, behavioralN(r)),
             ),
           align: "right",
         },
@@ -695,7 +696,7 @@ function compareColumns(
           header: "one-shot",
           value: (r) =>
             maybeMark(
-              w.oneShotRate === r.harness,
+              w.oneShotRate.winner === r.harness,
               rate(r.behavioral.oneShotRate, r.behavioral.envelopeTurns),
             ),
           align: "right",
@@ -704,7 +705,7 @@ function compareColumns(
           header: "missed-catch",
           value: (r) =>
             maybeMark(
-              w.missedCatchRate === r.harness,
+              w.missedCatchRate.winner === r.harness,
               rate(r.behavioral.missedCatchRate, r.behavioral.envelopeTurns),
             ),
           align: "right",
@@ -713,7 +714,7 @@ function compareColumns(
           header: "turns/success",
           value: (r) =>
             maybeMark(
-              w.turnsToSuccess === r.harness,
+              w.turnsToSuccess.winner === r.harness,
               r.behavioral.turnsToSuccess === null ? "—" : String(r.behavioral.turnsToSuccess),
             ),
           align: "right",
@@ -721,6 +722,13 @@ function compareColumns(
         {
           header: "outcome",
           value: (r) => outcomeCell(r.behavioral),
+          align: "right",
+        },
+        {
+          header: "clean",
+          value: (r) =>
+            bracketCell(r.behavioral.cleanRate, r.ci95.cleanRate, pct) +
+            rateSuffix(r.behavioral.cleanRate, terminalCount(r)),
           align: "right",
         },
         {
@@ -736,8 +744,12 @@ function compareColumns(
       header: "cost/session p50",
       value: (r) =>
         maybeMark(
-          w.costPerSessionP50 === r.harness,
-          r.costPerSession.p50 === null ? "—" : r.costPerSession.p50.toFixed(4),
+          w.costPerSessionP50.winner === r.harness,
+          bracketCell(
+            r.costPerSession.p50,
+            r.ci95.costPerSessionP50,
+            (v) => v.toFixed(4),
+          ),
         ),
       align: "right",
     },
@@ -749,20 +761,28 @@ function compareColumns(
       header: "ttft p50",
       value: (r) =>
         maybeMark(
-          w.ttftP50 === r.harness,
-          r.ttft.p50 === null ? "—" : `${r.ttft.p50.toFixed(0)}ms`,
+          w.ttftP50.winner === r.harness,
+          bracketCell(
+            r.ttft.p50,
+            r.ci95.ttftP50,
+            (v) => `${v.toFixed(0)}ms`,
+          ),
         ),
       align: "right",
     },
     {
       header: "hit",
       value: (r) =>
-        maybeMark(w.cacheHitRatio === r.harness, `${(r.cacheHitRatio * 100).toFixed(1)}%`),
+        maybeMark(
+          w.cacheHitRatio.winner === r.harness,
+          bracketCell(r.cacheHitRatio, r.ci95.cacheHitRatio, pct),
+        ),
       align: "right",
     },
     {
       header: "errors",
-      value: (r) => maybeMark(w.errorRate === r.harness, `${(r.errorRate * 100).toFixed(1)}%`),
+      value: (r) =>
+        maybeMark(w.errorRate.winner === r.harness, bracketCell(r.errorRate, r.ci95.errorRate, pct)),
       align: "right",
     },
     ...behavioralColumns,
@@ -771,14 +791,50 @@ function compareColumns(
   ];
 }
 
-/** The footer lines under the compare table (marker legend + provenance). */
-function compareFooterLines(covered: boolean): string[] {
+/**
+ * The `(n=…)` suffix behind a rate cell, only when the rate exists — a
+ * bracket without its n hides the sample size the interval rests on.
+ */
+function rateSuffix(value: number | null, n: number): string {
+  return value === null ? "" : ` (n=${n})`;
+}
+
+/**
+ * The #147 tied footer lines: one per metric whose anchor CI overlaps a rival
+ * — the honest "no decision yet" note, deterministic order.
+ */
+function tiedFooterLines(verdicts: CompareVerdicts): string[] {
+  const labels: Record<keyof CompareVerdicts, string> = {
+    costPerSessionP50: "cost/session",
+    errorRate: "errors",
+    cacheHitRatio: "hit",
+    ttftP50: "ttft p50",
+    toolErrorRate: "tool-err",
+    oneShotRate: "one-shot",
+    missedCatchRate: "missed-catch",
+    turnsToSuccess: "turns-to-success",
+  };
+  const lines: string[] = [];
+  for (const [metric, verdict] of Object.entries(verdicts) as [
+    keyof CompareVerdicts,
+    { winner: string | null; tied: string[] },
+  ][]) {
+    if (verdict.winner === null && verdict.tied.length > 0) {
+      lines.push(`${labels[metric]}: tied — not distinguishable yet (${verdict.tied.join(", ")})`);
+    }
+  }
+  return lines;
+}
+
+/** The footer lines under the compare table (marker legend + provenance + ties). */
+function compareFooterLines(covered: boolean, rows: readonly HarnessStatsRow[]): string[] {
   return [
-    `${WINNER_MARKER} = per-metric winner (lowest cost/session, lowest errors, highest hit, lowest ttft` +
+    `${WINNER_MARKER} = evidence-gated winner (CI clear of every rival; lowest cost/session, lowest errors, highest hit, lowest ttft` +
       (covered
         ? "; behavioral: lowest tool-err/missed-catch/turns-to-success, highest one-shot — covered cells only"
         : "") +
       ")",
+    ...tiedFooterLines(compareVerdicts(rows)),
     `rule (missed-catch): ${MISSED_CATCH_RULE} · provenance: heuristic(one-shot/retry envelope rule · imported harness markers)`,
   ];
 }
@@ -786,9 +842,8 @@ function compareFooterLines(covered: boolean): string[] {
 function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
   const columns = compareColumns(rows, noCost);
   table<HarnessStatsRow>(rows, columns);
-  for (const line of compareFooterLines(
-    rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null),
-  )) {
+  const covered = rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null);
+  for (const line of compareFooterLines(covered, rows)) {
     out(style.dim(line));
   }
   out();
@@ -815,7 +870,7 @@ function exportCompareTable(args: {
   const covered = args.rows.some(
     (r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
   );
-  const footers = compareFooterLines(covered).concat(
+  const footers = compareFooterLines(covered, args.rows).concat(
     behavioralCoverageLine(args.coverage),
     args.cohort === undefined
       ? []
@@ -837,7 +892,8 @@ function exportCompareTable(args: {
           behavioralCoverage: args.coverage,
           cohort: args.cohort ?? null,
           missedCatchRule: MISSED_CATCH_RULE,
-          labels: "heuristic(one-shot/retry envelope rule · imported harness markers)",
+          labels:
+            "heuristic(one-shot/retry envelope rule · imported harness markers)",
         },
         harnesses: args.rows.map((row) => ({
           ...row,
@@ -900,6 +956,26 @@ function behavioralCoverageLine(coverage: {
 
 function maybeMark(isWinner: boolean, cell: string): string {
   return isWinner ? `${WINNER_MARKER} ${cell}` : cell;
+}
+
+/**
+ * #147: a point estimate with its 95% CI bracket — `$1.20 [0.90–1.55]` style
+ * via the given formatter. No CI (n < 5) renders the plain value: the bracket
+ * must not imply evidence that doesn't exist.
+ */
+function bracketCell(
+  value: number | null,
+  ci: { lo: number; hi: number } | null,
+  render: (value: number) => string,
+): string {
+  if (value === null) return "—";
+  if (ci === null) return render(value);
+  return `${render(value)} [${render(ci.lo)}–${render(ci.hi)}]`;
+}
+
+/** The percentage formatter for rate brackets (whole tenths, no symbol). */
+function pct(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
 function renderSamples(rows: HarnessStatsRow[]): void {
