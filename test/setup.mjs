@@ -52,6 +52,12 @@ if (!process.env.AIAND_TEST_STUB_BIN) {
   process.on("exit", () => rmSync(bin, { recursive: true, force: true }));
 }
 process.env.AIAND_NO_BROWSER = "1";
+// AIAND_HOME must not resolve to the real home: local-usage scans the real
+// ~/.omp and ~/.pi session dirs through it (951MB here), which makes every
+// report-family CLI subprocess take seconds (#155 test-suite slowdown).
+if (!process.env.AIAND_HOME) {
+  process.env.AIAND_HOME = join(tmpdir(), `aiand-test-home-${process.pid}`);
+}
 delete process.env.CLAUDE_CONFIG_DIR;
 delete process.env.CODEX_HOME;
 delete process.env.HERMES_HOME;
