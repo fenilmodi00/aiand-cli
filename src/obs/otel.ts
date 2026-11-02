@@ -3,15 +3,10 @@ import { VERSION } from "../api/client.js";
 import { LOG_RANGES } from "../api/logs.js";
 import { listEnvelopesFromDb } from "../store/envelopes.js";
 import { listImportedArtifactsFromDb } from "../store/imported-artifacts.js";
-import {
-  createdSince,
-  createdUntilIncl,
-  openStore,
-  storePath,
-} from "../store/index.js";
+import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
 import { listSessions, type SessionRow } from "../store/sessions.js";
-import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
+import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
 
 /**
  * OTel metrics export (feature catalog G2, ticket #72).
@@ -411,8 +406,7 @@ export const HELP: Record<string, string> = {
     "Gateway-computed per-request cost summed over the window (USD).",
   "gen_ai.client.inference.usage.input_tokens":
     "Input tokens summed over the window — verbatim gateway sum, INCLUDES cached tokens.",
-  "gen_ai.client.inference.usage.output_tokens":
-    "Output tokens summed over the window.",
+  "gen_ai.client.inference.usage.output_tokens": "Output tokens summed over the window.",
   "gen_ai.server.request.duration":
     "Server-side request duration in seconds — the gateway's latency_ms.",
   "gen_ai.server.time_to_first_token":
@@ -435,8 +429,7 @@ export const HELP: Record<string, string> = {
     "Behaviorally covered requests / total requests in the window; omitted when there are no requests.",
   "aiand.store.sync_lag_seconds":
     "Seconds since the local store's last successful sync (local store freshness, NOT gateway freshness); omitted when the store has never synced.",
-  "aiand.store.requests_total":
-    "Request rows in the export window held by the local store.",
+  "aiand.store.requests_total": "Request rows in the export window held by the local store.",
 };
 
 // ---------------------------------------------------------------------------
@@ -459,7 +452,13 @@ function buildGauges(stats: HarnessStats): Series[] {
   for (const harness of stats.harnesses) {
     const attrs: [string, string][] = [["agent.name", harness.harness]];
 
-    series.push({ name: "aiand.harness.sessions", kind: "gauge", unit: "{session}", attrs, value: harness.sessions });
+    series.push({
+      name: "aiand.harness.sessions",
+      kind: "gauge",
+      unit: "{session}",
+      attrs,
+      value: harness.sessions,
+    });
 
     // Cost gauge: emit-only-where-data-exists, and only in the store's
     // single currency (usd or currency-less).
@@ -477,19 +476,43 @@ function buildGauges(stats: HarnessStats): Series[] {
     }
 
     if (harness.ttft.p95 !== null) {
-      series.push({ name: "aiand.harness.ttft_p95_ms", kind: "gauge", unit: "ms", attrs, value: harness.ttft.p95 });
+      series.push({
+        name: "aiand.harness.ttft_p95_ms",
+        kind: "gauge",
+        unit: "ms",
+        attrs,
+        value: harness.ttft.p95,
+      });
     }
 
     if (harness.requests > 0) {
-      series.push({ name: "aiand.harness.cache_hit_ratio", kind: "gauge", unit: "1", attrs, value: harness.cacheHitRatio });
-      series.push({ name: "aiand.harness.error_rate", kind: "gauge", unit: "1", attrs, value: harness.errorRate });
+      series.push({
+        name: "aiand.harness.cache_hit_ratio",
+        kind: "gauge",
+        unit: "1",
+        attrs,
+        value: harness.cacheHitRatio,
+      });
+      series.push({
+        name: "aiand.harness.error_rate",
+        kind: "gauge",
+        unit: "1",
+        attrs,
+        value: harness.errorRate,
+      });
     }
 
     // Behavioral cells ride the #146 source precedence: envelope turns ≥
     // MIN_BEHAVIORAL_TURNS, else imported markers, else uncovered (omitted).
     const behavioral = harness.behavioral;
     if (behavioral.cleanRate !== null) {
-      series.push({ name: "aiand.harness.clean_rate", kind: "gauge", unit: "1", attrs, value: behavioral.cleanRate });
+      series.push({
+        name: "aiand.harness.clean_rate",
+        kind: "gauge",
+        unit: "1",
+        attrs,
+        value: behavioral.cleanRate,
+      });
     }
     if (behavioral.toolErrorRate !== null) {
       series.push({
@@ -763,9 +786,9 @@ export function buildExportPayload(opts: ExportOptions = {}): ExportPayload {
       // Local store freshness (not gateway freshness) for sync_lag_seconds —
       // read inside the SAME handle; a missing sync_meta row means the store
       // has never synced and the gauge is omitted, never zeroed.
-      const syncRow = db
-        .prepare("SELECT value FROM sync_meta WHERE key = 'last_sync_at'")
-        .get() as Record<string, unknown> | undefined;
+      const syncRow = db.prepare("SELECT value FROM sync_meta WHERE key = 'last_sync_at'").get() as
+        | Record<string, unknown>
+        | undefined;
       lastSyncAt = typeof syncRow?.value === "string" ? syncRow.value : null;
     } finally {
       try {

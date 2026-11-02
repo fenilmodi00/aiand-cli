@@ -865,7 +865,10 @@ test("#130 behavioral columns are gated on envelope coverage; covered cells carr
   const run = await runCli(["harness", "compare", "--no-sync"], base);
   assert.equal(run.code, 0, run.stderr);
   // Coverage line: 10 covered turns / 12 requests.
-  assert.match(run.stdout, /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
+  assert.match(
+    run.stdout,
+    /behavioral columns: envelopes 83% of turns \(10\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/,
+  );
   // claude (v2): tool-err with n=; opencode (v1): v2-gated cells are —,
   // one-shot still computable from the edit walk — cells, never zeros.
   assert.match(run.stdout, /▸ 10\.0% \(n=5\)/, "covered tool-err cell with n and winner");
@@ -899,7 +902,10 @@ test("#130 compare without any envelope data degrades to the coverage line only"
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   assert.equal(run.code, 0, run.stderr);
-  assert.match(run.stdout, /behavioral columns: envelopes 0% of turns \(0\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/);
+  assert.match(
+    run.stdout,
+    /behavioral columns: envelopes 0% of turns \(0\/12\), imported 0 session\(s\) across 0 harness\(es\), uncovered → —/,
+  );
   // No behavioral column headers at all when nothing is covered.
   assert.ok(!run.stdout.includes("TOOL-ERR"));
   assert.ok(!run.stdout.includes("tool-err"));
@@ -1049,14 +1055,84 @@ test("#146 buildHarnessStats derives imported behavioral stats with envelope pre
   const { buildHarnessStats, MIN_BEHAVIORAL_TURNS } = await loadEngine();
   const imported = [
     // claude: 2 sessions; 3 tool calls (1 error), compaction, terminals.
-    { dedup_key: "c1", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T10:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c2", harness: "claude", session_id: "s1", kind: "tool", tool_name: null, outcome: "error", seq: 1, at: "2026-10-29T10:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c3", harness: "claude", session_id: "s1", kind: "compaction", tool_name: null, outcome: null, seq: null, at: null, imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c4", harness: "claude", session_id: "s1", kind: "terminal", tool_name: null, outcome: "clean", seq: null, at: "2026-10-29T10:02:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c5", harness: "claude", session_id: "s2", kind: "tool", tool_name: null, outcome: "ok", seq: 0, at: "2026-10-29T11:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
-    { dedup_key: "c6", harness: "claude", session_id: "s2", kind: "terminal", tool_name: null, outcome: "errored", seq: null, at: "2026-10-29T11:01:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    {
+      dedup_key: "c1",
+      harness: "claude",
+      session_id: "s1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T10:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c2",
+      harness: "claude",
+      session_id: "s1",
+      kind: "tool",
+      tool_name: null,
+      outcome: "error",
+      seq: 1,
+      at: "2026-10-29T10:01:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c3",
+      harness: "claude",
+      session_id: "s1",
+      kind: "compaction",
+      tool_name: null,
+      outcome: null,
+      seq: null,
+      at: null,
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c4",
+      harness: "claude",
+      session_id: "s1",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "clean",
+      seq: null,
+      at: "2026-10-29T10:02:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c5",
+      harness: "claude",
+      session_id: "s2",
+      kind: "tool",
+      tool_name: null,
+      outcome: "ok",
+      seq: 0,
+      at: "2026-10-29T11:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
+    {
+      dedup_key: "c6",
+      harness: "claude",
+      session_id: "s2",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "errored",
+      seq: null,
+      at: "2026-10-29T11:01:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
     // codex: session with terminals but no tools → toolErrorRate null.
-    { dedup_key: "x1", harness: "codex", session_id: "t1", kind: "terminal", tool_name: null, outcome: "aborted", seq: null, at: "2026-10-29T12:00:00.000Z", imported_at: "2026-10-30T00:00:00.000Z" },
+    {
+      dedup_key: "x1",
+      harness: "codex",
+      session_id: "t1",
+      kind: "terminal",
+      tool_name: null,
+      outcome: "aborted",
+      seq: null,
+      at: "2026-10-29T12:00:00.000Z",
+      imported_at: "2026-10-30T00:00:00.000Z",
+    },
   ];
   // Rows attributed through a wired key map (the same discipline the CLI
   // tests use), so request rows and imported markers share the harness id.
@@ -1161,11 +1237,45 @@ test("#146 harness stats shows imported tool-error + terminal split; one-shot st
     opened.db.close();
   });
   // claude imported markers: 3 tool calls (m1..m3), 1 error, clean terminal.
-  await seedImportedMarker(cfg2, { dedup_key: "m1", harness: "claude", session_id: "a", kind: "tool", outcome: "error", seq: 0, tool_name: "Bash" });
-  await seedImportedMarker(cfg2, { dedup_key: "m2", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 1 });
-  await seedImportedMarker(cfg2, { dedup_key: "m3", harness: "claude", session_id: "a", kind: "tool", outcome: "ok", seq: 2 });
-  await seedImportedMarker(cfg2, { dedup_key: "m4", harness: "claude", session_id: "a", kind: "compaction" });
-  await seedImportedMarker(cfg2, { dedup_key: "m5", harness: "claude", session_id: "a", kind: "terminal", outcome: "clean", at: "2026-10-29T10:05:00.000Z" });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m1",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "error",
+    seq: 0,
+    tool_name: "Bash",
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m2",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "ok",
+    seq: 1,
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m3",
+    harness: "claude",
+    session_id: "a",
+    kind: "tool",
+    outcome: "ok",
+    seq: 2,
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m4",
+    harness: "claude",
+    session_id: "a",
+    kind: "compaction",
+  });
+  await seedImportedMarker(cfg2, {
+    dedup_key: "m5",
+    harness: "claude",
+    session_id: "a",
+    kind: "terminal",
+    outcome: "clean",
+    at: "2026-10-29T10:05:00.000Z",
+  });
 
   const run = await runCli(["harness", "stats", "--no-sync"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg2 }),
@@ -1210,8 +1320,22 @@ test("#146 no imported markers: coverage line carries the backfill instruction",
 test("#146 envelope + imported for the same harness: envelope count wins, no double count", async () => {
   const cfg = cfgDir("imported-both");
   await seedBehavioralStore(cfg); // claude already has 5 v2 envelopes
-  await seedImportedMarker(cfg, { dedup_key: "b1", harness: "claude", session_id: "b", kind: "tool", outcome: "error", seq: 0 });
-  await seedImportedMarker(cfg, { dedup_key: "b2", harness: "claude", session_id: "b", kind: "terminal", outcome: "errored", at: "2026-10-29T10:06:00.000Z" });
+  await seedImportedMarker(cfg, {
+    dedup_key: "b1",
+    harness: "claude",
+    session_id: "b",
+    kind: "tool",
+    outcome: "error",
+    seq: 0,
+  });
+  await seedImportedMarker(cfg, {
+    dedup_key: "b2",
+    harness: "claude",
+    session_id: "b",
+    kind: "terminal",
+    outcome: "errored",
+    at: "2026-10-29T10:06:00.000Z",
+  });
   const run = await runCli(["harness", "compare", "--no-sync", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });

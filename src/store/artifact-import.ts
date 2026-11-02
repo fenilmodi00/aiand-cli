@@ -255,7 +255,13 @@ function claudeMarkers(): ArtifactMarker[] {
   const markers: ArtifactMarker[] = [];
   for (const path of claudeJsonlFiles()) {
     markers.push(
-      ...claudeMarkersFromFile(path, path.split(/[\\/]/).pop()?.replace(/\.jsonl$/, "") ?? ""),
+      ...claudeMarkersFromFile(
+        path,
+        path
+          .split(/[\\/]/)
+          .pop()
+          ?.replace(/\.jsonl$/, "") ?? "",
+      ),
     );
   }
   return markers;
@@ -310,7 +316,13 @@ function claudeUsageFromFile(path: string): ArtifactUsage[] {
     const output = finiteToken(usage.output_tokens);
     if (input === null || output === null) continue;
     const cached = finiteToken(usage.cache_read_input_tokens) ?? 0;
-    records.push({ model: message.model, inputTokens: input, outputTokens: output, cachedTokens: cached, at });
+    records.push({
+      model: message.model,
+      inputTokens: input,
+      outputTokens: output,
+      cachedTokens: cached,
+      at,
+    });
   }
   return records;
 }
@@ -497,8 +509,7 @@ function codexUsageFromFile(path: string): ArtifactUsage[] {
     const inputRaw = finiteToken(usage.input_tokens);
     const output = finiteToken(usage.output_tokens);
     if (inputRaw === null || output === null) continue;
-    const cached =
-      finiteToken(usage.cached_input_tokens) ?? finiteToken(usage.cache_read) ?? 0;
+    const cached = finiteToken(usage.cached_input_tokens) ?? finiteToken(usage.cache_read) ?? 0;
     const at = [parsed.timestamp, parsed.payload?.created_at, parsed.payload?.info?.created_at]
       .map((value) => (typeof value === "string" ? Date.parse(value) : Number.NaN))
       .find((ms) => !Number.isNaN(ms));

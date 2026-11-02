@@ -436,20 +436,32 @@ describe("artifact import (migration 0008, #133)", () => {
       JSON.stringify({
         type: "assistant",
         sessionId: "ses-u1",
-        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 1, output_tokens: 1 } },
+        message: {
+          role: "assistant",
+          model: "zai-org/glm-5.3",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
       }),
       // non-finite tokens — skipped; cache_read missing → 0
       JSON.stringify({
         type: "assistant",
         sessionId: "ses-u1",
         timestamp: "2026-10-29T10:03:00.000Z",
-        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 5, output_tokens: "many" } },
+        message: {
+          role: "assistant",
+          model: "zai-org/glm-5.3",
+          usage: { input_tokens: 5, output_tokens: "many" },
+        },
       }),
       JSON.stringify({
         type: "assistant",
         sessionId: "ses-u1",
         timestamp: "2026-10-29T10:04:00.000Z",
-        message: { role: "assistant", model: "zai-org/glm-5.3", usage: { input_tokens: 7, output_tokens: 2 } },
+        message: {
+          role: "assistant",
+          model: "zai-org/glm-5.3",
+          usage: { input_tokens: 7, output_tokens: 2 },
+        },
       }),
       // The content line the reader must never interpret as a record.
       JSON.stringify({
@@ -483,7 +495,11 @@ describe("artifact import (migration 0008, #133)", () => {
           at: Date.parse("2026-10-29T10:00:00.000Z"),
         });
         assert.deepEqual(
-          { in: records[1].inputTokens, out: records[1].outputTokens, cached: records[1].cachedTokens },
+          {
+            in: records[1].inputTokens,
+            out: records[1].outputTokens,
+            cached: records[1].cachedTokens,
+          },
           { in: 7, out: 2, cached: 0 },
         );
       },
@@ -504,7 +520,9 @@ describe("artifact import (migration 0008, #133)", () => {
       type: "event_msg",
       payload: {
         type: "event_msg",
-        info: { last_token_usage: { input_tokens: 1400, output_tokens: 300, cached_input_tokens: 200 } },
+        info: {
+          last_token_usage: { input_tokens: 1400, output_tokens: 300, cached_input_tokens: 200 },
+        },
       },
     });
     // fallback payload.usage; cache_read fallback name
@@ -516,7 +534,10 @@ describe("artifact import (migration 0008, #133)", () => {
     // fallback top-level usage; created_at timestamp fallback on payload
     const tu = JSON.stringify({
       type: "event_msg",
-      payload: { created_at: "2026-10-29T11:03:00.000Z", usage: { input_tokens: 30, output_tokens: 5 } },
+      payload: {
+        created_at: "2026-10-29T11:03:00.000Z",
+        usage: { input_tokens: 30, output_tokens: 5 },
+      },
     });
     // total_token_usage is cumulative and must never yield a record
     const ttu = JSON.stringify({
@@ -524,7 +545,10 @@ describe("artifact import (migration 0008, #133)", () => {
       type: "event_msg",
       payload: { info: { total_token_usage: { input_tokens: 99000, output_tokens: 950 } } },
     });
-    writeFileSync(join(codexDir, "rollout-u1.jsonl"), [model, ltu, pu, tu, ttu, "garbage {"].join("\n"));
+    writeFileSync(
+      join(codexDir, "rollout-u1.jsonl"),
+      [model, ltu, pu, tu, ttu, "garbage {"].join("\n"),
+    );
     await withEnv(
       {
         AIAND_CODEX_DIR: join(box.dir, "usage-codex-home", ".codex", "sessions"),
@@ -576,7 +600,6 @@ const { listImportedArtifactsFromDb, listImportedArtifacts } = await import(
 );
 
 describe("imported-artifacts reader (#146)", () => {
-
   function seedMarker(db, overrides) {
     const row = {
       dedup_key: `k${Math.random()}`,
@@ -651,10 +674,7 @@ describe("imported-artifacts reader (#146)", () => {
         since: "2026-10-29T00:00:00.000Z",
         until: "2026-10-30T00:00:00.000Z",
       });
-      assert.deepEqual(
-        rows.map((r) => r.dedup_key).sort(),
-        ["w1", "w2"],
-      );
+      assert.deepEqual(rows.map((r) => r.dedup_key).sort(), ["w1", "w2"]);
       // Unwindowed reads see all three.
       assert.equal(listImportedArtifactsFromDb(opened.db).length, 3);
     });
@@ -687,10 +707,7 @@ describe("imported-artifacts reader (#146)", () => {
       seedMarker(opened.db, { dedup_key: "wrap1" });
       opened.db.close();
       assert.equal(listImportedArtifacts().length, 1);
-      assert.equal(
-        listImportedArtifacts({ since: "2030-01-01T00:00:00.000Z" }).length,
-        0,
-      );
+      assert.equal(listImportedArtifacts({ since: "2030-01-01T00:00:00.000Z" }).length, 0);
     });
   });
 });

@@ -243,19 +243,68 @@ describe("aiand efficiency — imported markers (#146)", () => {
       assert.ok(opened.ok);
       // codex: import-only harness — 4 tool calls, 1 error, 2 clean terminals.
       seedImported(opened.db, [
-        { dedup_key: "x1", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 0, at: "2026-10-25T09:00:00.000Z" },
-        { dedup_key: "x2", harness: "codex", session_id: "s1", kind: "tool", outcome: "error", seq: 1, at: "2026-10-25T09:01:00.000Z" },
-        { dedup_key: "x3", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 2, at: "2026-10-25T09:02:00.000Z" },
-        { dedup_key: "x4", harness: "codex", session_id: "s1", kind: "tool", outcome: "ok", seq: 3, at: "2026-10-25T09:03:00.000Z" },
-        { dedup_key: "x5", harness: "codex", session_id: "s1", kind: "terminal", outcome: "clean", at: "2026-10-25T09:04:00.000Z" },
-        { dedup_key: "x6", harness: "codex", session_id: "s2", kind: "terminal", outcome: "clean", at: "2026-10-25T09:10:00.000Z" },
+        {
+          dedup_key: "x1",
+          harness: "codex",
+          session_id: "s1",
+          kind: "tool",
+          outcome: "ok",
+          seq: 0,
+          at: "2026-10-25T09:00:00.000Z",
+        },
+        {
+          dedup_key: "x2",
+          harness: "codex",
+          session_id: "s1",
+          kind: "tool",
+          outcome: "error",
+          seq: 1,
+          at: "2026-10-25T09:01:00.000Z",
+        },
+        {
+          dedup_key: "x3",
+          harness: "codex",
+          session_id: "s1",
+          kind: "tool",
+          outcome: "ok",
+          seq: 2,
+          at: "2026-10-25T09:02:00.000Z",
+        },
+        {
+          dedup_key: "x4",
+          harness: "codex",
+          session_id: "s1",
+          kind: "tool",
+          outcome: "ok",
+          seq: 3,
+          at: "2026-10-25T09:03:00.000Z",
+        },
+        {
+          dedup_key: "x5",
+          harness: "codex",
+          session_id: "s1",
+          kind: "terminal",
+          outcome: "clean",
+          at: "2026-10-25T09:04:00.000Z",
+        },
+        {
+          dedup_key: "x6",
+          harness: "codex",
+          session_id: "s2",
+          kind: "terminal",
+          outcome: "clean",
+          at: "2026-10-25T09:10:00.000Z",
+        },
         { dedup_key: "x7", harness: "codex", session_id: "s2", kind: "compaction", at: null },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"], {
-      env: cliEnvFor(dir),
-    });
+    const { code, stdout } = await runCli(
+      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"],
+      {
+        env: cliEnvFor(dir),
+      },
+    );
     assert.equal(code, 0, stdout);
     const payload = JSON.parse(stdout);
 
@@ -297,7 +346,20 @@ describe("aiand efficiency — imported markers (#146)", () => {
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       );
       for (let i = 0; i < 5; i += 1) {
-        insert.run(`rb${i}`, "zai-org/glm-5.3", "sk-abcd…1234", 200, 100, 50, 0, "0.1", 0.1, "USD", `2026-10-25T10:0${i}:00.000Z`, `2026-10-25T10:0${i}:00.000Z`);
+        insert.run(
+          `rb${i}`,
+          "zai-org/glm-5.3",
+          "sk-abcd…1234",
+          200,
+          100,
+          50,
+          0,
+          "0.1",
+          0.1,
+          "USD",
+          `2026-10-25T10:0${i}:00.000Z`,
+          `2026-10-25T10:0${i}:00.000Z`,
+        );
         insertEnvelope(opened.db, {
           id: `eb${i}`,
           agent: "claude",
@@ -318,13 +380,24 @@ describe("aiand efficiency — imported markers (#146)", () => {
       }
       // Same harness imported: must NOT change claude's slice.
       seedImported(opened.db, [
-        { dedup_key: "ib1", harness: "claude", session_id: "z", kind: "tool", outcome: "error", seq: 0, at: "2026-10-25T11:00:00.000Z" },
+        {
+          dedup_key: "ib1",
+          harness: "claude",
+          session_id: "z",
+          kind: "tool",
+          outcome: "error",
+          seq: 0,
+          at: "2026-10-25T11:00:00.000Z",
+        },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"], {
-      env: cliEnvFor(dir),
-    });
+    const { code, stdout } = await runCli(
+      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"],
+      {
+        env: cliEnvFor(dir),
+      },
+    );
     assert.equal(code, 0, stdout);
     const payload = JSON.parse(stdout);
     const claude = payload.oneShotRetry.byHarness.find((s) => s.key === "claude");
@@ -344,13 +417,24 @@ describe("aiand efficiency — imported markers (#146)", () => {
       const opened = openStore(storePath());
       assert.ok(opened.ok);
       seedImported(opened.db, [
-        { dedup_key: "h1", harness: "codex", session_id: "s1", kind: "tool", outcome: "error", seq: 0, at: "2026-10-25T09:00:00.000Z" },
+        {
+          dedup_key: "h1",
+          harness: "codex",
+          session_id: "s1",
+          kind: "tool",
+          outcome: "error",
+          seq: 0,
+          at: "2026-10-25T09:00:00.000Z",
+        },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"], {
-      env: cliEnvFor(dir),
-    });
+    const { code, stdout } = await runCli(
+      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"],
+      {
+        env: cliEnvFor(dir),
+      },
+    );
     assert.equal(code, 0, stdout);
     assert.match(stdout, /imported markers: 1 session\(s\) across 1 harness\(es\)/);
     assert.match(stdout, /tool errors 100% \(imported markers\)/);
@@ -359,10 +443,16 @@ describe("aiand efficiency — imported markers (#146)", () => {
   test("no imported markers: the human line instructs the backfill", async () => {
     const dir = join(box.dir, "imported-empty");
     seedStore(dir);
-    const { code, stdout } = await runCli(["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"], {
-      env: cliEnvFor(dir),
-    });
+    const { code, stdout } = await runCli(
+      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"],
+      {
+        env: cliEnvFor(dir),
+      },
+    );
     assert.equal(code, 0, stdout);
-    assert.match(stdout, /imported markers: none in this window — backfill with `aiand harness import`/);
+    assert.match(
+      stdout,
+      /imported markers: none in this window — backfill with `aiand harness import`/,
+    );
   });
 });

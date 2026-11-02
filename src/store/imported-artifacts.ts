@@ -45,8 +45,7 @@ export type ListImportedArtifactsQuery = {
 const WINDOW_COL = "COALESCE(at, imported_at)";
 
 /** The projected columns, in contract order — never `SELECT *`. */
-const COLUMNS =
-  "dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at";
+const COLUMNS = "dedup_key, harness, session_id, kind, tool_name, outcome, seq, at, imported_at";
 
 /** Coerce one raw row; a row without its id is unusable and skipped. */
 function rowToImported(row: Record<string, unknown>): ImportedArtifactRow | null {

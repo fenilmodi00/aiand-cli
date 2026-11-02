@@ -751,8 +751,14 @@ describe("otel export: harness + store gauges (#149)", () => {
       / gauge$/,
     );
     // Counters stay counters, histograms stay histograms.
-    assert.match(lines.find((l) => l.startsWith("# TYPE gen_ai_client_inference_usage_cost")), / counter$/);
-    assert.match(lines.find((l) => l.startsWith("# TYPE gen_ai_server_time_to_first_token")), / histogram$/);
+    assert.match(
+      lines.find((l) => l.startsWith("# TYPE gen_ai_client_inference_usage_cost")),
+      / counter$/,
+    );
+    assert.match(
+      lines.find((l) => l.startsWith("# TYPE gen_ai_server_time_to_first_token")),
+      / histogram$/,
+    );
     // Gauge sample lines: name{agent_name="..."} value.
     assert.match(
       lines.find((l) => l.startsWith("aiand_harness_sessions{")),

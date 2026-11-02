@@ -1,7 +1,7 @@
 import { cacheVerdict } from "../api/cache-report.js";
 import { type EfficiencyTurn, oneShotRetry } from "../model-efficiency.js";
+import type { ImportedArtifactRow } from "../store/imported-artifacts.js";
 import { type SessionRequestRow, sessionizeRows } from "../store/sessions.js";
-import { type ImportedArtifactRow } from "../store/imported-artifacts.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "./provenance.js";
 
 /** The input shape of the shared verdict function (its thresholds are law). */
@@ -422,9 +422,7 @@ export function buildHarnessStats(
                     ? null
                     : (() => {
                         const total =
-                          walked.sessions.clean +
-                          walked.sessions.aborted +
-                          walked.sessions.errored;
+                          walked.sessions.clean + walked.sessions.aborted + walked.sessions.errored;
                         return total > 0 ? walked.sessions.clean / total : null;
                       })(),
               };
@@ -474,9 +472,7 @@ export function buildHarnessStats(
     ? harnesses.reduce((sum, h) => sum + h.behavioral.envelopeTurns, 0)
     : 0;
   const importedRows = options.importedMarkers ?? [];
-  const importedSessions = new Set(
-    importedRows.map((m) => `${m.harness}\u0000${m.session_id}`),
-  );
+  const importedSessions = new Set(importedRows.map((m) => `${m.harness}\u0000${m.session_id}`));
   const behavioralCoverage = {
     covered,
     total: totalRequests,

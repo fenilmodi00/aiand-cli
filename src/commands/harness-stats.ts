@@ -560,7 +560,10 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
   // #146: behavioral columns appear in stats mode too, when any harness's
   // cell is covered (envelope or imported source). Same cells as compare.
   const covered = rows.some(
-    (r) => r.behavioral.toolErrorRate !== null || r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null,
+    (r) =>
+      r.behavioral.toolErrorRate !== null ||
+      r.behavioral.oneShotRate !== null ||
+      r.behavioral.cleanRate !== null,
   );
   const behavioralColumns: Column<HarnessStatsRow>[] = covered
     ? [
@@ -588,7 +591,8 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
         },
         {
           header: "compactions",
-          value: (r) => (r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions)),
+          value: (r) =>
+            r.behavioral.compactions === null ? "—" : String(r.behavioral.compactions),
           align: "right",
         },
       ]
@@ -782,7 +786,9 @@ function compareFooterLines(covered: boolean): string[] {
 function renderCompare(rows: HarnessStatsRow[], noCost: boolean): void {
   const columns = compareColumns(rows, noCost);
   table<HarnessStatsRow>(rows, columns);
-  for (const line of compareFooterLines(rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null))) {
+  for (const line of compareFooterLines(
+    rows.some((r) => r.behavioral.oneShotRate !== null || r.behavioral.cleanRate !== null),
+  )) {
     out(style.dim(line));
   }
   out();
@@ -831,8 +837,7 @@ function exportCompareTable(args: {
           behavioralCoverage: args.coverage,
           cohort: args.cohort ?? null,
           missedCatchRule: MISSED_CATCH_RULE,
-          labels:
-            "heuristic(one-shot/retry envelope rule · imported harness markers)",
+          labels: "heuristic(one-shot/retry envelope rule · imported harness markers)",
         },
         harnesses: args.rows.map((row) => ({
           ...row,

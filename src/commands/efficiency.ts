@@ -428,11 +428,9 @@ function render(payload: EfficiencyPayload): void {
   const imported = payload.importedCoverage;
   out(
     imported.sessions === 0
-      ? style.dim(
-          "  imported markers: none in this window — backfill with `aiand harness import`",
-        )
+      ? style.dim("  imported markers: none in this window — backfill with `aiand harness import`")
       : `  imported markers: ${imported.sessions} session(s) across ${imported.harnesses} harness(es) ` +
-        "(opt-in backfill of the harnesses' own session files; tool errors, terminals, compactions)",
+          "(opt-in backfill of the harnesses' own session files; tool errors, terminals, compactions)",
   );
   out("");
 

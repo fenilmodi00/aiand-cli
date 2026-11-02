@@ -3,10 +3,10 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHARED_AGENT } from "../api/agent-keys.js";
+import { agentHome } from "../fsutil.js";
 // Zero-copy reuse of the marker readers' file walks (#150): the usage
 // extraction lives next to the markers it shares traversal with.
 import { claudeUsageRecords, codexUsageRecords } from "./artifact-import.js";
-import { agentHome } from "../fsutil.js";
 
 /**
  * Local-usage correlation (harness attribution refinement).

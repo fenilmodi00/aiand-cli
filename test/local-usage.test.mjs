@@ -1189,7 +1189,11 @@ describe("local-usage correlation", () => {
     seedSharedKey(dir);
     writeClaudeSession(home, "--D--proj--", [
       // A content line that must never be read into any record:
-      JSON.stringify({ type: "user", timestamp: "2026-10-20T09:59:00.000Z", message: { role: "user", content: "SECRET-CLAUDE-PROMPT" } }),
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-10-20T09:59:00.000Z",
+        message: { role: "user", content: "SECRET-CLAUDE-PROMPT" },
+      }),
       matchingClaudeLine(),
     ]);
     await insertRows(dir, [storeRow()]);
@@ -1253,13 +1257,28 @@ describe("local-usage correlation", () => {
     mkdirSync(home, { recursive: true });
     writeCodexRollout(home, [
       codexSessionMetaLine(),
-      codexUsageLine({ ts: "2026-10-20T10:00:03.000Z", input: 1400, output: 300, cached: 200, shape: "payload" }),
-      codexUsageLine({ ts: "2026-10-20T10:05:03.000Z", input: 1400, output: 300, cached: 200, shape: "top" }),
+      codexUsageLine({
+        ts: "2026-10-20T10:00:03.000Z",
+        input: 1400,
+        output: 300,
+        cached: 200,
+        shape: "payload",
+      }),
+      codexUsageLine({
+        ts: "2026-10-20T10:05:03.000Z",
+        input: 1400,
+        output: 300,
+        cached: 200,
+        shape: "top",
+      }),
       // total_token_usage is cumulative and must NEVER yield a record:
       JSON.stringify({
         timestamp: "2026-10-20T10:06:03.000Z",
         type: "event_msg",
-        payload: { type: "event_msg", info: { total_token_usage: { input_tokens: 99000, output_tokens: 300 } } },
+        payload: {
+          type: "event_msg",
+          info: { total_token_usage: { input_tokens: 99000, output_tokens: 300 } },
+        },
       }),
     ]);
     const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
@@ -1367,14 +1386,21 @@ describe("local-usage correlation", () => {
     mkdirSync(home, { recursive: true });
     writeClaudeSession(home, "--D--proj--", [
       "not json at all",
-      JSON.stringify({ type: "assistant", timestamp: "2026-10-20T10:00:03.000Z", message: { role: "assistant", model: "zai-org/glm-5.3" } }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-10-20T10:00:03.000Z",
+        message: { role: "assistant", model: "zai-org/glm-5.3" },
+      }),
       matchingClaudeLine({ input: Number.NaN }),
     ]);
     writeCodexRollout(home, [
       codexSessionMetaLine(),
       "garbage {",
       // no timestamp anywhere parseable:
-      JSON.stringify({ type: "event_msg", payload: { info: { last_token_usage: { input_tokens: 10, output_tokens: 5 } } } }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { info: { last_token_usage: { input_tokens: 10, output_tokens: 5 } } },
+      }),
     ]);
     const records = await withEnv({ AIAND_HOME: home }, () => collectLocalUsageRecords());
     assert.equal(records.filter((r) => r.agent === "claude" || r.agent === "codex").length, 0);
