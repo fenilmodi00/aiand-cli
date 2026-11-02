@@ -262,3 +262,144 @@ describe("--json shape via parseRunRows + aggregateCells", () => {
     assert.equal(payload.solveTied, false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #152 — task-clustered bootstrap and pass@k / pass^k
+// ---------------------------------------------------------------------------
+
+describe("aggregateCells k option (#152)", () => {
+  /** Two tasks × 3 trials: t1 solves 2/3, t2 solves 3/3 (pooled 5/6). */
+  function twoTaskRows(harness = "claude", model = "m1") {
+    return [
+      row({ task: "t1", run_id: "r1", harness, model, success: true }),
+      row({ task: "t1", run_id: "r2", harness, model, success: true }),
+      row({ task: "t1", run_id: "r3", harness, model, success: false }),
+      row({ task: "t2", run_id: "r4", harness, model, success: true }),
+      row({ task: "t2", run_id: "r4b", harness, model, success: true }),
+      row({ task: "t2", run_id: "r4c", harness, model, success: true }),
+    ];
+  }
+
+  test("k=1: pass@k and pass^k both equal the pooled solve rate", () => {
+    const [c] = aggregateCells(twoTaskRows());
+    assert.equal(c.k, 1);
+    assert.equal(c.solveMethod, "clustered", "repeated trials per task → clustered");
+    assert.equal(c.tasksBelowK, 0);
+    assert.equal(c.passAtK, c.solves / c.trials);
+    assert.equal(c.passPowK, c.solves / c.trials);
+  });
+
+  test("k=1 single-trial cells stay Wilson with exact Wilson bounds", () => {
+    const [c] = aggregateCells([
+      row({ success: true }),
+      row({ success: true }),
+      row({ success: false, failure_mode: "agent_timeout" }),
+    ]);
+    assert.equal(c.solveMethod, "wilson");
+    const w = wilson95(2, 3);
+    assert.equal(c.solveLo, w.lo);
+    assert.equal(c.solveHi, w.hi);
+  });
+
+  test("k=3: both estimators, clustered CI differs from naive Wilson width", () => {
+    const naive = aggregateCells(
+      Array.from({ length: 6 }, (_, i) => row({ success: i < 5 })),
+    )[0];
+    const [clustered] = aggregateCells(twoTaskRows(), { k: 3 });
+    assert.equal(clustered.solveMethod, "clustered");
+    assert.equal(naive.solveMethod, "wilson", "no task repeats → Wilson even with 6 trials");
+    // Different bounds entirely: 2 effective task clusters vs 6 independent
+    // trials — the ticket requires the clustered CI to differ from naive
+    // Wilson on the same pooled 5/6.
+    assert.notEqual(clustered.solveLo, naive.solveLo);
+    assert.notEqual(clustered.solveHi, naive.solveHi);
+    // Unbiased estimators: t1 (n=3,c=2) → pass@3=1, pass^3=0; t2 (n=3,c=3) →
+    // pass@3=1, pass^3=1. Macro = (1+1)/2 and (0+1)/2.
+    assert.equal(clustered.k, 3);
+    assert.equal(clustered.passAtK, 1);
+    assert.equal(clustered.passPowK, 0.5);
+    assert.equal(clustered.tasksBelowK, 0);
+  });
+
+  test("pass@k rises with k, pass^k falls, and pass^k never exceeds pass@k", () => {
+    // t1: 2/6 solves; t2: 7/9 solves.
+    const rows = [
+      ...[1, 1, 0, 0, 0, 0].map((s, i) => row({ task: "t1", run_id: `a${i}`, success: !!s })),
+      ...[1, 1, 1, 1, 1, 1, 1, 0, 0].map((s, i) => row({ task: "t2", run_id: `b${i}`, success: !!s })),
+    ];
+    let prevAt = 0;
+    let prevPow = 1;
+    for (const k of [1, 2, 3, 4, 5, 6]) {
+      const [c] = aggregateCells(rows, { k });
+      assert.ok(c.passAtK > 0 && c.passAtK <= 1, `pass@${k} in (0,1]: ${c.passAtK}`);
+      assert.ok(c.passPowK >= 0 && c.passPowK <= 1, `pass^${k} in [0,1]: ${c.passPowK}`);
+      assert.ok(c.passAtK >= c.passPowK, `pass^${k} ≤ pass@${k}`);
+      assert.ok(c.passAtK >= prevAt - 1e-12, `pass@k monotone nondecreasing at k=${k}`);
+      assert.ok(c.passPowK <= prevPow + 1e-12, `pass^k monotone nonincreasing at k=${k}`);
+      prevAt = c.passAtK;
+      prevPow = c.passPowK;
+    }
+  });
+
+  test("task with n < k is excluded from the average and counted", () => {
+    const rows = [
+      row({ task: "short", run_id: "s1", success: true }),
+      row({ task: "short", run_id: "s2", success: true }),
+      row({ task: "full", run_id: "f1", success: true }),
+      row({ task: "full", run_id: "f2", success: true }),
+      row({ task: "full", run_id: "f3", success: true }),
+    ];
+    const [c] = aggregateCells(rows, { k: 3 });
+    assert.equal(c.tasksBelowK, 1);
+    // Only "full" qualifies: n=3, c=3 → pass@3 = 1, pass^3 = 1.
+    assert.equal(c.passAtK, 1);
+    assert.equal(c.passPowK, 1);
+  });
+
+  test("zero qualifying tasks → null, never 0", () => {
+    const rows = [row({ success: true }), row({ success: false })];
+    const [c] = aggregateCells(rows, { k: 3 });
+    assert.equal(c.passAtK, null);
+    assert.equal(c.passPowK, null);
+    assert.equal(c.tasksBelowK, 1);
+  });
+
+  test("missing task id falls back to run id as the cluster", () => {
+    const rows = [
+      row({ task: "", run_id: "x1", success: true }),
+      row({ task: "", run_id: "x2", success: true }),
+      row({ task: "", run_id: "x3", success: false }),
+    ];
+    const [c] = aggregateCells(rows, { k: 3 });
+    // Three run-id clusters of 1 trial each → all below k=3, and each row is
+    // its own task so the pooled solve rate is still 2/3.
+    assert.equal(c.tasksBelowK, 3);
+    assert.equal(c.passAtK, null);
+    assert.equal(c.solveMethod, "wilson");
+  });
+
+  test("clustered bootstrap is deterministic (same rows, same seed)", () => {
+    const a = aggregateCells(twoTaskRows(), { k: 3 });
+    const b = aggregateCells(twoTaskRows(), { k: 3 });
+    assert.deepEqual(a, b);
+  });
+
+  test("recorded rows never enter aggregation, with or without k", () => {
+    const rows = [
+      ...twoTaskRows(),
+      row({ task: "t1", run_id: "rec1", success: true, cost_basis: "recorded" }),
+      row({ task: "t2", run_id: "rec2", success: true, cost_basis: "recorded" }),
+    ];
+    const [live] = aggregateCells(rows, { k: 3 });
+    const [bare] = aggregateCells(twoTaskRows(), { k: 3 });
+    assert.deepEqual(live, bare);
+  });
+
+  test("clustered CI bounds are exact known values for the 2×3 fixture", () => {
+    const [c] = aggregateCells(twoTaskRows());
+    // Resampling 2 tasks {2/3, 3/3}: pooled rates ∈ {2/3 (p=1/4), 5/6 (p=1/2),
+    // 1 (p=1/4)} → percentile 2.5/97.5 of 2000 draws picks the min/max rates.
+    assert.equal(c.solveLo, 2 / 3);
+    assert.equal(c.solveHi, 1);
+  });
+});
