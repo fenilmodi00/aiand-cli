@@ -339,7 +339,7 @@ describe("overview text", () => {
         "  opencode     ███████·············  33%  $0.0042",
         "",
         "Top models (by cost, top 5)",
-        "  model                         requests avg tok/s max tok/s       cost",
+        "  model                         requests avg tok/s p95 tok/s       cost",
         "  glm-5.3                              3     666.7     750.0    $0.0126",
         "",
         "Busiest days (by cost)",
@@ -406,6 +406,24 @@ describe("overview text", () => {
         latency_ms: 1_100,
         output_tokens: 200,
       }),
+      // Outlier resistance: 20 samples at 100 tok/s plus one 500 tok/s
+      // burst. p95 must stay 100 (a raw max would show 500).
+      ...Array.from({ length: 20 }, (_, i) =>
+        row(`2026-10-20T14:${String(i).padStart(2, "0")}:00.000Z`, {
+          id: `s${i}`,
+          model: "acme/steady",
+          ttft_ms: 100,
+          latency_ms: 1_100,
+          output_tokens: 100,
+        }),
+      ),
+      row("2026-10-20T15:00:00.000Z", {
+        id: "burst",
+        model: "acme/steady",
+        ttft_ms: 100,
+        latency_ms: 300,
+        output_tokens: 100,
+      }),
     ]);
     seedKeysAndCatalog(dir);
     const text = await runCli(
@@ -416,13 +434,15 @@ describe("overview text", () => {
     const lines = text.stdout.split("\n");
     const glm = lines.find((l) => l.includes("glm-5.3"));
     const gpt = lines.find((l) => l.includes("gpt-5.2") && !l.includes("glm"));
-    assert.match(glm, /3\s+666\.7\s+750\.0\s+\$/, "avg + max TPS cells render");
+    assert.match(glm, /3\s+666\.7\s+750\.0\s+\$/, "avg + p95 TPS cells render");
     assert.match(gpt, /\s-\s+-\s/, "ineligible model renders - in both TPS columns");
     assert.ok(!gpt.includes("tok/s"), "no fabricated tok/s for an ineligible model");
     const noise = lines.find((l) => l.includes("noisy"));
     assert.match(noise, /200\.0\s+200\.0\s/, "sub-floor rows excluded from both TPS cells");
+    const steady = lines.find((l) => l.includes("steady"));
+    assert.match(steady, /104\.0\s+100\.0\s/, "p95 resists a single 500 tok/s burst");
     const fast = lines.find((l) => l.includes("fast") && l.includes("100000"));
-    assert.match(fast, /100000\s+100000\s/, "avg and max render integer form at 5 digits");
+    assert.match(fast, /100000\s+100000\s/, "avg and p95 render integer form at 5 digits");
     assert.ok(fast.indexOf("$") > fast.indexOf("100000"), "cost column survives the wide value");
     for (const line of lines) assert.ok(line.length <= 80, `line over 80 cols: ${line}`);
 
@@ -442,22 +462,23 @@ describe("overview text", () => {
     assert.equal(js.code, 0);
     const payload = JSON.parse(js.stdout);
     const byKey = Object.fromEntries(payload.topModels.map((m) => [m.key, m.avgTps]));
-    const maxKey = Object.fromEntries(payload.topModels.map((m) => [m.key, m.maxTps]));
+    const p95Key = Object.fromEntries(payload.topModels.map((m) => [m.key, m.p95Tps]));
     assert.ok(Math.abs(byKey["zai-org/glm-5.3"] - 800 / 1.2) < 1e-9);
     assert.equal(byKey["openai/gpt-5.2"], null, "no eligible rows → null, never 0");
     assert.ok(
-      Math.abs(maxKey["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
-      "maxTps = fastest eligible request",
+      Math.abs(p95Key["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
+      "p95Tps = robust peak over measurable windows",
     );
-    assert.equal(maxKey["openai/gpt-5.2"], null, "no eligible rows → maxTps null");
+    assert.equal(p95Key["openai/gpt-5.2"], null, "no eligible rows → p95Tps null");
     assert.equal(byKey["acme/noisy"], 200, "avg TPS ignores sub-floor timer noise");
-    assert.equal(maxKey["acme/noisy"], 200, "max TPS ignores sub-floor timer noise");
-    assert.equal(maxKey["acme/fast"], 100000, "measurable fast row keeps its peak");
+    assert.equal(p95Key["acme/noisy"], 200, "p95 TPS ignores sub-floor timer noise");
+    assert.equal(p95Key["acme/fast"], 100000, "measurable fast row keeps its peak");
+    assert.equal(p95Key["acme/steady"], 100, "p95 ignores the single burst");
     assert.ok(
-      Math.abs(maxKey["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
-      "maxTps = fastest eligible request",
+      Math.abs(p95Key["zai-org/glm-5.3"] - 300 / 0.4) < 1e-9,
+      "p95Tps = robust peak over measurable windows",
     );
-    assert.equal(maxKey["openai/gpt-5.2"], null, "no eligible rows → maxTps null");
+    assert.equal(p95Key["openai/gpt-5.2"], null, "no eligible rows → p95Tps null");
     const serialized = JSON.stringify(payload);
     assert.ok(!serialized.includes("tpsTokens"), "tpsTokens accumulator never leaks to JSON");
     assert.ok(!serialized.includes("tpsMs"), "tpsMs accumulator never leaks to JSON");

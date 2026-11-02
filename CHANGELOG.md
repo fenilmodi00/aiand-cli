@@ -39,11 +39,11 @@ breaking changes while the command surface settles.
   - `aiand export`: OTel histogram `gen_ai.server.output_tokens_per_second`
     (unit `{token}/s`, explicit bucket family mirroring `time_to_first_token`'s
     shape), in Prometheus and OTLP JSON, emitted only where TPS samples exist.
-  - `aiand overview`: Top models gains labeled `avg tok/s` and `max tok/s`
-    columns (throughput-weighted system rate and the fastest measured
-    request), computed only over decode windows ≥200 ms so millisecond
-    timer noise can't fabricate six-figure rates; ineligible models render
-    `-` and `null`, never 0.
+  - `aiand overview`: Top models gains labeled `avg tok/s` and `p95 tok/s`
+    columns (throughput-weighted system rate and the 95th-percentile
+    per-request rate), computed only over decode windows ≥200 ms so
+    millisecond timer noise can't fabricate six-figure rates; ineligible
+    models render `-` and `null`, never 0.
 
 ### Changed
 - Terminal output shows the bare model name (`glm-5.3`) instead of the

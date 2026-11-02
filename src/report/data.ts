@@ -193,8 +193,8 @@ export type ReportData = {
     key: string;
     savings: number | null /** #155: per-model system throughput; null without eligible rows. */;
     avgTps: number | null;
-    /** #155: the model's fastest eligible request; null without eligible rows. */
-    maxTps: number | null;
+    /** #155: p95 of per-request TPS over measurable (≥200 ms) windows; null without samples. */
+    p95Tps: number | null;
   })[];
   matrix: MatrixRow[];
   sessions: SessionRow[];
@@ -524,8 +524,6 @@ type Group = {
   models: Map<string, Mix>;
   tpsTokens: number;
   tpsMs: number;
-  /** #155: peak per-request TPS over eligible rows; null without eligible rows. */
-  tpsMax: number | null;
 };
 
 const emptyGroup = (): Group => ({
@@ -533,7 +531,6 @@ const emptyGroup = (): Group => ({
   models: new Map(),
   tpsTokens: 0,
   tpsMs: 0,
-  tpsMax: null,
 });
 
 function accMix(mix: Mix, row: ReportRow): void {
@@ -562,8 +559,6 @@ function accGroup(group: Group, row: ReportRow): void {
   if (decodeMs < MIN_MEASURABLE_DECODE_MS) return;
   group.tpsTokens += row.output_tokens ?? 0;
   group.tpsMs += decodeMs;
-  const tps = (row.output_tokens ?? 0) / (decodeMs / 1000);
-  group.tpsMax = group.tpsMax === null ? tps : Math.max(group.tpsMax, tps);
 }
 
 function groupSavings(group: Group, prices: Record<string, Price> | null): number | null {
@@ -621,9 +616,17 @@ function groupAvgTps(group: Group): number | null {
   return avgTps(group.tpsTokens, group.tpsMs);
 }
 
-/** #155: the model's fastest eligible request; null without eligible rows. */
-function groupMaxTps(group: Group): number | null {
-  return group.tpsMax;
+/**
+ * #155: nearest-rank percentile (p in 0..100). The peak column is p95, not
+ * max: a single short burst (or one 1ms timer artifact) sets a max, while
+ * p95 is the robust upper bound vLLM-style benchmarks report. Null for an
+ * empty sample, never a fabricated 0.
+ */
+function percentileOf(values: readonly number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.ceil((p / 100) * sorted.length);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, rank - 1))]!;
 }
 
 const MATRIX_NOTE =
@@ -686,6 +689,9 @@ export function buildReportData(
   const byHarness = new Map<string, Group>();
   const byHarnessModel = new Map<string, Group>(); // key `${harness}\u0000${model}`
   const byModel = new Map<string, Group>();
+  // Per-model per-request TPS samples (measurable windows only) for the p95
+  // peak column. One array per model, not per grouping: only topModels reads it.
+  const byModelTps = new Map<string, number[]>();
   const currencies = new Set<string>();
   let hasUnknownCurrencyCost = false;
 
@@ -700,6 +706,12 @@ export function buildReportData(
     const hmKey = `${harness}\0${row.model}`;
     accGroup(byHarnessModel.get(hmKey) ?? byHarnessModel.set(hmKey, emptyGroup()).get(hmKey)!, row);
     accGroup(byModel.get(row.model) ?? byModel.set(row.model, emptyGroup()).get(row.model)!, row);
+    const rowTps = requestTps(row.output_tokens, row.ttft_ms, row.latency_ms);
+    if (rowTps !== null && (row.latency_ms ?? 0) - (row.ttft_ms ?? 0) >= MIN_MEASURABLE_DECODE_MS) {
+      const samples = byModelTps.get(row.model) ?? [];
+      samples.push(rowTps);
+      byModelTps.set(row.model, samples);
+    }
     if (row.cost_value !== null) {
       if (row.currency === null) hasUnknownCurrencyCost = true;
       else currencies.add(row.currency);
@@ -770,7 +782,7 @@ export function buildReportData(
       costs: sortedCosts(group.mix.costs),
       savings: groupSavings(group, prices),
       avgTps: groupAvgTps(group),
-      maxTps: groupMaxTps(group),
+      p95Tps: percentileOf(byModelTps.get(key) ?? [], 95),
     }));
 
   const matrix: MatrixRow[] = [...byHarnessModel.entries()]

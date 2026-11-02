@@ -134,7 +134,7 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
     // ride the column headers (number-only cells, same as requests/cost).
     lines.push(
       style.dim(
-        `  ${"model".padEnd(28)} ${"requests".padStart(9)} ${"avg tok/s".padStart(9)} ${"max tok/s".padStart(
+        `  ${"model".padEnd(28)} ${"requests".padStart(9)} ${"avg tok/s".padStart(9)} ${"p95 tok/s".padStart(
           9,
         )} ${view.showCost ? "cost".padStart(10) : ""}`,
       ),
@@ -142,9 +142,9 @@ export function renderOverviewText(data: ReportData, view: OverviewView): string
     for (const model of data.topModels) {
       const cost = view.showCost ? padLeft(clipToWidth(costCell(model.costs), 10), 10) : "";
       const avg = clipToWidth(tpsCell(model.avgTps), 6).padStart(9);
-      const max = clipToWidth(tpsCell(model.maxTps), 6).padStart(9);
+      const p95 = clipToWidth(tpsCell(model.p95Tps), 6).padStart(9);
       lines.push(
-        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 9)} ${avg} ${max} ${cost}`,
+        `  ${padRight(modelLabel(model.key), 28)} ${padLeft(num(model.requests), 9)} ${avg} ${p95} ${cost}`,
       );
     }
     lines.push("");

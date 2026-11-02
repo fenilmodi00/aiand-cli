@@ -172,9 +172,9 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
   },
   {
     report: "overview",
-    field: "topModels[].maxTps",
+    field: "topModels[].p95Tps",
     provenance: estimated(
-      "max per-request output_tokens / ((latency_ms − ttft_ms)/1000) over requests with a measurable (≥200 ms) decode window",
+      "95th percentile of per-request output_tokens / ((latency_ms − ttft_ms)/1000) over requests with a measurable (≥200 ms) decode window",
     ),
   },
   // cache
