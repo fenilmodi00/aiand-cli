@@ -94,7 +94,7 @@ export function windowEnvelopes(
  * an old store contributes zero markers, never an error). The window rides
  * `COALESCE(at, imported_at)` inside the reader.
  */
-export function windowImportedMarkers(
+function windowImportedMarkers(
   sinceMs: number | null,
   untilMs: number | null,
 ): ImportedArtifactRow[] {

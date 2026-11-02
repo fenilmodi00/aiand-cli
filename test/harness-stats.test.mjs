@@ -43,7 +43,7 @@ function row(overrides) {
   };
 }
 
-import { buildHarnessStats, WINNER_MARKER } from "../dist/obs/harness-stats.js";
+import { WINNER_MARKER } from "../dist/obs/harness-stats.js";
 
 async function loadEngine() {
   return import("../dist/obs/harness-stats.js");
@@ -1238,7 +1238,7 @@ test("#146 buildHarnessStats derives imported behavioral stats with envelope pre
   // Precedence: with ≥ MIN_BEHAVIORAL_TURNS envelope turns, envelopes win and
   // imports add nothing (no double count); below the gate, imported applies.
   const envelopes = (n) =>
-    Array.from({ length: n }, (_, i) => ({
+    Array.from({ length: n }, (_, _i) => ({
       agent: "claude",
       model: null,
       envelope: {

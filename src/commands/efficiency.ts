@@ -78,7 +78,6 @@ function importedSlice(key: string, markers: readonly ImportedArtifactRow[]): Ef
   }
   let toolCalls = 0;
   let toolErrors = 0;
-  let compactions = 0;
   const split = { clean: 0, aborted: 0, errored: 0 };
   let terminals = 0;
   for (const bucket of sessions.values()) {
@@ -93,8 +92,6 @@ function importedSlice(key: string, markers: readonly ImportedArtifactRow[]): Ef
       if (marker.kind === "tool") {
         toolCalls += 1;
         if (marker.outcome === "error") toolErrors += 1;
-      } else if (marker.kind === "compaction") {
-        compactions += 1;
       }
     }
   }
