@@ -168,9 +168,9 @@ test("cli: sessions table is a deterministic snapshot over a fixture store", asy
       "▌ Sessions",
       "  sessions derived by 10-min gap heuristic — boundaries are approximate, not authoritative",
       "",
-      "SESSION           HARNESS  MODELS             TURNS  INPUT TOK  OUT TOK  CACHED TOK       COST  TTFT P50    P95  ERRORS  START             END",
-      `${SESSION_A_ID}  claude   zai-org/glm-5.3:3      3      3,000      300       1,500  $0.060000     300ms  390ms       0  2026-10-20 10:00  2026-10-20 10:02`,
-      `${SESSION_B_ID}  claude   openai/gpt-5.2:2       2      4,000      400           0          -       n/a    n/a       1  2026-10-20 12:00  2026-10-20 12:01`,
+      "SESSION           HARNESS  MODELS             TURNS  INPUT TOK  OUT TOK  CACHED TOK       COST  TTFT P50    P95         TPS     AVG TPS  ERRORS  START             END",
+      `${SESSION_A_ID}  claude   zai-org/glm-5.3:3      3      3,000      300       1,500  $0.060000     300ms  390ms  83.3 tok/s  90.9 tok/s       0  2026-10-20 10:00  2026-10-20 10:02`,
+      `${SESSION_B_ID}  claude   openai/gpt-5.2:2       2      4,000      400           0          -       n/a    n/a           -           -       1  2026-10-20 12:00  2026-10-20 12:01`,
       "",
     ].join("\n"),
   );
@@ -211,6 +211,7 @@ test("cli: --json list carries the pinned shape and the sessionization annotatio
   assert.equal(payload.sessions.length, 2);
   const session = payload.sessions.find((s) => s.id === SESSION_A_ID);
   assert.deepEqual(Object.keys(session).sort(), [
+    "avgTps",
     "cost",
     "costs",
     "currency",
@@ -221,6 +222,7 @@ test("cli: --json list carries the pinned shape and the sessionization annotatio
     "models",
     "start",
     "tokens",
+    "tps",
     "ttft",
     "turns",
   ]);
@@ -230,11 +232,18 @@ test("cli: --json list carries the pinned shape and the sessionization annotatio
   assert.equal(session.currency, "usd");
   assert.deepEqual(session.ttft, { p50: 300, p95: 390 });
   assert.equal(session.errors, 0);
+  // #155: per-request TPS = out/((lat-ttft)/1000) → 83.3, 83.3, 111.1; median
+  // 83.3 (middle sample); avg = 300 tokens / 3.3 s ≈ 90.9 (median ≠ avg).
+  assert.ok(Math.abs(session.tps - 100 / 1.2) < 1e-9);
+  assert.ok(Math.abs(session.avgTps - 300 / 3.3) < 1e-9);
   // Zero-cost / no-measurable-ttft session renders cleanly (no NaN/undefined).
   const costless = payload.sessions.find((s) => s.id === SESSION_B_ID);
   assert.equal(costless.cost, null);
   assert.equal(costless.currency, null);
   assert.deepEqual(costless.ttft, { p50: null, p95: null });
+  // #155: null ttft/latency propagate to null TPS, never 0.
+  assert.equal(costless.tps, null);
+  assert.equal(costless.avgTps, null);
   assert.equal(costless.errors, 1);
 });
 
@@ -282,6 +291,7 @@ test("cli: drill-down --json reconciles request sums to the session row", async 
     "status",
     "timestamp",
     "tokens",
+    "tps",
     "ttft_ms",
   ]);
   assert.deepEqual(request.tokens, { input: 1000, output: 100, cached: 500 });
@@ -549,4 +559,86 @@ test("cli: drill-down on a costless session prints the costless note and n/a cel
   assert.equal(run.code, 0, run.stderr);
   assert.match(run.stdout, /No billed cost recorded for this session/);
   assert.match(run.stdout, /n\/a/, "ttft cell renders n/a without ttft rows");
+});
+
+// #155: tps / avgTps on aiand sessions — per-request TPS =
+// output_tokens / ((latency_ms − ttft_ms) / 1000); null ttft/latency,
+// zero output, or latency ≤ ttft → null (rendered `-`, never 0);
+// avgTps = sum(output)/sum(seconds)*1000 over eligible rows.
+test("cli: #155 null propagation — tps stays null and renders -", async () => {
+  const cfg = cfgDir("tps-nulls");
+  await seedStore(cfg, [
+    // null ttft + null latency → both nulls.
+    ["rn1", "m", 200, null, null, 100, 100, 0, 0.01, "usd", "2026-10-20T10:00:00.000Z"],
+    // latency == ttft (no decode window) → null.
+    ["rn2", "m", 200, 500, 500, 100, 100, 0, 0.01, "usd", "2026-10-20T10:01:00.000Z"],
+    // latency < ttft → null.
+    ["rn3", "m", 200, 900, 500, 100, 100, 0, 0.01, "usd", "2026-10-20T10:02:00.000Z"],
+    // zero output tokens → null.
+    ["rn4", "m", 200, 100, 500, 100, 0, 0, 0.01, "usd", "2026-10-20T10:03:00.000Z"],
+  ]);
+  const payload = JSON.parse((await runCli(["sessions", "--json"], { env: ENV(cfg) })).stdout);
+  assert.equal(payload.sessions.length, 1);
+  assert.equal(payload.sessions[0].tps, null);
+  assert.equal(payload.sessions[0].avgTps, null);
+  const text = await runCli(["sessions"], { env: ENV(cfg) });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /TPS/);
+  const dataLine = lines(text.stdout)
+    .split("\n")
+    .find((l) => l.startsWith(payload.sessions[0].id));
+  assert.ok(dataLine);
+  // Two `-` cells between p95 and ERRORS (tps, avg tps); session ttft p50/p95
+  // still render (some rows carry ttft) — only the TPS cells are null.
+  assert.match(dataLine, /860ms\s+-\s+-\s+0\s/);
+  // Drill-down: per-request rows render `-` too.
+  const drill = await runCli(["sessions", payload.sessions[0].id], { env: ENV(cfg) });
+  assert.equal(drill.code, 0, drill.stderr);
+  assert.equal(lines(drill.stdout).split("-").length > 2, true, "dash cells present");
+});
+
+test("cli: #155 aggregate vs per-request divergence and mixed eligibility", async () => {
+  const cfg = cfgDir("tps-divergence");
+  await seedStore(cfg, [
+    // Fast short request: 100 tokens over 0.5 s decode → 200 tok/s.
+    ["rd1", "m", 200, 100, 600, 100, 100, 0, 0.01, "usd", "2026-10-20T10:00:00.000Z"],
+    // Slow long request: 100 tokens over 4.5 s decode → 22.22 tok/s.
+    ["rd2", "m", 200, 300, 4800, 100, 100, 0, 0.01, "usd", "2026-10-20T10:01:00.000Z"],
+    // Ineligible row (zero output) — must not dilute either aggregate.
+    ["rd3", "m", 200, 100, 500, 100, 0, 0, 0.01, "usd", "2026-10-20T10:02:00.000Z"],
+  ]);
+  const payload = JSON.parse((await runCli(["sessions", "--json"], { env: ENV(cfg) })).stdout);
+  const session = payload.sessions[0];
+  // Median of [22.22, 200] interpolates to ~111.11; the system average is
+  // 200 tokens / 5 s = 40 tok/s — median ≠ avg in one session.
+  assert.ok(Math.abs(session.tps - (200 + 100 / 4.5) / 2) < 1e-9);
+  assert.ok(Math.abs(session.avgTps - 40) < 1e-9);
+  assert.notEqual(session.tps, session.avgTps);
+
+  const text = await runCli(["sessions"], { env: ENV(cfg) });
+  assert.equal(text.code, 0, text.stderr);
+  assert.match(text.stdout, /111\.1 tok\/s/);
+  assert.match(text.stdout, /40\.0 tok\/s/);
+
+  // Drill-down: totals row carries med/avg; per-request rows carry tps.
+  const drill = JSON.parse(
+    (await runCli(["sessions", session.id, "--json"], { env: ENV(cfg) })).stdout,
+  );
+  assert.equal(drill.requests[0].tps, 200);
+  assert.equal(drill.requests[1].tps, 100 / 4.5);
+  assert.equal(drill.requests[2].tps, null);
+  assert.equal(drill.session.tps, session.tps);
+  assert.equal(drill.session.avgTps, session.avgTps);
+});
+
+test("cli: #155 all-eligible session — avgTps is the token-weighted system rate", async () => {
+  const cfg = cfgDir("tps-eligible");
+  await seedStore(cfg, [
+    ["re1", "m", 200, 200, 1200, 100, 100, 0, 0.01, "usd", "2026-10-20T10:00:00.000Z"],
+    ["re2", "m", 200, 200, 1200, 100, 100, 0, 0.01, "usd", "2026-10-20T10:01:00.000Z"],
+  ]);
+  const payload = JSON.parse((await runCli(["sessions", "--json"], { env: ENV(cfg) })).stdout);
+  // Both requests: 100 tokens / 1 s = 100 tok/s; median = avg here.
+  assert.equal(payload.sessions[0].tps, 100);
+  assert.equal(payload.sessions[0].avgTps, 100);
 });

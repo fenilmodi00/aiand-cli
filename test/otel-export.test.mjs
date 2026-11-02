@@ -154,6 +154,7 @@ const EXPECTED_METRICS = [
   "gen_ai.client.inference.usage.cost",
   "gen_ai.client.inference.usage.input_tokens",
   "gen_ai.client.inference.usage.output_tokens",
+  "gen_ai.server.output_tokens_per_second",
   "gen_ai.server.request.duration",
   "gen_ai.server.time_to_first_token",
 ];
@@ -685,8 +686,8 @@ describe("otel export: harness + store gauges (#149)", () => {
         Number(p.asInt),
       ]),
     );
-    assert.equal(byAgent["claude"], 1, "claude: one session (T0+T1 within the gap)");
-    assert.equal(byAgent["unknown"], 1, "unkeyed row attributes to unknown");
+    assert.equal(byAgent.claude, 1, "claude: one session (T0+T1 within the gap)");
+    assert.equal(byAgent.unknown, 1, "unkeyed row attributes to unknown");
     // attrs agent.name ONLY.
     for (const p of sessions) assert.equal(p.attributes.length, 1);
     // requests_total: 3 window rows, no attrs.
@@ -783,7 +784,14 @@ describe("otel export: harness + store gauges (#149)", () => {
       const doc = JSON.parse(s, (key, value) => (/UnixNano$/.test(key) ? "<ts>" : value));
       for (const metric of doc.resourceMetrics[0].scopeMetrics[0].metrics) {
         if (metric.name === "aiand.store.sync_lag_seconds") {
-          for (const point of metric.gauge.dataPoints) point.asDouble = "<lag>";
+          for (const point of metric.gauge.dataPoints) {
+            // Delete then re-add in a fixed order: an integer lag serializes
+            // as asInt, a fractional one as asDouble, and replacing in place
+            // would leave the two payloads' key order different.
+            delete point.asInt;
+            delete point.asDouble;
+            point.asDouble = "<lag>";
+          }
         }
       }
       return JSON.stringify(doc);
@@ -845,6 +853,108 @@ describe("otel export: harness + store gauges (#149)", () => {
     }
     const coverage = metrics.find((m) => m.name === "aiand.harness.behavioral_coverage_ratio");
     assert.ok(coverage, "coverage gauge emitted (window has requests)");
+  });
+});
+
+// #155: per-request TPS histogram gen_ai.server.output_tokens_per_second —
+// emit-only-where-data-exists in both formats.
+describe("otel export: output_tokens_per_second histogram (#155)", () => {
+  test("eligible rows: bucket/sum/count + HELP/TYPE in Prometheus, histogram datapoint in OTLP", async () => {
+    const dir = freshDir("tps-store");
+    seedAgentKey(dir);
+    // row defaults: ttft 300ms, latency 1500ms, output 300 → TPS = 300/1.2 = 250.
+    await seedStore(dir, [row(T0), row(T1, { ttft_ms: 500, latency_ms: 2500 })]);
+    // Second row: 300/2.0 = 150 tok/s. Sum = 400, count = 2.
+    const payload = await withStoreEnv(dir, async () => {
+      const otel = await import("../dist/obs/otel.js");
+      return otel.buildExportPayload({ range: "30days" });
+    });
+    assert.ok(payload.metricNames.includes("gen_ai.server.output_tokens_per_second"));
+
+    // Prometheus: HELP/TYPE/UNIT block + bucket/sum/count series.
+    const lines = payload.prometheus.trimEnd().split("\n");
+    const helpIdx = lines.findIndex((l) =>
+      l.startsWith("# HELP gen_ai_server_output_tokens_per_second "),
+    );
+    const typeIdx = lines.indexOf("# TYPE gen_ai_server_output_tokens_per_second histogram");
+    assert.ok(helpIdx !== -1, "# HELP present");
+    assert.ok(typeIdx !== -1, "# TYPE histogram present");
+    assert.ok(helpIdx < typeIdx, "HELP before TYPE");
+    assert.match(
+      lines.find((l) => l.startsWith("# UNIT gen_ai_server_output_tokens_per_second")),
+      / \{token\}\/s$/,
+    );
+    const group = (suffix) =>
+      lines.filter((l) => l.startsWith(`gen_ai_server_output_tokens_per_second${suffix}`));
+    const countLine = group("_count{").find((l) => !l.includes('le="'));
+    assert.match(countLine, / 2$/, "count = 2 eligible samples");
+    assert.match(
+      group("_sum{").find((l) => !l.includes('le="')),
+      / 400(\.0+)?$/,
+      "sum = 250 + 150 tok/s",
+    );
+    // le=250 bucket is cumulative 2 (both samples ≤ 250); le=100 is 0.
+    assert.match(
+      group("_bucket{").find((l) => l.includes('le="250"')),
+      / 2$/,
+    );
+    assert.match(
+      group("_bucket{").find((l) => l.includes('le="100"')),
+      / 0$/,
+    );
+    assert.match(
+      group("_bucket{").find((l) => l.includes('le="+Inf"')),
+      / 2$/,
+    );
+
+    // OTLP JSON mirrors: one histogram datapoint, count/sum/bounds in {token}/s.
+    const doc = JSON.parse(payload.otlp);
+    const metric = doc.resourceMetrics[0].scopeMetrics[0].metrics.find(
+      (m) => m.name === "gen_ai.server.output_tokens_per_second",
+    );
+    assert.ok(metric, "OTLP histogram emitted");
+    assert.equal(metric.unit, "{token}/s");
+    assert.equal(metric.histogram.dataPoints.length, 1);
+    const point = metric.histogram.dataPoints[0];
+    assert.equal(point.count, "2");
+    assert.equal(point.sum, 400);
+    assert.equal(point.explicitBounds.length + 1, point.bucketCounts.length);
+    assert.equal(point.bucketCounts[point.bucketCounts.length - 1], "2");
+  });
+
+  test("no eligible rows: the whole family is absent from both formats", async () => {
+    const dir = freshDir("tps-empty-store");
+    seedAgentKey(dir);
+    // Every exclusion path: null ttft, null latency, latency <= ttft,
+    // zero output, and the default output_tokens null.
+    await seedStore(dir, [
+      row(T0, { ttft_ms: null }),
+      row(T1, { latency_ms: null }),
+      row(T2, { ttft_ms: 800, latency_ms: 800, output_tokens: 300 }),
+      row("2026-10-24T10:40:00.000Z", { ttft_ms: 900, latency_ms: 800, output_tokens: 300 }),
+      row("2026-10-24T10:50:00.000Z", { ttft_ms: 100, latency_ms: 500, output_tokens: 0 }),
+    ]);
+    const payload = await withStoreEnv(dir, async () => {
+      const otel = await import("../dist/obs/otel.js");
+      return otel.buildExportPayload({ range: "30days" });
+    });
+    assert.ok(
+      !payload.metricNames.includes("gen_ai.server.output_tokens_per_second"),
+      "no TPS-eligible rows → family absent",
+    );
+    assert.ok(
+      !payload.prometheus.includes("gen_ai_server_output_tokens_per_second"),
+      "no zero-count series in Prometheus text",
+    );
+    const doc = JSON.parse(payload.otlp);
+    assert.ok(
+      !doc.resourceMetrics[0].scopeMetrics[0].metrics.some(
+        (m) => m.name === "gen_ai.server.output_tokens_per_second",
+      ),
+      "no zero-count series in OTLP JSON",
+    );
+    // The ttft/duration families still emit — only the TPS family gates.
+    assert.ok(payload.metricNames.includes("gen_ai.server.time_to_first_token"));
   });
 });
 

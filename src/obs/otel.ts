@@ -7,6 +7,7 @@ import { createdSince, createdUntilIncl, openStore, storePath } from "../store/i
 import { listSessions, resolveGapMinutes, type SessionRow } from "../store/sessions.js";
 import { DAY_MS, HOUR_MS, MINUTE_MS } from "../time.js";
 import { buildHarnessStats, type HarnessStats } from "./harness-stats.js";
+import { requestTps } from "./tps.js";
 
 /**
  * OTel metrics export (feature catalog G2, ticket #72).
@@ -179,6 +180,8 @@ const TOKEN_BUCKETS_OUTPUT = [
 ];
 /** Latency histograms in seconds. */
 const DURATION_BUCKETS = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60];
+/** #155: decode throughput, tokens per second. */
+const TPS_BUCKETS = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
 
 function bucketize(values: number[], bounds: number[]): { counts: number[]; sum: number } {
   // Counts are CUMULATIVE (bucket i = values <= bounds[i], +Inf last), as
@@ -239,6 +242,7 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
       latencies: number[];
       ttfts: number[];
       outTokens: number[];
+      tps: number[];
     }
   >();
 
@@ -289,6 +293,7 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
       latencies: [],
       ttfts: [],
       outTokens: [],
+      tps: [],
     };
     if (input > 0 || output > 0) {
       hist.tokens.push(input);
@@ -296,6 +301,11 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
     }
     if (row.latency_ms !== null) hist.latencies.push(row.latency_ms / 1000);
     if (row.ttft_ms !== null) hist.ttfts.push(row.ttft_ms / 1000);
+    // #155: per-request TPS — steady-state decode rate. Same null discipline
+    // as the ttft/duration histograms: ineligible rows are excluded, never
+    // zeroed (latency<=ttft has no decode window; 0 tokens has no numerator).
+    const tps = requestTps(output, row.ttft_ms, row.latency_ms);
+    if (tps !== null) hist.tps.push(tps);
     genHist.set(histKey, hist);
   }
 
@@ -379,6 +389,21 @@ function buildSeries(rows: readonly RequestRow[], sessions: readonly SessionRow[
       histSum: ttft.sum,
       histCount: hist.ttfts.length,
     });
+    // #155: per-request output-token throughput, {token}/s. Emit-only-where-
+    // data-exists: a group with no TPS-eligible rows emits no series at all.
+    if (hist.tps.length > 0) {
+      const tps = bucketize(hist.tps, TPS_BUCKETS);
+      series.push({
+        name: "gen_ai.server.output_tokens_per_second",
+        kind: "histogram",
+        unit: "{token}/s",
+        attrs: hist.attrs,
+        bounds: TPS_BUCKETS,
+        counts: tps.counts,
+        histSum: tps.sum,
+        histCount: hist.tps.length,
+      });
+    }
   }
 
   return series.sort(
@@ -411,6 +436,8 @@ export const HELP: Record<string, string> = {
     "Server-side request duration in seconds — the gateway's latency_ms.",
   "gen_ai.server.time_to_first_token":
     "Time to first token in seconds — the gateway's ttft_ms; rows without ttft are excluded from the histogram, not zeroed.",
+  "gen_ai.server.output_tokens_per_second":
+    "Per-request output-token throughput in tokens/second (#155) — output_tokens over the decode window (latency_ms − ttft_ms); ineligible rows (null ttft/latency, latency ≤ ttft, zero output) are excluded, never zeroed.",
   "aiand.harness.sessions":
     "Number of heuristic time-gap sessions attributed to the harness in the window (#66 sessionization).",
   "aiand.harness.cost_per_session_usd":

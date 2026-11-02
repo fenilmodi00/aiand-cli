@@ -414,6 +414,8 @@ describe("usage --jq and --format csv", () => {
       costs: { usd: 0.0168 },
       errors: 0, // #98: the shared #88 count over the window's rows
       errorRate: 0, // 0/4 — all 200s; only an empty window yields null
+      // #155: throughput-weighted avg TPS over the window's rows.
+      avgOutputTokensPerSecond: 62.5,
     });
   });
 
@@ -904,5 +906,118 @@ describe("usage error rate (#98)", () => {
     assert.equal(stats.code, 0, stats.stderr);
     const harnessRate = JSON.parse(stats.stdout).harnesses[0].errorRate;
     assert.equal(harnessRate, usageTotals.errorRate, "harness stats errorRate identical"); // #88
+  });
+});
+
+// -- avg TPS footer (#155) -------------------------------------------------------
+
+describe("usage avg TPS (#155)", () => {
+  test("JSON summary adds avgOutputTokensPerSecond (throughput-weighted) without touching existing keys", async () => {
+    const dir = freshDir("tps-json");
+    // One eligible row: 300 tokens over (500-100)ms -> 750 tok/s.
+    await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "t1" })]);
+    const run = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const payload = JSON.parse(run.stdout);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, 750);
+    // JSON stability: only the new key joined the totals row.
+    assert.deepEqual(Object.keys(payload.sections.totals).sort(), [
+      "avgOutputTokensPerSecond",
+      "cached_tokens",
+      "costs",
+      "errorRate",
+      "errors",
+      "input_tokens",
+      "output_tokens",
+      "requests",
+    ]);
+  });
+
+  test("aggregate divergence: avgOutputTokensPerSecond differs from any per-request TPS", async () => {
+    const dir = freshDir("tps-divergence");
+    // Fast short request: 60 tokens / 60ms = 1000 tok/s.
+    // Slow long request: 1000 tokens / 4000ms = 250 tok/s.
+    // Throughput-weighted avg = 1060 / 4.06s ≈ 261.08 — matches no per-request figure.
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", {
+        id: "fast",
+        ttft_ms: 40,
+        latency_ms: 100,
+        output_tokens: 60,
+      }),
+      row("2026-10-20T10:01:00.000Z", {
+        id: "slow",
+        ttft_ms: 500,
+        latency_ms: 4500,
+        output_tokens: 1000,
+      }),
+    ]);
+    const run = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const avg = JSON.parse(run.stdout).sections.totals.avgOutputTokensPerSecond;
+    assert.ok(Math.abs(avg - (1060 / 4060) * 1000) < 1e-9);
+    assert.notEqual(avg, 1000);
+    assert.notEqual(avg, 250);
+    // The median per-request TPS (625) is not the aggregate either.
+    assert.notEqual(avg, 625);
+  });
+
+  test("null propagation: ineligible rows (null ttft/latency, zero output, latency <= ttft)", async () => {
+    const dir = freshDir("tps-null");
+    await seedStore(dir, [
+      row("2026-10-20T10:00:00.000Z", { id: "n1", ttft_ms: null, latency_ms: 500 }),
+      row("2026-10-20T10:01:00.000Z", { id: "n2", ttft_ms: 100, latency_ms: null }),
+      row("2026-10-20T10:02:00.000Z", { id: "n3", output_tokens: 0 }),
+      row("2026-10-20T10:03:00.000Z", { id: "n4", ttft_ms: 500, latency_ms: 500 }),
+    ]);
+    const run = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const payload = JSON.parse(run.stdout);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, null);
+    assert.equal(payload.sections.totals.requests, 4);
+    // Text footer renders `-`, never 0.
+    const text = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
+    assert.equal(text.code, 0, text.stderr);
+    assert.ok(text.stdout.includes("avg tok/s  -"), text.stdout);
+  });
+
+  test("empty window: JSON totals.avgOutputTokensPerSecond is null", async () => {
+    const dir = freshDir("tps-empty");
+    const run = await runCli(["usage", "--by", "day", "--json", "--no-sync"], {
+      env: reportEnv(dir),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const payload = JSON.parse(run.stdout);
+    assert.equal(payload.sections.totals.requests, 0);
+    assert.equal(payload.sections.totals.avgOutputTokensPerSecond, null);
+    // An empty window renders no block table at all (nothing to footer), so
+    // the null surfaces only in JSON here; the `-` text path is the null-row
+    // window test below.
+  });
+
+  test("footer prints the value with its provenance on an eligible window", async () => {
+    const dir = freshDir("tps-footer");
+    await seedStore(dir, [row("2026-10-20T10:00:00.000Z", { id: "t1" })]);
+    const text = await runCli(["usage", "--by", "day", "--no-sync"], { env: reportEnv(dir) });
+    assert.equal(text.code, 0, text.stderr);
+    assert.ok(text.stdout.includes("avg tok/s  750 · "), text.stdout);
+    assert.ok(text.stdout.includes("estimated"), text.stdout);
+  });
+
+  test("--audit lists the avgOutputTokensPerSecond provenance entry", async () => {
+    const run = await runCli(["usage", "--audit", "--json"], {
+      env: reportEnv(freshDir("tps-audit")),
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const rows = JSON.parse(run.stdout);
+    const entry = rows.find((r) => r.field === "totals.avgOutputTokensPerSecond");
+    assert.ok(entry, "audit lists totals.avgOutputTokensPerSecond");
+    assert.match(entry.label, /^estimated\(/);
   });
 });

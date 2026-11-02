@@ -75,6 +75,8 @@ type RequestRow = {
   endpoint: string | null;
   created_at: string;
   status_code: number | null;
+  ttft_ms: number | null;
+  latency_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
@@ -116,6 +118,8 @@ type TotalsRow = Omit<GroupRow, "key"> & {
   errors: number;
   /** #98: errors / requests; null when the window holds no requests — never a fabricated 0. */
   errorRate: number | null;
+  /** #155: system throughput over the window; null when no TPS-eligible rows. */
+  avgOutputTokensPerSecond: number | null;
 };
 
 type CurrencyHandling = "single" | "mixed" | "none";
@@ -173,7 +177,7 @@ function readRequests(window: { sinceMs: number | null; untilMs: number | null }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, endpoint, status_code, created_at, input_tokens, output_tokens, cached_tokens, " +
+        "SELECT id, model, api_key, endpoint, status_code, ttft_ms, latency_ms, created_at, input_tokens, output_tokens, cached_tokens, " +
           "cost_value, currency FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -259,6 +263,24 @@ function currencyHandlingOf(rows: readonly { costs: Costs }[]): CurrencyHandling
 
 function costTotal(costs: Costs): number {
   return Object.values(costs).reduce((sum, value) => sum + value, 0);
+}
+
+// #155: system throughput over the window — throughput-weighted avg TPS,
+// sum(output_tokens) / sum(latency_ms − ttft_ms) * 1000. Eligible rows are
+// exactly the rows whose per-request TPS is non-null: non-null ttft/latency
+// with latency > ttft and a positive output_tokens count. null when no
+// eligible rows or the denominator sums to ≤ 0 — never a fabricated 0.
+function avgTpsOf(rows: readonly RequestRow[]): number | null {
+  let outputTokens = 0;
+  let decodeMs = 0;
+  for (const row of rows) {
+    if (row.ttft_ms === null || row.latency_ms === null || row.output_tokens === null) continue;
+    if (row.latency_ms <= row.ttft_ms || row.output_tokens <= 0) continue;
+    outputTokens += row.output_tokens;
+    decodeMs += row.latency_ms - row.ttft_ms;
+  }
+  if (decodeMs <= 0) return null;
+  return (outputTokens / decodeMs) * 1000;
 }
 
 // -- filters ------------------------------------------------------------------
@@ -644,6 +666,8 @@ export function buildReport(options: BuildReportOptions): Report {
     ...finalize(totalsAcc),
     errors,
     errorRate: totalsAcc.requests > 0 ? errors / totalsAcc.requests : null,
+    // #155: throughput-weighted avg TPS over the window's rows.
+    avgOutputTokensPerSecond: avgTpsOf(rows),
   };
 
   const byModelAll = new Map<string, Accumulator>();
@@ -736,6 +760,10 @@ function provenanceMeta(sessionUnit: boolean): Record<string, string> {
     // #98: the shared #88 definition — same label harness-stats emits.
     errors: formatLabel(estimated("non-2xx statuses excluding 429 over the window's rows")),
     errorRate: formatLabel(estimated("non-2xx excluding 429 / requests")),
+    // #155: system throughput — derived from the same rows the totals sum.
+    avgOutputTokensPerSecond: formatLabel(
+      estimated("sum of output_tokens / sum of latency_ms − ttft_ms over the window's rows"),
+    ),
   };
   if (sessionUnit) labels.sessions = formatLabel(heuristic("time-gap sessionization"));
   return labels;
@@ -1025,7 +1053,18 @@ function renderBlockTable(blocks: BlockRow[], report: Report, view: RenderOption
         ),
       );
     }
+    // #155: system throughput — same footer, `-` when no TPS-eligible rows.
+    out(style.dim(avgTpsLine(totals, report.meta)));
   }
+}
+
+/** The #155 footer line, identical in the block-table and totals-only paths. */
+function avgTpsLine(totals: TotalsRow, meta: ReportMeta): string {
+  const value =
+    totals.avgOutputTokensPerSecond === null
+      ? "-"
+      : num(Math.round(totals.avgOutputTokensPerSecond));
+  return `avg tok/s  ${value} · ${meta.provenance.avgOutputTokensPerSecond ?? ""}`.trimEnd();
 }
 
 function renderBreakdowns(report: Report, view: RenderOptions): void {
@@ -1114,5 +1153,8 @@ function renderTotalsFields(
       pairs.push([`cost (${currency === "" ? "unknown" : currency})`, formatCost(sum, currency)]);
     }
   }
+  // #155: the footer metric lands after the totals fields, the same position
+  // the block-table footer prints it.
+  out(avgTpsLine(totals, meta));
   for (const [key, value] of pairs) out(`${style.dim(key.padEnd(16))}  ${value}`);
 }

@@ -5,6 +5,7 @@ import { CliError } from "../cli/errors.js";
 import { currencySymbol, err, json, num, out, relativeTime, style, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
+import { requestTps } from "../obs/tps.js";
 import { SECOND_MS } from "../time.js";
 
 const DEFAULT_LIMIT = 20;
@@ -62,7 +63,10 @@ export async function run(argv: string[]): Promise<void> {
     limit: Math.max(1, int(parsed, "limit") ?? DEFAULT_LIMIT),
   });
 
-  if (bool(parsed, "json")) return json(entries);
+  if (bool(parsed, "json"))
+    return json(
+      entries.map((e) => ({ ...e, tps: requestTps(e.output_tokens, e.ttft_ms, e.latency_ms) })),
+    );
 
   if (entries.length === 0) {
     out(style.dim(`No ${errorsOnly ? "failed " : ""}requests in the last ${range}.`));
@@ -111,6 +115,14 @@ function printTable(entries: LogEntry[]): void {
     {
       header: "latency",
       value: (e) => (e.latency_ms === null ? "-" : `${e.latency_ms}ms`),
+      align: "right",
+    },
+    {
+      header: "tok/s",
+      value: (e) => {
+        const tps = requestTps(e.output_tokens, e.ttft_ms, e.latency_ms);
+        return tps === null ? "-" : tps.toFixed(1);
+      },
       align: "right",
     },
     { header: "cost", value: (e) => costCell(e), align: "right" },
@@ -172,7 +184,16 @@ async function follow(
       if (fresh.length === 0) continue;
 
       for (const entry of fresh) {
-        out(options.asJson ? JSON.stringify(entry) : followRow(entry));
+        // #155: follow rows carry the same derived `tps` key as --json's
+        // one-shot path — never the raw entry without it.
+        out(
+          options.asJson
+            ? JSON.stringify({
+                ...entry,
+                tps: requestTps(entry.output_tokens, entry.ttft_ms, entry.latency_ms),
+              })
+            : followRow(entry),
+        );
       }
     }
   } finally {

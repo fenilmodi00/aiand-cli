@@ -58,7 +58,8 @@ mode).
   `gen_ai.request.model`, `gen_ai.response.model`.
 - Histograms (explicit buckets): `gen_ai.client.inference.operation.{input,output}_tokens`,
   `gen_ai.client.inference.duration` (s), `gen_ai.server.request.duration` (s),
-  `gen_ai.server.time_to_first_token` (s — the gateway's `ttft_ms`).
+  `gen_ai.server.time_to_first_token` (s — the gateway's `ttft_ms`),
+  `gen_ai.server.output_tokens_per_second` (`{token}/s` — #155, below).
 - Failures: rows with a non-2xx status form their own series carrying
   `error.type` = the HTTP status as a string; **tokens recorded on failed
   operations are still exported**, per the semconv.
@@ -127,6 +128,7 @@ lag grow until the next successful sync.
 | `gen_ai.client.inference.usage.cost` | counter (`sum`) | Yes / `counter` / `USD` |
 | `gen_ai.client.inference.operation.{input,output}_tokens` | histogram | Yes / `histogram` / `{token}` |
 | `gen_ai.client.inference.duration`, `gen_ai.server.request.duration`, `gen_ai.server.time_to_first_token` | histogram | Yes / `histogram` / `s` |
+| `gen_ai.server.output_tokens_per_second` (#155) | histogram | Yes / `histogram` / `{token}/s` |
 | `aiand.harness.*` (table above) | gauge | Yes / `gauge` / varies (`{session}`, `USD`, `ms`, `1`) |
 | `aiand.store.sync_lag_seconds` | gauge | Yes / `gauge` / `s` |
 | `aiand.store.requests_total` | gauge | Yes / `gauge` / `{request}` |
@@ -141,6 +143,12 @@ without a unit line). A test pins that no emitted metric lacks HELP.
   ids, so `session.id` is ai&'s time-gap derived id (default 10-minute idle
   gap). Boundaries are approximate; a gateway-provided session id is tracked
   for the gateway backlog.
+- **`gen_ai.server.output_tokens_per_second` covers only decodable rows.**
+  Per-request TPS (#155) = `output_tokens / ((latency_ms − ttft_ms) / 1000)`.
+  Rows with null `ttft_ms`/`latency_ms`, `latency_ms ≤ ttft_ms` (no decode
+  window), or null/zero `output_tokens` are **excluded from the histogram,
+  not zeroed**; when no row in a series group qualifies, the whole family is
+  absent from the export (emit-only-where-data-exists).
 - **Cache-write and reasoning tokens are not emitted.** The gateway exposes
   no cache-write split and the store has no reasoning-token column; the
   exporter emits only where data exists.

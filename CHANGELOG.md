@@ -7,6 +7,25 @@ breaking changes while the command surface settles.
 
 ## [Unreleased]
 
+### Added
+- Throughput (tokens/s) is now surfaced across the observability commands,
+  derived at render time from the store's existing `ttft_ms`/`latency_ms`/
+  `output_tokens` columns — no migration, no new dependency. Two labelled
+  definitions: per-request TPS (`output_tokens / ((latency_ms − ttft_ms)/1000)`,
+  `-` when unavailable) and avg TPS (system throughput:
+  `sum(output_tokens) / sum(latency_ms − ttft_ms) * 1000`).
+  - `aiand logs`: `tok/s` column and `tps` in `--json`.
+  - `aiand sessions`: `tps` (median per-request) and `avgTps` columns,
+    session JSON, and the drill-down per-request view.
+  - `aiand dashboard`: `tps` line in the Totals panel and a per-harness
+    `tps` column in the compare view (informational only — it never feeds
+    the harness scorecard verdicts).
+  - `aiand usage`: `avgOutputTokensPerSecond` in the `--json` summary and an
+    `avg tok/s` footer line.
+  - `aiand export`: OTel histogram `gen_ai.server.output_tokens_per_second`
+    (unit `{token}/s`, explicit bucket family mirroring `time_to_first_token`'s
+    shape), in Prometheus and OTLP JSON, emitted only where TPS samples exist.
+
 ### Fixed
 - The installer's post-install check and login offer address the launcher by
   its install name: a side-by-side preview install (`aiand-v2`) exited 1 after

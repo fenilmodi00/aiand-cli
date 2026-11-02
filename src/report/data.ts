@@ -15,6 +15,7 @@ import { configDir } from "../config.js";
 import { loadBudget, type PacingVerdict } from "../obs/budget.js";
 import { forecast, monthWindow } from "../obs/forecast.js";
 import { estimated, formatLabel, gatewayBilled, heuristic } from "../obs/provenance.js";
+import { avgTps, requestTps } from "../obs/tps.js";
 import { currencyKey } from "../pricing/currency.js";
 import { computeCoverage, rangeDurationMs, type SyncOutcome } from "../store/coverage.js";
 import { createdSince, createdUntilIncl, openStore, storePath } from "../store/index.js";
@@ -80,6 +81,8 @@ type ReportRow = {
   endpoint: string | null;
   created_at: string;
   latency_ms: number | null;
+  /** #155: decode-throughput denominator (with latency_ms); null on old rows. */
+  ttft_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
@@ -178,7 +181,11 @@ export type ReportData = {
     /** Present when savings could not be computed (no cached catalog). */
     savingsNote: string | null;
   };
-  totals: Mix & { savings: number | null };
+  totals: Mix & {
+    savings: number | null;
+    /** #155: avg TPS (system throughput) over the window; null without eligible rows. */
+    avgTps: number | null;
+  };
   byHarness: HarnessShare[];
   days: DayBucket[];
   harnessDays: { harness: string; day: string; costs: Costs; savings: number | null }[];
@@ -220,7 +227,7 @@ function storeLoadWith(
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const rows = db
       .prepare(
-        "SELECT id, model, api_key, endpoint, created_at, latency_ms, input_tokens, output_tokens, " +
+        "SELECT id, model, api_key, endpoint, created_at, latency_ms, ttft_ms, input_tokens, output_tokens, " +
           "cached_tokens, cost_value, currency, attributed_agent FROM requests" +
           where +
           " ORDER BY created_at, id",
@@ -553,6 +560,24 @@ function sortedCosts(costs: Costs): Costs {
   return Object.fromEntries(Object.entries(costs).sort(([a], [b]) => a.localeCompare(b)));
 }
 
+/**
+ * #155: throughput-weighted avg TPS over the window's rows —
+ * sum(output)/sum(latency_ms − ttft_ms)*1000 over the rows whose per-request
+ * TPS is non-null; null without eligible rows (never a fabricated 0).
+ * Computed here, not on `Mix`, so the raw sums never leak into the
+ * overview `--json` shape.
+ */
+function windowAvgTps(rows: readonly ReportRow[]): number | null {
+  let tokens = 0;
+  let decodeMs = 0;
+  for (const row of rows) {
+    if (requestTps(row.output_tokens, row.ttft_ms, row.latency_ms) === null) continue;
+    tokens += row.output_tokens ?? 0;
+    decodeMs += (row.latency_ms ?? 0) - (row.ttft_ms ?? 0);
+  }
+  return avgTps(tokens, decodeMs);
+}
+
 const MATRIX_NOTE =
   "Matrix mirrors the cache-report grouping columns (harness × model); " +
   "the OBS-P2-4 harness-stats columns (ttft p50/p95, error rate) land with #64.";
@@ -805,6 +830,8 @@ export function buildReportData(
     totals: {
       ...totals.mix,
       costs: sortedCosts(totals.mix.costs),
+      /** #155: sum(output_tokens)/sum(latency_ms − ttft_ms)*1000; null without eligible rows. */
+      avgTps: windowAvgTps(rows),
       savings: groupSavings(totals, prices),
     },
     byHarness: byHarnessRows,

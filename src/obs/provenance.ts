@@ -154,6 +154,14 @@ export const PROVENANCE_CATALOG: readonly ProvenanceEntry[] = [
     field: "totals.errorRate",
     provenance: estimated("non-2xx excluding 429 / requests"),
   },
+  // #155: avg tok/s (system throughput)
+  {
+    report: "usage",
+    field: "totals.avgOutputTokensPerSecond",
+    provenance: estimated(
+      "sum of output_tokens / sum of latency_ms − ttft_ms over the window's rows",
+    ),
+  },
   // cache
   {
     report: "cache",

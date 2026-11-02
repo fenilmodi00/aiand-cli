@@ -388,3 +388,245 @@ test("heatmap on a corrupt store prints the empty grid and exits 0 (#91)", async
   assert.equal(run.code, 0, `${run.stdout}${run.stderr}`);
   assert.match(run.stdout, /no activity/i);
 });
+
+// ---------------------------------------------------------------------------
+// #155: TPS on the dashboard — Totals panel line (avg system throughput) and
+// the compare view's informational `tps` column (never a winner input).
+// avg TPS = sum(output_tokens)/sum(latency_ms − ttft_ms)*1000 over eligible
+// rows; `-` when none are eligible. Null never becomes 0.
+// ---------------------------------------------------------------------------
+
+// #155 rows: [id, ttft_ms, latency_ms, output_tokens, created_at offset minutes]
+// Same masked claude key as seedStore so everything lands in one harness.
+const TPS_SEEDS = [
+  // Eligible: 100 tokens over (600−100)ms decode → 200 tok/s.
+  ["t1", 100, 600, 100, 0],
+  // Eligible: 100 tokens over (4800−300)ms decode → 22.22 tok/s.
+  ["t2", 300, 4800, 100, 1],
+  // Ineligible rows — skipped by the avg, never diluted to 0:
+  ["t3", 500, 500, 100, 2], // latency == ttft (no decode window)
+  ["t4", 900, 500, 100, 3], // latency < ttft
+  ["t5", 100, 600, 0, 4], // zero output
+  ["t6", null, 600, 100, 5], // null ttft
+  ["t7", 100, null, 100, 6], // null latency
+];
+
+async function seedTpsStore(cfg) {
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    const insert = opened.db.prepare(
+      "INSERT OR IGNORE INTO requests (id, model, api_key, status_code, ttft_ms, latency_ms, " +
+        "input_tokens, output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (const [id, ttft, latency, output, offsetMin] of TPS_SEEDS) {
+      insert.run(
+        id,
+        "zai-org/glm-5.3",
+        "sk-test...-000",
+        200,
+        ttft,
+        latency,
+        1000,
+        output,
+        500,
+        "0.02",
+        0.02,
+        "usd",
+        new Date(MONDAY_10 + offsetMin * 60_000).toISOString(),
+        new Date(MONDAY_10 + offsetMin * 60_000).toISOString(),
+      );
+    }
+    opened.db.close();
+  });
+}
+
+// Avg over the two eligible rows: 200 tokens / (0.5s + 4.5s) = 40 tok/s.
+const TPS_AVG = 40;
+
+test("dashboard TUI: Totals tps line and compare tps column (#155)", async () => {
+  const cfg = cfgDir("tps-panels");
+  await seedTpsStore(cfg);
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { runDashboardUi } = await import("../dist/commands/dashboard.js");
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    output.columns = 110;
+    output.rows = 40;
+    const done = runDashboardUi({
+      input,
+      output,
+      timezone: "UTC",
+      models: [],
+      initialHarness: null,
+      showCost: true,
+      refreshMs: 60_000,
+      sync: { skipped: true },
+      now: new Date(MONDAY_10 + 12 * HOUR),
+    });
+    try {
+      await waitFor(() => output.text.includes("ai& dashboard"));
+      // Totals panel: avg TPS line, tok/s formatted, never 0.
+      assert.match(output.text, new RegExp(`tps\\s+${TPS_AVG.toFixed(1)} tok/s`));
+
+      input.send("c"); // compare view
+      await waitFor(() => output.text.includes("Harness compare"), 5000, "compare on");
+      // The header carries the tps column next to ttft p50 …
+      const header = output.text
+        .split("\n")
+        .find((l) => l.includes("ttft p50") && l.includes("tps"));
+      assert.ok(header, "compare header carries ttft p50 and tps");
+      // …and the harness row (under the compare header) carries the value.
+      const rows = output.text.split("\n");
+      const headerIdx = rows.indexOf(header);
+      const row = rows.slice(headerIdx + 1).find((l) => l.includes("claude"));
+      assert.ok(row, "compare harness row renders");
+      assert.match(
+        row,
+        new RegExp(`${TPS_AVG.toFixed(1)}\\s*$`),
+        `tps column value on the row: ${JSON.stringify(row)}`,
+      );
+      // tps is informational: no winner marker rides the tps cell.
+      const tpsIdx = header.indexOf("tps");
+      assert.ok(!row.slice(tpsIdx).includes("▸"), "no winner marker on the tps cell");
+
+      input.send("q");
+      await done;
+    } finally {
+      input.send("q");
+      await done.catch(() => {});
+    }
+  });
+});
+
+test("dashboard TUI: Totals tps renders - and compare tps - without eligible rows (#155)", async () => {
+  const cfg = cfgDir("tps-nulls");
+  await seedStore(cfg, 4); // ttft only, latency null → nothing eligible
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { runDashboardUi } = await import("../dist/commands/dashboard.js");
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    output.columns = 110;
+    output.rows = 40;
+    const done = runDashboardUi({
+      input,
+      output,
+      timezone: "UTC",
+      models: [],
+      initialHarness: null,
+      showCost: true,
+      refreshMs: 60_000,
+      sync: { skipped: true },
+      now: new Date(MONDAY_10 + 12 * HOUR),
+    });
+    try {
+      await waitFor(() => output.text.includes("ai& dashboard"));
+      assert.match(output.text, /tps\s+-\s*\n|tps\s+-$/m, "Totals tps is `-`");
+      input.send("c");
+      await waitFor(() => output.text.includes("Harness compare"), 5000, "compare on");
+      const rows = output.text.split("\n");
+      const headerIdx = rows.findIndex((l) => l.includes("ttft p50"));
+      const row = rows.slice(headerIdx + 1).find((l) => l.includes("claude"));
+      assert.ok(row, "compare harness row renders");
+      assert.match(row, /\s-\s*$/, `compare tps cell is \`-\`: ${JSON.stringify(row)}`);
+      input.send("q");
+      await done;
+    } finally {
+      input.send("q");
+      await done.catch(() => {});
+    }
+  });
+});
+
+test("dashboard: panels never exceed their column width with long tps values (#155)", async () => {
+  const cfg = cfgDir("tps-width");
+  // A big-output window drives tps values to 5+ digits; the grid must clip,
+  // never reflow.
+  const { openStore, storePath } = await import("../dist/store/index.js");
+  const { recordAgentKey } = await import("../dist/api/agent-keys.js");
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    await recordAgentKey("claude", "sk-test-claude-super-secret-key-000");
+    const opened = openStore(storePath());
+    assert.ok(opened.ok);
+    const insert = opened.db.prepare(
+      "INSERT OR IGNORE INTO requests (id, model, api_key, status_code, ttft_ms, latency_ms, " +
+        "input_tokens, output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    for (let i = 0; i < 6; i += 1) {
+      // 1_000_000 tokens over 1s decode → 1_000_000 tok/s.
+      insert.run(
+        `w${i}`,
+        "zai-org/glm-5.3",
+        "sk-test-claude-super-secret-key-000",
+        200,
+        10,
+        1010,
+        2_000_000,
+        1_000_000,
+        0,
+        "0.02",
+        0.02,
+        "usd",
+        new Date(MONDAY_10 + i * HOUR).toISOString(),
+        new Date(MONDAY_10 + i * HOUR).toISOString(),
+      );
+    }
+    opened.db.close();
+  });
+  await withEnv({ AIAND_CONFIG_DIR: cfg }, async () => {
+    const { runDashboardUi, columnsFor } = await import("../dist/commands/dashboard.js");
+    const { visibleWidth } = await import("../dist/cli/output.js");
+    const width = 100; // 3 columns → colWidth = max(20, floor((100-6)/3)) = 31
+    const colWidth = Math.max(20, Math.floor((width - 3 * (columnsFor(width) - 1)) / 3));
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    output.columns = width;
+    output.rows = 40;
+    const done = runDashboardUi({
+      input,
+      output,
+      timezone: "UTC",
+      models: [],
+      initialHarness: null,
+      showCost: true,
+      refreshMs: 60_000,
+      sync: { skipped: true },
+      now: new Date(MONDAY_10 + 12 * HOUR),
+    });
+    try {
+      await waitFor(() => output.text.includes("ai& dashboard"));
+      assert.match(output.text, /tps\s+1000000\.0 tok\/s/, "large tps value rendered");
+      // Capture the settled frame BEFORE quitting — after `q` the last
+      // `\r` frame is the teardown blank, not the dashboard.
+      const lastFrame = output.text.split("\r").pop() ?? "";
+      input.send("q");
+      await done;
+      // The panel grid clips per column (composeColumns): every drawn line
+      // fits the terminal AND the per-panel lines fit their column width —
+      // a wide tps value must clip, never reflow the grid. `clipToWidth`
+      // would make the check true by construction, so measure the frame as
+      // drawn (ANSI-stripped): a reflow would push a line past `width`.
+      // Strip every CSI sequence (\x1b[2K erase, SGR \x1b[…m, cursor moves).
+      const plainFrame = lastFrame.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+      for (const line of plainFrame.split("\n")) {
+        assert.ok(visibleWidth(line) <= width, `line exceeds width: ${JSON.stringify(line)}`);
+      }
+      // The wide tok/s value stays inside the Totals panel's column — the
+      // full value renders (no clip needed) and the column gutter holds, so
+      // the other panels' content starts at the same offsets it would
+      // without the wide value.
+      const tpsLine = plainFrame.split("\n").find((l) => l.includes("1000000.0 tok/s"));
+      assert.ok(tpsLine, "tps line present in the frame");
+      assert.ok(tpsLine.length <= colWidth, `totals panel fits its column (${colWidth})`);
+      assert.ok(colWidth >= 20, "column width computation sanity");
+    } finally {
+      input.send("q");
+      await done.catch(() => {});
+    }
+  });
+});

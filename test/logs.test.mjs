@@ -189,4 +189,114 @@ describe("logs --follow", () => {
       assert.deepEqual(process.listeners("SIGINT"), before);
     });
   });
+
+  // #155: follow JSON rows must carry the same derived `tps` key as the
+  // one-shot --json path. In-process (like the SIGINT test above) so the
+  // rows are assertable — the follow loop prints them straight to stdout.
+  test("follow --json rows carry the derived tps key", async () => {
+    const { run } = await import("../dist/commands/logs.js");
+    const { captureStdio } = await import("./helpers.mjs");
+    requests.length = 0;
+    // The seed page returns one entry; each later poll returns a NEW one —
+    // follow only prints fresh ids, so a static handler prints nothing.
+    let poll = 0;
+    handler = () => {
+      poll += 1;
+      return {
+        data:
+          poll === 1
+            ? [entry("follow-seed")]
+            : [entry(`follow-${poll}`, { ttft_ms: poll === 2 ? 10 : null })],
+        has_more: false,
+        next_after: null,
+        next_after_id: null,
+      };
+    };
+    const before = process.listeners("SIGINT");
+    const capture = captureStdio();
+    try {
+      await withEnv({ AIAND_API_KEY: FAKE_API_KEY, AIAND_BASE_URL: baseUrl }, async () => {
+        // interval 1s: the follow loop polls only after one interval, so 30s
+        // would never print within the test; 1s fires one poll promptly.
+        const running = run(["--follow", "--json", "--interval", "1"]);
+        // Seed fetch + one poll: the poll's fresh row prints.
+        await waitFor(
+          () => capture.log.out.join("").includes("follow-2"),
+          5000,
+          "follow row printed",
+        );
+        const listeners = process.listeners("SIGINT").filter((l) => !before.includes(l));
+        listeners[0]?.();
+        await running;
+        const rows = capture.log.out
+          .join("")
+          .split("\n")
+          .filter((l) => l.startsWith("{"))
+          .map((l) => JSON.parse(l));
+        assert.ok(rows.length >= 1, `poll row(s) printed: ${rows.length}`);
+        // Every printed follow row carries the derived tps — the one-shot
+        // --json contract, honored by the follow path too.
+        for (const row of rows) assert.ok("tps" in row, `row ${row.id} carries tps`);
+        const happy = rows.find((r) => r.id === "follow-2");
+        assert.ok(happy, "the eligible poll row printed");
+        assert.ok(Math.abs(happy.tps - 77.77777777777777) < 1e-9);
+      });
+    } finally {
+      capture.restore();
+    }
+  });
+});
+
+describe("logs tok/s (#155)", () => {
+  test("JSON tps: happy path, null ttft, null latency, zero output, latency <= ttft", async () => {
+    requests.length = 0;
+    // #155 default entry: ttft 10ms, latency 100ms, 7 out → 7 / 0.09 ≈ 77.78 tok/s
+    handler = () => ({
+      data: [
+        entry("happy"),
+        entry("no-ttft", { ttft_ms: null }),
+        entry("no-latency", { latency_ms: null }),
+        entry("zero-out", { output_tokens: 0 }),
+        entry("ttft-ge-latency", { ttft_ms: 100, latency_ms: 100 }),
+      ],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const { code, stdout } = await cli(["logs", "--json"]);
+    assert.equal(code, 0);
+    const rows = JSON.parse(stdout);
+    assert.equal(rows.length, 5);
+    assert.ok(Math.abs(rows[0].tps - 77.77777777777777) < 1e-9, `tps ${rows[0].tps}`);
+    assert.equal(rows[1].tps, null);
+    assert.equal(rows[2].tps, null);
+    assert.equal(rows[3].tps, null);
+    assert.equal(rows[4].tps, null);
+  });
+
+  test("text table renders tok/s value and '-' for null", async () => {
+    requests.length = 0;
+    handler = () => ({
+      data: [entry("happy")],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const { code, stdout } = await cli(["logs"]);
+    assert.equal(code, 0);
+    assert.match(stdout, /TOK\/S/);
+    // 7 tokens over (100ms - 10ms) = 77.8 tok/s after latency
+    assert.match(stdout, /100ms\s+77\.8\s+\$0\.001/);
+
+    handler = () => ({
+      data: [entry("no-ttft", { ttft_ms: null })],
+      has_more: false,
+      next_after: null,
+      next_after_id: null,
+    });
+    const nullRow = await cli(["logs"]);
+    assert.equal(nullRow.code, 0);
+    // #155 cached '-' then null ttft '-' then tok/s '-'
+    assert.match(nullRow.stdout, /7\s+-\s+-\s+100ms\s+-\s+\$0\.001/);
+  });
 });

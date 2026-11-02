@@ -566,7 +566,7 @@ export function readHarnessRows(
     const rows = db
       .prepare(
         "SELECT id, model, api_key, endpoint, created_at, input_tokens, output_tokens, cached_tokens, " +
-          "cost, cost_value, currency, status_code, ttft_ms FROM requests" +
+          "cost, cost_value, currency, status_code, ttft_ms, latency_ms FROM requests" +
           where +
           " ORDER BY created_at, id",
       )
@@ -629,22 +629,29 @@ export function parseWindowFlags(
 // Rendering
 // ---------------------------------------------------------------------------
 
+/** The per-harness JSON projection — every scorecard field EXCEPT `avgTps` (#155): TPS is informational and stays out of the harness scorecard JSON (dashboard renders it from the full row). */
+type HarnessStatsJsonRow = Omit<HarnessStatsRow, "avgTps"> & {
+  labels: { behavioral: string };
+};
+
+function jsonRow(row: HarnessStatsRow): HarnessStatsJsonRow {
+  const { avgTps: _tps, ...rest } = row;
+  return {
+    ...rest,
+    labels: {
+      behavioral:
+        row.behavioral.behavioralSource === "imported"
+          ? "heuristic(imported harness markers)"
+          : "heuristic(one-shot/retry envelope rule)",
+    },
+  };
+}
+
 /** The `--json` payload shape (provenance + harnesses + excluded) — one source of truth for the shape. */
-function payload(
-  stats: ReturnType<typeof buildHarnessStats>,
-  harnesses: HarnessStatsRow[],
-): unknown {
+function payload(stats: HarnessStats, harnesses: HarnessStatsRow[]): unknown {
   return {
     provenance: stats.provenance,
-    harnesses: harnesses.map((row) => ({
-      ...row,
-      labels: {
-        behavioral:
-          row.behavioral.behavioralSource === "imported"
-            ? "heuristic(imported harness markers)"
-            : "heuristic(one-shot/retry envelope rule)",
-      },
-    })),
+    harnesses: harnesses.map(jsonRow),
     excluded: stats.excluded,
     excludedMixedSpend: stats.excludedMixed,
     behavioralCoverage: stats.behavioralCoverage,
@@ -1028,15 +1035,7 @@ function exportCompareTable(args: {
           missedCatchRule: MISSED_CATCH_RULE,
           labels: "heuristic(one-shot/retry envelope rule · imported harness markers)",
         },
-        harnesses: args.rows.map((row) => ({
-          ...row,
-          labels: {
-            behavioral:
-              row.behavioral.behavioralSource === "imported"
-                ? "heuristic(imported harness markers)"
-                : "heuristic(one-shot/retry envelope rule)",
-          },
-        })),
+        harnesses: args.rows.map(jsonRow),
         notes: footers,
       },
       null,

@@ -15,6 +15,7 @@ import {
 } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { percentile } from "../obs/harness-stats.js";
+import { requestTps as requestTpsOf } from "../obs/tps.js";
 import { currencyKey } from "../pricing/currency.js";
 import {
   createdSince,
@@ -75,6 +76,9 @@ type SessionView = {
   /** Per-currency sums — the only money shape when the session mixes. */
   costs: Costs;
   ttft: { p50: number | null; p95: number | null };
+  /** #155: median per-request TPS; avgTps is the system throughput over the session. */
+  tps: number | null;
+  avgTps: number | null;
   errors: number;
   start: string;
   end: string;
@@ -83,6 +87,39 @@ type SessionView = {
 /** Ordering key for `--top-cost`: the sum ACROSS currencies (display never sums). */
 function costAcross(session: SessionView): number {
   return Object.values(session.costs).reduce((sum, value) => sum + value, 0);
+}
+
+/**
+ * #155: per-request TPS — the shared formula in obs/tps.ts; null never
+ * becomes 0.
+ */
+export function requestTps(row: SessionCommandRow): number | null {
+  return requestTpsOf(row.output_tokens, row.ttft_ms, row.latency_ms);
+}
+
+/** #155: median per-request TPS and the throughput-weighted session average. */
+export function tpsStats(rows: readonly SessionCommandRow[]): {
+  tps: number | null;
+  avgTps: number | null;
+} {
+  const samples: number[] = [];
+  let outputSum = 0;
+  let secondsSum = 0;
+  for (const row of rows) {
+    const tps = requestTps(row);
+    if (tps === null) continue;
+    samples.push(tps);
+    // requestTps returned non-null, so output_tokens and both latency
+    // inputs are non-null here — no `?? 0` fallbacks.
+    outputSum += row.output_tokens!;
+    secondsSum += (row.latency_ms! - row.ttft_ms!) / 1000;
+  }
+  return {
+    tps: percentile(samples, 0.5),
+    // sum(output) / sum(decode ms) * 1000 — ms in the denominator, so this is
+    // just tokens per decode second.
+    avgTps: secondsSum > 0 ? outputSum / secondsSum : null,
+  };
 }
 
 /** The list-row and drill-down view of one session. */
@@ -102,6 +139,7 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
     if ((row.status_code ?? 0) >= 400) errors += 1;
   }
   const currencies = Object.keys(costs);
+  const tps = tpsStats(detail.rows);
   return {
     id: detail.session_id,
     harness: detail.agent,
@@ -118,6 +156,8 @@ export function toView(detail: SessionDetail<SessionCommandRow>): SessionView {
     currency: currencies.length === 1 ? (currencies[0] === "" ? null : currencies[0]!) : null,
     costs,
     ttft: { p50: percentile(ttfts, 0.5), p95: percentile(ttfts, 0.95) },
+    tps: tps.tps,
+    avgTps: tps.avgTps,
     errors,
     start: detail.started_at,
     end: detail.ended_at,
@@ -433,6 +473,11 @@ function ttftCell(value: number | null): string {
   return value === null ? "n/a" : `${value.toFixed(0)}ms`;
 }
 
+/** #155: tok/s cell; `-` when the metric is unavailable (never 0). */
+function tpsCell(value: number | null): string {
+  return value === null ? "-" : `${value.toFixed(1)} tok/s`;
+}
+
 type ListView = {
   showCost: boolean;
   compact: boolean;
@@ -462,6 +507,8 @@ function renderList(sessions: SessionView[], view: ListView): void {
     cost: costCell(session, view.showCost),
     ttftP50: ttftCell(session.ttft.p50),
     ttftP95: ttftCell(session.ttft.p95),
+    tps: tpsCell(session.tps),
+    avgTps: tpsCell(session.avgTps),
     errors: session.errors,
     start: stamp(session.start, view.timezone),
     end: stamp(session.end, view.timezone),
@@ -490,6 +537,8 @@ function renderList(sessions: SessionView[], view: ListView): void {
   const statColumns: Column<(typeof rows)[number]>[] = [
     { header: "ttft p50", value: (r) => r.ttftP50, align: "right" },
     { header: "p95", value: (r) => r.ttftP95, align: "right" },
+    { header: "tps", value: (r) => r.tps, align: "right" },
+    { header: "avg tps", value: (r) => r.avgTps, align: "right" },
     { header: "errors", value: (r) => num(r.errors), align: "right" },
   ];
   columns.push(...(view.compact ? [] : statColumns));
@@ -582,6 +631,7 @@ function runDrillDown(
         currency: row.currency,
         latency_ms: row.latency_ms,
         ttft_ms: row.ttft_ms,
+        tps: requestTps(row),
         status: row.status_code,
       })),
     });
@@ -609,6 +659,7 @@ function runDrillDown(
     cost: string;
     latency: string;
     ttft: string;
+    tps: string;
     status: string;
   };
   const requestRows: RequestRowView[] = detail.rows.map((row) => ({
@@ -623,6 +674,7 @@ function runDrillDown(
         : formatMoney(row.cost_value, row.currency ?? UNKNOWN_CURRENCY),
     latency: row.latency_ms === null ? "-" : `${row.latency_ms.toFixed(0)}ms`,
     ttft: row.ttft_ms === null ? "-" : `${row.ttft_ms.toFixed(0)}ms`,
+    tps: tpsCell(requestTps(row)),
     status: row.status_code === null ? "-" : String(row.status_code),
   }));
   const totals: RequestRowView = {
@@ -634,6 +686,7 @@ function runDrillDown(
     cost: showCost ? costCell(view, true) : "-",
     latency: "-",
     ttft: showCost ? `p50 ${ttftCell(view.ttft.p50)} / p95 ${ttftCell(view.ttft.p95)}` : "-",
+    tps: `med ${tpsCell(view.tps)} / avg ${tpsCell(view.avgTps)}`,
     status: `${view.errors} err`,
   };
   const columns: Column<RequestRowView>[] = [
@@ -654,6 +707,7 @@ function runDrillDown(
     columns.push(
       { header: "latency", value: (r) => r.latency, align: "right" },
       { header: "ttft", value: (r) => r.ttft, align: "right" },
+      { header: "tps", value: (r) => r.tps, align: "right" },
       { header: "status", value: (r) => r.status, align: "right" },
     );
   }
