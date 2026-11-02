@@ -686,8 +686,8 @@ describe("otel export: harness + store gauges (#149)", () => {
         Number(p.asInt),
       ]),
     );
-    assert.equal(byAgent["claude"], 1, "claude: one session (T0+T1 within the gap)");
-    assert.equal(byAgent["unknown"], 1, "unkeyed row attributes to unknown");
+    assert.equal(byAgent.claude, 1, "claude: one session (T0+T1 within the gap)");
+    assert.equal(byAgent.unknown, 1, "unkeyed row attributes to unknown");
     // attrs agent.name ONLY.
     for (const p of sessions) assert.equal(p.attributes.length, 1);
     // requests_total: 3 window rows, no attrs.
