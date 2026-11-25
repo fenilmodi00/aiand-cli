@@ -354,7 +354,7 @@ async function printAgents(agents: AgentStatusResult[]): Promise<void> {
       value: (a) =>
         a.installed
           ? (a.binary ?? "yes")
-          : style.dim(`install: ${installHints.get(a.agent) ?? ""}`),
+          : styled(style.dim, `install: ${installHints.get(a.agent) ?? ""}`),
     },
   ]);
 }

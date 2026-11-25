@@ -23,6 +23,12 @@ import {
 
 /** withFileLock's files in `locks/`: one per profile's token refresh, and the store sync. */
 const LOCK_FILE = /^(?:refresh-.+|store-sync(?:\.steal)?)$/;
+/**
+ * The request store's own leftovers beside the names in CONFIG_FILES: SQLite's
+ * rollback journal, and the copies `quarantineStore` renames a corrupt store
+ * (and its WAL sidecars) to before recreating it.
+ */
+const STORE_LEFTOVER = /^store\.db(?:-journal|\.corrupt-.+)$/;
 /** The timestamped capture dirs captureFiles makes inside a snapshot dir. */
 const SNAPSHOT_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z$/;
 const SNAPSHOT_STATE_FILES = ["latest.json", "added.json", "git-optin.json"];
@@ -141,7 +147,7 @@ export async function wipeConfigDir(real: string, plan: WipePlan): Promise<WipeR
   for (const name of await readdir(real)) {
     const path = join(real, name);
     if (name === CONFIG_MARKER_FILE) continue;
-    if (STRAY_TEMP.test(name)) {
+    if (STRAY_TEMP.test(name) || STORE_LEFTOVER.test(name)) {
       await removeFile(path);
     } else if (CONFIG_FILES.has(name)) {
       if (plan.keep.has(name)) kept.push(name);

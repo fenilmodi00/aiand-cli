@@ -137,6 +137,13 @@ async function keychainDelete(account: string): Promise<void> {
       ? await run("security", ["delete-generic-password", "-s", SERVICE, "-a", account])
       : await run("secret-tool", ["clear", "service", SERVICE, "account", account]);
   if (result.code !== 0) {
+    // Some tools exit non-zero for an absent item. Read it back: a keychain
+    // that still yields the secret is a failed delete, not an absent one.
+    try {
+      await keychainGet(account);
+    } catch {
+      return;
+    }
     throw new Error(`${keychainTool()} could not delete the secret (exit ${result.code}).`);
   }
 }
@@ -219,6 +226,9 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
     // keychainSet verifies its own readback; any failure drops to the
     // encrypted file rather than leave the profile unbootable.
     await keychainSet(profile, blob);
+    // A superseded file-tier copy would be exported by loadSecret's fallback
+    // if the keychain read later failed, so the winning tier is the only copy.
+    await dropFileEntry(profile).catch(() => {});
     return "keychain";
   } catch {
     process.stderr.write(
@@ -273,11 +283,13 @@ export async function deleteSecret(profile: string): Promise<void> {
   // A Storage tier change strands the old blob (refresh token included):
   // keychain→file or plaintext→file leaves the previous store holding a
   // still-valid session that logout never revokes. Sweep every tier
-  // best-effort instead of trusting the recorded one.
+  // best-effort instead of trusting the recorded one; a keychain delete that
+  // provably left the secret throwable is raised after the other tiers.
+  let keychainFailure: unknown;
   try {
     await keychainDelete(profile);
-  } catch {
-    // already absent (or no keychain on this machine) — a no-op
+  } catch (error) {
+    keychainFailure = error;
   }
   try {
     await dropFileEntry(profile);
@@ -298,6 +310,11 @@ export async function deleteSecret(profile: string): Promise<void> {
     });
   } catch {
     // unreadable/missing map means no residue to remove
+  }
+  if (keychainFailure !== undefined) {
+    throw new CliError(`The OS keychain still holds the key for "${profile}".`, {
+      hint: "Unlock it and run `aiand logout` again; a locked keychain can refuse a delete.",
+    });
   }
 }
 

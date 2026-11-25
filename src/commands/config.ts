@@ -262,7 +262,7 @@ async function warnWiredElsewhere(profile: string, apiUrl: string): Promise<void
     if (normalizeBaseUrl(wired) === target) continue;
     err(
       style.dim(
-        `[${agent}] Still wired to ${redactUrl(wired)}, which is where its key goes; this change does not move it. Sign in for ${redactUrl(target)} (\`aiand login --profile ${profile}\`), then run \`aiand --profile ${profile} ${agent} on\` to rewire it.`,
+        `[${agent}] Still wired to ${redactUrl(wired)}, which is where its key goes; this change does not move it. Sign in for ${redactUrl(target)} (\`aiand login --profile ${profile}\`), then run \`aiand --profile ${profile} ${agent} on\` to move it over.`,
       ),
     );
   }

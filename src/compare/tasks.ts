@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { CliError } from "../cli/errors.js";
+import { scrubAgentEnv } from "../cli/spawn-env.js";
 import { configDir, makePrivateTempDirSync, writeFileAtomic } from "../fsutil.js";
 
 /**
@@ -163,11 +164,14 @@ function extractScore(output: string): number {
   return 0;
 }
 
-/** Run a task's verify script in `cwd` (the workspace root under test). */
+/** Run a task's verify script in `cwd` (the workspace root under test). The
+ * script is task-pack code, not the CLI: it inherits PATH/HOME/PWD but never
+ * the CLI's own secrets (AIAND_API_KEY, the store master key). */
 export function runVerify(dir: string, cwd?: string, timeoutMs?: number): VerifyResult {
   const script = join(dir, VERIFY_FILE);
   const proc = spawnSync("sh", [script], {
     cwd: cwd ?? dir,
+    env: scrubAgentEnv(process.env),
     encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,

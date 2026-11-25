@@ -54,11 +54,17 @@ function launchModels(
   }
   const keep = (value: string): boolean => adapter.passesLaunchModel?.(value) === true;
   const lifted = takeFlagValues(passthrough, flags, keep);
-  const fast = adapter.fastModelFlag
-    ? takeFlagValues(lifted.rest, ["--fast-model"])
-    : { values: [], rest: lifted.rest };
+  // `--fast-model` is aiand's own flag wherever it appears: lifting it keeps
+  // it out of the agent's argv. launchAgentSession has already refused it for
+  // adapters with no fast slot (the bare `aiand <agent> --session` path hands
+  // it through here instead of parsing it).
+  const fast = takeFlagValues(lifted.rest, ["--fast-model"]);
   const pick = (given: string | undefined, values: string[], flag: string): string | undefined => {
-    let chosen = given;
+    // Compare served ids, not spellings: `aiand/X` and `X` name the same
+    // model when the catalog serves it, so they are one choice. Empty,
+    // duplicate, and unserved values keep their outcome — an empty or
+    // unknown spelling still fails the catalog check after this.
+    let chosen = given === undefined ? undefined : servedModelId(catalog, given);
     for (const value of values.map((v) => servedModelId(catalog, v))) {
       if (chosen !== undefined && chosen !== value) {
         throw new CliError(`${flag} was given twice: ${chosen} and ${value}.`, {
@@ -89,6 +95,16 @@ export async function launchAgentSession(
   opts: SessionModelOptions & { profile?: string } = {},
 ): Promise<string> {
   if (opts.fastModel !== undefined) assertFastModelFlag(adapter);
+  // `aiand <agent> --session` does not parse the agent's flags, so a
+  // --fast-model given there arrives in the passthrough. Refuse it before
+  // the login ceremony for an adapter with no fast slot, with the same
+  // wording the parsed flag gets above.
+  if (
+    !adapter.fastModelFlag &&
+    takeFlagValues(opts.passthrough ?? [], ["--fast-model"]).values.length > 0
+  ) {
+    assertFastModelFlag(adapter);
+  }
 
   const session = await requireSessionKey(opts.profile);
 
@@ -122,6 +138,9 @@ export async function launchAgentSession(
     profileName: profile.name,
     catalog,
     baseUrl,
+    // The agent's own argv after aiand lifted its model flags; a Claude Code
+    // alias (`--model haiku`) stays here and picks the startup context size.
+    args: models.passthrough,
   });
 
   // Attribute this session's requests to the agent, not aiand-cli: without

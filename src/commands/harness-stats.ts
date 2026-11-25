@@ -13,6 +13,7 @@ import {
   out,
   renderCell,
   style,
+  styled,
   table,
 } from "../cli/output.js";
 import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
@@ -772,10 +773,10 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
       header: "verdict",
       value: (r) =>
         r.verdict === "good"
-          ? style.green(r.verdict)
+          ? styled(style.green, r.verdict)
           : r.verdict === "bad"
-            ? style.red(r.verdict)
-            : style.yellow(r.verdict),
+            ? styled(style.red, r.verdict)
+            : styled(style.yellow, r.verdict),
     },
     ...behavioralColumns,
   ]);

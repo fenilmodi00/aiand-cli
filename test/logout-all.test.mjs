@@ -825,6 +825,25 @@ describe("logout --all only wipes a directory that proves it is aiand's (serial)
     assert.equal(readFileSync(join(stuff, "other"), "utf8"), "keep\n");
   });
 
+  test("a foreign dir holding only a tasks/ tree is preserved and never claimed", async () => {
+    const project = join(home, "project");
+    mkdirSync(join(project, "tasks"), { recursive: true });
+    writeFileSync(join(project, "tasks", "notes.txt"), "mine\n");
+    process.env.AIAND_CONFIG_DIR = project;
+    // A cache write is the first thing aiand would do there: it must claim nothing.
+    await writeFileAtomicIn(join(project, "model-catalog.json"));
+    assert.equal(existsSync(join(project, ".aiand-config")), false);
+    await assert.rejects(() => logoutAll({ force: true }), /not aiand's/);
+    assert.equal(readFileSync(join(project, "tasks", "notes.txt"), "utf8"), "mine\n");
+    assert.deepEqual(state.revocations, []);
+
+    // Even a marker an older aiand left here must not vouch for tasks/ alone.
+    writeFileSync(join(project, ".aiand-config"), `id: ${"ab".repeat(16)}\n`);
+    await assert.rejects(() => logoutAll({ force: true }), /not aiand's/);
+    assert.equal(readFileSync(join(project, "tasks", "notes.txt"), "utf8"), "mine\n");
+    assert.equal(existsSync(join(project, ".aiand-config")), true);
+  });
+
   test("the refusal names the marker file that vouches for a real aiand dir", async () => {
     const stuff = join(home, "stuff");
     mkdirSync(stuff, { recursive: true });
@@ -860,6 +879,34 @@ describe("logout --all only wipes a directory that proves it is aiand's (serial)
     const captured = await runAll({ json: true });
     assert.equal(JSON.parse(cliStdout(captured)).config_dir.removed, true);
     assert.equal(existsSync(old), false);
+  });
+
+  test("a marker-vouched dir's v2 files, store leftovers and dirs are all wiped", async () => {
+    writeConfigMarker(cfg);
+    for (const name of [
+      "store.db",
+      "store.db-wal",
+      "store.db-shm",
+      "store.db-journal",
+      "store.db.corrupt-2026-11-25T00-00-00-000Z",
+      "store.db.corrupt-2026-11-25T00-00-00-000Z-wal",
+      "agent-keys.json",
+      "bench-sweep.json",
+      "welcome.json",
+    ]) {
+      writeFileSync(join(cfg, name), "{}\n");
+    }
+    mkdirSync(join(cfg, "tasks", "t1"), { recursive: true });
+    writeFileSync(join(cfg, "tasks", "t1", "task.json"), "{}\n");
+    mkdirSync(join(cfg, "compare-runs", "r1"), { recursive: true });
+    writeFileSync(join(cfg, "compare-runs", "r1", "run.json"), "{}\n");
+
+    const report = JSON.parse(cliStdout(await runAll({ json: true })));
+
+    assert.deepEqual(report.config_dir.left, []);
+    assert.equal(report.config_dir.removed, true, JSON.stringify(report));
+    assert.equal(report.complete, true, JSON.stringify(report));
+    assert.equal(existsSync(cfg), false);
   });
 
   test("a proven dir's foreign locks/ entries survive; only aiand's lock files go", async () => {

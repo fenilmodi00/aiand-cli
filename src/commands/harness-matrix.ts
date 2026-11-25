@@ -15,6 +15,7 @@ import {
   out,
   renderCell,
   style,
+  styled,
   table,
 } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
@@ -322,12 +323,12 @@ function ttftCell(row: PairStatsRow, key: "p50" | "p90" | "p95"): string {
   return value === null ? "—" : `${value.toFixed(0)}ms`;
 }
 
-function verdictCell(row: PairStatsRow): string {
+function verdictCell(row: PairStatsRow) {
   return row.verdict === "good"
-    ? style.green(row.verdict)
+    ? styled(style.green, row.verdict)
     : row.verdict === "bad"
-      ? style.red(row.verdict)
-      : style.yellow(row.verdict);
+      ? styled(style.red, row.verdict)
+      : styled(style.yellow, row.verdict);
 }
 
 function pairColumns(showP90: boolean): Column<PairStatsRow>[] {

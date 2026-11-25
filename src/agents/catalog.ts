@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { listModels, type Model } from "../api/models.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import { safeLine } from "../cli/output.js";
-import { configDir, writeFileAtomic } from "../config.js";
+import { commandName, configDir, writeFileAtomic } from "../config.js";
 import { PRIVATE_FILE_MODE } from "../fsutil.js";
 import { HOUR_MS } from "../time.js";
 
@@ -146,8 +146,12 @@ export function servedModelId(catalog: readonly Pick<Model, "id">[], value: stri
   return has(bare) ? bare : value;
 }
 
-/** The provider id every adapter registers ai& under, as an agent model-ref prefix. */
-const AGENT_PROVIDER_PREFIX = "aiand/";
+/**
+ * The provider id every adapter registers ai& under, as an agent model-ref
+ * prefix. The side-by-side install renames the command, and its adapters
+ * derive the same provider id from it, so the prefix follows `commandName()`.
+ */
+const AGENT_PROVIDER_PREFIX = `${commandName()}/`;
 
 /**
  * Pick the model written into agent configs: an explicit profile model wins

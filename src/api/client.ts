@@ -371,11 +371,8 @@ export function midStreamAbortError(url: string, cause: unknown): unknown {
       ));
   if (!isNetwork) return cause;
   // Same credential scrubbing as fetchOrFail: undici reasons may echo the
-  // request URL, which can carry userinfo.
-  const reason = (cause instanceof Error ? cause.message : String(cause)).replace(
-    /\/\/[^/@\s]+@/g,
-    "//[redacted]@",
-  );
+  // request URL (userinfo included) and a rejected header value.
+  const reason = redactSecrets(cause instanceof Error ? cause.message : String(cause));
   const origin = (() => {
     try {
       return new URL(url).origin;

@@ -2,6 +2,7 @@ import { AGENTS, findAgent } from "../agents/registry.js";
 import { hasSnapshot, restoreSnapshot } from "../agents/snapshot.js";
 import type { AgentAdapter } from "../agents/types.js";
 import { forgetWired } from "../agents/wired.js";
+import { forgetAgentKeys } from "../api/agent-keys.js";
 import { bool, parse } from "../cli/args.js";
 import { CliError, cancelled } from "../cli/errors.js";
 import { json, out, style } from "../cli/output.js";
@@ -110,6 +111,9 @@ export async function run(argv: string[]): Promise<void> {
         continue;
       }
       await forgetWired(adapter.id);
+      // Restore leaves the agent unwired, so its attribution map goes too,
+      // exactly as `aiand <agent> off` does.
+      await forgetAgentKeys(adapter.id);
       out(`${adapter.label} config restored from snapshot.`);
       reportSkips(adapter, wired, unmanaged);
     }
@@ -142,6 +146,7 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   await forgetWired(adapter.id);
+  await forgetAgentKeys(adapter.id);
 
   if (bool(parsed, "json")) {
     return json({

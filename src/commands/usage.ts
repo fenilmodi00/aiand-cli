@@ -269,7 +269,7 @@ function printAudit(rows: ProvenanceEntry[]): void {
     { header: "report", value: (r) => r.report },
     { header: "field", value: (r) => r.field },
     { header: "label", value: (r) => formatLabel(r.provenance) },
-    { header: "computed from", value: (r) => style.dim(describeProvenance(r.provenance)) },
+    { header: "computed from", value: (r) => styled(style.dim, describeProvenance(r.provenance)) },
   ]);
   out();
   out(
@@ -394,10 +394,10 @@ function formatValue(row: VerifyRow, value: number): string {
   return row.metric === "cost" ? value.toFixed(6) : num(value);
 }
 
-function formatStatus(row: VerifyRow): string {
-  if (row.status === "ok") return style.green("OK");
-  if (row.status === "mismatch") return style.red("MISMATCH");
-  return style.yellow("UNVERIFIABLE");
+function formatStatus(row: VerifyRow) {
+  if (row.status === "ok") return styled(style.green, "OK");
+  if (row.status === "mismatch") return styled(style.red, "MISMATCH");
+  return styled(style.yellow, "UNVERIFIABLE");
 }
 
 // ---------------------------------------------------------------------------

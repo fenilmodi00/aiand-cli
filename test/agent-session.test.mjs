@@ -256,4 +256,50 @@ describe("aiand <agent> --session", () => {
       rmSync(nobin, { recursive: true, force: true });
     }
   });
+
+  test("codex --session refuses --fast-model instead of forwarding it", async () => {
+    // The bare --session path hands the agent's own args through, so this
+    // flag used to reach codex, which has no fast slot; run-agent and
+    // `on --session` already refuse it.
+    plantStub(binDir, "codex", CAPTURE_STUB);
+    const state = captureDir();
+    try {
+      const { code, stderr } = await cli(
+        ["codex", "--session", "--fast-model", "other/model"],
+        state,
+      );
+      assert.notEqual(code, 42, "the agent must not launch");
+      assert.match(stderr, /Codex has no separate fast model/);
+      assert.equal(existsSync(join(state, "capture.args")), false, "the agent never ran");
+    } finally {
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("session launcher model flags", () => {
+  test("--model aiand/X and a passthrough --model X are one model, not a duplicate", async () => {
+    // The shared launcher compares catalog ids: `aiand/X` and `X` name the
+    // same served model, so this is one --model, not "given twice".
+    plantStub(binDir, "codex", CAPTURE_STUB);
+    const state = captureDir();
+    try {
+      const { code, stderr } = await cli(
+        [
+          "run-agent",
+          "codex",
+          "--model",
+          "aiand/zai-org/glm-5.3",
+          "--",
+          "--model",
+          "zai-org/glm-5.3",
+        ],
+        state,
+      );
+      assert.equal(code, 42, stderr);
+      assert.match(capturedArgs(state).join(" "), /zai-org\/glm-5\.3/);
+    } finally {
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
 });
