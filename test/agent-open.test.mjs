@@ -24,7 +24,7 @@ exit 42`;
 let binDir;
 const box = withTestEnv("aiand-open-", (dir) => {
   binDir = join(dir, "bin");
-  for (const agent of ["opencode", "claude", "codex", "hermes", "jouzu"])
+  for (const agent of ["opencode", "claude", "codex", "hermes", "jouzu", "copilot"])
     plantStub(binDir, agent, CAPTURE_STUB);
 });
 
@@ -432,6 +432,45 @@ cp "$CLAUDE_CONFIG_DIR/settings.json" "$AIAND_CAPTURE.during"`,
     assert.deepEqual(opencode, { Path: "C:\\bin" });
     const codex = agentBaseEnv({ id: "codex" }, env, "win32");
     assert.deepEqual(codex, { aiand_secret_store_master_key: "ab".repeat(32), Path: "C:\\bin" });
+  });
+
+  test("copilot open: rejects --model and --model= values outside the catalog before spawning", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    for (const flag of [["--model", "not-served/model"], ["--model=not-served/model"]]) {
+      const { code, stderr } = await cli(["copilot", ...flag], state);
+      assert.equal(code, 1);
+      assert.match(stderr, /--model "not-served\/model" is not in the catalog\./);
+      assert.match(stderr, /Valid ids: zai-org\/glm-5\.3, other\/model/);
+      assert.equal(existsSync(`${state.capture}.args`), false, "Copilot was never spawned");
+    }
+  });
+
+  test("copilot open: rejects a served model that differs from the configured model", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    const managedFiles = ["providers.json", "settings.json"].map((file) =>
+      join(state.home, ".copilot", file),
+    );
+    const before = managedFiles.map((file) => readFileSync(file, "utf8"));
+    const { code, stderr } = await cli(["copilot", "--model", "other/model"], state);
+    assert.equal(code, 1);
+    assert.match(stderr, /GitHub Copilot is already configured for a different model\./);
+    assert.match(stderr, /Run `aiand copilot on --model other\/model` to change it\./);
+    assert.equal(existsSync(`${state.capture}.args`), false, "Copilot was never spawned");
+    assert.deepEqual(
+      managedFiles.map((file) => readFileSync(file, "utf8")),
+      before,
+      "the configured model was not rewritten",
+    );
+  });
+
+  test("copilot open: a served model matching the configured model launches with verbatim args", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    const { code } = await cli(["copilot", "--model=zai-org/glm-5.3"], state);
+    assert.equal(code, 42);
+    assert.deepEqual(capturedArgs(state), ["--model=zai-org/glm-5.3"]);
   });
 
   test("copilot-app open wires and never spawns", async () => {

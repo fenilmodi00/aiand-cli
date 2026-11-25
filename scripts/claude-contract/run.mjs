@@ -36,6 +36,20 @@ const note = (line) => {
   console.log(line);
 };
 
+function contractEnv() {
+  return {
+    PATH: `${CLAUDE_BIN}:${process.env.PATH}`,
+    HOME,
+    TERM: "xterm-256color",
+    NODE_EXTRA_CA_CERTS: "/certs/ca.pem",
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    AIAND_API_KEY: "sk-aiand-mock",
+    AIAND_BASE_URL: AIAND_URL,
+    AIAND_NO_BROWSER: "1",
+  };
+}
+
 function setup() {
   sh(`mkdir -p /certs && cd /certs &&
     openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=mock-ca -keyout ca.key -out ca.pem 2>/dev/null &&
@@ -81,17 +95,7 @@ function setup() {
   );
   writeFileSync(SETTINGS, `${JSON.stringify({ model: "opus" }, null, 2)}\n`);
   mkdirSync(`${HOME}/.config/aiand`, { recursive: true });
-  const env = {
-    PATH: `${CLAUDE_BIN}:${process.env.PATH}`,
-    HOME,
-    TERM: "xterm-256color",
-    NODE_EXTRA_CA_CERTS: "/certs/ca.pem",
-    DISABLE_AUTOUPDATER: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    AIAND_API_KEY: "sk-aiand-mock",
-    AIAND_BASE_URL: AIAND_URL,
-    AIAND_NO_BROWSER: "1",
-  };
+  const env = contractEnv();
   const exports = Object.entries(env)
     .map(([k, v]) => `export ${k}='${v}'`)
     .join("; ");
@@ -206,6 +210,53 @@ function check(id, what, pass, evidence, kind = "check") {
 const observe = (id, what, seen, evidence) => check(id, what, seen, evidence, "observe");
 
 const route = (r) => (r ? { gateway: r.label, model: r.model, session: r.cwd } : null);
+
+// Settings parity alone cannot prove that stock Claude Code reads the
+// hint. Compare the window it reports in modelUsage with the HTTP catalog.
+async function contextParity() {
+  note("\n# Context parity: API catalog → aiand startup hint → Claude Code modelUsage");
+  const baseUrl = `${AIAND_URL}/stub/context-catalog`;
+  const { data: catalog } = await (await fetch(`${baseUrl}/v1/models`)).json();
+  for (const model of catalog) {
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        [
+          "/src/dist/index.js",
+          "--base-url",
+          baseUrl,
+          "claude",
+          "--model",
+          model.id,
+          "-p",
+          "say context parity",
+          "--output-format",
+          "json",
+          "--max-turns",
+          "1",
+        ],
+        { encoding: "utf8", cwd: "/work/sessA", env: contractEnv(), timeout: 45_000 },
+      );
+      writeFileSync(join(OUT, `context-${catalog.indexOf(model)}.json`), stdout);
+      const result = JSON.parse(stdout);
+      const usage =
+        result.modelUsage?.[model.id] ?? result.modelUsage?.[model.id.replace(/\[1m\]$/i, "")];
+      check(
+        `context.${model.id}`,
+        "Claude Code's reported context window equals API context_window",
+        !result.is_error && usage?.contextWindow === model.context_window,
+        { model: model.id, expected: model.context_window, modelUsage: result.modelUsage },
+      );
+    } catch (error) {
+      check(
+        `context.${model.id}`,
+        "Claude Code reports the API context window",
+        false,
+        String(error),
+      );
+    }
+  }
+}
 
 async function sideBySide() {
   note("\n# Scenario 1: A plain claude, B aiand claude, C plain claude");
@@ -646,13 +697,17 @@ await sleep(1000);
 if (SETUP_ONLY) process.exit(0);
 note(`Claude Code ${sh(`${CLAUDE_BIN}/claude --version`).trim()}`);
 try {
-  if (!process.env.CONTRACT_ONLY_EXPERIMENTS) await sideBySide();
-  if (!process.env.CONTRACT_ONLY_EXPERIMENTS) await globalOnOff();
-  if (!process.env.CONTRACT_ONLY_EXPERIMENTS) await claudeCodeBehaviour();
-  if (!process.env.CONTRACT_ONLY_EXPERIMENTS) await faults();
+  if (!process.env.CONTRACT_ONLY_EXPERIMENTS) await contextParity();
+  if (!process.env.CONTRACT_ONLY_EXPERIMENTS && !process.env.CONTRACT_CONTEXT_ONLY)
+    await sideBySide();
+  if (!process.env.CONTRACT_ONLY_EXPERIMENTS && !process.env.CONTRACT_CONTEXT_ONLY)
+    await globalOnOff();
+  if (!process.env.CONTRACT_ONLY_EXPERIMENTS && !process.env.CONTRACT_CONTEXT_ONLY)
+    await claudeCodeBehaviour();
+  if (!process.env.CONTRACT_ONLY_EXPERIMENTS && !process.env.CONTRACT_CONTEXT_ONLY) await faults();
   if (process.env.CONTRACT_EXPERIMENTS) await emptyThenDelete();
 } finally {
-  tmux("kill-server");
+  if (!process.env.CONTRACT_CONTEXT_ONLY) tmux("kill-server");
 }
 const failed = results.filter((r) => !r.pass && r.kind === "check");
 writeFileSync(join(OUT, "results.json"), JSON.stringify({ version: VERSION, results }, null, 2));

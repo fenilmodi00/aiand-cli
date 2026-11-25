@@ -1,3 +1,4 @@
+import { getCatalog, validateCatalogModel } from "../agents/catalog.js";
 import {
   agentBaseEnv,
   installIfMissing,
@@ -12,6 +13,7 @@ import { requireSessionKey } from "../auth/session.js";
 import { bool, type Parsed, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import {
+  type CellValue,
   err,
   fields,
   json,
@@ -170,7 +172,22 @@ async function runOpen(
   // idempotent, so clearing twice around those yields is harmless.
   const spin = spinner(`Opening ${adapter.label}...`);
   try {
-    if (retarget || !(await adapter.probe()).active) {
+    // A bare open with --model must not override a configured Copilot model
+    // silently: validate the id, then refuse a different configured model.
+    const probe = retarget ? undefined : await adapter.probe();
+    if (adapter.id === "copilot") {
+      const [requestedModel] = takeFlagValues(passthrough, ["--model"]).values.slice(-1);
+      if (requestedModel !== undefined) {
+        const catalog = await getCatalog(resolveProfile(profile).apiUrl);
+        validateCatalogModel(catalog, requestedModel);
+        if (probe?.active && probe.model !== null && probe.model !== requestedModel) {
+          throw new CliError("GitHub Copilot is already configured for a different model.", {
+            hint: `Run \`aiand copilot on --model ${requestedModel}\` to change it.`,
+          });
+        }
+      }
+    }
+    if (retarget || !probe?.active) {
       // A model in the agent's own args is the one to wire, not our default:
       // otherwise later plain launches stay on a model the user never picked.
       const [launchModel] = takeFlagValues(
@@ -262,7 +279,7 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
     return json(result);
   }
 
-  const configuredModel: string = result.model ? modelLabel(result.model) : style.dim("—");
+  const configuredModel = result.model ? modelLabel(result.model) : styled(style.dim, "—");
   fields([
     ["agent", result.agent],
     [
@@ -274,7 +291,7 @@ async function runStatus(adapter: AgentAdapter, jsonOut: boolean): Promise<void>
     // Every model the agent can send requests to, so none is a surprise.
     ...(result.slots ?? []).map(
       ({ label, model }) =>
-        [`  ${label}`, model ? modelLabel(model) : styled(style.dim, "—")] as [string, string],
+        [`  ${label}`, model ? modelLabel(model) : styled(style.dim, "—")] as [string, CellValue],
     ),
   ]);
   printNotes(result.warnings ?? []);

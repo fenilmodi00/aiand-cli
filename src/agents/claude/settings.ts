@@ -2,7 +2,7 @@ import type { Model } from "../../api/models.js";
 import { DEFAULT_BASE_URL, isRoutableBaseUrl, trimSlash } from "../../config.js";
 import { resolveDefault } from "../catalog.js";
 import { asObject, notValidJsonError, parseJsonc } from "../managed-file.js";
-import { buildModelPicker, CONTEXT_CAP_TOKENS } from "./picker.js";
+import { buildModelPicker } from "./picker.js";
 
 /** Claude Code reads its boolean env switches as "1" and "0". */
 export const ENV_ON = "1";
@@ -18,13 +18,17 @@ export const API_KEY_KEY = "ANTHROPIC_API_KEY";
  * the client-side fix for a gateway that reshapes `system`.
  */
 const ATTRIBUTION_KEY = "CLAUDE_CODE_ATTRIBUTION_HEADER";
-/** A `[1m]`-tagged id would make Claude Code assume a 1M window and ignore the cap below. */
+/**
+ * Let the numeric hint size unrecognized `[1m]` ids too; otherwise Claude Code
+ * ignores it and assumes exactly 1M, even when the catalog says otherwise.
+ * https://code.claude.com/docs/en/model-config#which-ids-claude_code_max_context_tokens-applies-to
+ */
 const DISABLE_1M_KEY = "CLAUDE_CODE_DISABLE_1M_CONTEXT";
 const OPUS_SLOT = "ANTHROPIC_DEFAULT_OPUS_MODEL";
 const SONNET_SLOT = "ANTHROPIC_DEFAULT_SONNET_MODEL";
 const FABLE_SLOT = "ANTHROPIC_DEFAULT_FABLE_MODEL";
-export const MAIN_SLOTS = [OPUS_SLOT, SONNET_SLOT, FABLE_SLOT, "CLAUDE_CODE_SUBAGENT_MODEL"];
-export const FAST_SLOT = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
+const MAIN_SLOTS = [OPUS_SLOT, SONNET_SLOT, FABLE_SLOT, "CLAUDE_CODE_SUBAGENT_MODEL"];
+const FAST_SLOT = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
 /**
  * The model auto mode's safety checks run on (Claude Code v2.1.302+; older
  * versions ignore it). Unset, they run on the Sonnet slot: each check sends
@@ -265,11 +269,12 @@ export function slotReport(
   return { slots, warnings };
 }
 
-export function contextTokens(catalog: Model[], ids: string[]): string | undefined {
-  const windows = ids
-    .map((id) => catalog.find((model) => model.id === id)?.context_window)
-    .filter((window): window is number => typeof window === "number" && window > 0);
-  return windows.length > 0 ? String(Math.min(CONTEXT_CAP_TOKENS, ...windows)) : undefined;
+/** Claude Code exposes one process-wide hint, so size it for the startup model. */
+export function contextTokens(catalog: Model[], id: string | undefined): string | undefined {
+  const window = catalog.find((model) => model.id === id)?.context_window;
+  return typeof window === "number" && Number.isSafeInteger(window) && window > 0
+    ? String(window)
+    : undefined;
 }
 
 export function buildClaudeSettings({
@@ -278,12 +283,14 @@ export function buildClaudeSettings({
   main,
   fast,
   catalog,
+  startup,
 }: {
   apiKey: string;
   baseUrl: string;
   main: string;
   fast: string;
   catalog: Model[];
+  startup?: string;
 }): Record<string, unknown> {
   // ANTHROPIC_MODEL too: a shell export of it would beat the `model` below.
   const env: Env = {
@@ -291,13 +298,15 @@ export function buildClaudeSettings({
     ...slotEnv(main, fast),
     [ENV_MODEL_KEY]: main,
   };
-  const tokens = contextTokens(catalog, [main, fast]);
-  if (tokens) env[CONTEXT_KEY] = tokens;
+  // Claude Code's own --model (an alias it resolves through the slots) outranks `model`.
+  const selected = startupModel({ env: { ...env, [ENV_MODEL_KEY]: startup ?? main } }).model;
+  // Empty also clears an inherited hint when the catalog has no usable window.
+  env[CONTEXT_KEY] = contextTokens(catalog, selected) ?? "";
   return {
     model: main,
     env,
     permissions: { deny: DENIED_TOOLS },
-    modelPicker: buildModelPicker(catalog, Number(tokens) || undefined),
+    modelPicker: buildModelPicker(catalog),
   };
 }
 

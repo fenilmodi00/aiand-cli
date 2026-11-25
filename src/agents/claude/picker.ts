@@ -13,26 +13,22 @@ const PICKER_KEY = "modelPicker";
 type PickerRow = { model: string; label: string; description: string };
 export type ModelPicker = { options: PickerRow[]; replaceBuiltInOptions: boolean };
 
-// One cap for every model: open models get unreliable at tool calling well
-// before their advertised 1M window (a glm-5.3 session looped at ~270k), so
-// Claude Code should compact long sessions first. A per-model catalog field
-// (an "effective context") would retire it.
-export const CONTEXT_CAP_TOKENS = 200_000;
-
-/** A round cap reads as decimal K, a model window as binary K. */
-function contextLabel(window: number, cap: number): string {
-  if (!(window > 0)) return "";
-  const tokens = Math.min(cap, window);
+/** Picker labels describe the published window, independently of the startup hint. */
+function contextLabel(tokens: number): string {
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) return "";
+  if (tokens >= 1_000_000) {
+    return ` · ${Number((tokens / (tokens % 1000 === 0 ? 1_000_000 : 1_048_576)).toFixed(2))}M context`;
+  }
   const k = tokens % 1000 === 0 ? tokens / 1000 : Math.round(tokens / 1024);
   return ` · ${k}K context`;
 }
 
-export function buildModelPicker(catalog: Model[], sessionCap = CONTEXT_CAP_TOKENS): ModelPicker {
+export function buildModelPicker(catalog: Model[]): ModelPicker {
   return {
     options: catalog.map((model) => ({
       model: model.id,
       label: model.name || model.id,
-      description: `ai&${contextLabel(model.context_window, sessionCap)}${visionLabel(model) === "text-only" ? " · text only" : ""}`,
+      description: `ai&${contextLabel(model.context_window)}${visionLabel(model) === "text-only" ? " · text only" : ""}`,
     })),
     // The built-in Opus, Sonnet and Haiku rows would run ai&'s slot models
     // under Anthropic names, so the picker shows only ai&'s own.

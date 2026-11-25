@@ -138,17 +138,28 @@ is kept, and Claude Code starts on it.
 
 What else `on` changes:
 
-- **Context size.** Claude Code's context budget is capped at 200k tokens, so
-  long sessions compact before open models start to degrade (a model shown with
-  a `[1m]` suffix is sized the same way).
+- **Context size.** Claude Code's context budget
+  (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`) is the `context_window` the ai& catalog
+  publishes for the model Claude Code starts on, including windows above 1M.
+  That is the model you chose, a kept `model` setting, or the slot an alias
+  such as `aiand claude --model haiku` starts on; `--fast-model` does not
+  change it. Claude Code holds one budget per process, so after a `/model`
+  switch the session keeps the startup model's budget. To work on another
+  model, exit and start a new session with `aiand claude --model <id>`, or run
+  `aiand claude on --model <id>` before starting `claude`.
+  `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` stays set so a model shown with a `[1m]`
+  suffix is sized by its catalog window rather than an assumed 1M. Claude Code
+  may keep its built-in window for model ids it recognizes as Claude models;
+  see its
+  [context override rules](https://code.claude.com/docs/en/model-config#which-ids-claude_code_max_context_tokens-applies-to).
 - **Attribution header.** It is turned off, since ai& would otherwise pass it
   to the model as prompt text.
 - **`/model`.** It lists every ai& model. Claude Code only discovers gateway
   models whose id contains "claude", so `on` writes them into its
   `modelPicker` setting, replacing the built-in Opus, Sonnet and Haiku rows (a
-  `modelPicker` of your own is kept). Each row shows the context Claude Code
-  actually gets under its 200K cap (`ai& · 200K context`), and text-only models
-  add `· text only`.
+  `modelPicker` of your own is kept). Each row shows the model's published
+  context window (`ai& · 1M context`), and text-only models add
+  `· text only`.
 - **Other clouds.** The Bedrock, Vertex and Foundry switches are written as
   `0`, so one left on elsewhere cannot route Claude Code away from ai&.
 - **Auto-mode safety checks.** In auto mode (Claude Code's default permission

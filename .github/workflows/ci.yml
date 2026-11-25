@@ -308,13 +308,14 @@ jobs:
       - run: node scripts/windows-secrets-smoke.mjs
       # Real npm-installed OpenCode and Pi (a .cmd shim on Windows) launched
       # through `aiand run-agent`, against the live gateway. Needs the key, so
-      # same events as the live job. This is also the Windows install
+      # same events as the live job, and like the `key` job not Dependabot's
+      # PRs, which get no secrets. This is also the Windows install
       # tripwire for the Pi pin — check-dist keeps the version in step.
       # The only install code that runs before the key step is opencode-ai's
       # postinstall, which needs to link its binary. Pi and Copilot install
       # with --ignore-scripts, and omp is a digest-checked binary. Each of the
       # four is an agent the key step launches with the key by design.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
         run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       # check-dist keeps the pin in step with the CLI's install hint; the
@@ -323,13 +324,13 @@ jobs:
       # scripts is empty; bin is a plain node npm-loader.js), so
       # --ignore-scripts is a no-op here — it matches the pi pin's
       # discipline and keeps a future postinstall from running CI-side.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
         run: npm install -g --ignore-scripts @github/copilot@1.0.89
       # Windows downloads the same pinned release asset as the Linux job
       # (check-dist keeps the two in step). RUNNER_TEMP is not on PATH, so
       # expose the dir via GITHUB_PATH. Gated with the run-agent check
       # below so fork PRs skip the download.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'omp'
           New-Item -ItemType Directory -Path $dir | Out-Null
@@ -337,7 +338,7 @@ jobs:
           Invoke-WebRequest -Uri https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-windows-x64.exe -OutFile $exe
           if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne '5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54') { throw 'omp-windows-x64.exe sha256 mismatch' }
           $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
         run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
           New-Item -ItemType Directory -Path $state | Out-Null

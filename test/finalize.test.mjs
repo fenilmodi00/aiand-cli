@@ -4,9 +4,7 @@ import { join } from "node:path";
 import test, { describe } from "node:test";
 import { withTestEnv } from "./helpers.mjs";
 
-const { changelogBullets, finalizeOnVersionChange } = await import(
-  "../dist/housekeeping/finalize.js"
-);
+const { finalizeOnVersionChange } = await import("../dist/housekeeping/finalize.js");
 const { VERSION } = await import("../dist/api/client.js");
 
 const env = withTestEnv("aiand-finalize-", (dir) => {
@@ -25,21 +23,21 @@ describe("finalizeOnVersionChange", () => {
     assert.deepEqual(notes, []);
   });
 
-  test("returns changelog notes on a version change and persists lastVersion", async () => {
+  test("returns one release-notes link on a version change and persists lastVersion", async () => {
     writeState("0.0.0");
     const notes = await finalizeOnVersionChange();
-    assert.ok(Array.isArray(notes));
-    assert.ok(notes.length > 0, `expected ${VERSION} notes`);
-    // At least one line comes from the changelog's Fixed/Added sections.
-    assert.ok(notes.every((n) => n.startsWith("- ")));
-    assert.ok(notes.every((n) => !n.startsWith("###")));
+    assert.deepEqual(notes, [
+      `What's new in v${VERSION}: https://github.com/aiandlabs/aiand-cli/releases/tag/v${VERSION}`,
+    ]);
     assert.equal(readState().lastVersion, VERSION);
   });
 
   test("is idempotent on a second call", async () => {
     writeState("0.0.0");
     const first = await finalizeOnVersionChange();
-    assert.ok(first.length > 0);
+    assert.deepEqual(first, [
+      `What's new in v${VERSION}: https://github.com/aiandlabs/aiand-cli/releases/tag/v${VERSION}`,
+    ]);
     const second = await finalizeOnVersionChange();
     assert.deepEqual(second, []);
   });
@@ -53,27 +51,5 @@ describe("finalizeOnVersionChange", () => {
     const notes = await finalizeOnVersionChange();
     assert.deepEqual(notes, []);
     assert.equal(readState().lastVersion, VERSION);
-  });
-});
-
-describe("changelogBullets", () => {
-  test("joins wrapped bullets and stops at blank lines and headings", () => {
-    const section = [
-      "### Changed",
-      "",
-      "- Node runtime floor is Node 22+. Installers",
-      "  check it before cloning.",
-      "- Short one.",
-      "",
-      "Loose paragraph text is not a bullet.",
-      "### Fixed",
-      "- Last",
-      "  wrapped too",
-    ];
-    assert.deepEqual(changelogBullets(section), [
-      "- Node runtime floor is Node 22+. Installers check it before cloning.",
-      "- Short one.",
-      "- Last wrapped too",
-    ]);
   });
 });

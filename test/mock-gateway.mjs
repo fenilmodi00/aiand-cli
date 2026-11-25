@@ -87,6 +87,15 @@ const CATALOG = [
   catalogModel("deepseek-ai/deepseek-v4-flash"),
 ];
 
+// deliberately different windows expose a shared/minimum-window hint.
+const CONTEXT_CATALOG = [
+  ...CATALOG.map((model, index) => ({
+    ...model,
+    context_window: [32768, 1048576, 262144][index],
+  })),
+  { ...catalogModel("vendor/custom[1m]"), context_window: 524288 },
+];
+
 const VISION_CATALOG = [
   catalogModel("vendor/vision-model", ["vision", "tool_calling"]),
   catalogModel("vendor/text-model", ["tool_calling"]),
@@ -458,6 +467,8 @@ function handle(req, res) {
     if (scenario === "429") return reply429(res);
     if (scenario === "401") return reply401(res);
     if (scenario === "catalog-down") return reply(res, 500, { error: "catalog_unavailable" });
+    if (scenario === "context-catalog")
+      return reply(res, 200, { object: "list", data: CONTEXT_CATALOG });
     if (scenario === "vision-catalog")
       return reply(res, 200, { object: "list", data: VISION_CATALOG });
     return reply(res, 200, { object: "list", data: CATALOG });
