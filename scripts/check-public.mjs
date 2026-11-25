@@ -167,7 +167,7 @@ const KNOWN_OVERSIZED = new Map([
   ["src/report/data.ts", 1046],
   ["src/store/artifact-import.ts", 783],
   ["src/store/index.ts", 793],
-  ["src/store/local-usage.ts", 788],
+  ["src/store/local-usage.ts", 798],
   ["src/store/sessions.ts", 666],
 ]);
 

@@ -154,26 +154,36 @@ function opencodeDbPath(): string | null {
  * Both flat `<dir>/<uuid>.jsonl` files and per-cwd subdirectories are
  * accepted; files are read newest-first so freshest evidence iterates first.
  *
- * Parsed records are cached per file, keyed by path+mtime: an unchanged file
- * is never re-read or re-parsed. The correlator runs on every dashboard
- * refresh while any row is still unresolved (a permanently ambiguous row
- * keeps the gate true forever), and re-parsing the whole agent history —
- * hundreds of MB — on every keypress is the dashboard hang. The walk that
- * finds files (one statSync each) still runs, so new and updated files are
- * always picked up; only unchanged files are served from memory.
+ * Parsed records are cached per file, keyed by path, mtime and size: an
+ * unchanged file is never re-read or re-parsed. Size is part of the key
+ * because a rewrite that appends within the filesystem's timestamp tick can
+ * leave mtimeMs identical; the byte count still changes. The correlator runs
+ * on every dashboard refresh while any row is still unresolved (a permanently
+ * ambiguous row keeps the gate true forever), and re-parsing the whole agent
+ * history — hundreds of MB — on every keypress is the dashboard hang. The
+ * walk that finds files (one statSync each) still runs, so new and updated
+ * files are always picked up; only unchanged files are served from memory.
  * ponytail: unbounded Map — the TUI process is short-lived and the cache
  * is one entry per session file; evict by mtime if a daemon ever reuses it.
  */
-const chatRecordsCache = new Map<string, { mtime: number; records: LocalUsageRecord[] }>();
+const chatRecordsCache = new Map<
+  string,
+  { mtime: number; size: number; records: LocalUsageRecord[] }
+>();
 
-/** Parse one session file into the mtime cache; returns its records. */
+/** Parse one session file into the stat cache; returns its records. */
 function parseChatFile(file: string, agent: string): LocalUsageRecord[] {
   let mtime: number;
+  let size: number;
   let text: string;
   try {
-    mtime = statSync(file).mtimeMs;
+    const stats = statSync(file);
+    mtime = stats.mtimeMs;
+    size = stats.size;
     const cached = chatRecordsCache.get(file);
-    if (cached !== undefined && cached.mtime === mtime) return cached.records;
+    if (cached !== undefined && cached.mtime === mtime && cached.size === size) {
+      return cached.records;
+    }
     text = readFileSync(file, "utf8");
   } catch {
     chatRecordsCache.delete(file);
@@ -185,7 +195,7 @@ function parseChatFile(file: string, agent: string): LocalUsageRecord[] {
     const record = parseChatLine(line, agent) ?? parseModelUsageLine(line, agent);
     if (record !== null) parsed.push(record);
   }
-  chatRecordsCache.set(file, { mtime, records: parsed });
+  chatRecordsCache.set(file, { mtime, size, records: parsed });
   return parsed;
 }
 

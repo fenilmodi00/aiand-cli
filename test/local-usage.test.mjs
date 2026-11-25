@@ -996,7 +996,7 @@ describe("local-usage correlation", () => {
 
     writeFileSync(file, `${line(50)}\n${line(51)}`);
     const third = await read();
-    assert.equal(third.length, 2, "changed mtime: file re-parsed with new content");
+    assert.equal(third.length, 2, "changed stat: file re-parsed with new content");
   });
 
   test("an unlogged ephemeral turn joins its session's evidence-backed harness", async () => {
