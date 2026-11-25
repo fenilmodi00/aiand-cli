@@ -275,7 +275,7 @@ async function sideBySide() {
 
   // 2.1.311 rewrites opus to opus[1m] at start.
   const userDefault = settings().model;
-  const saved = await pickModel("B", /deepseek-ai\/deepseek-v4-flash/, true);
+  const saved = await pickModel("B", /deepseek-v4-flash/, true);
   await sleep(1500);
   check(
     "S1.4",
@@ -454,7 +454,7 @@ const resetSettings = (text = `${JSON.stringify({ model: "opus" }, null, 2)}\n`)
 async function aiandSessionWithPick(name) {
   open(name, `${AIAND} claude`);
   await waitScreen(name, /API Usage Billing/);
-  return pickModel(name, /deepseek-ai\/deepseek-v4-flash/, true);
+  return pickModel(name, /deepseek-v4-flash/, true);
 }
 
 async function faults() {
@@ -524,7 +524,7 @@ async function faults() {
     ],
     { stdio: "ignore" },
   );
-  const sSaved = await pickModel("S", /deepseek-ai\/deepseek-v4-flash/, true);
+  const sSaved = await pickModel("S", /deepseek-v4-flash/, true);
   await new Promise((r) => writer.on("exit", r));
   await sleep(1500);
   const final = JSON.parse(readRaw());
