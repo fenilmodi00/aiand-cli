@@ -38,7 +38,10 @@ describe("runTool", () => {
 
 describe("the banner theme", () => {
   test("with colour it wraps the brand in 24-bit colour and the muted text in dim", async () => {
-    const theme = await withEnv({ FORCE_COLOR: "1", NO_COLOR: undefined }, () => createTheme());
+    const theme = await withEnv(
+      { FORCE_COLOR: "1", COLORTERM: "truecolor", NO_COLOR: undefined },
+      () => createTheme(),
+    );
     assert.equal(theme.color, true);
     assert.equal(theme.brand("ai&"), "\x1b[38;2;199;0;7mai&\x1b[39m");
     assert.equal(theme.muted("x"), "\x1b[2mx\x1b[22m");
