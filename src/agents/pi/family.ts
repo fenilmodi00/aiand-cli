@@ -229,7 +229,7 @@ export function createPiFamily(spec: PiFamilySpec): PiFamilyCore {
     const modelsText = jsoncSet(
       raw.models,
       ["providers", PI_PROVIDER_ID],
-      buildPiProvider({ baseUrl, catalog }),
+      buildPiProvider({ baseUrl, catalog, agentId: id }),
     );
 
     // auth.json: the session key under the aiand credential, marked as ours.

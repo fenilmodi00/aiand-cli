@@ -219,7 +219,11 @@ describe("pi adapter", () => {
       max: "max",
     });
     assert.equal(entry.compat.supportsReasoningEffort, true);
-    const provider = buildPiProvider({ baseUrl: "https://gw.example/v1", catalog: [glm] });
+    const provider = buildPiProvider({
+      baseUrl: "https://gw.example/v1",
+      catalog: [glm],
+      agentId: "pi",
+    });
     assert.equal(provider.compat, undefined);
     const plain = piModelEntry(catalogModel("qwen/qwen3.8-27b"));
     assert.equal(plain.thinkingLevelMap, undefined);
@@ -227,7 +231,11 @@ describe("pi adapter", () => {
   });
 
   test("buildPiProvider renders the catalog with live-gateway compat", () => {
-    const provider = buildPiProvider({ baseUrl: "https://gw.example/v1", catalog: CATALOG });
+    const provider = buildPiProvider({
+      baseUrl: "https://gw.example/v1",
+      catalog: CATALOG,
+      agentId: "pi",
+    });
     assert.equal(provider.name, "ai&");
     assert.equal(provider.api, "openai-completions");
     assert.deepEqual(provider.headers, { "x-aiand-agent": "pi" });

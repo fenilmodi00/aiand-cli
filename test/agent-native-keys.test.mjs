@@ -36,6 +36,23 @@ test("recordNativeAgentKeys attributes a native key without baking it", async ()
   });
 });
 
+test("a native Jouzu key on the chat dialect resolves to jouzu, not shared or pi", async () => {
+  const cfg = cfgDir("jouzu-dialect");
+  const { recordAgentKey, recordNativeAgentKeys, agentForMaskedKey, maskKey } = await import(
+    "../dist/api/agent-keys.js"
+  );
+  const KEY = "sk-test-native-jouzu-000011112222333344445555666677778888";
+  await withEnv({ AIAND_CONFIG_DIR: join(cfg, "cfg") }, async () => {
+    // One key baked into two harnesses: without jouzu among the chat-dialect
+    // holders the endpoint narrows nothing and Jouzu's rows stay "shared".
+    await recordAgentKey("claude", KEY);
+    await recordNativeAgentKeys("jouzu", [KEY]);
+    const masked = maskKey(KEY);
+    assert.equal(agentForMaskedKey(masked), "shared");
+    assert.equal(agentForMaskedKey(masked, "/v1/chat/completions"), "jouzu");
+  });
+});
+
 test("cli: omp's own aiand login shows as omp in harness compare, not unknown", async () => {
   const cfg = join(cfgDir("compare"), "cfg");
   const home = join(cfgDir("compare"), "home");

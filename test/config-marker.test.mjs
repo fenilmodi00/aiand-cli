@@ -19,6 +19,7 @@ const env = withTestEnv("aiand-config-marker-", (dir) => {
 });
 const { writeFileAtomic } = await import("../dist/fsutil.js");
 const { loadConfig, saveConfig } = await import("../dist/config.js");
+const { mayMarkConfigDir } = await import("../dist/config-files.js");
 const { provesAiandConfigDir } = await import("../dist/auth/config-wipe.js");
 
 const MARKER = ".aiand-config";
@@ -75,6 +76,28 @@ describe("the config-dir marker", () => {
     writeFileSync(join(dir, "update-check.json"), "{}\n");
     await cacheWrite(dir);
     assert.equal(existsSync(join(dir, MARKER)), true);
+  });
+
+  test("a dir holding only a generic tasks/ tree is neither vouchable nor marked", async () => {
+    const dir = homeDir("tasks-only");
+    mkdirSync(join(dir, "tasks"), { recursive: true });
+    writeFileSync(join(dir, "tasks", "notes.txt"), "mine\n");
+    assert.equal(await mayMarkConfigDir(dir), false);
+    await cacheWrite(dir);
+    assert.equal(existsSync(join(dir, MARKER)), false);
+    assert.equal(await provesAiandConfigDir(dir), false);
+    assert.equal(readFileSync(join(dir, "tasks", "notes.txt"), "utf8"), "mine\n");
+  });
+
+  test("a dir holding only a generic store.db is neither vouchable nor marked", async () => {
+    const dir = homeDir("store-only");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "store.db"), "not a database\n");
+    assert.equal(await mayMarkConfigDir(dir), false);
+    await cacheWrite(dir);
+    assert.equal(existsSync(join(dir, MARKER)), false);
+    assert.equal(await provesAiandConfigDir(dir), false);
+    assert.equal(readFileSync(join(dir, "store.db"), "utf8"), "not a database\n");
   });
 
   test("a foreign dir with a Docker-shaped config.json gets no marker from a cache write", async () => {

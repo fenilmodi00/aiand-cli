@@ -193,7 +193,7 @@ export const SHARED_AGENT = "shared";
 const ENDPOINT_HARNESSES: Readonly<Record<string, readonly string[]>> = {
   "/v1/messages": ["claude"],
   "/v1/responses": ["codex"],
-  "/v1/chat/completions": ["opencode", "pi", "omp", "copilot", "copilot-app", "hermes"],
+  "/v1/chat/completions": ["opencode", "pi", "jouzu", "omp", "copilot", "copilot-app", "hermes"],
 };
 
 /**

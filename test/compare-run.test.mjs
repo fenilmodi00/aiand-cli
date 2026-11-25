@@ -201,6 +201,81 @@ test("happy path: solved row with gateway-metered cost and exact pinned shape", 
   });
 });
 
+/**
+ * main v0.8.0: an agent child never inherits the CLI's own secrets. The
+ * compare runner used to spread process.env and delete only AIAND_API_KEY,
+ * so AIAND_SECRET_STORE_MASTER_KEY — the key that decrypts the file tier —
+ * reached every harness process and everything it spawned. Codex is the one
+ * deliberate exception: its `aiand key export` child decrypts the file tier
+ * (see agentBaseEnv in src/agents/launch.ts), so compare must mirror
+ * agentSession, not blanket-delete it.
+ */
+test("agent env: store master key scrubbed, except Codex's key-export child", async () => {
+  const MASTER = "ab".repeat(32);
+  await withPinnedGateway(async ({ url }) => {
+    const dir = cfg("scrub-master");
+    await addValidatedTask(dir, "scrub-master-task");
+    plantStub(join(dir, "bin"), "opencode", AGENT_STUB);
+    const res = await runCli(
+      [
+        "compare",
+        "run",
+        "--task",
+        "scrub-master-task",
+        "--harness",
+        "opencode",
+        "--trials",
+        "1",
+        "--json",
+      ],
+      {
+        env: runEnv(dir, url, {
+          AIAND_SECRET_STORE_MASTER_KEY: MASTER,
+          AIAND_SOLVE: "1",
+        }),
+      },
+    );
+    assert.equal(res.code, 0, res.stderr);
+    const captured = readFileSync(join(dir, "capture.env"), "utf8");
+    assert.doesNotMatch(
+      captured,
+      /^AIAND_SECRET_STORE_MASTER_KEY=/m,
+      "a non-Codex harness must not inherit the store master key",
+    );
+    assert.match(captured, /^AIAND_CAPTURE=/m, "the stub capture knob still reaches the child");
+    assert.match(captured, /^AIAND_SOLVE=1$/m, "the stub solve knob still reaches the child");
+
+    const codexDir = cfg("codex-master");
+    await addValidatedTask(codexDir, "codex-master-task");
+    plantStub(join(codexDir, "bin"), "codex", AGENT_STUB);
+    const codexRes = await runCli(
+      [
+        "compare",
+        "run",
+        "--task",
+        "codex-master-task",
+        "--harness",
+        "codex",
+        "--trials",
+        "1",
+        "--json",
+      ],
+      {
+        env: runEnv(codexDir, url, {
+          AIAND_SECRET_STORE_MASTER_KEY: MASTER,
+          AIAND_SOLVE: "1",
+        }),
+      },
+    );
+    assert.equal(codexRes.code, 0, codexRes.stderr);
+    assert.match(
+      readFileSync(join(codexDir, "capture.env"), "utf8"),
+      new RegExp(`^AIAND_SECRET_STORE_MASTER_KEY=${MASTER}$`, "m"),
+      "Codex's aiand key export child needs it",
+    );
+  });
+});
+
 test("verify-fail row: success false, score null, exit recorded", async () => {
   await withPinnedGateway(async ({ url }) => {
     const dir = cfg("fail");

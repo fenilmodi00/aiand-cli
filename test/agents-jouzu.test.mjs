@@ -140,6 +140,9 @@ describe("jouzu adapter", () => {
     const provider = readJson(modelsPath()).providers.aiand;
     assert.equal(provider.baseUrl, "https://api.aiand.com/v1");
     assert.equal(provider.api, "openai-completions");
+    // Jouzu runs Pi's engine but is its own harness: requests through this
+    // block must be credited to jouzu, never to pi.
+    assert.deepEqual(provider.headers, { "x-aiand-agent": "jouzu" });
     assert.deepEqual(
       provider.models.map((model) => model.id),
       ["zai-org/glm-5.3", "qwen/qwen3.8-27b"],

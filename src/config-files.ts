@@ -3,10 +3,11 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * What aiand keeps in its config dir, shared by the two things that must agree
- * on it: `fsutil` (which vouches for a dir with a marker) and `auth/config-wipe`
- * (which deletes by name once a dir is vouched for). A leaf module, so neither
- * imports the other.
+ * What aiand keeps in its config dir, shared by the code that wipes it
+ * (`auth/config-wipe`, by name, once a dir is vouched for) and the predicate
+ * here that vouches for a dir with its marker. The wipe lists and the vouch
+ * proof are kept apart on purpose: a name in a wipe list is not evidence the
+ * directory is aiand's. A leaf module, so neither imports the other.
  */
 
 /** Proof for `logout --all` that a directory is aiand's own. */
@@ -67,7 +68,13 @@ export const SIGN_IN_STORE_FILES: ReadonlySet<string> = new Set([
   "secret-store.dpapi.json",
 ]);
 
-/** Files aiand writes into its config dir. A new sign-in store file goes in SIGN_IN_STORE_FILES. */
+/**
+ * Files aiand writes into its config dir, wiped by `auth/config-wipe` once a
+ * dir is vouched for. This is a wipe list, never proof a dir is aiand's: it
+ * also names files other tools keep (`store.db` and its SQLite sidecars,
+ * `agent-keys.json`, `bench-sweep.json`, `welcome.json`). A new sign-in store
+ * file goes in SIGN_IN_STORE_FILES.
+ */
 export const CONFIG_FILES: ReadonlySet<string> = new Set([
   "config.json",
   ...SIGN_IN_STORE_FILES,
@@ -92,11 +99,13 @@ export const CONFIG_FILES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Directories aiand makes in its config dir. `locks` also holds the store
- * sync lock (`locks/store-sync`, store/index.ts) beside the refresh locks.
- * Shared with `auth/config-wipe`: `snapshots` and `locks` are generic names,
- * so a wipe only empties them of aiand's entries, while the rest are aiand's
- * own directories and go whole.
+ * Directories aiand makes in its config dir, wiped once a dir is vouched for.
+ * `locks` also holds the store sync lock (`locks/store-sync`, store/index.ts)
+ * beside the refresh locks. Shared with `auth/config-wipe`: `snapshots` and
+ * `locks` are generic names, so a wipe only empties them of aiand's entries,
+ * while the rest are aiand's own directories and go whole. Like
+ * `CONFIG_FILES`, this is not proof: `tasks` and `compare-runs` are names
+ * other tools use too.
  */
 export const CONFIG_DIRS: ReadonlySet<string> = new Set([
   "snapshots",
@@ -104,6 +113,30 @@ export const CONFIG_DIRS: ReadonlySet<string> = new Set([
   "compare-runs",
   "tasks",
 ]);
+
+/**
+ * The files whose names only aiand uses. One of them is the strong evidence
+ * `mayMarkConfigDir` needs before aiand vouches for a dir with its marker, so
+ * the wipe list can grow with names other tools share without making those
+ * names proof. `snapshots` and `locks` may sit beside that evidence (a cache
+ * write makes one), but a directory holding only them or only a v2 name
+ * (`store.db`, `agent-keys.json`, `welcome.json`, `bench-sweep.json`,
+ * `tasks`, `compare-runs`) is not aiand's to claim.
+ */
+const VOUCH_FILES: ReadonlySet<string> = new Set([
+  "secret-store.lock",
+  "secret-store.lock.steal",
+  "credentials.lock",
+  "credentials.lock.steal",
+  "wired.json",
+  "finalize.json",
+  "update-check.json",
+  "model-catalog.json",
+  "opencode-api.json",
+]);
+
+/** The dirs that may sit beside a vouch file; they never vouch on their own. */
+const MARKABLE_DIRS: ReadonlySet<string> = new Set(["snapshots", "locks"]);
 
 /** Leftovers of an interrupted atomic write or key publish. */
 export const STRAY_TEMP = /^(?:\.\d+-[0-9a-f]+\.tmp|secret-store\.key\.\d+\.[0-9a-f]+\.tmp)$/;
@@ -127,25 +160,39 @@ export async function holdsAiandConfig(real: string): Promise<boolean> {
 
 /**
  * Whether aiand may vouch for `root` with its marker: its `config.json` has
- * aiand's shape (an install older than the marker), or the dir holds nothing
- * but aiand's own caches, dirs and temp files, a new or empty dir included. A
- * dir with anything else in it, or a `config.json` of another tool's shape, is
- * someone else's: an `AIAND_CONFIG_DIR` typed as `~/.docker` must stay
- * unproven so `logout --all` refuses it. So is one holding a sign-in file and
- * no `config.json`: sign-in writes `config.json` right after the credential,
- * so aiand's own sign-in files never sit without one for long, and a marker
- * dropped by a cache write must not vouch for another tool's credentials.
+ * aiand's shape (an install older than the marker), or the dir holds at least
+ * one file only aiand writes (`VOUCH_FILES`) and nothing but aiand's own
+ * caches, dirs and temp files, a new or empty dir included. A dir holding
+ * only the marker is markable too, so an empty or older marker in an
+ * otherwise empty dir can be replaced with one that names the install. The
+ * wipe lists are deliberately not the proof: `CONFIG_FILES`/`CONFIG_DIRS`
+ * also name things other tools keep (`store.db`, `agent-keys.json`,
+ * `welcome.json`, `bench-sweep.json`, `tasks`, `compare-runs`), so a dir
+ * holding only those could be anyone's and a cache write there must drop no
+ * marker. A dir with anything else in it, or a `config.json` of another
+ * tool's shape, is someone else's: an `AIAND_CONFIG_DIR` typed as `~/.docker`
+ * must stay unproven so `logout --all` refuses it. So is one holding a
+ * sign-in file and no `config.json`: sign-in writes `config.json` right after
+ * the credential, so aiand's own sign-in files never sit without one for
+ * long, and a marker dropped by a cache write must not vouch for another
+ * tool's credentials.
  */
 export async function mayMarkConfigDir(root: string): Promise<boolean> {
   if (await holdsAiandConfig(root)) return true;
   const names = await readdir(root);
-  return names.every(
-    (name) =>
-      name !== "config.json" &&
-      !SIGN_IN_STORE_FILES.has(name) &&
-      (name === CONFIG_MARKER_FILE ||
-        CONFIG_FILES.has(name) ||
-        CONFIG_DIRS.has(name) ||
-        STRAY_TEMP.test(name)),
+  const vouched =
+    names.some((name) => VOUCH_FILES.has(name)) ||
+    names.every((name) => name === CONFIG_MARKER_FILE);
+  return (
+    vouched &&
+    names.every(
+      (name) =>
+        name !== "config.json" &&
+        !SIGN_IN_STORE_FILES.has(name) &&
+        (name === CONFIG_MARKER_FILE ||
+          VOUCH_FILES.has(name) ||
+          MARKABLE_DIRS.has(name) ||
+          STRAY_TEMP.test(name)),
+    )
   );
 }

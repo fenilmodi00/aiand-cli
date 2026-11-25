@@ -146,6 +146,7 @@ export const piAdapter: AgentAdapter = {
             [PI_PROVIDER_ID]: buildPiProvider({
               baseUrl: piBaseUrl(input.baseUrl),
               catalog: input.catalog,
+              agentId: PI_ID,
             }),
           },
         },
