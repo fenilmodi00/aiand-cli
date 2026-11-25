@@ -22,6 +22,11 @@ const REFRESH_ENV = {
   AIAND_AUTH_URL: "https://auth.example.test",
   AIAND_KEY_STORAGE: "plaintext",
 };
+/** Where those stored credentials were issued, as credentials.json records it. */
+const REFRESH_BINDING = {
+  auth_url: REFRESH_ENV.AIAND_AUTH_URL,
+  api_url: REFRESH_ENV.AIAND_BASE_URL,
+};
 
 test("publicRequest preserves Headers and tuple Authorization", async () => {
   /** @type {Headers | undefined} */
@@ -107,6 +112,7 @@ test("two overlapping 401s send exactly one refresh_token grant", async () => {
     `${JSON.stringify({
       default: {
         origin: "device",
+        bound_to: REFRESH_BINDING,
         expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
         storage: "plaintext",
       },
@@ -178,6 +184,7 @@ test("an expiring key another process already rotated is reused, not rotated aga
       `${JSON.stringify({
         default: {
           origin: "device",
+          bound_to: REFRESH_BINDING,
           expires_at: Math.floor(Date.now() / 1000) + days * 24 * 3600,
           storage: "plaintext",
         },
@@ -221,6 +228,7 @@ test("a padded env key or stored key wires trimmed", async () => {
       `${JSON.stringify({
         default: {
           origin: "device",
+          bound_to: REFRESH_BINDING,
           expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
           storage: "plaintext",
         },
@@ -250,6 +258,7 @@ test("staggered second 401 reloads persisted refresh_token after first rotation"
     `${JSON.stringify({
       default: {
         origin: "device",
+        bound_to: REFRESH_BINDING,
         expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
         storage: "plaintext",
       },
@@ -324,6 +333,7 @@ test("staggered second 401 reloads persisted refresh_token after first rotation"
             access_token: "sk-stale",
             refresh_token: "rt-stale",
             origin: "device",
+            bound_to: REFRESH_BINDING,
             expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
             storage: "plaintext",
           },

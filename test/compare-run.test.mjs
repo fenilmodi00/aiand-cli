@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   cliEnv,
   FAKE_API_KEY,
+  hermeticPath,
   plantStub,
   runCli,
   withEnv,
@@ -29,7 +30,8 @@ function cfg(name) {
 }
 
 /** The agent capture stub: dump argv+env, optionally solve, optionally hack. */
-const AGENT_STUB = `env > "$AIAND_CAPTURE.env"
+const AGENT_STUB = `if [ "$1" = "--version" ]; then echo "stub-agent 0.0.0"; exit 0; fi
+env > "$AIAND_CAPTURE.env"
 printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
 node -e "if(process.env.AIAND_SOLVE)require('fs').writeFileSync('solved.txt','x\\n')"
 node -e "if(process.env.AIAND_HACK)require('fs').writeFileSync(process.env.AIAND_HACK,'hacked\\n')"
@@ -299,12 +301,15 @@ test("unvalidated task refused with a hint; --force overrides", async () => {
       "zai-org/glm-5.3",
       "--json",
     ],
-    { env: runEnv(dir, "http://127.0.0.1:9") },
+    { env: runEnv(dir, "http://127.0.0.1:9", { PATH: hermeticPath(join(dir, "bin")) }) },
   );
-  assert.notEqual(forced.code, 0, "infra rows fail the command, reported separately");
-  const rows = JSON.parse(forced.stdout).rows;
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].failure_mode, "infra");
+  // The capability pre-check runs before any session/catalog work: a harness
+  // that is not installed fails loudly, and --force only skips validation.
+  assert.equal(forced.code, 127, forced.stderr);
+  assert.match(forced.stderr, /Codex is not installed/);
+  assert.match(forced.stderr, /Install it with:/);
+  assert.doesNotMatch(forced.stderr, /not validated/, "--force skipped validation");
+  assert.equal(forced.stdout.trim(), "");
 });
 
 test("gateway unreachable => infra row, cost null, never folded into solve rate", async () => {

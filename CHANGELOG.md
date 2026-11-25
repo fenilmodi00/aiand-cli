@@ -50,65 +50,6 @@ breaking changes while the command surface settles.
     per-request rate), computed only over decode windows ≥200 ms so
     millisecond timer noise can't fabricate six-figure rates; ineligible
     models render `-` and `null`, never 0.
-
-### Changed
-- `aiand overview`: the per-day table separates requests, tokens, cost, and
-  savings with explicit spaces, so large counts cannot merge into one number.
-- Terminal output shows the bare model name (`glm-5.3`) instead of the
-  org-qualified id (`zai-org/glm-5.3`), so model columns no longer inflate
-  every table. Applies to `models`, `logs`, `sessions`, `status`, `agent`,
-  `chat`/`run`, `dashboard`, `overview`, `wrapped`, `usage`, `harness`,
-  `compare`, `efficiency`, and the Claude picker. Full ids are unchanged in
-  `--json`, config writes, filters, and the `recommend` apply command.
-
-### Fixed
-- The installer's post-install check and login offer address the launcher by
-  its install name: a side-by-side preview install (`aiand-v2`) exited 1 after
-  successfully installing because `install.sh` verified a hardcoded `aiand`
-  launcher that did not exist.
-- `aiand dashboard` no longer hangs for seconds at launch and on every
-  period/scope keypress: the local-usage correlation pass re-parsed every
-  omp/pi session file (hundreds of MB on a real history) synchronously on
-  each refresh whenever any gateway row was still unresolved. The TUI now
-  paints immediately, runs that pass once in the background (batched, so
-  keys stay live), and folds the refined harness labels in when it lands;
-  unchanged session files are cached by mtime and never re-parsed.
-- `aiand dashboard`/`overview` no longer render shared harness rows as 100%
-  when the store has already refined them: the correlation pass returns
-  refinement labels only, so a persisted `attributed_agent` is never
-  overwritten with the weaker base label while other rows stay pending.
-- Subagent traffic now correlates: pi-mono session `model_usage` side-lines
-  (provider/model/usage/timestamp at the top level, no `message` key) are
-  parsed as local usage records for aiand, refining the gateway rows that
-  previously stayed NULL forever.
-- `aiand omp` no longer reports `off` and can no longer re-bake a stale key
-  when the user's `models.yml` contains the flow mappings omp itself writes
-  (e.g. a provider's `cost: {input: 0, output: 0, …}` map): the omp YAML
-  reader rejected flow mappings, so `aiand omp status`/`probe`/`bakedKey`
-  silently failed and `aiand omp on` / key rotation could not swap a
-  deactivated key into the wired provider block. Flow mappings now parse; run
-  `aiand omp on --force` (or `aiand login` to trigger a rotation) to refresh a
-  stale `api_key has been deactivated` key into the active session key.
-- Dashboard attribution no longer seals a stale key-map label: a unique
-  local-usage match now overrides the key holders ∩ wire-dialect label on
-  specific-base rows, so traffic misattributed when a harness's data lived
-  outside the swept homes (e.g. omp in WSL, invisible to the key sweep, left
-  the map with no `omp` entry) heals on the next correlation pass instead of
-  staying wrong until `store reset`. Rows with no matching local record
-  still settle to their base label, and `correlationsPending` still reaches
-  false (materialized sessions re-bake once, rules version 3 → 4).
-- `aiand dashboard`/`overview`/`sessions` no longer label an omp-only session
-  `shared` because an auxiliary request in it never reached the harness's
-  local usage log: omp's auto-title generation (gateway-logged as a 499 when
-  the client tears the stream down) and idle recap turn are ephemeral turns
-  that write no session JSONL, so those gateway rows had no local record to
-  match. A row with no local evidence now inherits its time-gap session's sole
-  evidence-backed harness when a same-dialect sibling carries one; the request
-  row itself keeps its honest NULL, so late local evidence still heals it.
-  Sessions with two genuinely different harnesses still report `shared`
-  (sessionization rules version 4 → 5).
-
-### Added
 - `aiand compare` (lane B, #129/#131/#132/#134): replay your own tasks across
   harnesses and models. `compare add` scaffolds a task pack
   (`instruction.md` + `workspace/` + `verify.sh`) with verifier discipline —
@@ -236,144 +177,6 @@ breaking changes while the command surface settles.
   the ambiguity rules.
 - `aiand compare table --k <n>` reports task-clustered bootstrap intervals
   and pass@k and pass^k for runs of the same task.
-
-### Changed (UX)
-- Comparisons at small n no longer crown a point-estimate winner: when 95%
-  intervals overlap the footer says `tied — not distinguishable yet (…)`,
-  and `recommend` withholds the monthly-savings claim.
-- The interactive menu no longer flattens all 31 commands into one
-  undifferentiated section: rows are grouped by activity — Ask & run, Spend &
-  reports, Harness & compare, Setup & health, Account — between the agent
-  sections and Quit, with search still matching group names, command names,
-  and aliases. Pure metadata: no command module loads at menu draw.
-- Flag-only commands (the whole read-only report/diagnostics surface:
-  `usage`, `sessions`, `overview`, `report`, `wrapped`, `efficiency`,
-  `cache`, `logs`, `heatmap`, `dashboard`, `forecast`, `recommend`,
-  `status`, `doctor`, `whoami`, `orgs`, `models`, `login`, `logout`,
-  `update`, and the harness stats/compare/matrix/import subcommands) now
-  reject a stray positional word as a usage error instead of silently
-  ignoring it. `aiand harness bogus` used to swallow the word and start a
-  multi-minute benchmark.
-- A typo in `aiand harness --scenario <id>` or `--harness <id>` now reports
-  as a usage error with the known ids and a "Did you mean …?" suggestion,
-  instead of the "please report this bug" banner with a stack trace and exit
-  code 70. Same for a non-positive `report --top`.
-- An unknown help topic now gets the same nearest-match suggestion as an
-  unknown command: `aiand help usgae` points at `aiand help usage`.
-- Pressing Enter on an empty required prompt (the pasted-key sign-in flow)
-  is now a usage error naming the `AIAND_API_KEY` alternative, instead of
-  exiting with the not-signed-in code — a CI script can no longer mistake
-  "you typed nothing" for "logged out". The non-TTY end-of-input message
-  names the env key too.
-- The `compare` summary no longer advertises verbs the dispatcher rejects:
-  it now reads "add tasks, list, validate".
-
-### Fixed
-- Harness attribution now uses the gateway's per-request `endpoint` (the wire
-  dialect: `/v1/messages`, `/v1/responses`, `/v1/chat/completions`), so
-  Claude Code and Codex traffic on a key shared with other agents is
-  attributed precisely instead of collapsing to `shared`. Same-dialect
-  agents sharing one key (e.g. omp and pi) still honestly share, and rows
-  synced before this change keep the old label until re-served.
-- Harness attribution heals late local evidence: the correlation pass used to
-  attempt each request row exactly once, and the attempt cursor then sealed
-  any row it could not resolve. Agents buffer their session files, so a
-  request whose local usage record landed on disk seconds after the pass ran
-  (a live store showed 1,174 such rows attributed to `shared` while every
-  one had a matching omp record) stayed wrong forever — re-syncing or
-  resetting the store did not help, the same race re-sealed new rows.
-  Unresolved rows are now re-attempted on every pass and healed as soon as
-  their record appears; the cursor bounds per-pass work, not a row's
-  lifetime.
-
-- `correlationsPending` can actually reach false now: it counted every row
-  with a NULL `attributed_agent`, but rows resolved to a specific base
-  label (claude, codex, …) never get a local record and so kept the gate
-  open forever — every report build re-parsed all agent session files for
-  no new information. A row now settles into the column the moment it
-  resolves (unique local match or specific base label); only genuinely
-  unresolved rows keep counting, so the heal-on-late-evidence path is
-  unchanged and the sessions fingerprint re-bakes on settle.
-
-### Removed
-- The adapter-side envelope capture API (`src/agents/envelope-capture.ts`,
-  `createEnvelopeRecorder`, `ENVELOPE_CAPTURE_CONFIG_KEY`, the
-  `envelopeCapture` config.json flag, and the `AIAND_ENVELOPE_CAPTURE` env
-  toggle). It was never wired into any adapter, so no behavior changes; the
-  envelope schema (`aiand-envelope/v1`), the `envelopes` store table, and the
-  efficiency reports built on them are unchanged.
-- The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
-  `--include-imported` combined grand total, the import adapter module, the
-  imported-usage report section, and the migration 0003 store tables
-  (`ccusage_imports` + `imported_usage`, left in place on existing stores and
-  no longer read or written)). It imported a competitor tool's price-table-derived cost
-  estimates as a parallel cost lane — the gateway's own logs are the single
-  cost source.
-- The `aiand mcp` stdio MCP server (#70) with its four tools (`usage_stats`,
-  `session_stats`, `harness_compare`, `spend_check`), the `mcp.realProjectNames`
-  config key, and the `src/mcp/` server module. The CLI `--json` commands are
-  the programmatic surface; agents were the only consumer of the MCP layer,
-  and the local store + `--json` output already serve that need directly.
-- The vendor list-price comparison (`usage --vs-list`, the bundled vendor
-  list-price snapshot module, the list-prices comparison module, the
-  `--prices-file` flag, and the `config set prices.<model>.input|output|cacheRead`
-  overrides with their sanitizer). It compared spend against third-party list
-  prices the user never pays — the gateway catalog is the only pricing source.
-- The peak/off-peak cost split (`usage --sections peak` and
-  `usage --show-windows`) along with its window-table module and provenance
-  entries. The aiand gateway does not bill by peak/off-peak windows, so the
-  split was an estimate over a billing model the provider doesn't use.
-- `aiand forecast --model v2` and `aiand forecast bench` (the calibrated
-  Gamma-process Monte Carlo forecaster and its scoring bench, #77): the v2
-  model was built for a quota-window billing shape ai& doesn't have — it is
-  prepaid with a monthly budget, and the question "will I hit my budget?" is
-  what the v1 linear burn-rate extrapolation already answers. `aiand forecast`
-  now runs only the v1 burn-rate model; `overview`, `report`, and `cache`
-  are unchanged. Model docs: `docs/observability/forecast-v2.md`
-  is removed with it.
-
-### Changed
-- Bare interactive `aiand init` now lists every detected agent pre-checked:
-  Enter alone wires them all; space still unticks the ones you do not want.
-- `aiand restore` with no agent name now opens an interactive picker (mirroring
-  `aiand init`): every agent with a snapshot is listed pre-checked, a single
-  yes/no confirm replaces the --force flag, and scripts and `--json` runs keep
-  the old usage error.
-- `aiand recommend` and `aiand harness matrix` attribute mixed-model
-  sessions per model instead of excluding them: each (model, slice) of a
-  session spanning several models counts as its own session sample for that
-  (harness, model) pair. Previously such sessions were silently dropped,
-  discarding a large share of real spend (e.g. a 697-request / $18.02
-  session interleaving main-agent and subagent models).
-- Harness attribution labels traffic on a key several agents share as
-  `shared` instead of crediting whichever agent was recorded first (or
-  last, depending on the surface). `aiand init` bakes one sign-in key
-  into every harness it wires, so the gateway's per-key logs cannot
-  tell claude from codex from pi — yet the dashboard's session list said
-  `claude` while By harness bucketed the same rows under codex / omp /
-  aiand-cli, making Claude Code usage look inflated (observed: top-5
-  sessions labeled claude with no claude row in By harness). One
-  resolution rule now feeds every surface, and the materialized sessions
-  table relabels when the key map changes.
-- The interactive menu starts fast and shows feedback instead of a blank
-  screen. Agent detection no longer spawns `where`/`which` per adapter —
-  one memoized PATH scan (re-probed after wiring or launching an agent)
-  took the menu build from ~5.3s to ~0.3s cold and ~0ms warm on Windows.
-  Command modules load lazily on first run instead of all 31 at startup
-  (the eager import cost ~440ms cold before the menu appeared). Every
-  heavy menu action — sign-in, wiring agents, opening an agent, running
-  a command — animates a spinner on stderr while it works, except the
-  terminal-owning commands (`dashboard`, `chat`, `run-agent`), and
-  the spinner always clears before the agent binary inherits the terminal.
-- The interactive dashboard paints its first frame immediately from the local
-  store and refreshes in place when the background gateway sync lands,
-  instead of blocking on the network before anything shows.
-- Gateway/API requests now time out after 10 seconds instead of hanging until
-  the OS gives up (measured 11s+ on unroutable hosts). Status and other
-  networked commands also skip re-importing the agent adapter graph on every
-  sync call (~100ms per sync back to the caller).
-
-### Added
 - The bundled list-price snapshot (`bundled@2026-10-28`) now prices the
   gateway's first-party models — zai-org/glm-5.3, zai-org/glm-5.3-flash,
   deepseek-ai/deepseek-v4-pro, deepseek-ai/deepseek-v4.1-flash,
@@ -387,171 +190,17 @@ breaking changes while the command surface settles.
   (DeepSeek bills peak vs off-peak, not by input length; peak is exactly 2x
   off-peak, so priced savings are conservative by at most 2x on off-peak
   requests).
-
-### Removed
-- The adapter-envelope gateway-echo scaffolding: the `x-aiand-envelope` header
-  constant and its serializer from `src/agents/envelope.ts`. Nothing sent the
-  header and nothing read it back — the gateway does not forward or echo
-  envelopes (gateway ask #2 remains open in ticket #80). Locally captured
-  envelopes (the store table and the `efficiency` reports
-  built on them) are the only envelope path and are unchanged.
-
-### Fixed
-- Session-launched agents (`aiand <agent> --session`, `aiand run-agent`)
-  now record their key→agent mapping at launch, so the gateway's request
-  rows land under the agent's harness in `dashboard`, `usage`, and
-  `harness stats`. Before, a session launch ran on the CLI's own session
-  key without recording a mapping; the sync sweep labeled that key
-  `aiand-cli`, and every request the agent made was attributed to
-  aiand-cli instead of the agent (observed: an omp session's glm-5.3
-  traffic counted under aiand-cli). The persistent `on` path already
-  recorded it; the session path now does too. Existing machines repair
-  themselves at the next session launch, or once per agent with
-  `aiand <agent> on`; past rows re-label instantly because attribution
-  is a read-time key lookup, not a stored column.
-- Interactive prompts no longer vanish under the menu spinner: when the
-  interactive menu runs `login` or `logout` (or any command that asks a
-  question) behind its animated spinner, the question was erased within
-  80ms by the spinner's line redraw and the screen showed a hung
-  "Working..." loader until Enter was pressed blind. The spinner now
-  pauses its frames for the whole lifetime of an interactive read —
-  `confirm`, pasted-key input, and the org picker — clears its line in
-  place, shows the cursor, and resumes animating only after the answer.
-- Picking a command in the interactive menu no longer prints its title
-  twice — the `▌` heading owns the command title and the spinner below
-  it now shows a generic "Working..." instead of repeating the summary
-  text.
-- bare `aiand key` now says what the command is for and gives a
-  copy-pasteable example (`aiand key export`) instead of a bare verb list
-- `harness stats`, `harness compare`, and `harness matrix` made the cost of
-  mixed-model sessions visible (OBS-LT-4): these sessions are excluded from
-  every per-harness/per-pair row by design, but the only trace was a footer
-  count, so harness totals didn't visibly reconcile with `usage`. The footer
-  now also shows the excluded sessions' gateway-billed spend — session and
-  request counts, token sums, and cost with the same provenance as pair
-  costs, never folded into any row. `--json` carries it under
-  `excludedMixedSpend` (one shared definition in `src/obs/pair-stats.ts` /
-  `src/obs/harness-stats.ts`); no line prints when nothing was excluded.
-- `harness latency` / `harness duel` flag UX: an unknown layout in
-  `--pair harness=...` (the natural first guess `harness=default` included)
-  now names every valid layout AND suggests omitting `harness=`
-  (`--pair model=<model>`) to use the default layout `omp` — which is now a
-  supported shorthand. Both commands' `--help` list every valid layout, and
-  `harness duel --help` names `--turns-cap` as the flag that limits replayed
-  turns (there is no `--turns`). `harness duel` reports ALL unmet argument
-  requirements (shape source conflict, pair count) in one error instead of
-  one at a time.
-- `aiand run`/`aiand chat` traffic on a machine with no agents wired showed
-  as `unknown` everywhere: `agent-keys.json` was empty, so nothing identified
-  the CLI's own key. The store sync now self-records the key the CLI
-  authenticates with as a first-class `aiand-cli` entry (same local sweep
-  seam as the adapter native-key sweep — runs even when the gateway is
-  unreachable), so `aiand sessions`, dashboard "By harness", `wrapped`,
-  `overview`, harness stats, and `aiand doctor`'s agent-keys check reflect
-  CLI-own traffic. Agents wired with the same key keep their label (the self
-  entry is a fallback, not a claim); a foreign key the CLI never presented
-  still stays `unknown`.
-- Live-gateway sandbox testing of every command on this branch surfaced
-  defects, now fixed and regression-tested.
-  `usage --vs-list` showed `usd 0.000000` billed for models the bundled
-  list-price snapshot does not price: the billed accumulator lived inside the
-  priced-row branch, so gateway-billed cost was silently dropped for unpriced
-  models (the plain `usage` report showed the real total). Billed now
-  accumulates for every row; equivalent/savings stay `unpriced`-honest. And
-  the note "run any catalog-reading command once to cache it" never came
-  true: `aiand models` and `aiand cache` fetched the catalog but never wrote
-  the 6h `model-catalog.json` cache the offline readers (report/overview
-  savings) price from. Both commands now persist the cache on fetch.
-- Harness attribution showed `unknown` for traffic an agent sent with a key
-  the CLI never baked — most visibly omp running on its own OMP
-  authentication (`aiand harness compare`, dashboard, sessions, usage, and
-  OTel export all ride the same key map). Adapters now expose
-  `nativeAiandKeys` (omp's `agent.db` `aiand` credentials; OpenCode/Pi
-  providers hand-pointed at the gateway; Claude Code settings env blocks
-  pointing at the gateway; Codex `config.toml` gateway providers via
-  `env_key`/`experimental_bearer_token`/`requires_openai_auth`; Copilot CLI
-  `providers.json` gateway rows; Hermes `config.yaml` gateway blocks with
-  their `key_env` var), and every store sync sweeps them into
-  `agent-keys.json` before anything else — purely local, so it runs even
-  when the gateway is unreachable. Never swept, deliberately:
-  Claude/Codex OAuth credential stores (OAuth tokens are not ai& keys),
-  `apiKeyHelper`/`auth.command` scripts (no arbitrary execution at sync
-  time), plain env vars outside the config that names them, and the Copilot
-  app's user-made provider rows (their keys live in the OS keychain, and
-  the only in-db readable shape is byte-identical to what `on` writes —
-  `aiand cache --attribute copilot-app=<masked-key>` labels those by hand).
-  A key the agent has since rotated away with no trace left anywhere stays
-  `unknown` (never guessed); the materialized `sessions` table
-  re-attributes when the key map changes.
-- Re-login/key rotation stranded pre-rotation history as `unknown`: rebake
-  swapped the new key into agent configs but never recorded it in
-  `agent-keys.json`. Rebake now records the swapped-in key, so rows under
-  both the old and new keys keep their harness label.
-- `aiand dashboard` TUI looked dead on real stores: every period key, arrow,
-  `p`, and `r` froze the frame for seconds (only `c` and `q`, which skip the
-  data refresh, responded). Root cause: harness attribution re-read
-  `agent-keys.json` once per request row (~2.7s for a 2799-row store on
-  Windows). The report build now reads the key map once and resolves every
-  row from memory, so a refresh is ~350ms and all keys respond.
-- `aiand dashboard` TUI left the previous frame's tail rows on screen when a
-  keypress produced a shorter frame (`p` scope changes, `c` compare toggle):
-  the in-place redraw never cleared below the frame, so the old footer and
-  stale panels stayed visible and actions looked like they ran twice. The
-  redraw now blanks the orphaned rows, mirroring the prompt renderer.
-- `est. saved` showed $0.0000 despite a high cache-hit rate: savings priced
-  cached tokens at the cheap cached rate, which is exactly what the gateway
-  already bills, so the counterfactual equaled the billed cost. Savings now
-  price all input at the full rate (what a cold cache would have cost),
-  matching the `aiand cache` formula.
-
-### Changed
-- The dashboard TUI now uses the same brand theme as the home screen
-  (two-tone ai& wordmark, accent-highlighted active period tab, themed
-  section titles and muted meta lines) and its layout spans the full
-  terminal width (the pinned-sessions divider no longer caps at 60
-  columns).
-- Command output now shares the menu's visual language (ticket #76 follow-up
-  to the brand theme): the shared style helpers paint red/green/yellow/cyan
-  with the ai& palette's danger/success/warning/accent roles instead of raw
-  terminal colors, section titles across `usage`, `sessions`, `cache`,
-  `efficiency`, `recommend`, and the harness commands render as accent
-  focus-bar headings (`▌ Title`) like the menu chrome, and the interactive
-  menu frames each run with the command heading so tiled command output
-  reads as one continuous surface.
-
-### Removed
-
-- `aiand harness duel` and `aiand harness latency` (ticket #119): both ran
-  live billed gateway requests for personal A/B comparisons. The store-backed
-  `harness stats` / `compare` / `matrix` answer the same harness×model
-  question from real traffic, and the synthetic `harness` benchmark remains
-  the offline performance path.
-- The `claude_code.*` OTel metric family (`claude_code.session.count`,
-  `claude_code.cost.usage`, `claude_code.token.usage` with the
-  input-excludes-cache conversion) from `aiand export` — dashboard-
-  compatibility cargo named after one vendor's agent on a CLI that ships
-  eight. The vendor-neutral `gen_ai.*` family is the sole export surface and
-  now carries cost (`gen_ai.client.inference.usage.cost`) and per-model token
-  usage itself; the constant-0 `cache_write`/`reasoning`/`cacheCreation`
-  series it emitted despite the store having no such data are gone too
-  (emit-only-where-data-exists). The gateway has no cache-write split or
-  reasoning-token column, so those series were zeros reading as real
-  measurements.
-
-## [0.7.1] - 2026-11-02
-
-### Changed
-
-- `aiand claude on` picks `deepseek-ai/deepseek-v4.1-flash-1017` as Claude
-  Code's fast model, replacing `deepseek-ai/deepseek-v4.1-flash`, which ai&
-  retires on 2026-11-06 0:00 JST. A setup written earlier keeps the old
-  model until then: run `aiand claude on` again after that date, or run
-  `aiand claude on --model <your main model>` to switch now.
-
-
-## [0.7.0] - 2026-10-26
-
-### Added
+- `--fast-model <id>` for `aiand claude on`, `aiand claude` and
+  `aiand run-agent claude`: a separate model for Claude Code's background
+  calls and auto mode's safety checks. Without it, they use `--model`.
+- `aiand claude status` lists every model Claude Code can send requests to
+  (each slot and the auto-mode safety checks) and warns about any slot that
+  holds a model other than the one you chose.
+- Both installers finish with an agent summary: which coding-agent binaries
+  are on `PATH`, the install hint for each one that is missing, and a nudge
+  to run `aiand init`. The hint is that adapter's own install command for
+  this machine (Jouzu included). The Copilot desktop app is left out; it is
+  not a PATH binary. The installer still never wires agents itself.
 - `aiand store reset` (ticket #95, OBS-BF-10) — clears the request/session rows so the next `store sync` is a full re-pull, keeping the schema, migrations, the ccusage import dedupe ledger, and locally captured envelopes (opt-in, not re-pullable) intact; confirms unless `--force`, `--json` reports what was cleared. Self-heal for a stale store without hand-deleting `store.db`.
 - `aiand usage` surfaces the error rate (ticket #98): the report's totals
   carry `errors` and `errorRate` (non-2xx statuses excluding 429, over
@@ -561,7 +210,6 @@ breaking changes while the command surface settles.
   `estimated(non-2xx excluding 429 / requests)` provenance. An empty window
   yields `errorRate: null` (and no plain line) — never a fabricated 0.0.
 - `aiand mcp` — a stdio MCP server for coding agents exposing `usage_stats`, `session_stats`, `harness_compare`, and `spend_check` over the local request store; project names are pseudonymized by default (`project-a1b2`), opt out with `config set mcp.realProjectNames true`.
-
 - `aiand dashboard`, `aiand heatmap`, and `aiand wrapped` (ticket #75),
   all hand-drawn with zero runtime dependencies. The dashboard is an
   interactive TUI with CodeBurn's keyboard model: keys 1–6 and arrows switch
@@ -596,7 +244,6 @@ breaking changes while the command surface settles.
   samples it prints `insufficient data` instead of a thin percentile. Same
   seed + shape + pairs produce byte-identical cost/token tables offline —
   the D4 golden-fixture prerequisite (pinned in the test suite).
-
 - Calibrated forecast v2 + `aiand forecast bench` (ticket #77): `aiand
   forecast --model v2` runs the claumon MODEL.tex v2.2 model over the local
   store — OLS rate over the trailing 30 minutes conjugated with a prior from
@@ -613,7 +260,6 @@ breaking changes while the command surface settles.
   [delta, delta^2] calibration regression with a plain-language verdict;
   the deliberately miscalibrated non-rectified-Gaussian variant measurably
   worsens bench coverage. Model docs: `docs/observability/forecast-v2.md`.
-
 - `aiand sessions` (ticket #62): a per-conversation view over the local
   request store. The list shows one row per session — session id, harness
   (masked-key attribution), model mix, turns (one stored request = one turn),
@@ -845,30 +491,92 @@ breaking changes while the command surface settles.
   Plain `aiand status` keeps its documented auth exit codes and now shows
   the statusline line under the auth fields.
 
-### Fixed
-
-- `store`, `efficiency`, and `mcp` no longer fall back to the default profile silently when an explicit unknown `--profile` (or `AIAND_PROFILE`) is set (OBS-BF-17, #103): the same stderr warning `config`/`cache` emit (naming the requested profile and the fallback) now fires, while `--json` stdout stays parseable.
-- A gateway cutting a response body mid-stream during `run`/`chat` no longer
-  crashes with a raw undici stack and exit 70 (OBS-BF-18, #104): the
-  connection loss is now classified as a retryable unreachable-gateway
-  failure (human message + retry hint, exit 1); Ctrl-C mid-stream still
-  exits 130.
-- Budget pacing in `aiand report` / `aiand overview` no longer projects a
-  month from a narrow window (ticket #97): when the requested window starts
-  after the current month began (e.g. `--last 1d`), the budget section now
-  loads month-span rows for its month-to-date math while `meta.range` and
-  every other section keep the requested window.
-- `aiand usage --verify --since/--until` now honors the requested window on
-  the remote side (OBS-BF-11, #96): gateway log rows carry `created_at` in
-  the wire format (`2026-10-26 05:02:11.844519+00`), which bare string
-  comparison ordered before every ISO bound, so windowed verifies compared
-  the local store against remote 0/0/0. Remote rows are now filtered by
-  instant, matching the store's #86 normalized window comparisons; the
-  exit-code contract (0 match, 1 mismatch with per-metric deltas) is
-  unchanged.
-
 ### Changed
 
+- `aiand overview`: the per-day table separates requests, tokens, cost, and
+  savings with explicit spaces, so large counts cannot merge into one number.
+- Terminal output shows the bare model name (`glm-5.3`) instead of the
+  org-qualified id (`zai-org/glm-5.3`), so model columns no longer inflate
+  every table. Applies to `models`, `logs`, `sessions`, `status`, `agent`,
+  `chat`/`run`, `dashboard`, `overview`, `wrapped`, `usage`, `harness`,
+  `compare`, `efficiency`, and the Claude picker. Full ids are unchanged in
+  `--json`, config writes, filters, and the `recommend` apply command.
+- Bare interactive `aiand init` now lists every detected agent pre-checked:
+  Enter alone wires them all; space still unticks the ones you do not want.
+- `aiand restore` with no agent name now opens an interactive picker (mirroring
+  `aiand init`): every agent with a snapshot is listed pre-checked, a single
+  yes/no confirm replaces the --force flag, and scripts and `--json` runs keep
+  the old usage error.
+- `aiand recommend` and `aiand harness matrix` attribute mixed-model
+  sessions per model instead of excluding them: each (model, slice) of a
+  session spanning several models counts as its own session sample for that
+  (harness, model) pair. Previously such sessions were silently dropped,
+  discarding a large share of real spend (e.g. a 697-request / $18.02
+  session interleaving main-agent and subagent models).
+- Harness attribution labels traffic on a key several agents share as
+  `shared` instead of crediting whichever agent was recorded first (or
+  last, depending on the surface). `aiand init` bakes one sign-in key
+  into every harness it wires, so the gateway's per-key logs cannot
+  tell claude from codex from pi — yet the dashboard's session list said
+  `claude` while By harness bucketed the same rows under codex / omp /
+  aiand-cli, making Claude Code usage look inflated (observed: top-5
+  sessions labeled claude with no claude row in By harness). One
+  resolution rule now feeds every surface, and the materialized sessions
+  table relabels when the key map changes.
+- The interactive menu starts fast and shows feedback instead of a blank
+  screen. Agent detection no longer spawns `where`/`which` per adapter —
+  one memoized PATH scan (re-probed after wiring or launching an agent)
+  took the menu build from ~5.3s to ~0.3s cold and ~0ms warm on Windows.
+  Command modules load lazily on first run instead of all 31 at startup
+  (the eager import cost ~440ms cold before the menu appeared). Every
+  heavy menu action — sign-in, wiring agents, opening an agent, running
+  a command — animates a spinner on stderr while it works, except the
+  terminal-owning commands (`dashboard`, `chat`, `run-agent`), and
+  the spinner always clears before the agent binary inherits the terminal.
+- The interactive dashboard paints its first frame immediately from the local
+  store and refreshes in place when the background gateway sync lands,
+  instead of blocking on the network before anything shows.
+- Gateway/API requests now time out after 10 seconds instead of hanging until
+  the OS gives up (measured 11s+ on unroutable hosts). Status and other
+  networked commands also skip re-importing the agent adapter graph on every
+  sync call (~100ms per sync back to the caller).
+- The dashboard TUI now uses the same brand theme as the home screen
+  (two-tone ai& wordmark, accent-highlighted active period tab, themed
+  section titles and muted meta lines) and its layout spans the full
+  terminal width (the pinned-sessions divider no longer caps at 60
+  columns).
+- Command output now shares the menu's visual language (ticket #76 follow-up
+  to the brand theme): the shared style helpers paint red/green/yellow/cyan
+  with the ai& palette's danger/success/warning/accent roles instead of raw
+  terminal colors, section titles across `usage`, `sessions`, `cache`,
+  `efficiency`, `recommend`, and the harness commands render as accent
+  focus-bar headings (`▌ Title`) like the menu chrome, and the interactive
+  menu frames each run with the command heading so tiled command output
+  reads as one continuous surface.
+- The CLI now sends its requests through `HTTPS_PROXY`/`HTTP_PROXY` and trusts
+  the system certificate store. It requires Node 22.21 or later.
+- Signing in again revokes the key the old sign-in created. `aiand login
+  --force`, or yes to "Sign in again and replace it?", used to leave that key
+  valid with nothing on the machine able to revoke it. The revoke runs after
+  the new sign-in is stored and goes to where the old key was issued, so a
+  failed or cancelled sign-in keeps the old one. `--keep-remote` keeps the old
+  key valid. A pasted key is never revoked.
+- `aiand claude` and `aiand claude on` point Claude Code's auto-mode safety
+  checks at the fast model (`CLAUDE_CODE_AUTO_MODE_MODEL`) instead of the main
+  one. Each check sends about 30,000 input tokens, and on the main model the
+  checks cost 1.9 to 7 times the coding work in our tests. They also set
+  `CLAUDE_CODE_AUTO_MODE_SERVER=0`, so Claude Code runs the checks itself
+  rather than asking ai& for server-side checks it cannot provide; this keeps
+  auto mode working when Claude Code removes its fallback for them.
+- The README and the npm page link the CLI guide at
+  [docs.aiand.com/cli](https://docs.aiand.com/cli/), not the docs home page.
+- A source-build `npm ci` passes `--prefer-offline`, so a re-run reuses the
+  npm cache and still downloads anything the cache does not have.
+- `install.sh` reads the first `"version"` key in package.json without
+  spawning node, so a later `"version"` on the same line cannot win.
+- `install.ps1` runs the `aiand` launcher, and `aiand.cmd` only when
+  `OS` is `Windows_NT`, so the version check and the login offer work under
+  PowerShell on Linux.
 - Consistent empty-window contract (ticket #100): `harness compare` and
   `recommend` now both follow the honest-empty pattern — a window with no
   requests exits 0 with an explicit empty/insufficient result instead of
@@ -878,7 +586,6 @@ breaking changes while the command surface settles.
   but a warning naming the requested profile and the built-in-default
   fallback prints once per requested name on stderr (stdout `--json` stays
   parseable and unchanged).
-
 - Benchmark scenario pack expansion for `aiand harness`: three new scenario
   families — `multi-turn-refactor-long` (a six-turn refactor over a large
   stable file body), `long-file-read` (one very large read dominating the
@@ -949,67 +656,12 @@ breaking changes while the command surface settles.
   installs can wire the same agents without clobbering each other's entries.
   `AIAND_V2_SIDEBYSIDE=0` restores the production defaults (the test
   harnesses pin it); the block is deleted when the branch merges back.
-
 - `AIAND_BRANCH` names the branch to clone when `AIAND_SOURCE` is a git URL.
-
 - `install.sh` re-runs fetch remote changes when the script being run is the
   checkout being installed (`aiand update`'s rerun of the launcher's own
   `install.sh` on the source path) instead of rebuilding the old tree in
   place; running `install.sh` from inside any other checkout still installs
   that local source.
-
-- Hermes Agent is now wired like the rest: `aiand hermes on` ships a
-  dedicated `aiand` model-provider plugin under
-  `~/.hermes/plugins/model-providers/aiand`, adds a `providers.aiand` block
-  to `~/.hermes/config.yaml` (`base_url` carries `/v1`, because Hermes posts
-  to `${base_url}/chat/completions`), and writes the session key to
-  `~/.hermes/.env` (mode 0600) as `AIAND_HERMES_API_KEY`. The plugin carries
-  each model's published reasoning levels, so a user's picked level is clamped
-  to a set the model accepts and a level left unset sends no
-  `reasoning_effort`, leaving the model's own engine default
-  (`reasoning_effort_default`) to apply; reasoning switched off omits the
-  field entirely instead of sending a level the model does not publish (models
-  that do accept it still receive `none`). The model pin
-  comes from the live catalog; `--model <id>` switches it, and
-  `--model native` leaves the model section as it is. `off` removes exactly
-  what `on` added, puts a set-aside model and any set-aside `ANTHROPIC_*`
-  lines back, and leaves a provider block you repointed (`base_url` or
-  `key_env`) in place with a note. A `providers:` or `model:` key holding an
-  inline flow map or an anchor is no longer rewritten: those shapes refuse with
-  a by-hand hint instead of dropping the providers the value carried (or
-  leaving a duplicate block behind), and a wired home whose `providers:`
-  carries an anchor reads as on again, so a second `on` cannot splice a second
-  block. A multi-line quoted `.env` value is stripped whole by `off`, so no
-  part of it is left behind in your file and the key reads back in full. A
-  foreign `providers.aiand` block or a
-  legacy `custom_providers` entry named aiand is refused instead of
-  overwritten. `aiand hermes` with no verb opens that wiring: the install
-  hint is printed rather than run (it is not an npm install), and inherited
-  `ANTHROPIC_*` and `OPENAI_*` values are dropped so they cannot outrank
-  the files `on` wrote. `status`, `init --all`, logout, and rebake cover it
-  (#17, thanks @fenilmodi00).
-- `aiand run-agent hermes` launches Hermes on ai& for one session with
-  nothing written under the real `~/.hermes`. A throwaway `HERMES_HOME`
-  holds the same `aiand` provider plugin, a routing-only `config.yaml`, and
-  the key in the overlay `.env`. The child is started with
-  `--provider aiand --model <id>` (a launch always names a model, so
-  `--model native` is the usual catalog error). Your plugins, sessions, and
-  skills are linked back in; inherited `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`,
-  `OPENAI_API_KEY`, and `OPENAI_BASE_URL` are removed from the child;
-  `--provider`, `--model`, and `-m` after `--` are stripped. The overlay is
-  deleted when Hermes exits, and store shims that pointed at it are put back.
-  On Windows the state links back through junctions (a directory symlink
-  there needs Developer Mode), so a session's writes survive cleanup, and
-  the Hermes install hint names the PowerShell form of the same pinned
-  installer instead of a `curl | bash` line a Windows shell cannot run
-  (#17, thanks @fenilmodi00).
-- The ai& CLI landing page now lives in `site/` and is published to
-  GitHub Pages by `.github/workflows/pages.yml`. It shows four steps:
-  create an account in the console, redeem a promo code on the console's
-  billing page, install the CLI with npm, and run `aiand code`, with a switch
-  that swaps in `aiand codex` or `aiand claude`.
-
-
 - `aiand cache` reports the prompt-cache hit rate, the miss rate, what was
   spent, and what the cache saved — grouped by agent, by model, or by key
   (`--by agent|model|key`). Every number comes from the gateway's own
@@ -1019,7 +671,6 @@ breaking changes while the command surface settles.
   attributed to an agent by the API key the CLI baked into that agent's
   config; a key the CLI cannot place is reported as `unknown` rather than
   guessed, and `--attribute <agent>=<masked-key>` labels one by hand.
-
 - `aiand harness` compares agent request *shapes* on cache behavior. A
   harness here is a request shape, not a prompt, and each harness speaks its
   own wire dialect: Claude Code posts to `/v1/messages` (Anthropic), Oh My Pi
@@ -1031,13 +682,9 @@ breaking changes while the command surface settles.
   or a reordering that *moves* as the conversation grows all miss at 0%.
   `--sweep-models` runs every shape against every model in the catalog; the
   shapes run in parallel, each with its own cache salt.
-
 - The CLI now remembers which key each wired agent uses, so `aiand cache`
   can attribute the gateway's per-request rows to it. The map is written
   when an agent is wired and dropped when it is unwired.
-
-### Changed
-
 - `aiand update` upgrades this install in place. The update check is always a
   live registry read (`--check` reports and exits 1 when a newer version
   exists, `--json` prints `{current, latest, installKind, upToDate}`), an
@@ -1049,7 +696,6 @@ breaking changes while the command surface settles.
   version is re-verified through the launched entry, so a PATH shadow is
   reported instead of passing silently. `aiand upgrade` is an alias.
   `AIAND_AUTO_UPDATE=0` silences the background update notice only.
-
 - `aiand <agent> --session` and `aiand <agent> on --session` run the agent on
   ai& for one session without writing any persistent config: the adapter's own
   `sessionLaunch` wiring (the one `aiand run-agent <agent>` uses) layers a
@@ -1057,7 +703,6 @@ breaking changes while the command surface settles.
   launcher removes it after the child exits. `--session --json` reports
   `{agent, mode:"session", model, files:[]}`. Adapters that cannot launch a
   session (`copilot-app`, the desktop app) refuse with a clear error.
-
 - A terminal-native interactive surface. `aiand` with no command now prints
   a home screen — brand header and version, then titled sections of
   `command  description` rows aligned on one column — in place of the old
@@ -1073,17 +718,14 @@ breaking changes while the command surface settles.
   two-palette brand theme (dark by default, light when `AIAND_THEME=light` or
   the terminal reports a light background), drawn as truecolor with an
   xterm-256 fallback and plain text under `NO_COLOR`.
-
 - Recolored the interactive surface to the ai& brand: the palette is the ai&
   red gradient `#EF2635` / `#E2091A` / `#C70007` over warm neutrals.
   Menu chrome (focus bars, search highlights, section titles) now uses the
   gradient's bright stop, the wordmark and splash title keep the deep red,
   and the focused-row fill is ai& graphite `#303037` (light: `#EEE9E9`).
   Unused palette roles and the unused six-color chart ramp were removed.
-
 - `aiand welcome` renders the animated wordmark; `aiand banner` stays as an
   alias for it.
-
 - The installer's two install paths are now named by what they install rather
   than by a speed ranking: the published path installs the npm release
   tarball with its already-built `dist/`, and the source path installs your own
@@ -1093,7 +735,6 @@ breaking changes while the command surface settles.
   printing `AIAND_FAST_INSTALL is deprecated; use AIAND_PUBLISHED_RELEASE.` —
   keep using it if you must, but move to the new name. Only vocabulary and the
   path names change: every staging, ownership, and launcher guard is unchanged.
-
 - `aiand` with no command on a terminal now opens an interactive menu instead
   of printing the static home screen: a search bar that filters agents and
   commands as you type, grouped rows each showing its command and a state
@@ -1120,40 +761,266 @@ breaking changes while the command surface settles.
   and the tagline drops the brand name the wordmark already carries.
 - The menu row builders moved to `src/cli/menu-items.ts`, so the row shape is
   testable without a terminal.
-
-
-- `aiand claude on` picks DeepSeek V4.1 Flash for Claude Code's fast slot,
-  then Gemma 4. ai& retires DeepSeek V4 Flash, Kimi K2.7 Code and GLM 5.2 on
-  2026-10-27 0:00 JST; Kimi K2.7 Code also leaves the main-slot preference.
-  A setup written before that date still names DeepSeek V4 Flash: run
-  `aiand claude on` again.
-- `--base-url` and `aiand config set api-url|auth-url` refuse `/v1`-suffixed
-  URLs (adapters append `/v1` themselves, so a suffixed URL would double to
-  `/v1/v1`) and base URLs carrying a query or fragment, at set time. An
-  unreachable gateway no longer echoes credentials embedded in the base URL.
-  (#34, thanks @fenilmodi00)
-- The installers now run the installed `aiand --version` for you and print
-  the version, instead of asking you to run it.
-- At the end of an install, the installers ask "Log in to ai& now?" and run
-  `aiand login` on yes. They skip the question when you are already signed
-  in, when `AIAND_API_KEY` is set, in CI, or without a terminal. With
-  `AIAND_API_KEY` set they say the key is in use instead of suggesting
-  `aiand login`. A failed or cancelled login never undoes the install:
-  Ctrl+C at the question counts as no, and Ctrl+C during the login stops
-  only the login (`install.sh` still exits 0).
-
 - The adapter contract gained an optional `bakedKey()`, implemented by the
   Claude Code, OpenCode, Pi, Oh My Pi, GitHub Copilot CLI and GitHub Copilot
   app adapters. It reads the key from the agent's own config — the same
   file `on` writes — so agents wired before this change are still
   attributed. An adapter that bakes no key of its own (Codex asks
   `aiand key export`) does not implement it.
-
 - `--harness` is now repeatable, so two shapes can be compared directly:
   `aiand harness --harness claude-code --harness omp`.
 
+### Changed (UX)
+
+- Comparisons at small n no longer crown a point-estimate winner: when 95%
+  intervals overlap the footer says `tied — not distinguishable yet (…)`,
+  and `recommend` withholds the monthly-savings claim.
+- The interactive menu no longer flattens all 31 commands into one
+  undifferentiated section: rows are grouped by activity — Ask & run, Spend &
+  reports, Harness & compare, Setup & health, Account — between the agent
+  sections and Quit, with search still matching group names, command names,
+  and aliases. Pure metadata: no command module loads at menu draw.
+- Flag-only commands (the whole read-only report/diagnostics surface:
+  `usage`, `sessions`, `overview`, `report`, `wrapped`, `efficiency`,
+  `cache`, `logs`, `heatmap`, `dashboard`, `forecast`, `recommend`,
+  `status`, `doctor`, `whoami`, `orgs`, `models`, `login`, `logout`,
+  `update`, and the harness stats/compare/matrix/import subcommands) now
+  reject a stray positional word as a usage error instead of silently
+  ignoring it. `aiand harness bogus` used to swallow the word and start a
+  multi-minute benchmark.
+- A typo in `aiand harness --scenario <id>` or `--harness <id>` now reports
+  as a usage error with the known ids and a "Did you mean …?" suggestion,
+  instead of the "please report this bug" banner with a stack trace and exit
+  code 70. Same for a non-positive `report --top`.
+- An unknown help topic now gets the same nearest-match suggestion as an
+  unknown command: `aiand help usgae` points at `aiand help usage`.
+- Pressing Enter on an empty required prompt (the pasted-key sign-in flow)
+  is now a usage error naming the `AIAND_API_KEY` alternative, instead of
+  exiting with the not-signed-in code — a CI script can no longer mistake
+  "you typed nothing" for "logged out". The non-TTY end-of-input message
+  names the env key too.
+- The `compare` summary no longer advertises verbs the dispatcher rejects:
+  it now reads "add tasks, list, validate".
+
 ### Fixed
 
+- The installer's post-install check and login offer address the launcher by
+  its install name: a side-by-side preview install (`aiand-v2`) exited 1 after
+  successfully installing because `install.sh` verified a hardcoded `aiand`
+  launcher that did not exist.
+- `aiand dashboard` no longer hangs for seconds at launch and on every
+  period/scope keypress: the local-usage correlation pass re-parsed every
+  omp/pi session file (hundreds of MB on a real history) synchronously on
+  each refresh whenever any gateway row was still unresolved. The TUI now
+  paints immediately, runs that pass once in the background (batched, so
+  keys stay live), and folds the refined harness labels in when it lands;
+  unchanged session files are cached by mtime and never re-parsed.
+- `aiand dashboard`/`overview` no longer render shared harness rows as 100%
+  when the store has already refined them: the correlation pass returns
+  refinement labels only, so a persisted `attributed_agent` is never
+  overwritten with the weaker base label while other rows stay pending.
+- Subagent traffic now correlates: pi-mono session `model_usage` side-lines
+  (provider/model/usage/timestamp at the top level, no `message` key) are
+  parsed as local usage records for aiand, refining the gateway rows that
+  previously stayed NULL forever.
+- `aiand omp` no longer reports `off` and can no longer re-bake a stale key
+  when the user's `models.yml` contains the flow mappings omp itself writes
+  (e.g. a provider's `cost: {input: 0, output: 0, …}` map): the omp YAML
+  reader rejected flow mappings, so `aiand omp status`/`probe`/`bakedKey`
+  silently failed and `aiand omp on` / key rotation could not swap a
+  deactivated key into the wired provider block. Flow mappings now parse; run
+  `aiand omp on --force` (or `aiand login` to trigger a rotation) to refresh a
+  stale `api_key has been deactivated` key into the active session key.
+- Dashboard attribution no longer seals a stale key-map label: a unique
+  local-usage match now overrides the key holders ∩ wire-dialect label on
+  specific-base rows, so traffic misattributed when a harness's data lived
+  outside the swept homes (e.g. omp in WSL, invisible to the key sweep, left
+  the map with no `omp` entry) heals on the next correlation pass instead of
+  staying wrong until `store reset`. Rows with no matching local record
+  still settle to their base label, and `correlationsPending` still reaches
+  false (materialized sessions re-bake once, rules version 3 → 4).
+- `aiand dashboard`/`overview`/`sessions` no longer label an omp-only session
+  `shared` because an auxiliary request in it never reached the harness's
+  local usage log: omp's auto-title generation (gateway-logged as a 499 when
+  the client tears the stream down) and idle recap turn are ephemeral turns
+  that write no session JSONL, so those gateway rows had no local record to
+  match. A row with no local evidence now inherits its time-gap session's sole
+  evidence-backed harness when a same-dialect sibling carries one; the request
+  row itself keeps its honest NULL, so late local evidence still heals it.
+  Sessions with two genuinely different harnesses still report `shared`
+  (sessionization rules version 4 → 5).
+- Harness attribution now uses the gateway's per-request `endpoint` (the wire
+  dialect: `/v1/messages`, `/v1/responses`, `/v1/chat/completions`), so
+  Claude Code and Codex traffic on a key shared with other agents is
+  attributed precisely instead of collapsing to `shared`. Same-dialect
+  agents sharing one key (e.g. omp and pi) still honestly share, and rows
+  synced before this change keep the old label until re-served.
+- Harness attribution heals late local evidence: the correlation pass used to
+  attempt each request row exactly once, and the attempt cursor then sealed
+  any row it could not resolve. Agents buffer their session files, so a
+  request whose local usage record landed on disk seconds after the pass ran
+  (a live store showed 1,174 such rows attributed to `shared` while every
+  one had a matching omp record) stayed wrong forever — re-syncing or
+  resetting the store did not help, the same race re-sealed new rows.
+  Unresolved rows are now re-attempted on every pass and healed as soon as
+  their record appears; the cursor bounds per-pass work, not a row's
+  lifetime.
+- `correlationsPending` can actually reach false now: it counted every row
+  with a NULL `attributed_agent`, but rows resolved to a specific base
+  label (claude, codex, …) never get a local record and so kept the gate
+  open forever — every report build re-parsed all agent session files for
+  no new information. A row now settles into the column the moment it
+  resolves (unique local match or specific base label); only genuinely
+  unresolved rows keep counting, so the heal-on-late-evidence path is
+  unchanged and the sessions fingerprint re-bakes on settle.
+- Session-launched agents (`aiand <agent> --session`, `aiand run-agent`)
+  now record their key→agent mapping at launch, so the gateway's request
+  rows land under the agent's harness in `dashboard`, `usage`, and
+  `harness stats`. Before, a session launch ran on the CLI's own session
+  key without recording a mapping; the sync sweep labeled that key
+  `aiand-cli`, and every request the agent made was attributed to
+  aiand-cli instead of the agent (observed: an omp session's glm-5.3
+  traffic counted under aiand-cli). The persistent `on` path already
+  recorded it; the session path now does too. Existing machines repair
+  themselves at the next session launch, or once per agent with
+  `aiand <agent> on`; past rows re-label instantly because attribution
+  is a read-time key lookup, not a stored column.
+- Interactive prompts no longer vanish under the menu spinner: when the
+  interactive menu runs `login` or `logout` (or any command that asks a
+  question) behind its animated spinner, the question was erased within
+  80ms by the spinner's line redraw and the screen showed a hung
+  "Working..." loader until Enter was pressed blind. The spinner now
+  pauses its frames for the whole lifetime of an interactive read —
+  `confirm`, pasted-key input, and the org picker — clears its line in
+  place, shows the cursor, and resumes animating only after the answer.
+- Picking a command in the interactive menu no longer prints its title
+  twice — the `▌` heading owns the command title and the spinner below
+  it now shows a generic "Working..." instead of repeating the summary
+  text.
+- bare `aiand key` now says what the command is for and gives a
+  copy-pasteable example (`aiand key export`) instead of a bare verb list
+- `harness stats`, `harness compare`, and `harness matrix` made the cost of
+  mixed-model sessions visible (OBS-LT-4): these sessions are excluded from
+  every per-harness/per-pair row by design, but the only trace was a footer
+  count, so harness totals didn't visibly reconcile with `usage`. The footer
+  now also shows the excluded sessions' gateway-billed spend — session and
+  request counts, token sums, and cost with the same provenance as pair
+  costs, never folded into any row. `--json` carries it under
+  `excludedMixedSpend` (one shared definition in `src/obs/pair-stats.ts` /
+  `src/obs/harness-stats.ts`); no line prints when nothing was excluded.
+- `harness latency` / `harness duel` flag UX: an unknown layout in
+  `--pair harness=...` (the natural first guess `harness=default` included)
+  now names every valid layout AND suggests omitting `harness=`
+  (`--pair model=<model>`) to use the default layout `omp` — which is now a
+  supported shorthand. Both commands' `--help` list every valid layout, and
+  `harness duel --help` names `--turns-cap` as the flag that limits replayed
+  turns (there is no `--turns`). `harness duel` reports ALL unmet argument
+  requirements (shape source conflict, pair count) in one error instead of
+  one at a time.
+- `aiand run`/`aiand chat` traffic on a machine with no agents wired showed
+  as `unknown` everywhere: `agent-keys.json` was empty, so nothing identified
+  the CLI's own key. The store sync now self-records the key the CLI
+  authenticates with as a first-class `aiand-cli` entry (same local sweep
+  seam as the adapter native-key sweep — runs even when the gateway is
+  unreachable), so `aiand sessions`, dashboard "By harness", `wrapped`,
+  `overview`, harness stats, and `aiand doctor`'s agent-keys check reflect
+  CLI-own traffic. Agents wired with the same key keep their label (the self
+  entry is a fallback, not a claim); a foreign key the CLI never presented
+  still stays `unknown`.
+- Live-gateway sandbox testing of every command on this branch surfaced
+  defects, now fixed and regression-tested.
+  `usage --vs-list` showed `usd 0.000000` billed for models the bundled
+  list-price snapshot does not price: the billed accumulator lived inside the
+  priced-row branch, so gateway-billed cost was silently dropped for unpriced
+  models (the plain `usage` report showed the real total). Billed now
+  accumulates for every row; equivalent/savings stay `unpriced`-honest. And
+  the note "run any catalog-reading command once to cache it" never came
+  true: `aiand models` and `aiand cache` fetched the catalog but never wrote
+  the 6h `model-catalog.json` cache the offline readers (report/overview
+  savings) price from. Both commands now persist the cache on fetch.
+- Harness attribution showed `unknown` for traffic an agent sent with a key
+  the CLI never baked — most visibly omp running on its own OMP
+  authentication (`aiand harness compare`, dashboard, sessions, usage, and
+  OTel export all ride the same key map). Adapters now expose
+  `nativeAiandKeys` (omp's `agent.db` `aiand` credentials; OpenCode/Pi
+  providers hand-pointed at the gateway; Claude Code settings env blocks
+  pointing at the gateway; Codex `config.toml` gateway providers via
+  `env_key`/`experimental_bearer_token`/`requires_openai_auth`; Copilot CLI
+  `providers.json` gateway rows; Hermes `config.yaml` gateway blocks with
+  their `key_env` var), and every store sync sweeps them into
+  `agent-keys.json` before anything else — purely local, so it runs even
+  when the gateway is unreachable. Never swept, deliberately:
+  Claude/Codex OAuth credential stores (OAuth tokens are not ai& keys),
+  `apiKeyHelper`/`auth.command` scripts (no arbitrary execution at sync
+  time), plain env vars outside the config that names them, and the Copilot
+  app's user-made provider rows (their keys live in the OS keychain, and
+  the only in-db readable shape is byte-identical to what `on` writes —
+  `aiand cache --attribute copilot-app=<masked-key>` labels those by hand).
+  A key the agent has since rotated away with no trace left anywhere stays
+  `unknown` (never guessed); the materialized `sessions` table
+  re-attributes when the key map changes.
+- Re-login/key rotation stranded pre-rotation history as `unknown`: rebake
+  swapped the new key into agent configs but never recorded it in
+  `agent-keys.json`. Rebake now records the swapped-in key, so rows under
+  both the old and new keys keep their harness label.
+- `aiand dashboard` TUI looked dead on real stores: every period key, arrow,
+  `p`, and `r` froze the frame for seconds (only `c` and `q`, which skip the
+  data refresh, responded). Root cause: harness attribution re-read
+  `agent-keys.json` once per request row (~2.7s for a 2799-row store on
+  Windows). The report build now reads the key map once and resolves every
+  row from memory, so a refresh is ~350ms and all keys respond.
+- `aiand dashboard` TUI left the previous frame's tail rows on screen when a
+  keypress produced a shorter frame (`p` scope changes, `c` compare toggle):
+  the in-place redraw never cleared below the frame, so the old footer and
+  stale panels stayed visible and actions looked like they ran twice. The
+  redraw now blanks the orphaned rows, mirroring the prompt renderer.
+- `est. saved` showed $0.0000 despite a high cache-hit rate: savings priced
+  cached tokens at the cheap cached rate, which is exactly what the gateway
+  already bills, so the counterfactual equaled the billed cost. Savings now
+  price all input at the full rate (what a cold cache would have cost),
+  matching the `aiand cache` formula.
+- `--model <id>` now puts every model slot of Claude Code on that model:
+  Opus, Sonnet, Fable, subagent, and the fast `haiku` slot that session
+  titles and other background calls use. Before, `aiand claude on --model`
+  left the fast slot on `deepseek-ai/deepseek-v4.1-flash-1017`, and
+  `aiand claude --model <id>` (one session) left every slot but the startup
+  model on `moonshotai/kimi-k3`, so auto mode's safety checks went there.
+  A model set with `aiand config set model` counts as a choice too, and a
+  later `on` follows a new one. `aiand claude` sessions keep a model given
+  to `on --model`. `on` also writes `CLAUDE_CODE_AUTO_MODE_MODEL` (the
+  safety checks' model, Claude Code 2.1.302+) to the chosen model, so one
+  exported in the shell cannot send the checks elsewhere. A re-run of
+  `aiand claude on` moves a fast slot that 0.8.0 left behind.
+- `aiand claude --model <id>` and `aiand run-agent <agent> -- --model <id>`
+  run the session on that model. Before, Copilot, Pi, omp and Hermes dropped
+  a `--model` given after `--` and started on the default model, and Claude
+  Code got the flag while its other slots stayed on the default. A model ai&
+  does not serve is now refused instead of replaced.
+- `aiand <agent> --model <id>` on an agent that is not set up yet sets it up
+  on that model, not on the default, so a later plain launch stays on it.
+- OpenCode: `aiand opencode on` and one-session launches set `small_model`
+  to the chosen model, so titles and summaries stay on it instead of a model
+  OpenCode picks; `off` hands back a `small_model` of your own. A `--model`
+  or `-m` in `aiand opencode`'s arguments is no longer overridden.
+- `store`, `efficiency`, and `mcp` no longer fall back to the default profile silently when an explicit unknown `--profile` (or `AIAND_PROFILE`) is set (OBS-BF-17, #103): the same stderr warning `config`/`cache` emit (naming the requested profile and the fallback) now fires, while `--json` stdout stays parseable.
+- A gateway cutting a response body mid-stream during `run`/`chat` no longer
+  crashes with a raw undici stack and exit 70 (OBS-BF-18, #104): the
+  connection loss is now classified as a retryable unreachable-gateway
+  failure (human message + retry hint, exit 1); Ctrl-C mid-stream still
+  exits 130.
+- Budget pacing in `aiand report` / `aiand overview` no longer projects a
+  month from a narrow window (ticket #97): when the requested window starts
+  after the current month began (e.g. `--last 1d`), the budget section now
+  loads month-span rows for its month-to-date math while `meta.range` and
+  every other section keep the requested window.
+- `aiand usage --verify --since/--until` now honors the requested window on
+  the remote side (OBS-BF-11, #96): gateway log rows carry `created_at` in
+  the wire format (`2026-10-26 05:02:11.844519+00`), which bare string
+  comparison ordered before every ISO bound, so windowed verifies compared
+  the local store against remote 0/0/0. Remote rows are now filtered by
+  instant, matching the store's #86 normalized window comparisons; the
+  exit-code contract (0 match, 1 mismatch with per-metric deltas) is
+  unchanged.
 - Incremental store sync (OBS-BF-9, #94): the gateway's `/logs` is newest-first
   and `after` is an exclusive floor, so an incremental sync that started at
   `watermark − 5min` could never page forward to rows newer than the watermark —
@@ -1184,7 +1051,6 @@ breaking changes while the command surface settles.
   epsilon-negative accumulation (overview, wrapped, report, heatmap
   legends) — negatives that round to zero render as plain zero at the
   formatting boundary.
-
 - Store sync cursor: the outer sync loop advanced by `created_at` alone,
   so any timestamp owning more rows than one page re-served the identical
   page forever — a live sync captured 103 of 832 rows and never finished
@@ -1212,7 +1078,6 @@ breaking changes while the command surface settles.
   fallbacks, which used to render a report for an unsafe name. Inverted
   windows (`--since` after `--until`) are rejected on every window-filtered
   command instead of quietly reporting nothing.
-
 - `usage --include-imported` no longer splits one currency into two lanes in
   the grand total (`usd` + `USD`): gateway rows carry lowercase currency
   codes while the ccusage import stored `USD`. Currency keys are now
@@ -1269,7 +1134,6 @@ breaking changes while the command surface settles.
   `SIGPIPE` semantics; a regression test spawns the built CLI, destroys the
   pipe's read end immediately, and asserts a clean exit with no `EPIPE` on
   stderr.
-
 - The first-run splash's version label no longer renders as two separate color
   runs on a colored terminal: `paint()` coalesced only the cells after a run's
   first character, so `v0.6.0` was emitted as `ESC[38;5;246mv ESC[39m0.6.0 ESC[39m`
@@ -1277,23 +1141,19 @@ breaking changes while the command surface settles.
   consumer matching the styled output (tests, log capture, screen diff) read a
   split label; a contiguous same-color run is now one opening sequence, the
   run's characters, then one reset.
-
 - `aiand update --yes` is accepted again. The flag was documented in the help
   and read by the command, but never declared in the argument parser, so
   `aiand update --yes` failed with "Unknown option '--yes'" before reaching the
   confirmation or the install child.
-
 - `aiand --json <agent> --session` now reports the session instead of printing
   nothing. The bare open path parsed the global flags from the wrong position,
   so `--json` was dropped and no machine-readable output was produced, while
   the equivalent `<agent> on --session --json` always worked.
-
 - The prebuilt-release install path no longer requires `curl`. It fetched the
   release manifest and tarball with `curl -fsSL`, so on systems without curl
   (Alpine and other minimal images ship busybox `wget`) the install silently
   built from source instead, costing ~30 seconds. It now fetches with
   `node`, which the installer already requires.
-
 - The test suite now runs on Windows. Stub agent binaries were written as
   extensionless `#!/bin/sh` files, which Windows `spawn` cannot execute, so
   every stub-driven test failed with `127` instead of the stub's exit code;
@@ -1302,16 +1162,839 @@ breaking changes while the command surface settles.
   now guarded, since NTFS cannot express owner-only bits, and the theme tests
   no longer inherit a host's `COLORTERM` when they assert the xterm-256
   fallback.
-
 - Claude Code sessions no longer silently run on the user's own Anthropic
   subscription when a `CLAUDE_CODE_OAUTH_TOKEN` is exported in the shell: the
   token is now blanked in the wiring `on` writes and deleted from the child
   env of every launcher path, so an aiand session cannot bill a plan the
   command did not route.
-
 - Selecting `key` in the menu no longer fails with "No verb given. Verbs:
   export" — `key` takes a verb, so the menu now runs `aiand key export`.
+- `aiand harness stats` now counts errors the way `harness matrix` and
+  `compare` already do — non-2xx statuses excluding 429 (a rate limit is the
+  gateway's pressure, not the pair's quality); null statuses count as
+  unknown, not errors. Both surfaces share one error-count helper, so the
+  same rows yield the same errorRate everywhere; the stats label says
+  `non-2xx excluding 429 / requests`. (#88)
 
+### Removed
+
+- The adapter-side envelope capture API (`src/agents/envelope-capture.ts`,
+  `createEnvelopeRecorder`, `ENVELOPE_CAPTURE_CONFIG_KEY`, the
+  `envelopeCapture` config.json flag, and the `AIAND_ENVELOPE_CAPTURE` env
+  toggle). It was never wired into any adapter, so no behavior changes; the
+  envelope schema (`aiand-envelope/v1`), the `envelopes` store table, and the
+  efficiency reports built on them are unchanged.
+- The ccusage JSON import lane (`usage --import-ccusage <file|->`, the
+  `--include-imported` combined grand total, the import adapter module, the
+  imported-usage report section, and the migration 0003 store tables
+  (`ccusage_imports` + `imported_usage`, left in place on existing stores and
+  no longer read or written)). It imported a competitor tool's price-table-derived cost
+  estimates as a parallel cost lane — the gateway's own logs are the single
+  cost source.
+- The `aiand mcp` stdio MCP server (#70) with its four tools (`usage_stats`,
+  `session_stats`, `harness_compare`, `spend_check`), the `mcp.realProjectNames`
+  config key, and the `src/mcp/` server module. The CLI `--json` commands are
+  the programmatic surface; agents were the only consumer of the MCP layer,
+  and the local store + `--json` output already serve that need directly.
+- The vendor list-price comparison (`usage --vs-list`, the bundled vendor
+  list-price snapshot module, the list-prices comparison module, the
+  `--prices-file` flag, and the `config set prices.<model>.input|output|cacheRead`
+  overrides with their sanitizer). It compared spend against third-party list
+  prices the user never pays — the gateway catalog is the only pricing source.
+- The peak/off-peak cost split (`usage --sections peak` and
+  `usage --show-windows`) along with its window-table module and provenance
+  entries. The aiand gateway does not bill by peak/off-peak windows, so the
+  split was an estimate over a billing model the provider doesn't use.
+- `aiand forecast --model v2` and `aiand forecast bench` (the calibrated
+  Gamma-process Monte Carlo forecaster and its scoring bench, #77): the v2
+  model was built for a quota-window billing shape ai& doesn't have — it is
+  prepaid with a monthly budget, and the question "will I hit my budget?" is
+  what the v1 linear burn-rate extrapolation already answers. `aiand forecast`
+  now runs only the v1 burn-rate model; `overview`, `report`, and `cache`
+  are unchanged. Model docs: `docs/observability/forecast-v2.md`
+  is removed with it.
+- The adapter-envelope gateway-echo scaffolding: the `x-aiand-envelope` header
+  constant and its serializer from `src/agents/envelope.ts`. Nothing sent the
+  header and nothing read it back — the gateway does not forward or echo
+  envelopes (gateway ask #2 remains open in ticket #80). Locally captured
+  envelopes (the store table and the `efficiency` reports
+  built on them) are the only envelope path and are unchanged.
+- `aiand harness duel` and `aiand harness latency` (ticket #119): both ran
+  live billed gateway requests for personal A/B comparisons. The store-backed
+  `harness stats` / `compare` / `matrix` answer the same harness×model
+  question from real traffic, and the synthetic `harness` benchmark remains
+  the offline performance path.
+- The `claude_code.*` OTel metric family (`claude_code.session.count`,
+  `claude_code.cost.usage`, `claude_code.token.usage` with the
+  input-excludes-cache conversion) from `aiand export` — dashboard-
+  compatibility cargo named after one vendor's agent on a CLI that ships
+  eight. The vendor-neutral `gen_ai.*` family is the sole export surface and
+  now carries cost (`gen_ai.client.inference.usage.cost`) and per-model token
+  usage itself; the constant-0 `cache_write`/`reasoning`/`cacheCreation`
+  series it emitted despite the store having no such data are gone too
+  (emit-only-where-data-exists). The gateway has no cache-write split or
+  reasoning-token column, so those series were zeros reading as real
+  measurements.
+
+## [0.8.0] - 2026-11-20
+
+### Added
+
+- Windows now keeps your key in an OS-backed store: Windows DPAPI, through
+  the Windows PowerShell that ships with Windows. The key is encrypted for
+  your Windows account, so another account on the machine, or a copy of the
+  file taken elsewhere, cannot decrypt it. `aiand status` shows
+  `storage  Windows DPAPI`. A key you signed in with before moves into DPAPI
+  the next time the CLI reads it, and the encrypted-file copy is removed.
+  Where PowerShell cannot reach DPAPI (Constrained Language Mode on a
+  locked-down machine, or PowerShell missing), the key stays in the
+  encrypted file as before, and `aiand status` says why in one line.
+  `AIAND_KEY_STORAGE=dpapi` pins it; `AIAND_KEY_STORAGE=file` keeps the old
+  behaviour.
+- `aiand logout --all` hands a shared or loaner machine back. It revokes every
+  key `login` created (best-effort, one profile at a time), removes ai& from
+  every coding agent whichever profile wired it and checks no key is left in
+  their configs, deletes session files a crashed `aiand run-agent` left in the
+  temp directory, deletes every stored key (OS keychain included) and
+  `~/.config/aiand` with its snapshots. It asks first, or takes `--force` off
+  a terminal; `--keep-remote` skips revoking; `--json` reports each step.
+  A profile whose key it could not revoke keeps its sign-in (its refresh
+  token is the only thing that can revoke the key), and so does the config
+  directory; run it again later, or add `--keep-remote` to forget the key
+  here and revoke it in the console. Pasted keys, which the CLI cannot
+  revoke, are listed with the console page that can. It exits 1 after listing anything it could not remove, and only
+  deletes a config directory inside your home directory unless
+  `AIAND_WIPE_OUTSIDE_HOME=1`. It also refuses a directory that does not
+  prove it is aiand's: aiand writes a `.aiand-config` marker file into its
+  config directory on its first write there, only while the directory is new,
+  empty or holds nothing but aiand's own files, and the marker carries a
+  random id that `config.json` records too (an older install passes while its
+  `config.json` has aiand's `profile` and `profiles`). An empty marker, or one
+  copied from another install, vouches for nothing, so an `AIAND_CONFIG_DIR`
+  pointed at `~/.docker` or a project folder is left whole, even after a cache
+  write into it. Sign-in files (`credentials.json`, `secret-store.*`) need
+  that `config.json` beside them: the marker alone vouches only for caches,
+  so a directory holding another tool's `credentials.json` and no
+  `config.json` is refused, and says so. If those files are aiand's (a
+  sign-in interrupted before `config.json` was written), it says to run
+  `aiand logout --profile <name>` there first, which revokes each key where
+  it was issued, since a new `aiand login` would replace the sign-in without
+  revoking it. Where there is no such `config.json`, or one whose id does not
+  match the marker's, a sign-in that records no issuer is sent nowhere:
+  `aiand logout` keeps it and points to the console and `--keep-remote`, and
+  its first use, `aiand config set` and `aiand config use` neither pin nor
+  bake it. aiand never rewrites a marker that names an id, so a later command
+  cannot make a mismatched pair agree; the refusal says to delete the marker
+  before signing in again. A `locks` or `snapshots` folder
+  keeps whatever aiand did not put in it. The directory is checked again
+  right before anything is deleted from it, so one swapped for a link while a
+  slow revoke ran is refused. Session folders it could not delete, a temp
+  directory it could not read, and `aiand-*` folders from an older aiand that
+  still hold a key (no marker, so it deletes nothing on a guess) are reported
+  and make the run incomplete, and so is a session folder kept because a
+  Hermes shim still points into it (the report says to reinstall Hermes
+  rather than delete it by hand), as is a revoke the server answered with an HTTP
+  status, which `--json` gives as `http_status`. An agent it could not clean up (its
+  `off` failed, or its config still holds a key) keeps its snapshot and the
+  record `on` left, so running `aiand <agent> off` once the file is fixed
+  still strips exactly what was added. See "Shared and loaner computers" in
+  the README.
+- `aiand run-agent` marks each throwaway session dir it creates, and deletes
+  day-old ones whose session is gone before starting a new one; `logout` and
+  `logout --all` delete them regardless of age. A session killed before its
+  cleanup no longer leaves its key in the temp directory indefinitely.
+- `install.sh uninstall --purge` and `install.ps1 uninstall --purge` wipe a
+  shared or loaner machine. Before deleting anything, they run
+  `aiand logout --all --force --json`, or `aiand logout --profile <name>
+  --json` for each profile on a CLI without `--all`. That revokes the keys
+  this CLI minted and strips every agent. They then delete the config
+  directory along with the CLI. They go on only when every key the CLI minted
+  reports revoked (a pasted key is not theirs to revoke); an older CLI exits 0
+  after a failed revoke, so the installer reads the JSON, not the exit code.
+  Otherwise nothing is deleted by the installer, and `--force --purge` skips
+  sign-out and says the keys were not revoked. The config directory must sit strictly
+  inside HOME, be named `aiand`, and on Windows have no link or junction
+  between it and HOME.
+- Jouzu, Shisa AI's terminal coding harness built on Pi, is supported:
+  `aiand jouzu` (or `aiand jz`), `aiand jouzu on|off|status`,
+  `aiand restore jouzu --force`, and key rotation. `on` writes Pi's
+  provider, credential and defaults into Jouzu's own config dir
+  (`$JOUZU_HOME/agent`, or Jouzu's per-platform default), never into Pi's.
+  `aiand jouzu` opens Jouzu on the ai& model it wired, because Jouzu's
+  last-used model would otherwise decide, unless the arguments pick a
+  model or session (`--model`, `--continue`, `--fork` and the like) or run
+  a Jouzu or Pi command (`doctor`, `list`, `install` and the like). There is
+  no `run-agent jouzu`.
+
+### Changed
+
+- The README is reorganised around a three-step quick start, a short Claude Code
+  section, a table of supported agents, per-OS key storage, troubleshooting,
+  and a "Shared and loaner computers" section; per-agent detail moved to
+  `docs/agents.md`. A Japanese README, `README.ja.md`, ships alongside it.
+- `aiand status` now calls the fallback tier `file (owner-only, not encrypted at
+  rest)` instead of `encrypted file`: its decryption key sits beside the
+  ciphertext, so it is worth no more than an owner-only file. `aiand status
+  --json` keeps the label in `storage` and adds `storage_tier` with the stable
+  tier id (`keychain`, `dpapi`, `file` or `plaintext`). The README documents
+  `AIAND_SECRET_STORE_MASTER_KEY`, which supplies that key from elsewhere.
+  The label follows the facts: with `AIAND_SECRET_STORE_MASTER_KEY` set it
+  reads `file (encrypted; key held outside the config folder)`, and on
+  Windows, where `icacls` could not restrict the files to you, it says
+  `not owner-only`. `storage_tier` does not change.
+- `aiand hermes on` sets your own `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`
+  and `ANTHROPIC_TOKEN` entries aside by commenting them out where they sit
+  in `~/.hermes/.env` (`# aiand set aside: …`), instead of copying them in
+  plaintext into `~/.config/aiand/snapshots/hermes`. `off` uncomments them.
+  A multi-line quoted value now comes back whole; before, only its first line
+  was handed back. Entries an earlier version recorded are still handed back
+  by `off`, which then deletes the record. A `#` comment containing an
+  apostrophe no longer hides the next `.env` entry from that check, and a
+  launcher session's throwaway home never carries a set-aside entry.
+- `install.sh` and `install.ps1` install the latest release instead of
+  building the main branch. They download the `@aiand/cli` tarball from npm
+  and install it only when it matches both npm's sha512 and the
+  `SHA256SUMS` attached to the GitHub release. With no release reachable,
+  or with GitHub rate-limiting the download, they stop and change nothing,
+  with no fallback to `main`. `AIAND_VERSION=x.y.z` installs that release,
+  including one older than the installed version: without it, they refuse a
+  latest release that is older than what is installed, and they refuse
+  anything older than 0.8.0, the first release published with a
+  `SHA256SUMS`, even when pinned. `AIAND_SOURCE` still builds a checkout or
+  clone, labelled as an unverified development build. A release install
+  needs only Node.js, not git or npm. Releases before this one have no
+  `SHA256SUMS`, so the installers cannot install them. These checks cover
+  the tarball, not the installer script: a fresh install runs the script as
+  fetched from GitHub alone, before anything is verified, so that first
+  step is trusted on first use. Later `update` runs run the copy of the
+  script that shipped in an earlier verified release.
+- The README one-liners fetch `install.sh` and `install.ps1` from the latest
+  GitHub release's assets
+  (`https://github.com/aiandlabs/aiand-cli/releases/latest/download/`)
+  instead of the main branch, so a push to main no longer changes what a new
+  install runs. Until a release carries them they answer 404: run
+  `npm install -g @aiand/cli` meanwhile.
+- Running `aiand claude` on its own (no `on`, `off` or `status`) starts one
+  Claude Code session on ai& and leaves Claude Code's settings alone, the
+  same launch as `aiand run-agent claude`. It used to run
+  `aiand claude on` first, which moved every Claude Code session already
+  open, including other terminals and editor sessions, onto ai&, where
+  Anthropic's models fail. `aiand claude on` and `off` still route every
+  `claude` through ai& and back. Other agents keep opening through `on`.
+- `aiand claude on` warns that Claude Code sessions already running switch
+  to ai& at once. `aiand claude off` now moves them back as well: Claude
+  Code applies settings changes to running sessions but keeps a value that
+  disappears, so `off` first writes what it removes as empty (which Claude
+  Code reads as unset), waits three seconds for running sessions to reload,
+  then deletes it. `off` therefore takes about three seconds.
+- `/model` rows in Claude Code show the context Claude Code actually gets
+  under the 200K cap (`ai& · 200K context`) instead of the model's full
+  window, and label only text-only models (`· text only`) instead of
+  printing `vision` on most rows.
+- Publishing: the job runs in a GitHub environment named `release`, so that
+  approval and `v*`-only deployment can be required for it. A first run packs
+  from the tagged checkout and stops if the draft release already holds a
+  different tarball of the same name; only a resumed run reuses an uploaded one.
+  CONTRIBUTING.md lists the repository and npm settings this relies on. The
+  draft release is published only when it holds exactly the tarball,
+  `SHA256SUMS`, `install.sh` and `install.ps1`; an asset anyone else attached
+  to it stops the run, naming what to remove, before anything is published.
+
+### Fixed
+
+- `aiand logout` when the server does not revoke the key now says what it
+  answered (`https://… answered HTTP 404 to the sign-out request`) instead of
+  always telling you to check your connection. The sign-in is still kept.
+- `aiand run --no-stream "…" > out.txt` ends the answer with the platform's
+  line ending again (`\r\n` on Windows), as it did before the output was
+  cleaned.
+- Two `aiand` processes waiting on the same dead lock could still both take it:
+  one that had judged the lock stale could delete the fresh lock a faster one had
+  just created. Takeovers now go one at a time, and each re-checks the lock first.
+  A lock that disappears mid-check is retried instead of judged by a missing
+  timestamp.
+- `aiand claude` could skip the "Your default Claude Code model is ... again" note
+  when Claude Code saved a default of its own just before the session ended.
+- `aiand models` now uses your stored login when `AIAND_API_KEY` is set to only whitespace, matching every other command.
+- Pasting a key that has a stray space or control character inside it at the masked prompt now counts as one of the three attempts instead of ending the login on the spot; leading and trailing whitespace is trimmed.
+- `aiand status` no longer fails with exit 2 and no output when the stored sign-in belongs to another endpoint (`--base-url B` while signed in on A): it reports not signed in with the reason (`reason` in `--json`) and the agent table. `whoami` still refuses.
+- `aiand login --base-url X` now saves X on the profile, so later commands no longer exit 2 asking you to drop an override you never set. The refusal hint names `aiand config set api-url` / `auth-url`, and only says to drop an override when one is set.
+- On Windows, the GitHub Copilot app wiring no longer picks a `sqlite3.cmd` or
+  `sqlite3.bat` from PATH, which cannot be launched; it looks for `sqlite3.exe`.
+- Coding agents now start with a PATH of absolute entries only, on every platform.
+  A `.`, empty or relative entry let `#!/usr/bin/env node` (or an npm shim's
+  `node`) run a program planted in a cloned repository.
+- On Windows, an `aiand_api_key` or other differently-cased spelling of the
+  secret variables is now removed from the environment of agents and npm installs,
+  as the exact-case name already was.
+- `AIAND_SECRET_STORE_MASTER_KEY` no longer reaches the coding agents you launch
+  with `aiand <agent>`, the processes they start, or the `npm install -g` that
+  fetches one. Only Codex still gets it, because its `aiand key export` command
+  needs it to read the encrypted file store.
+- A token refresh that finds its profile signed out by another process now stops
+  with "not signed in" instead of rotating the old refresh token, which signed
+  the profile back in.
+- On Windows, saving a key no longer holds the store lock while it starts `whoami`
+  and `icacls`, so a second `aiand` waiting on a cold machine no longer takes the
+  lock over mid-write.
+- A second `aiand key export` (Codex starts one per session) no longer steals the
+  token-refresh lock from a refresh that is merely slow, which could rotate one
+  refresh token twice and get the whole sign-in revoked as stolen. A lock is
+  now taken over only when its holder has exited; a live holder keeps it alive
+  while it works, and the rotation request itself times out after 30 seconds.
+  A lock also names its holder by process ID and a random value, and a live
+  holder is called hung only after the waiting process has watched the lock
+  stay untouched for a minute on its own clock. A process ID that Windows gave
+  to something else after a killed `aiand key export` no longer holds everyone
+  up for five minutes, and a clock change or a laptop going to sleep no longer
+  makes a waiter take a lock whose holder is alive.
+- On Windows, `aiand.cmd` finds Node through PATH again when its baked-in
+  Node is gone and Node lives under the current directory (a profile-local
+  fnm or scoop Node from `%USERPROFILE%`, anything from `C:\`). A hit is
+  refused only when it came through an empty, `.`, relative or
+  drive-relative PATH entry.
+- On Windows, `install.ps1 uninstall` now refuses, before turning anything off,
+  a checkout that is a link or junction or holds one, as it already did for
+  the config directory, instead of letting PowerShell follow it into the target.
+- `uninstall --purge` now stops, deleting nothing, when `logout --all` could
+  not read the credentials it was meant to revoke (`complete: false` with
+  `problems`, or no profiles while `credentials.json` names some), in
+  `install.sh` and `install.ps1`.
+- `uninstall --purge` no longer deletes what `logout --all` kept. When
+  `logout --all` exits non-zero it lists the keys still on disk and what it
+  kept in the config directory, leaves that directory unless it is empty, and
+  exits 1.
+- On Windows, `install.ps1 uninstall --purge` no longer stops with a PowerShell
+  error and exit 1 after it has signed you out: `aiand logout --all` already
+  deletes the config directory, which the purge then tried to delete again.
+- On Windows, launching an agent through an npm `.cmd` shim now runs it with a
+  `PATH` of absolute entries only. `NoDefaultCurrentDirectoryInExePath` stops
+  cmd.exe searching the current directory by itself, but not a `.` or relative
+  entry you put in `PATH`, so the shim's bare `node` could run a `node.exe`
+  planted in a repo you were standing in.
+- On Windows, the throwaway folder that holds a key for a launched agent is now
+  refused, and removed, when it could not be made owner-only, instead of the
+  key being written under the folder's inherited permissions.
+- A file where ai& needs a directory (a config path blocked by a file) is a
+  clear error with a hint on Windows too, instead of `Unexpected error: EEXIST`.
+- A stored sign-in is now bound to the endpoints that issued it, recorded as
+  `bound_to` in `credentials.json`. When `--base-url`, `AIAND_BASE_URL`,
+  `AIAND_AUTH_URL` or `aiand config set` point elsewhere, the CLI refuses to
+  send the stored key (exit 2, with a hint to sign in on a separate profile)
+  instead of sending it to that host, and never sends the refresh token
+  anywhere but its issuer, so a pasted "faster endpoint" command can no longer
+  take over the account. `logout` revokes at the issuer too. Sign-ins saved by
+  earlier versions are bound on first use to the profile's stored endpoints
+  (the production default unless `config set` changed them), never to a
+  one-off override; if you signed in under `AIAND_BASE_URL` before, sign in
+  again. `AIAND_API_KEY` is unaffected.
+- Codex no longer pulls the stored key to an endpoint it was not issued for.
+  `aiand codex on` now writes `aiand key export --for <origin>` into the
+  profile (the origin Codex sends to), and `key export --for` refuses, with
+  exit 2, unless the stored sign-in was issued for that origin. Before, the
+  check used the profile as resolved in Codex's environment, so a profile
+  wired by `AIAND_API_KEY=k AIAND_BASE_URL=B aiand codex on` later handed the
+  stored key to B. `codex on` also warns when the environment key's endpoint
+  differs from the stored sign-in's. A Codex profile written before this
+  (no `--for`) is checked against its own `base_url` when it belongs to the
+  profile being exported, so `aiand key export` run by hand can now be
+  refused for the same reason; run `aiand codex on` again to rewrite it.
+  `--for` takes an origin only: a URL with a username or password is refused
+  without being printed, and an endpoint quoted in a refusal, a hint or a
+  rewire note never carries a username, password, query or fragment.
+- `aiand config set api-url` / `auth-url` can no longer redirect an old
+  sign-in that has not been used since the upgrade. A credential saved before
+  0.8 is pinned to the profile's stored endpoints when it is first used, so
+  setting both URLs to a new host first, then running `whoami` or `logout`,
+  sent the key and refresh token there and bound the credential to it. The
+  pin is now written before the new URL is. `config set api-url` also names
+  any agent wired for the old API endpoint, which keeps sending there.
+- A stored sign-in with no recorded endpoint is now refused instead of sent
+  anywhere. The request gate used to let it through, a token refresh fell
+  back to the profile as resolved with this run's overrides, and saving a
+  credential without a binding recorded those overrides. The first now fails
+  closed, and the others take the profile's stored endpoints, as the first
+  use of an older sign-in already did. `status --local` and `whoami --local`
+  still read the cached identity without a binding.
+- `aiand models --base-url <url>` while signed in for a different endpoint
+  now lists that endpoint's public catalog, priced in USD, with a note that
+  the stored key was not sent, instead of failing with the endpoint-binding
+  refusal. The same applies after `aiand config set api-url`.
+- If you keep `AIAND_BASE_URL` (or `AIAND_AUTH_URL`) exported to reach staging
+  while signed in on the `default` profile, that sign-in is now refused
+  there: it was issued for production, and the override no longer moves it.
+  Sign in once on a profile of its own, for example `aiand login --profile
+  staging --base-url https://staging.example.com`, then select it with
+  `--profile staging`, `AIAND_PROFILE=staging`, or `aiand config use staging`
+  and drop the exported URLs. Keeping the `default` profile for production
+  leaves it working unchanged.
+- Requests that carry a key, refresh token, device code or PKCE verifier no
+  longer follow redirects. A 307/308 resent the body to the `Location`, even
+  cross-origin; the CLI now stops with an error naming the redirect.
+- A key containing a line break, space or other unprintable character (for
+  example `AIAND_API_KEY="$(grep sk- .env)"` matching two lines) is refused
+  with "API key contains invalid characters (check for a line break or
+  space)" when it is read from `AIAND_API_KEY`, pasted, or saved, instead of
+  being printed in full in a "Could not reach" error. Error messages and
+  crash stacks now redact `Bearer …` values and `sk-…` keys, and a request
+  the CLI could not build is no longer reported as a network failure.
+- Switching profiles (`aiand config use`) or signing in to another one no
+  longer bakes that profile's key into an agent wired for a different API
+  endpoint, which sent it to that endpoint. `aiand <agent> on` now records
+  the endpoint it wired (`wired.json` in the config directory); an agent
+  wired for another one keeps its key and is named in a note with the
+  `aiand --profile <name> <agent> on` command that moves it. An agent wired
+  by an earlier version has no record, so its own config is read for the base
+  URL it holds and compared with the credential's; one that cannot be read
+  is left alone with the same note.
+- Automatic key rotation now holds to the same rule. It used to swap the new
+  key into every agent config that held the previous one, including an agent
+  wired for another API endpoint before 0.8 (no record, an override
+  pointing elsewhere), which kept getting each rotated key. It now swaps
+  only agents wired for the credential's own endpoint, still only where the
+  config holds exactly the key it replaced, and names any other in a note
+  with the `aiand --profile <name> <agent> on` command that moves it.
+- Reads from the gateway are bounded: a server-sent event line over 1 MiB
+  ends the stream with an error, error bodies are read up to 64 KiB and
+  shown as at most 500 characters (a non-JSON body as its status text plus
+  first line), and `aiand logs` stops paging when a page adds no rows or the
+  cursor repeats, instead of looping forever.
+- On Windows, aiand no longer finds an agent, npm, or itself in the current
+  directory. It used `where`, which searches the current directory before
+  PATH, so a `claude.cmd`, `npm.cmd` or `aiand.cmd` in a cloned repo would run
+  in place of the real one, and `aiand codex on` could bake that `aiand.cmd`
+  into Codex's auth command. aiand now walks PATH itself, skipping empty,
+  relative and `.` entries, and spawns what it finds by absolute path. A
+  directory you put on PATH by its absolute path still counts, even while you
+  are in it. Run `aiand codex on` again if you set Codex up from inside a repo
+  you did not write.
+- On macOS and Linux, an agent or npm that resolves only through an empty,
+  `.` or relative PATH entry in the current directory is treated as not
+  installed, and aiand spawns the agent by the absolute path it detected
+  rather than by name. A directory you put on PATH by its absolute path still
+  counts, even while you are in it.
+- On Windows, aiand starts `cmd.exe`, `rundll32.exe` and `tasklist.exe` from
+  `%SystemRoot%\System32` and `sqlite3` from PATH by absolute path, so a
+  same-named file in the current directory never runs in their place. Batch
+  shims now always go through System32's `cmd.exe`, not `%ComSpec%`.
+- On Windows, batch shims run under `cmd.exe /v:off`, so delayed expansion
+  turned on in the registry cannot expand `!name!` in an argument.
+- The installed launchers no longer fall back to a `node` in the current
+  directory when the Node.js found at install time is gone. `aiand.cmd`
+  searched with `where node`, which tries the current directory first; it now
+  searches PATH only and refuses a `node.exe` that came through a relative
+  PATH entry (an empty or `.` entry, `bin`, a drive-relative one), so a cloned
+  repo cannot supply it; a drive-rooted or UNC PATH entry is trusted even when
+  it lies under the current directory. It also runs under `setlocal
+  DisableDelayedExpansion`, so it no longer leaks variables into your shell
+  or expands `!name!` in an argument. The bash launchers (`install.sh`, and
+  `install.ps1`'s Git Bash shim) refuse the relative path an empty or `.`
+  PATH entry yields. Re-run the installer to get the new launchers.
+- On Windows, the files and folders that hold your key are now readable by
+  you alone. Windows ignores the owner-only modes the CLI sets elsewhere, so
+  the config folder, the key stores, `credentials.json`, agent configs
+  carrying the key, snapshots, and the throwaway folders `run-agent` writes
+  the key into now get an owner-only ACL (`icacls`, your account's SID with
+  full control, inherited entries removed). Before, a session folder under a
+  shared `TEMP` could be readable by every user on the machine. If `icacls`
+  fails the write still goes ahead; `AIAND_DEBUG=1` prints why.
+- `aiand login --paste` no longer shows your key on Windows. The prompt now
+  masks it with `*` as it does on macOS and Linux, in Windows Terminal and
+  the classic console alike: a Ctrl+V or right-click paste is masked, and
+  Backspace and Ctrl+C (exit 130) work as usual. Input is visible only on a
+  terminal that offers no raw mode, and the prompt says so first.
+- `aiand run` and `aiand chat` no longer pass escape and control sequences
+  from a model's answer or reasoning to your terminal. A reply (for example,
+  one steered by a prompt-injected page you asked it to summarise) could
+  previously write your clipboard (OSC 52), plant a link whose target differs
+  from its text (OSC 8), retitle the window, or move the cursor and erase
+  lines to fake a prompt. Escape sequences, C0/C1 controls, DEL, and bidi
+  override and isolate characters are now removed, including a sequence split
+  across streamed chunks; a bare carriage return prints as a new line, so it
+  can no longer overwrite what came before it. Japanese, emoji, combining
+  marks, tabs, and CRLF are untouched. Only terminal output is filtered:
+  piped or redirected output (`aiand run … > out.md`) is still the model's
+  raw text, byte for byte.
+- Text from the server is now cleaned before it is printed, piped or not:
+  organization names, emails, model ids and descriptions, log rows, usage
+  labels, response headers in the `run` footer and `chat`, and API error
+  messages (cleaned when they are received). Escape and control sequences
+  and bidi overrides are removed, and a line break inside a table cell or
+  field becomes a space, so it can no longer add a fake row. Cell text is
+  cleaned in full and only then coloured, so no escape sequence, a server's
+  colour codes included, reaches a pipe, a file, or a `NO_COLOR` terminal
+  from a cell. Notes, warnings, hints and error text that quote the gateway
+  are cleaned wherever they are printed: `aiand init`, `aiand <agent> on` and
+  `off`, the chat banner, the key-refresh notes after sign-in and `aiand
+  config use`, and `aiand logs --follow`. A model whose id has control or
+  bidi characters is dropped from the catalog, a token count or latency that
+  is not a number prints as `-`, and an update notice shows only a
+  version-shaped string. `--json` output is unchanged. The installers clean
+  the text they print about a release (a tarball entry name, an npm manifest
+  field) the same way.
+- Sweeping a crashed Hermes session's overlay (the next `aiand run-agent`
+  after a day, or `logout`) puts the store shims back first. A session that
+  died before its cleanup left your own `hermes` binary pointing into the
+  overlay, and deleting the overlay broke it. The overlay now carries a copy
+  of the shim snapshot, and is kept while any shim still points inside.
+- Hermes's `.env` handling treats a quote as opening a multi-line value only
+  straight after the `=`, as python-dotenv does. A stray quote inside an
+  unquoted value (`GREETING=it's fine`, `URL=http://x?a="b`) used to hide every
+  following line, so `aiand hermes on` left your own `ANTHROPIC_API_KEY` active
+  and `off` left `AIAND_HERMES_API_KEY` in the file.
+- `aiand logout` no longer deletes the refresh token when it cannot reach ai&
+  to revoke the key. You stay signed in, with a message to retry or to run
+  `logout --keep-remote`; before, the key stayed valid with nothing left on
+  the machine that could revoke it. Pasted-key and no-refresh-token logouts
+  now name the console page that revokes the key.
+- A snapshot never copies a config file that already carries ai&'s marker or
+  a known ai& key. Before, re-running `on` after moving an agent's config dir
+  (`PI_CODING_AGENT_DIR`, `COPILOT_HOME`, Oh My Pi's agent dir) copied the
+  wired file, key included, into `~/.config/aiand/snapshots` and replaced the
+  real pre-aiand snapshot. Now `on` adds a moved dir's files beside the first
+  capture instead of replacing it, and Pi, Oh My Pi and the Copilot CLI refuse
+  to wire a second dir while the first still holds the key (run `off` first),
+  as Claude Code and Codex already did. `aiand restore` says which files it
+  had no copy of, and keeps the copies of files the agent no longer reads.
+  `aiand logout` deletes snapshot copies an older version left holding the
+  logged-out key, and copies carrying ai&'s marker even when the key in them
+  is another one. `aiand restore` keeps what `on` recorded while a path it left
+  alone (the agent no longer reads it) may still be wired, so `off` run from a
+  shell that names that path can still tell your values from ours.
+- `aiand omp off` and `aiand copilot off` no longer leave the ai& key behind
+  when you edited the `aiand` provider's `baseUrl`. They keep your edit,
+  remove the key (and Oh My Pi's `managedBy` stamp) from the block, and say
+  so. They remove only a key ai& put there (a stored, session or `AIAND_API_KEY`
+  key, or the one `on` wrote); a key you set in the repointed block stays. Before, the key stayed and `off` forgot it had written it, so logout
+  could not remove it either.
+- `on` and the key refresh after `login` refuse to write the ai& key into an
+  agent config that sits inside a git repository, which is where a GNU Stow or
+  chezmoi symlink into a dotfiles repo used to put it, one `git add -A` from
+  being pushed. The error names the repository and how to proceed; gitignore
+  the file and set `AIAND_ALLOW_GIT_TRACKED=1` to write it anyway. A bare
+  dotfiles repository directly in your home directory (`git
+  --git-dir=~/.dotfiles --work-tree=~`) counts too: it is recognised from its
+  `core.worktree`, or from the `index` such a repository grows, without
+  running git, and so do the repositories yadm (`~/.local/share/yadm/repo.git`)
+  and vcsh (`~/.config/vcsh/repo.d/*.git`) keep. The opt-in is remembered for each file in the agent's recorded
+  state, so the key rotation a later `login` runs, without the variable, still
+  swaps the key it wrote instead of leaving the agent on a dead one; `off`
+  forgets it. Config files that do not hold the key still follow links as
+  before.
+- `aiand omp on` quotes and escapes every model id or value it writes to
+  Oh My Pi's YAML unless it is a plain id, URL or key, so a carriage return,
+  NEL, U+2028/2029, tab, control character or a word like `yes` or `0x1F` in
+  a catalog string can no longer add keys or change a value's type.
+- `aiand opencode on` copies only the descriptive fields of each model from
+  the gateway's `/v1/api.json` (name, family, dates, limits, cost,
+  modalities, capability flags, status, reasoning options) and drops
+  `npm`, `provider`, `options`, `headers`, `variants` and any string carrying
+  an OpenCode `{env:…}` or `{file:…}` substitution.
+  `aiand opencode` (the session launcher) holds the models it builds from the
+  catalog to the same allowlist, and leaves out a model whose id carries one.
+- `aiand opencode off` on an `opencode.json` that does not parse no longer
+  reports "nothing to turn off" with the key still inside. It says the file
+  may still hold your ai& key, asks you to fix the JSON and run `off` again,
+  and keeps what `on` recorded so that retry strips exactly what it added,
+  as `aiand claude off` already did.
+- `install.ps1 uninstall --purge` refuses a config directory with a directory
+  link or junction inside it, deleting nothing. Windows PowerShell 5.1 follows
+  a junction when it deletes recursively, which would have removed files
+  outside the config directory.
+- A release install no longer replaces a git clone it did not create. A
+  developer's checkout at `AIAND_DIR` has no ownership marker and is not the
+  default install directory, so the installer stops and leaves it alone, as
+  `uninstall` already did.
+- `uninstall --purge` no longer refuses everything when HOME is reached
+  through a symlink and `~/.config/aiand` was never created. A config
+  directory that does not exist is skipped, not guarded, and the purge says so.
+- The installers' "no published release was found" and "release v… was not
+  found" errors now tell users to `npm install -g @aiand/cli` meanwhile, which
+  matters from merge until the first release with a `SHA256SUMS`.
+- A failed `publish.yml` run can be re-run. A version already on npm with no
+  complete GitHub release resumes instead of stopping at the "already on
+  npm" check: it publishes nothing, requires npm to serve the tarball it just
+  packed, and creates the release (as a draft, published once every asset is
+  attached). The wait for npm to serve a new version is up to about ten
+  minutes, with backoff, up from 150 seconds.
+- `install.sh update` and `install.ps1 update` say why when npm's latest
+  version, which the update notice reads, is ahead of the latest GitHub
+  release, which they install: "already up to date; npm shows X, but its
+  GitHub release is not out yet". Before, the notice and the updater looked
+  like a loop.
+- The Hermes Agent install hint on macOS and Linux no longer pipes the
+  site's installer into bash. It downloads the installer at the pinned
+  commit to a temp file and runs it only after its sha256 matches. The Oh My
+  Pi hint downloads the binary to a temp file, checks it, and only then
+  moves it into `~/.local/bin`, so an unverified binary is never on PATH.
+  On Windows it is now plain PowerShell that works when pasted at a
+  PowerShell prompt: the old `powershell -Command "…"` line broke on its
+  nested quotes. The Hermes hint on Windows does the same as the other
+  platforms: it downloads the commit-pinned `install.ps1` and runs it only
+  when its SHA-256 matches (the earlier line was missing a closing quote and
+  could not be parsed), in PowerShell 7 and Windows PowerShell 5.1 alike.
+- Opening Claude Code or Codex when it is missing installs a pinned release,
+  not whatever npm calls latest: `@anthropic-ai/claude-code@2.1.312` and
+  `@openai/codex@0.165.0`. Codex and the Copilot CLI install with
+  `--ignore-scripts`, since neither package has an install script. Claude
+  Code still runs its postinstall, which puts its native binary in place.
+  The question names the exact command it will run. `check:dist` now fails
+  any npm install hint that has no exact version, or that runs install
+  scripts without a stated reason.
+- The update notice for installer installs printed a command that rebuilt
+  the version already installed. It now prints `bash ~/.aiand/cli/install.sh
+  update`, or on Windows `powershell -NoProfile -ExecutionPolicy Bypass -File
+  "…\install.ps1" update`, which runs under the default execution policy.
+  `update` always fetches and verifies the latest release, and it updates
+  the install directory it runs from. npm installs are told to run
+  `npm install -g @aiand/cli@latest`. Installs made before this release
+  update by running the one-line install command again.
+- The installers refuse an `AIAND_SOURCE` that starts with `-` and end
+  `git clone`'s options with `--`, so a source can never be read as a git
+  option such as `--upload-pack`.
+- On Windows, a program run through an npm `.cmd` shim can no longer be
+  planted in the current directory. npm's shim runs `node.exe` beside itself
+  if there is one and otherwise a bare `node`, which `cmd.exe` looks for in the
+  current directory first (the default Node installer keeps the shims in
+  `%APPDATA%\npm` and `node.exe` in Program Files), so `cd cloned-repo &&
+  aiand codex` ran a `node.exe` or `node.cmd` from the repo. aiand now sets
+  `NoDefaultCurrentDirectoryInExePath=1` for itself and every process it
+  starts, and `aiand codex on` bakes Node's absolute path and this install's
+  `dist\index.js` as Codex's auth command instead of `aiand.cmd`. Run
+  `aiand codex on` again to replace a baked `aiand.cmd`.
+- On Windows, aiand finds programs that are Store App Execution Aliases (such
+  as a `python.exe` or `winget.exe` in `%LOCALAPPDATA%\Microsoft\WindowsApps`)
+  again. Those are zero-byte reparse points that `stat` can refuse to open,
+  and the PATH walk had stopped seeing them.
+- On macOS and Linux, the system tools aiand starts (`which`, `open`,
+  `xdg-open`, `pgrep`, `security`, `secret-tool`, `sqlite3`) are found through
+  the absolute entries of PATH only. They used to run through the whole PATH,
+  so an empty, `.` or relative entry could pick a same-named file in the
+  current directory. They also no longer inherit `AIAND_API_KEY` or
+  `AIAND_SECRET_STORE_MASTER_KEY`, which the keychain tools never needed.
+- On Windows, `aiand logout` and the rest of the credential store no longer
+  start `secret-tool`. It was a bare name, so `cmd.exe` tried the current
+  directory first, and the child inherited `AIAND_API_KEY`. Nothing is
+  spawned there now.
+- Two `aiand` processes on Windows can no longer lose a key to each other.
+  Moving a sign-in into DPAPI on first read, or saving a new one, rewrites
+  whole key stores, and processes running at once (Codex starts one per
+  session) could overwrite each other's update: a key whose old copy was
+  already removed was gone, and `credentials.json` could lose a concurrent
+  sign-in. The key stores and `credentials.json` are now updated under a
+  cross-process lock, the old copy is removed only after DPAPI is seen to
+  hold the key, and a stale read never overwrites a newer sign-in.
+- Signing in on Windows no longer fails when an old encrypted-file store
+  cannot be read (for example after `AIAND_SECRET_STORE_MASTER_KEY` changed)
+  even though DPAPI already holds the new key. The leftover file copy is
+  simply left alone.
+- A config folder shared between Windows and WSL or Linux no longer shows the
+  Linux side as signed out, nor tries to start a Windows PowerShell from it,
+  once Windows has moved the key into DPAPI. The Linux side now says the key
+  was stored with Windows DPAPI and to sign in again there.
+- A single failed PowerShell start on Windows no longer keeps your key out of
+  DPAPI until you sign in again. Constrained Language Mode, which is policy,
+  is remembered for good. After a timeout or a PowerShell that would not
+  start, the next save tries DPAPI again (once per run), and a read waits ten
+  minutes before it tries again: a PowerShell that hangs used to cost every
+  `aiand` process, and so every Codex session, 20 seconds on its first read of
+  the key. `aiand status` says why the key is in the file in both cases.
+- The fallback warning on Windows now says how to stop aiand trying DPAPI
+  (`AIAND_KEY_STORAGE=file`) for machines where endpoint security blocks the
+  PowerShell call. `docs/windows-key-storage.md` records what a DPAPI read
+  costs and a test plan for real Windows machines, Microsoft Defender
+  included.
+- A stray control character no longer swallows the text after it. A mis-decoded
+  quote (`â€\u009d`) carries an 8-bit string introducer that was read as the
+  start of a hidden sequence, so `aiand run`, `aiand chat` and every table or
+  field cut off at that point. Those introducers are now dropped on their own,
+  and an escape-introduced string that is never closed ends at the next line
+  break, or after 4096 characters, instead of running to the end of the
+  output.
+- An emoji or other character outside the basic plane that a model streams
+  split across two chunks now prints whole, on a terminal and in a pipe,
+  instead of as two replacement characters.
+- Chat in the GitHub Copilot app no longer fails with `400 max_tokens must
+  be an integer of at least 1 and below the model's context window`.
+  `aiand copilot-app on` set each model's output limit to its whole context
+  window, which the app sends as `max_tokens`. It now writes the output limit
+  ai& publishes for the model, capped at half the context window, and gives
+  the prompt the rest, so prompt and output together fit the model. Run
+  `aiand copilot-app on` again to update a database set up earlier.
+- Ctrl+C inside an agent started by aiand reaches only the agent. aiand used
+  to exit and delete the session's settings on the first press, handing the
+  prompt back while the agent kept running (Claude Code uses that press to
+  clear its input). SIGTERM and SIGHUP are passed on to the agent, and the
+  session's files are removed after it exits. A launched agent killed by a
+  signal now exits with `128 + n` instead of `1`.
+- Saving an ai& model as the default in `/model` inside an `aiand claude`
+  (or `aiand run-agent claude`) session no longer leaves plain `claude`
+  starting on a model Anthropic does not serve: aiand puts your own default
+  back as soon as Claude Code saves the pick, so a `claude` started in
+  another terminal meanwhile is not affected either. An ai& default left by
+  an earlier session is removed when the next one ends. While
+  `aiand claude on` is in effect, an ai& default is yours to keep. A
+  `settings.json` symlinked into a dotfiles checkout is covered too.
+- `aiand logout --all` no longer deletes a sign-in it could not read. A profile whose
+  credential would not load (a locked keychain over SSH) or a corrupt
+  `credentials.json` is now reported as `revoked: false, kept: true`, its sign-in
+  files stay for a retry, and the run is `complete: false` with a `problems` entry.
+- `aiand logout --all` no longer strips the Copilot app while the app is running: like
+  `aiand copilot-app off`, it now asks you to quit it first (the app rewrites its
+  database on exit and would put the key back), and keeps that agent's state for a retry.
+- `aiand restore <agent> --force` no longer drops what `on` recorded while a file it could
+  not restore still holds ai& wiring (a Copilot CLI wired at a non-default URL, say), so a
+  later `aiand <agent> off` can still find the key it has to remove.
+- `aiand opencode on` no longer writes a model id into OpenCode's root `model` unless OpenCode's
+  cleaned model map carries it, so an id holding `{env:}` or `{file:}` cannot be read back
+  through OpenCode's substitution.
+- Sweeping the overlay of a crashed Hermes session no longer reverts a store shim you
+  updated since: it puts back only a shim that still points into the overlay.
+- Running `aiand claude off` again after one was interrupted during its reload wait now
+  removes the keys the first run had emptied, instead of leaving `""` values behind and
+  claiming you edited them.
+- Signing in, or switching profile, no longer bakes a key into an agent wired for another
+  endpoint when `on` left no record of where (pre-0.8 `AIAND_BASE_URL=staging aiand opencode on`,
+  then `aiand login --force` against production). Each agent's own config is read for the
+  base URL it bakes and compared with the credential's; one that cannot be judged is left alone
+  with a note naming `aiand --profile <name> <agent> on`, and a corrupt `wired.json` no longer
+  reads as safe.
+- `aiand login` over SSH signs in with a device code right away instead of
+  waiting five minutes for a browser redirect that can't reach the remote
+  machine, and no longer opens a browser on the remote machine.
+- `install.ps1` no longer starts with a byte-order mark, so
+  `irm <url> | iex` runs it from its first line instead of failing on
+  `PowerShell` and `param()` as commands. It is plain ASCII now (the banner is
+  built from character codes), which Windows PowerShell 5.1 reads correctly
+  from the raw bytes a release serves, and a test fails if either comes back.
+- A release install refuses a git checkout whose branch has no upstream, as
+  well as one with commits its upstream lacks. Before, `git switch -c mywork`,
+  a commit, and a re-run of the installer replaced the checkout and the commit
+  with it, because the failed comparison read as "nothing ahead".
+- An update stopped between the two moves that swap it in (Ctrl-C, a closed
+  terminal, `SIGTERM`) puts the previous install back instead of leaving
+  `~/.aiand/cli` empty, and a run that was killed outright is repaired by the
+  next one before it does anything else. Staging and `cli.prev-*` folders an
+  earlier run left behind are removed on the next run; a folder that is not an
+  `@aiand/cli` install, a link, and one a still-running installer is using are
+  left alone. `install.ps1` does the same. The pid in a `cli.prev-<pid>` name
+  counts with or without a suffix after it, and a run that finds another
+  installer's set-aside install, while that installer is still running, no
+  longer puts it back or deletes it, which made that installer's second move
+  nest the new install inside the old one.
+- A release download over the size limit stops at the limit with a message
+  naming it, instead of being downloaded whole and then refused without one.
+  The limit is 16 MiB for the tarball (a release is a few hundred KiB), 4 MiB
+  for `SHA256SUMS` and npm's manifest, and 64 MiB for what the tarball unpacks to.
+- `aiand pi on --model native` after an earlier `aiand pi on` now hands
+  back the `defaultProvider` and `defaultModel` that `on` set, as it does
+  on a fresh config. They used to stay, so ai& kept deciding Pi's model.
+- `aiand pi off` removes Pi's ai& credential last, so an `off` that stops
+  part-way can be run again. After the agent dir moved, it now removes a
+  credential whose marker Pi dropped, and keeps a provider block you
+  edited, as it already did in the current dir.
+
+### Removed
+
+- The organization picker at sign-in. A key belongs to exactly one org, so
+  browser and device sign-in, `aiand login --paste` and `--with-token` no
+  longer ask a multi-org account to choose one: the CLI records the org the
+  gateway names in the token response (or, if it names none, the first org it
+  lists; for a pasted key, the first org the gateway lists) instead of one the
+  key does not bill, which `status` and `whoami` then misreported.
+- The keychain tier on Windows. Windows keeps its key in DPAPI or the
+  encrypted file, so `AIAND_KEY_STORAGE=keychain` now fails there with a
+  clear error instead of being tried.
+
+
+## [0.7.1] - 2026-11-02
+
+### Changed
+
+- `aiand claude on` picks `deepseek-ai/deepseek-v4.1-flash-1017` as Claude
+  Code's fast model, replacing `deepseek-ai/deepseek-v4.1-flash`, which ai&
+  retires on 2026-11-06 0:00 JST. A setup written earlier keeps the old
+  model until then: run `aiand claude on` again after that date, or run
+  `aiand claude on --model <your main model>` to switch now.
+
+## [0.7.0] - 2026-10-26
+
+### Added
+
+- Hermes Agent is now wired like the rest: `aiand hermes on` ships a
+  dedicated `aiand` model-provider plugin under
+  `~/.hermes/plugins/model-providers/aiand`, adds a `providers.aiand` block
+  to `~/.hermes/config.yaml` (`base_url` carries `/v1`, because Hermes posts
+  to `${base_url}/chat/completions`), and writes the session key to
+  `~/.hermes/.env` (mode 0600) as `AIAND_HERMES_API_KEY`. The plugin carries
+  each model's published reasoning levels, so a user's picked level is clamped
+  to a set the model accepts and a level left unset sends no
+  `reasoning_effort`, leaving the model's own engine default
+  (`reasoning_effort_default`) to apply; reasoning switched off omits the
+  field entirely instead of sending a level the model does not publish (models
+  that do accept it still receive `none`). The model pin
+  comes from the live catalog; `--model <id>` switches it, and
+  `--model native` leaves the model section as it is. `off` removes exactly
+  what `on` added, puts a set-aside model and any set-aside `ANTHROPIC_*`
+  lines back, and leaves a provider block you repointed (`base_url` or
+  `key_env`) in place with a note. A `providers:` or `model:` key holding an
+  inline flow map or an anchor is no longer rewritten: those shapes refuse with
+  a by-hand hint instead of dropping the providers the value carried (or
+  leaving a duplicate block behind), and a wired home whose `providers:`
+  carries an anchor reads as on again, so a second `on` cannot splice a second
+  block. A multi-line quoted `.env` value is stripped whole by `off`, so no
+  part of it is left behind in your file and the key reads back in full. A
+  foreign `providers.aiand` block or a
+  legacy `custom_providers` entry named aiand is refused instead of
+  overwritten. `aiand hermes` with no verb opens that wiring: the install
+  hint is printed rather than run (it is not an npm install), and inherited
+  `ANTHROPIC_*` and `OPENAI_*` values are dropped so they cannot outrank
+  the files `on` wrote. `status`, `init --all`, logout, and rebake cover it
+  (#17, thanks @fenilmodi00).
+- `aiand run-agent hermes` launches Hermes on ai& for one session with
+  nothing written under the real `~/.hermes`. A throwaway `HERMES_HOME`
+  holds the same `aiand` provider plugin, a routing-only `config.yaml`, and
+  the key in the overlay `.env`. The child is started with
+  `--provider aiand --model <id>` (a launch always names a model, so
+  `--model native` is the usual catalog error). Your plugins, sessions, and
+  skills are linked back in; inherited `ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `OPENAI_API_KEY`, and `OPENAI_BASE_URL` are removed from the child;
+  `--provider`, `--model`, and `-m` after `--` are stripped. The overlay is
+  deleted when Hermes exits, and store shims that pointed at it are put back.
+  On Windows the state links back through junctions (a directory symlink
+  there needs Developer Mode), so a session's writes survive cleanup, and
+  the Hermes install hint names the PowerShell form of the same pinned
+  installer instead of a `curl | bash` line a Windows shell cannot run
+  (#17, thanks @fenilmodi00).
+- The ai& CLI landing page now lives in `site/` and is published to
+  GitHub Pages by `.github/workflows/pages.yml`. It shows four steps:
+  create an account in the console, redeem a promo code on the console's
+  billing page, install the CLI with npm, and run `aiand code`, with a switch
+  that swaps in `aiand codex` or `aiand claude`.
+
+### Changed
+
+- `aiand claude on` picks DeepSeek V4.1 Flash for Claude Code's fast slot,
+  then Gemma 4. ai& retires DeepSeek V4 Flash, Kimi K2.7 Code and GLM 5.2 on
+  2026-10-27 0:00 JST; Kimi K2.7 Code also leaves the main-slot preference.
+  A setup written before that date still names DeepSeek V4 Flash: run
+  `aiand claude on` again.
+- `--base-url` and `aiand config set api-url|auth-url` refuse `/v1`-suffixed
+  URLs (adapters append `/v1` themselves, so a suffixed URL would double to
+  `/v1/v1`) and base URLs carrying a query or fragment, at set time. An
+  unreachable gateway no longer echoes credentials embedded in the base URL.
+  (#34, thanks @fenilmodi00)
+- The installers now run the installed `aiand --version` for you and print
+  the version, instead of asking you to run it.
+- At the end of an install, the installers ask "Log in to ai& now?" and run
+  `aiand login` on yes. They skip the question when you are already signed
+  in, when `AIAND_API_KEY` is set, in CI, or without a terminal. With
+  `AIAND_API_KEY` set they say the key is in use instead of suggesting
+  `aiand login`. A failed or cancelled login never undoes the install:
+  Ctrl+C at the question counts as no, and Ctrl+C during the login stops
+  only the login (`install.sh` still exits 0).
+
+### Fixed
 
 - `aiand pi on` writes each model's `maxTokens` from the catalog's
   `max_output_tokens` instead of its context window. Pi sends at most
@@ -1331,7 +2014,6 @@ breaking changes while the command surface settles.
   and the line is only recorded (and noted on `off`) when a drop actually
   happened. `yaml-probes.ts` moved out of routing.ts without behavior
   change.
-
 - OpenCode Launcher sessions and Pi pass each model's published reasoning
   levels. Pi's own default is medium, and an unsupported level moves up to
   the next published one. On GLM-5.3 that level is high. The 0.6.0 Pi note
@@ -1346,12 +2028,6 @@ breaking changes while the command surface settles.
   adapters that own no config files, and unusable config paths (a file where
   a directory belongs, a directory where a file belongs, unreadable files)
   refuse exit 1 with a hint instead of a raw stack. (#34, thanks @fenilmodi00)
-- `aiand harness stats` now counts errors the way `harness matrix` and
-  `compare` already do — non-2xx statuses excluding 429 (a rate limit is the
-  gateway's pressure, not the pair's quality); null statuses count as
-  unknown, not errors. Both surfaces share one error-count helper, so the
-  same rows yield the same errorRate everywhere; the stats label says
-  `non-2xx excluding 429 / requests`. (#88)
 
 ## [0.6.0] - 2026-10-06
 

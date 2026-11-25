@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { describe } from "node:test";
-import { withEnv, withFetch, withTestEnv } from "./helpers.mjs";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { BIN, withEnv, withFetch, withTestEnv } from "./helpers.mjs";
 
 const { compareVersions, checkForUpdate } = await import("../dist/housekeeping/update.js");
 const { VERSION } = await import("../dist/api/client.js");
+const { updateInstallHint } = await import("../dist/index.js");
 
 // Build a version string safely above the local one (same part count).
 function newerVersion(version) {
@@ -96,6 +100,21 @@ describe("checkForUpdate", () => {
     });
   });
 
+  test("a latest that is not version-shaped is never offered, cached or fetched", async () => {
+    const hostile = "99.0.0\x1b]52;c;Y3VybA==\x07";
+    writeCache({ checkedAt: Date.now(), ok: true, latest: hostile });
+    assert.equal(await checkForUpdate(), null);
+
+    writeCache({ checkedAt: Date.now() - 25 * hour, ok: true, latest: VERSION });
+    const fetch = countingFetch(() => registryReply({ version: hostile }));
+    await withFetch(fetch, async () => {
+      assert.equal(await checkForUpdate(), null);
+      assert.equal(fetch.calls, 1);
+      assert.equal(readCache().ok, false);
+      assert.equal(readCache().latest, undefined);
+    });
+  });
+
   test("fetch failure writes the failed cache and returns null", async () => {
     writeCache({ checkedAt: Date.now() - 25 * hour, ok: true, latest: VERSION });
     const fetch = countingFetch(() => {
@@ -165,5 +184,104 @@ describe("checkForUpdate", () => {
       assert.equal(info, null);
       assert.equal(readCache().ok, false);
     });
+  });
+});
+
+describe("updateInstallHint", () => {
+  test("the default install updates through its own install.sh update", () => {
+    assert.equal(
+      updateInstallHint({
+        platform: "linux",
+        launched: "/srv/u/.aiand/cli/dist/index.js",
+        home: "/srv/u",
+      }),
+      "bash ~/.aiand/cli/install.sh update",
+    );
+  });
+
+  // A bare re-run of the installed install.sh rebuilt the same version.
+  test("never prints a bare re-run of the installer", () => {
+    for (const hint of [
+      updateInstallHint({
+        platform: "linux",
+        launched: "/srv/u/.aiand/cli/dist/index.js",
+        home: "/srv/u",
+      }),
+      updateInstallHint({
+        platform: "win32",
+        launched: "C:\\Users\\u\\.aiand\\cli\\dist\\index.js",
+      }),
+    ]) {
+      assert.match(hint, / update$/);
+    }
+  });
+
+  test("an install outside HOME names its own install.sh, quoted", () => {
+    assert.equal(
+      updateInstallHint({
+        platform: "linux",
+        launched: "/tmp/fixture/.aiand/cli/dist/index.js",
+        home: "/srv/u",
+      }),
+      "bash /tmp/fixture/.aiand/cli/install.sh update",
+    );
+    assert.equal(
+      updateInstallHint({
+        platform: "linux",
+        launched: "/tmp/it's here/.aiand/cli/dist/index.js",
+        home: "/srv/u",
+      }),
+      "bash '/tmp/it'\\''s here/.aiand/cli/install.sh' update",
+    );
+  });
+
+  test("win32 runs install.ps1 under a process-scoped Bypass policy", () => {
+    assert.equal(
+      updateInstallHint({
+        platform: "win32",
+        launched: "C:\\Users\\u\\.aiand\\cli\\dist\\index.js",
+      }),
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\u\\.aiand\\cli\\install.ps1" update',
+    );
+  });
+
+  test("npm-global launch returns npm install of the latest", () => {
+    assert.equal(
+      updateInstallHint({
+        launched: "/usr/local/lib/node_modules/@aiand/cli/dist/index.js",
+        aiandDir: "",
+      }),
+      "npm install -g @aiand/cli@latest",
+    );
+  });
+
+  test("an AIAND_DIR install updates that directory's install.sh", () => {
+    assert.equal(
+      updateInstallHint({
+        platform: "linux",
+        launched: "/opt/aiand/dist/index.js",
+        aiandDir: "/opt/aiand/",
+        home: "/srv/u",
+      }),
+      "bash /opt/aiand/install.sh update",
+    );
+  });
+});
+
+describe("updateInstallHint default launched path", () => {
+  // No explicit `launched`: the hint reads process.argv[1], so run it in a
+  // child whose argv[1] is an npm-global install path.
+  test("an npm-global argv[1] prints npm install", async () => {
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { updateInstallHint } from ${JSON.stringify(pathToFileURL(BIN).href)}; console.log("HINT:" + updateInstallHint());`,
+        "/usr/local/lib/node_modules/@aiand/cli/dist/index.js",
+      ],
+      { env: { ...process.env, AIAND_DIR: "" } },
+    );
+    assert.match(stdout, /HINT:npm install -g @aiand\/cli@latest/);
   });
 });

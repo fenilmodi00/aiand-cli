@@ -1,4 +1,4 @@
-import { ApiError, CliError, cancelled } from "../cli/errors.js";
+import { ApiError, CliError, cancelled, SYNTHETIC_STATUS } from "../cli/errors.js";
 import {
   gatewayNotJsonError,
   HEADERS,
@@ -196,6 +196,10 @@ function assertEventStream(response: Response): void {
   );
 }
 
+/** One SSE line longer than this is no chat delta: a broken or hostile
+ * stream that never sends a newline would otherwise grow without bound. */
+const SSE_LINE_MAX_CHARS = 1024 * 1024;
+
 async function* parseSse(response: Response): AsyncGenerator<StreamChunk> {
   const body = response.body as ReadableStream<Uint8Array>;
   const decoder = new TextDecoder();
@@ -245,6 +249,14 @@ async function* parseSse(response: Response): AsyncGenerator<StreamChunk> {
         if (choice?.finish_reason) chunk.finishReason = choice.finish_reason;
         if (event.usage) chunk.usage = event.usage;
         if (Object.keys(chunk).length > 0) yield chunk;
+      }
+      // Throwing out of the for-await cancels the body.
+      if (buffer.length > SSE_LINE_MAX_CHARS) {
+        throw new ApiError(
+          SYNTHETIC_STATUS.BAD_GATEWAY,
+          "The gateway sent a server-sent event line over 1 MiB; stopped reading the stream.",
+          { requestId: response.headers.get(HEADERS.REQUEST_ID) ?? undefined },
+        );
       }
     }
   } catch (cause) {

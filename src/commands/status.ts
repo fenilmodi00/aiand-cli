@@ -4,7 +4,7 @@ import { modelLabel } from "../api/models.js";
 import { authStatus } from "../auth/identity.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { err, fields, json, out, style, table } from "../cli/output.js";
+import { err, fields, json, out, safeLine, style, styled, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
 import {
@@ -159,20 +159,21 @@ export async function run(argv: string[]): Promise<void> {
 
   if (!auth.signed_in) {
     out(style.yellow("Not signed in."));
-    err(style.dim("Run `aiand login` first."));
+    err(style.dim(auth.reason ? safeLine(auth.reason) : "Run `aiand login` first."));
     await printAgents(agents);
     process.exitCode = EXIT.ERROR;
     return;
   }
 
   fields([
-    ["email", auth.email ?? style.dim("unknown")],
-    ["org", auth.org ?? style.dim("none")],
+    ["email", auth.email || styled(style.dim, "unknown")],
+    ["org", auth.org || styled(style.dim, "none")],
     ["profile", auth.profile],
-    ["key", style.dim(auth.key ?? "unknown")],
-    ["source", style.dim(auth.source ?? "unknown")],
-    ["storage", style.dim(auth.storage ?? "unknown")],
+    ["key", styled(style.dim, auth.key ?? "unknown")],
+    ["source", styled(style.dim, auth.source ?? "unknown")],
+    ["storage", styled(style.dim, auth.storage ?? "unknown")],
   ]);
+  if (auth.storage_notice) err(style.yellow(`Note: ${auth.storage_notice}`));
 
   printStatusline();
   await printAgents(agents);

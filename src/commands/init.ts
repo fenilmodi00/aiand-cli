@@ -3,8 +3,9 @@ import { agentOff, agentOn } from "../agents/setup.js";
 import type { AgentAdapter } from "../agents/types.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError, cancelled } from "../cli/errors.js";
-import { err, json, out, style } from "../cli/output.js";
+import { err, json, out, printNotes, safeLine, style } from "../cli/output.js";
 import { isInteractive } from "../cli/prompt.js";
+import { redactSecrets } from "../cli/redact.js";
 import { promptCheckbox } from "../cli/select.js";
 import { routedAgents } from "./agent.js";
 
@@ -42,7 +43,7 @@ type InitResult = {
 };
 
 function noteFromError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactSecrets(error instanceof Error ? error.message : String(error));
 }
 
 async function isolateWire(
@@ -75,13 +76,12 @@ function failBatchIfNeeded(results: InitResult[]): void {
 }
 
 function emitInitLine(result: InitResult, okLine: string): void {
-  const line = result.note ? `  ${style.dim(result.agent)} — ${result.note}` : okLine;
+  // A note is an error message and a hint can list catalog ids; both can quote the gateway.
+  const line = result.note ? `  ${style.dim(result.agent)} — ${safeLine(result.note)}` : okLine;
   if (result.failed) err(line);
   else out(line);
-  if (result.hint) {
-    for (const hintLine of result.hint.split("\n")) err(style.dim(`  ${hintLine}`));
-  }
-  for (const warning of result.warnings ?? []) err(style.dim(`  ${warning}`));
+  if (result.hint) printNotes(result.hint.split("\n"), "  ");
+  printNotes(result.warnings ?? [], "  ");
 }
 
 async function wireOn(
@@ -188,7 +188,10 @@ async function runOnAll(
   failBatchIfNeeded(results);
   if (jsonOut) return json({ agents: results });
   for (const result of results) {
-    emitInitLine(result, `  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+    emitInitLine(
+      result,
+      `  ${style.green(result.agent)}  ${style.bold(safeLine(result.model ?? "on"))}`,
+    );
   }
 }
 
@@ -292,7 +295,10 @@ async function runInteractive(jsonOut: boolean, profile?: string, force?: boolea
   for (const adapter of targets) {
     const result = await isolateWire(adapter.id, "off", () => wireOn(adapter, { profile, force }));
     results.push(result);
-    emitInitLine(result, `  ${style.green(result.agent)}  ${style.bold(result.model ?? "on")}`);
+    emitInitLine(
+      result,
+      `  ${style.green(result.agent)}  ${style.bold(safeLine(result.model ?? "on"))}`,
+    );
   }
   failBatchIfNeeded(results);
 }

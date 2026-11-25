@@ -6,7 +6,7 @@ import { KEY, type PromptInput, type PromptOutput } from "./select.js";
 
 /**
  * Read a single line of visible (echoed) input from stdin. Used by `readSecret`
- * on the non-TTY / Windows path. Prompt chrome goes to stderr so `--json`
+ * on the non-TTY / no-raw-mode path. Prompt chrome goes to stderr so `--json`
  * stdout stays pure.
  */
 export async function readLineVisible(
@@ -30,11 +30,25 @@ export async function readLineVisible(
   }
 }
 
+/** Raw mode, or false where the terminal cannot give it (no setRawMode, or it throws). */
+function enterRawMode(input: PromptInput): boolean {
+  if (typeof input.setRawMode !== "function") return false;
+  try {
+    input.setRawMode(true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Read a secret from stdin, echoing a `*` mask per character on Unix TTYs so a
+ * Read a secret from stdin, echoing a `*` mask per character on a TTY so a
  * paste is visible (and a backspace erases one mask char) without revealing the
- * key. Non-TTY/Windows falls back to ordinary visible input. Ctrl-C exits 130.
- * Prompt and mask go to stderr so `--json` stdout stays pure.
+ * key. Windows consoles take the same raw path: Enter arrives as `\r`,
+ * Backspace as `\b`, Ctrl+C as `\x03`, and a Ctrl+V or right-click paste as
+ * one burst of characters. Only a non-TTY, or a terminal with no raw mode,
+ * falls back to visible input. Ctrl-C exits 130. Prompt and mask go to
+ * stderr so `--json` stdout stays pure.
  */
 export async function readSecret(
   prompt: string,
@@ -48,9 +62,11 @@ export async function readSecret(
 ): Promise<string> {
   const { allowEmpty = false, output = stderr } = options;
   const input: PromptInput = options.input ?? stdin;
-  if (!input.isTTY || process.platform === "win32") {
-    if (input.isTTY && process.platform === "win32") {
-      output.write("Note: input is visible on Windows.\n");
+  if (!input.isTTY || !enterRawMode(input)) {
+    if (input.isTTY) {
+      output.write(
+        `Note: input is visible ${process.platform === "win32" ? "on Windows" : "on this terminal"}.\n`,
+      );
     }
     const line = (await readLineVisible(prompt, { input, output })).trim();
     if (!allowEmpty && !line)
@@ -61,7 +77,6 @@ export async function readSecret(
   }
 
   output.write(prompt);
-  input.setRawMode(true);
   input.resume();
   input.setEncoding("utf8");
 
@@ -146,7 +161,11 @@ export async function readSecret(
         }),
     );
   } finally {
-    input.setRawMode(false);
+    try {
+      input.setRawMode(false);
+    } catch {
+      // Raw mode was already gone (a console that closed under us): the result or the Ctrl-C exit code stands.
+    }
     output.write("\n");
   }
 

@@ -1,8 +1,9 @@
-import { chmod, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { watch } from "node:fs";
+import { chmod, mkdir, realpath, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { CliError } from "../../cli/errors.js";
-import { agentHome, DEFAULT_BASE_URL, isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
+import { printNotes } from "../../cli/output.js";
+import { DEFAULT_BASE_URL, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { detectBinary } from "../detect.js";
 import {
@@ -12,7 +13,9 @@ import {
   notValidJsonError,
   parseJsonc,
   readTextIfExists,
+  writeKeyFile,
 } from "../managed-file.js";
+import { makeOverlayDir } from "../overlays.js";
 import {
   clearAddedState,
   fileCreatedByUs,
@@ -26,15 +29,26 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
+  ProbeDetail,
   ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
 import { applyModelPicker, buildModelPicker, stripModelPicker } from "./picker.js";
+import { launchDefault, putBackUserDefault, type UserDefault } from "./put-back.js";
+import {
+  CLAUDE_ID,
+  type ClaudeRecord,
+  claudeSettingsPath,
+  modelSlots,
+  stickyChoice,
+  wiredSettingsPath,
+} from "./record.js";
 import {
   API_KEY_KEY,
   BASE_URL_KEY,
   buildClaudeSettings,
   CONTEXT_KEY,
+  chosenModel,
   claudeBaseUrl,
   claudeDefaultModel,
   contextTokens,
@@ -42,61 +56,39 @@ import {
   ENV_OFF,
   ENV_ON,
   type Env,
+  FAST_SIDE,
   FAST_SLOT,
   FOREIGN_PROVIDER_KEYS,
   fastModel,
   gatewayEnv,
   HEADERS_KEY,
+  INVALID_CONFIG_HINT,
   inCatalog,
   isAlias,
+  legacyChosen,
   MAIN_SLOTS,
   MARKER_KEY,
   MODEL_SETTINGS,
   nonEmpty,
   ownedValues,
+  parseSettings,
+  routedByUs,
   settingAt,
   slotEnv,
+  slotReport,
   startupModel,
   TOKEN_KEY,
   withAgentHeader,
 } from "./settings.js";
 
-const CLAUDE_ID = "claude";
 const CLAUDE_BIN = "claude";
 
-const INVALID_CONFIG_HINT = "Fix it by hand, then run aiand claude on again.";
-
-/** What enable() recorded so off can tell its values from the user's. */
-type ClaudeRecord = {
-  path?: string;
-  env?: Env;
-  previousEnv?: Env;
-  removedModel?: string;
-  removedEnvModel?: string;
-  addedDeny?: string[];
-  createdKeys?: string[];
-  modelPicker?: unknown;
-  previousMode?: number;
-  created?: boolean;
-};
-
-function claudeSettingsPath(): string {
-  const dir = process.env.CLAUDE_CONFIG_DIR || join(agentHome(), ".claude");
-  return join(dir, "settings.json");
-}
-
-/**
- * While wired, the file `on` wrote: logout, uninstall and rotation run from
- * shells that may not share the CLAUDE_CONFIG_DIR it was wired under. An
- * unreadable record falls back to the current file, so status still reads one.
- */
-async function wiredSettingsPath(): Promise<string> {
-  try {
-    return (await getAddedState<ClaudeRecord>(CLAUDE_ID))?.path ?? claudeSettingsPath();
-  } catch {
-    return claudeSettingsPath();
-  }
-}
+const LIVE_ON_WARNING =
+  "If you have Claude Code open in other windows, they now send requests to ai&. One that starts failing needs a restart: type /exit, then run claude --continue. To use ai& in one session only, run aiand claude off, then aiand claude.";
+const LIVE_OFF_NOTE =
+  "If you have Claude Code open in other windows, they switch back too. If one still uses ai&, restart it: type /exit, then run claude --continue.";
+/** Claude Code applies a settings change 1–1.5s after the write (measured on 2.1.311–2.1.319). */
+const LIVE_RELOAD_MS = 3000;
 
 const restoreEnv = (text: string, key: string, previous: string | undefined): string =>
   previous !== undefined ? jsoncSet(text, ["env", key], previous) : jsoncDelete(text, ["env", key]);
@@ -110,9 +102,6 @@ async function markedFile(path: string): Promise<boolean> {
     return true;
   }
 }
-
-const routedByUs = (env: Record<string, unknown> | undefined): boolean =>
-  env?.[MARKER_KEY] === ENV_ON && isRoutableBaseUrl(env[BASE_URL_KEY]);
 
 /** Host of the gateway the CLI itself dials, for native-key routing checks. */
 const GATEWAY_HOST = new URL(DEFAULT_BASE_URL).hostname;
@@ -155,21 +144,6 @@ async function claudeNativeAiandKeys(): Promise<string[]> {
   }
   return keys;
 }
-
-function parseSettings(path: string, raw: string): Record<string, unknown> {
-  if (!raw.trim()) return {};
-  let parsed: unknown;
-  try {
-    parsed = parseJsonc(raw);
-  } catch (error) {
-    if (error instanceof SyntaxError) throw notValidJsonError(path, INVALID_CONFIG_HINT);
-    throw error;
-  }
-  const object = asObject(parsed);
-  if (!object) throw notValidJsonError(path, INVALID_CONFIG_HINT);
-  return object;
-}
-
 /** Re-parse text this module just wrote, which is always an object. */
 const parseWritten = (text: string): Record<string, unknown> => asObject(parseJsonc(text)) ?? {};
 
@@ -193,7 +167,7 @@ function assertNotForeign(
   }
 }
 
-async function probe(): Promise<ProbeResult> {
+async function probeDetail(): Promise<ProbeDetail> {
   let settings: Record<string, unknown>;
   try {
     const path = await wiredSettingsPath();
@@ -201,8 +175,18 @@ async function probe(): Promise<ProbeResult> {
   } catch {
     return { active: false, model: null };
   }
-  const active = routedByUs(asObject(settings.env));
-  return { active, model: (active && startupModel(settings).model) || null };
+  const env = asObject(settings.env);
+  const active = routedByUs(env);
+  return {
+    active,
+    model: (active && startupModel(settings).model) || null,
+    ...(active ? { baseUrl: String(env?.[BASE_URL_KEY]) } : {}),
+  };
+}
+
+async function probe(): Promise<ProbeResult> {
+  const { active, model } = await probeDetail();
+  return { active, model };
 }
 
 async function enable(input: EnableInput): Promise<EnableResult> {
@@ -261,11 +245,34 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     typeof env[HEADERS_KEY] === "string" ? env[HEADERS_KEY] : undefined,
   );
   const kept: Env = {};
+  let chosen: string | undefined;
+  let fastChosen: string | undefined;
+  let fromProfile = false;
   if (!isNative) {
-    const pinned = input.pinModel ? input.model : claudeDefaultModel(catalog, input.profileModel);
-    for (const [slot, value] of Object.entries(slotEnv(pinned, fastModel(catalog, pinned)))) {
+    // A re-run without --model keeps the model the last `on` was told to use.
+    const served = (id: string | undefined): string | undefined =>
+      id !== undefined && inCatalog(catalog, id) ? id : undefined;
+    // A --model sticks; a profile-sourced choice follows the current profile.
+    const sticky = input.pinModel
+      ? input.model
+      : prior?.choice === undefined
+        ? legacyChosen(priorEnv, catalog, input.profileModel)
+        : prior.choice.fromProfile
+          ? undefined
+          : served(prior.choice.model);
+    chosen = sticky ?? chosenModel(catalog, undefined, input.profileModel);
+    fromProfile = sticky === undefined && chosen !== undefined;
+    fastChosen = input.fastModel ?? (input.pinModel ? undefined : served(prior?.choice?.fast));
+    const main = chosen ?? claudeDefaultModel(catalog, input.profileModel);
+    const fast = fastModel(catalog, main, { chosen, fast: fastChosen });
+    for (const [slot, value] of Object.entries(slotEnv(main, fast))) {
       const current = env[slot];
-      if (!input.pinModel && typeof current === "string" && inCatalog(catalog, current)) {
+      const pinned = input.pinModel || (input.fastModel !== undefined && FAST_SIDE.has(slot));
+      // Only a value the user wrote stays; one a previous `on` wrote is
+      // recomputed, so a slot never keeps a model nobody chose.
+      const users =
+        typeof current === "string" && current !== priorEnv[slot] && inCatalog(catalog, current);
+      if (!pinned && users) {
         kept[slot] = current;
       } else {
         desired[slot] = value;
@@ -284,6 +291,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   } else {
     warnings.push("Claude Code's own models are not on ai&; pass --model to pick one.");
   }
+  if (!marked) warnings.push(LIVE_ON_WARNING);
 
   let text = raw;
   if (settings.env === undefined) createdKeys.add("env");
@@ -341,14 +349,14 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     text,
     settings.modelPicker,
     prior?.modelPicker,
-    buildModelPicker(catalog),
+    buildModelPicker(catalog, Number(desired[CONTEXT_KEY]) || undefined),
   );
   text = picker.text;
   if (picker.warning) warnings.push(picker.warning);
 
   const previousMode = prior?.previousMode ?? (await existingFileMode(path)) ?? DEFAULT_FILE_MODE;
   if (text !== raw) {
-    await writeFileAtomic(path, text, { mode: PRIVATE_FILE_MODE });
+    await writeKeyFile(path, text, { mode: PRIVATE_FILE_MODE, agentId: CLAUDE_ID });
   } else {
     await chmod(path, PRIVATE_FILE_MODE);
   }
@@ -362,16 +370,26 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     modelPicker: picker.recorded,
     previousMode,
     created: created || prior?.created === true,
+    choice: {
+      ...(chosen !== undefined ? { model: chosen } : {}),
+      ...(fastChosen !== undefined ? { fast: fastChosen } : {}),
+      ...(fromProfile ? { fromProfile } : {}),
+    },
   });
 
   // --model pins the slots; a model setting (concrete, or an alias resolving
   // to another slot) can still decide where Claude Code starts.
   const { model: startsOn, setting } = startupModel(parseWritten(text));
-  if (input.pinModel && setting && startsOn !== input.model) {
+  if (chosen !== undefined && setting && startsOn !== chosen) {
     const shown = setting.value === startsOn ? startsOn : `${setting.value} → ${startsOn}`;
     warnings.push(
-      `Claude Code still starts on your ${setting.label} setting (${shown}); remove it or use /model to switch to ${input.model}.`,
+      `Claude Code still starts on your ${setting.label} setting (${shown}); remove it or use /model to switch to ${chosen}.`,
     );
+  }
+  if (chosen !== undefined) {
+    // A slot the user set by hand still holds another model: say so.
+    const report = slotReport(parseWritten(text), { chosen, fast: fastChosen });
+    warnings.push(...report.warnings.filter((line) => !line.includes("startup model")));
   }
   return {
     model: startsOn ?? input.model,
@@ -412,7 +430,8 @@ async function disable(): Promise<DisableResult> {
   const ours: Env = added?.env ?? ownedValues(env);
   for (const [key, value] of Object.entries(ours)) {
     if (key === MARKER_KEY || env[key] === undefined) continue;
-    if (env[key] !== value) {
+    // "" is an `off` that died in its wait after emptying the key: ours, mid-off.
+    if (env[key] !== value && env[key] !== "") {
       notes.push(`left env.${key} because you edited it`);
       continue;
     }
@@ -456,6 +475,7 @@ async function disable(): Promise<DisableResult> {
   if (picker.note) notes.push(picker.note);
 
   if (text !== raw) {
+    await emptyRemovedKeys(path, text, env);
     const empty = Object.keys(parseWritten(text)).length === 0;
     if (empty && (added?.created === true || (await fileCreatedByUs(CLAUDE_ID, path)))) {
       await unlink(path);
@@ -465,11 +485,39 @@ async function disable(): Promise<DisableResult> {
     }
   }
   await clearAddedState(CLAUDE_ID);
-  return { stripped: true, notes };
+  return { stripped: true, notes, warnings: [LIVE_OFF_NOTE] };
 }
 
+/**
+ * Running Claude Code sessions keep an env key that disappears but read "" as unset.
+ * The marker stays so a failed second write still reads as ours.
+ */
+async function emptyRemovedKeys(
+  path: string,
+  final: string,
+  env: Record<string, unknown>,
+): Promise<void> {
+  const left = asObject(parseWritten(final).env) ?? {};
+  const removed = Object.keys(env).filter((key) => !(key in left) && key !== MARKER_KEY);
+  if (removed.length === 0) return;
+  let text = jsoncSet(final, ["env", MARKER_KEY], ENV_ON);
+  for (const key of removed) text = jsoncSet(text, ["env", key], "");
+  await writeFileAtomic(path, text, { mode: PRIVATE_FILE_MODE });
+  const wait = Number(process.env.AIAND_CLAUDE_RELOAD_MS ?? LIVE_RELOAD_MS);
+  await new Promise((resolve) => setTimeout(resolve, wait));
+}
+
+/**
+ * The Claude Code release `open` installs (check-dist requires every npm
+ * install hint to pin one). No --ignore-scripts: the package's postinstall
+ * (install.cjs) puts the platform's native binary at bin/claude.exe, which
+ * is a placeholder until it runs.
+ * @public read from dist/ by scripts/check-dist.mjs
+ */
+export const CLAUDE_CODE_VERSION = "2.1.312";
+
 const CLAUDE_INSTALL = {
-  command: "npm install -g @anthropic-ai/claude-code",
+  command: `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}`,
   url: "https://code.claude.com/docs",
 };
 
@@ -479,9 +527,11 @@ export const claudeAdapter: AgentAdapter = {
   bin: CLAUDE_BIN,
   install: CLAUDE_INSTALL,
   aliases: ["claude-code"],
+  openLaunchesSession: true,
   detect(): DetectResult {
     return detectBinary(CLAUDE_BIN);
   },
+  carriesWiring: (text) => text.includes(`"${MARKER_KEY}"`),
   managedFiles(): string[] {
     // The wired file too, so restore works from a shell without its CLAUDE_CONFIG_DIR.
     const wired = getAddedStateSync<ClaudeRecord>(CLAUDE_ID)?.path;
@@ -489,6 +539,12 @@ export const claudeAdapter: AgentAdapter = {
     return wired && wired !== current ? [current, wired] : [current];
   },
   probe,
+  modelSlots,
+  fastModelFlag: true,
+  launchModelFlags: ["--model"],
+  // Claude Code's own aliases (opus, sonnet, haiku…) resolve through the slots.
+  passesLaunchModel: isAlias,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
   enable,
   disable,
   // Claude Code prefers its own OAuth token over any API key, so a shell that
@@ -522,8 +578,9 @@ export const claudeAdapter: AgentAdapter = {
     // A rotation swaps only the key it replaced: a config baked from another
     // profile keeps routing to that profile's org.
     if (input.previousKey !== undefined && env[TOKEN_KEY] !== input.previousKey) return false;
-    await writeFileAtomic(path, jsoncSet(raw, ["env", TOKEN_KEY], input.apiKey), {
+    await writeKeyFile(path, jsoncSet(raw, ["env", TOKEN_KEY], input.apiKey), {
       mode: PRIVATE_FILE_MODE,
+      agentId: CLAUDE_ID,
     });
     return true;
   },
@@ -532,21 +589,73 @@ export const claudeAdapter: AgentAdapter = {
     // the user's settings, and Claude Code loads the token from it. It then
     // exports that env block, key included, to every Bash command and hook it
     // runs, as it does after `on`; an apiKeyHelper would keep the key out.
-    const main = input.model ?? claudeDefaultModel(input.catalog, input.profileModel);
+    // Every slot on the chosen model: Claude Code sends titles and other
+    // background calls to the fast slot, and safety checks to the Sonnet slot.
+    // Without --model, a --model given to `on` still holds.
+    const sticky = input.model === undefined ? await stickyChoice(input.catalog) : {};
+    const chosen = chosenModel(input.catalog, input.model ?? sticky.model, input.profileModel);
+    const main = chosen ?? claudeDefaultModel(input.catalog, input.profileModel);
     const settings = buildClaudeSettings({
       apiKey: input.apiKey,
       baseUrl: claudeBaseUrl(input.baseUrl),
       main,
+      fast: fastModel(input.catalog, main, { chosen, fast: input.fastModel ?? sticky.fast }),
       catalog: input.catalog,
     });
-    const dir = await mkdtemp(join(tmpdir(), "aiand-claude-"));
+    const dir = await makeOverlayDir("aiand-claude-");
     const file = join(dir, "settings.json");
-    await writeFile(file, JSON.stringify(settings), { mode: PRIVATE_FILE_MODE });
+    try {
+      await writeFile(file, JSON.stringify(settings), { mode: PRIVATE_FILE_MODE, flag: "wx" });
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true });
+      throw error;
+    }
+    const userPath = claudeSettingsPath();
+    const user: UserDefault | null = await readTextIfExists(userPath)
+      .then((raw) => launchDefault(parseSettings(userPath, raw), input.catalog))
+      .catch(() => null);
+    // One at a time: a watcher-triggered put-back still writing when cleanup
+    // runs would leave cleanup's own read nothing to do, and cleanup would
+    // check `replaced` before the write set it, dropping the note.
+    let putBackQueue: Promise<void> = Promise.resolve();
+    const putBack = (): Promise<void> => {
+      if (!user) return Promise.resolve();
+      putBackQueue = putBackQueue.then(() =>
+        putBackUserDefault(userPath, user, input.catalog).catch(() => {}),
+      );
+      return putBackQueue;
+    };
+    let watcher: ReturnType<typeof watch> | undefined;
+    try {
+      if (user) {
+        await mkdir(dirname(userPath), { recursive: true });
+        // Claude Code writes through a symlinked settings.json.
+        const real = await realpath(userPath).catch(() => userPath);
+        watcher = watch(dirname(real), (_event, name) => {
+          if (name === basename(real)) void putBack();
+        });
+        watcher.on("error", () => watcher?.close());
+      }
+    } catch {
+      watcher = undefined;
+    }
     return {
       env: {},
       args: ["--settings", file],
       cleanup: async () => {
+        watcher?.close();
         await rm(dir, { recursive: true, force: true });
+        await putBack();
+        // Claude Code owns the terminal until it exits. Both ids can carry
+        // bytes the user did not type (a catalog id from the server, a model
+        // from a settings file another tool wrote), so the note is sanitised.
+        if (user?.replaced) {
+          const back =
+            user.model === undefined
+              ? `Cleared ${user.replaced} as your default Claude Code model, so plain claude uses its usual model.`
+              : `Your default Claude Code model is ${String(user.model)} again.`;
+          printNotes([`${back} ai& models only work inside aiand claude.`]);
+        }
       },
     };
   },

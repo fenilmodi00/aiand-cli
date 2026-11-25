@@ -92,6 +92,14 @@ export async function getLogsPaged(
     });
     collected.push(...page.data);
     if (!page.has_more || !page.next_after || !page.next_after_id) break;
+    // A page that adds nothing, or a cursor that does not move, would loop
+    // forever while still claiming has_more: stop with what we have.
+    const stalled =
+      page.data.length === 0 || (page.next_after === after && page.next_after_id === afterId);
+    if (stalled) {
+      truncated = true;
+      break;
+    }
     if (collected.length >= query.limit) {
       truncated = true;
       break;

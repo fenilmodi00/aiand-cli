@@ -1,9 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, extname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_FILE_MODE, writeFileAtomic } from "../fsutil.js";
+import { DEFAULT_FILE_MODE, makePrivateTempDirSync, writeFileAtomic } from "../fsutil.js";
 
 /** One external command to try, in order, until one succeeds. */
 export type CommandSpec = {
@@ -250,7 +249,7 @@ export async function writeAndShare(
   }
 
   const pngPath = ext === ".png" ? outPath : `${outPath}.png`;
-  const tempDir = mkdtempSync(join(tmpdir(), "aiand-share-"));
+  const tempDir = makePrivateTempDirSync("aiand-share-");
   const tempSvg = join(tempDir, "overview.svg");
   try {
     await writeFileAtomic(tempSvg, svg, { mode: DEFAULT_FILE_MODE });

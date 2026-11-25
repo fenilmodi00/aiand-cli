@@ -129,6 +129,7 @@ const SCRUB = [
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
   "HERMES_HOME",
+  "JOUZU_HOME",
   "PI_CODING_AGENT_DIR",
   "PI_CONFIG_DIR",
   "XDG_DATA_HOME",
@@ -205,6 +206,17 @@ const PI_DIR = join(MAIN_HOME, ".pi", "agent");
 const PI_MODELS = join(PI_DIR, "models.json");
 const PI_AUTH = join(PI_DIR, "auth.json");
 const PI_SETTINGS = join(PI_DIR, "settings.json");
+// Jouzu keeps Pi's files in its own per-platform agent dir; with
+// JOUZU_HOME scrubbed, AIAND_HOME stands in for the OS home.
+const JOUZU_DIR =
+  process.platform === "darwin"
+    ? join(MAIN_HOME, "Library", "Application Support", "Jouzu", "agent")
+    : process.platform === "win32"
+      ? join(MAIN_HOME, "AppData", "Roaming", "Jouzu", "agent")
+      : join(MAIN_HOME, ".config", "jouzu", "agent");
+const JOUZU_MODELS = join(JOUZU_DIR, "models.json");
+const JOUZU_AUTH = join(JOUZU_DIR, "auth.json");
+const JOUZU_SETTINGS = join(JOUZU_DIR, "settings.json");
 // omp's config root honors PI_CONFIG_DIR like pi's honors
 // PI_CODING_AGENT_DIR; the scenarios scrub both, so the default
 // ~/.omp/agent is what the matrix wires.
@@ -255,7 +267,17 @@ function readCopilotDb(...sqls) {
 /* Sandbox setup                                                              */
 /* -------------------------------------------------------------------------- */
 
-const STUB_NAMES = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "hermes"];
+const STUB_NAMES = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "omp",
+  "copilot",
+  "copilot-app",
+  "hermes",
+  "jouzu",
+];
 
 function writeStubs() {
   mkdirSync(BIN, { recursive: true });
@@ -585,6 +607,41 @@ const AGENT_DEFS = {
       t.ok(settings.theme === "dark", "user settings survive");
     },
   },
+  jouzu: {
+    bin: "jouzu",
+    seed(state) {
+      state.created = [JOUZU_MODELS];
+      seedFile(
+        state,
+        JOUZU_AUTH,
+        `${JSON.stringify({ shisa: { type: "api_key", key: "sk-user-shisa" } }, null, 2)}\n`,
+      );
+      seedFile(state, JOUZU_SETTINGS, `${JSON.stringify({ tuiMode: "regular" }, null, 2)}\n`);
+    },
+    contents(t) {
+      const models = parseJson(readFileSync(JOUZU_MODELS, "utf8")) ?? {};
+      const aiand = models.providers?.aiand ?? {};
+      t.ok(aiand.api === "openai-completions", "provider speaks openai-completions");
+      t.ok(
+        aiand.baseUrl === "https://api.aiand.com/v1",
+        "provider baseUrl is gateway /v1",
+        String(aiand.baseUrl),
+      );
+      const auth = parseJson(readFileSync(JOUZU_AUTH, "utf8")) ?? {};
+      t.ok(
+        auth.aiand?.key === KEY && auth.aiand?.managedBy === "aiand",
+        "auth.json aiand credential carries the key and marker",
+      );
+      t.ok(auth.shisa?.key === "sk-user-shisa", "user credential survives");
+      const settings = parseJson(readFileSync(JOUZU_SETTINGS, "utf8")) ?? {};
+      t.ok(
+        settings.defaultProvider === "aiand" && settings.defaultModel === modelId(),
+        "settings pin provider and model",
+        `${settings.defaultProvider}/${settings.defaultModel}`,
+      );
+      t.ok(settings.tuiMode === "regular", "user settings survive");
+    },
+  },
   omp: {
     bin: "omp",
     seed(state) {
@@ -779,8 +836,10 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
       t.ok(envText.includes(KEY), "the session key rides the dedicated var");
       t.ok(envText.includes("https://api.aiand.com"), "the .env carries the gateway base URL");
       t.ok(
-        envText.includes("USER_KEY=keep") && !envText.includes("user-key"),
-        "unrelated .env lines survive, the user ANTHROPIC key is set aside",
+        envText.includes("USER_KEY=keep") &&
+          !/^\s*(export\s+)?ANTHROPIC_API_KEY\s*=/m.test(envText) &&
+          envText.includes('# aiand set aside: ANTHROPIC_API_KEY="user-key"'),
+        "unrelated .env lines survive, the user ANTHROPIC key is commented out in place",
       );
       // POSIX only: win32 reports 0666 regardless of the mode `on` wrote.
       if (process.platform !== "win32") {
@@ -795,7 +854,17 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   },
 };
 
-const WIRING_ONE = ["opencode", "claude", "codex", "pi", "omp", "copilot", "copilot-app", "hermes"];
+const WIRING_ONE = [
+  "opencode",
+  "claude",
+  "codex",
+  "pi",
+  "omp",
+  "copilot",
+  "copilot-app",
+  "hermes",
+  "jouzu",
+];
 
 // Whole-registry assertion (`status` lists every shipped adapter) reads the
 // shipped registry instead of a hand-kept list, which goes stale silently as
@@ -2006,7 +2075,8 @@ define(
     // shadow or confuse the overlay routing.
     const r = launchCheck(
       "hermes",
-      ["hermes", "--model", model, "--", "--provider", "x", "--model", "y", "--dump"],
+      // Hermes's own --model after `--` names the session model, so it must agree.
+      ["hermes", "--model", model, "--", "--provider", "x", "--model", model, "--dump"],
       {
         extra: {
           ANTHROPIC_API_KEY: "inherited-anthropic-key",

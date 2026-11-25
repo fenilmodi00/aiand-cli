@@ -40,6 +40,7 @@ function seedCredential({ expiresAt = EXPIRES_AT } = {}) {
     `${JSON.stringify({
       default: {
         origin: "paste",
+        bound_to: { auth_url: stubUrl(), api_url: stubUrl() },
         storage: "plaintext",
         ...(expiresAt === null ? {} : { expires_at: expiresAt }),
         user: { id: "u1", email: "dev@example.com" },
@@ -53,8 +54,10 @@ function seedCredential({ expiresAt = EXPIRES_AT } = {}) {
   );
 }
 
+const stubUrl = () => `${gateway.url}/stub/two-orgs`;
+
 const cli = (args, overrides = {}) =>
-  runCli(args, { env: cliEnv({ AIAND_BASE_URL: `${gateway.url}/stub/two-orgs`, ...overrides }) });
+  runCli(args, { env: cliEnv({ AIAND_BASE_URL: stubUrl(), ...overrides }) });
 
 describe("orgs under an Env-key Session", () => {
   test("no Org is marked active despite a leftover stored Credential", async () => {

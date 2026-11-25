@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
-import { readEnvValue, renderHermesEnv, replaceEnvValue } from "../dist/agents/hermes/env.js";
+import {
+  readEnvValue,
+  renderHermesEnv,
+  replaceEnvValue,
+  withoutOwnedEnv,
+} from "../dist/agents/hermes/env.js";
 import {
   assertNoLegacyAiand,
   buildHermesWrites,
@@ -560,6 +565,99 @@ describe("multi-line quoted .env values", () => {
     assert.ok(!out.text.includes("u\nv"), "shadowed ANTHROPIC line gone, body included");
     // The dropped report names the header, the way enable() warns about it.
     assert.deepEqual(out.droppedUserLines, ['ANTHROPIC_API_KEY="u']);
+  });
+});
+
+describe("a quote only opens a multi-line .env value right after the =", () => {
+  // python-dotenv reads `GREETING=it's fine` and `URL=http://x?a="b` as plain
+  // unquoted values; treating the stray quote as an opener hid every later
+  // line, our own appended key included, from set-aside and from off.
+  const ASIDE = { setAside: "comment" };
+  const ROUTING = { apiKey: "sk-new", baseUrl: "https://x/v1" };
+
+  for (const stray of ["GREETING=it's fine", 'URL=http://x?a="b', 'NOTE=say "hi', "A=b'c"]) {
+    test(`${stray} does not swallow the entries after it`, () => {
+      const out = renderHermesEnv(`${stray}\nANTHROPIC_API_KEY=sk-user\nKEEP=1\n`, ROUTING, ASIDE);
+      assert.equal(
+        out.text,
+        `${stray}\n# aiand set aside: ANTHROPIC_API_KEY=sk-user\nKEEP=1\nAIAND_HERMES_API_KEY="sk-new"\nAIAND_HERMES_BASE_URL="https://x/v1"\n`,
+      );
+      assert.deepEqual(out.droppedUserLines, ["ANTHROPIC_API_KEY=sk-user"]);
+    });
+
+    test(`off still strips our key from a file holding ${stray}`, () => {
+      const kept = withoutOwnedEnv([stray, 'AIAND_HERMES_API_KEY="sk-new"', "KEEP=1"]);
+      assert.deepEqual(kept, [stray, "KEEP=1"]);
+    });
+  }
+
+  test("text after a closing quote opens nothing", () => {
+    const out = renderHermesEnv('A="x" it\'s\nANTHROPIC_TOKEN=t\n', ROUTING);
+    assert.ok(!out.text.includes("ANTHROPIC_TOKEN=t"));
+  });
+
+  test("a stray quote does not hide a later value from read or replace", () => {
+    const text = 'G=it\'s\nAIAND_HERMES_API_KEY="old"\nZ=1\n';
+    assert.equal(readEnvValue(text, "AIAND_HERMES_API_KEY"), "old");
+    assert.equal(
+      replaceEnvValue(text, "AIAND_HERMES_API_KEY", "sk-new"),
+      'G=it\'s\nAIAND_HERMES_API_KEY="sk-new"\nZ=1\n',
+    );
+    assert.equal(replaceEnvValue("A=it's\nB=old\nC=it's\n", "B", "n"), "A=it's\nB=\"n\"\nC=it's\n");
+  });
+
+  test("a quote after the = still opens a multi-line value, spaces and export included", () => {
+    const text = "KEEP = \"a\nb\"\nexport ANTHROPIC_TOKEN= 'tok\nen'\nZ=1\n";
+    const out = renderHermesEnv(text, ROUTING, ASIDE);
+    assert.ok(out.text.includes('KEEP = "a\nb"\n'), "the user's value stays whole");
+    assert.ok(
+      out.text.includes(
+        "# aiand set aside: export ANTHROPIC_TOKEN= 'tok\n# aiand set aside: en'\n",
+      ),
+    );
+    assert.equal(readEnvValue(out.text, "Z"), "1");
+  });
+
+  test("a comment line or a junk line with a quote opens nothing", () => {
+    const out = renderHermesEnv("# it's\njunk \"\nANTHROPIC_API_KEY=x\n", ROUTING);
+    assert.ok(!out.text.includes("ANTHROPIC_API_KEY=x"));
+  });
+});
+
+describe("set-aside .env entries", () => {
+  test("comment mode keeps the entry in place, body included", () => {
+    const out = renderHermesEnv(
+      'KEEP=1\nANTHROPIC_API_KEY="u\nv"\nZ=2\n',
+      { apiKey: "sk-new", baseUrl: "https://x/v1" },
+      { setAside: "comment" },
+    );
+    assert.equal(
+      out.text,
+      'KEEP=1\n# aiand set aside: ANTHROPIC_API_KEY="u\n# aiand set aside: v"\nZ=2\nAIAND_HERMES_API_KEY="sk-new"\nAIAND_HERMES_BASE_URL="https://x/v1"\n',
+    );
+    assert.deepEqual(out.droppedUserLines, ['ANTHROPIC_API_KEY="u']);
+  });
+
+  test("an apostrophe in a comment does not swallow the next entry", () => {
+    const out = renderHermesEnv(
+      "# don't\nANTHROPIC_API_KEY=x\nKEEP=1 # it's fine\nANTHROPIC_TOKEN=t\n",
+      {
+        apiKey: "sk-new",
+        baseUrl: "https://x/v1",
+      },
+    );
+    assert.ok(!out.text.includes("ANTHROPIC_API_KEY=x"));
+    assert.ok(!out.text.includes("ANTHROPIC_TOKEN=t"));
+    assert.ok(out.text.includes("KEEP=1 # it's fine"));
+  });
+
+  test("drop mode leaves no set-aside entry behind", () => {
+    const out = renderHermesEnv(
+      'KEEP=1\n# aiand set aside: ANTHROPIC_API_KEY="u\n# aiand set aside: v"\n',
+      { apiKey: "sk-new", baseUrl: "https://x/v1" },
+    );
+    assert.ok(!out.text.includes("aiand set aside"));
+    assert.ok(out.text.startsWith("KEEP=1\n"));
   });
 });
 

@@ -30,81 +30,125 @@ function envValuePattern(name: string): RegExp {
   return new RegExp(`^([ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=[ \\t]*).*$`);
 }
 
-/** The quote state a dotenv line leaves, carried from the state it started in. */
-function quoteState(
-  line: string,
-  open: { single: boolean; double: boolean },
-): { single: boolean; double: boolean } {
-  let single = open.single;
-  let double = open.double;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]!;
-    if (single) {
-      if (ch === "'" && line[i + 1] === "'") i += 1;
-      else if (ch === "'") single = false;
-    } else if (double) {
-      if (ch === "\\") i += 1;
-      else if (ch === '"') double = false;
-    } else if (ch === "'") single = true;
-    else if (ch === '"') double = true;
+type Quote = "'" | '"';
+
+/** Where a dotenv assignment's value begins: `KEY=`, `export KEY =`, whitespace after the `=` too. */
+const ASSIGNMENT_RE = /^[ \t]*(?:export[ \t]+)?[^\s=#'"][^\s=]*[ \t]*=[ \t]*/;
+
+/**
+ * The quote still open at the end of `text`, which starts inside a value
+ * opened with `quote`. Nothing after the closing quote counts, so
+ * `A="x" it's` leaves nothing open.
+ */
+function scanQuoted(text: string, quote: Quote): Quote | null {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote === "'") {
+      if (ch === "'" && text[i + 1] === "'") i += 1;
+      else if (ch === "'") return null;
+    } else if (ch === "\\") {
+      i += 1;
+    } else if (ch === '"') {
+      return null;
+    }
   }
-  return { single, double };
+  return quote;
 }
 
 /**
- * Split the lines into the kept ones and the dropped headers: a dotenv value
- * whose quote never closes on its own line continues onto the next lines
- * (the multi-line quoted form), so a line-wise drop must take the body with
- * the header or strand it in the file. Only a matched header is reported as
- * dropped, never a continuation line.
+ * The quote an entry's first line leaves open: only a quote straight after
+ * the `=` opens a value, as in python-dotenv. A stray quote inside an unquoted
+ * value (`GREETING=it's fine`), a comment, or a line that is no assignment
+ * opens nothing, so the lines after it stay visible to every edit.
  */
-function filterEnvLines(
+function quoteOpenedBy(header: string): Quote | null {
+  const assignment = ASSIGNMENT_RE.exec(header);
+  if (!assignment) return null;
+  const quote = header[assignment[0].length];
+  if (quote !== "'" && quote !== '"') return null;
+  return scanQuoted(header.slice(assignment[0].length + 1), quote);
+}
+
+/**
+ * Group the lines into dotenv entries: a value whose quote never closes on
+ * its own line continues onto the next lines (the multi-line quoted form),
+ * so a matched header takes its body with it. `matched` is decided on the
+ * header alone, never a continuation line.
+ */
+function envEntries(
   lines: string[],
   match: (line: string) => boolean,
-): { kept: string[]; dropped: string[] } {
-  const kept: string[] = [];
-  const dropped: string[] = [];
-  let skipping = false;
-  let open = { single: false, double: false };
+): { lines: string[]; matched: boolean }[] {
+  const entries: { lines: string[]; matched: boolean }[] = [];
+  let open: Quote | null = null;
   for (const line of lines) {
-    if (skipping) {
-      open = quoteState(line, open);
-      skipping = open.single || open.double;
+    if (open !== null) {
+      entries.at(-1)!.lines.push(line);
+      open = scanQuoted(line, open);
       continue;
     }
-    if (!match(line)) {
-      kept.push(line);
-      continue;
-    }
-    dropped.push(line);
-    open = quoteState(line, { single: false, double: false });
-    skipping = open.single || open.double;
+    entries.push({ lines: [line], matched: match(line) });
+    open = quoteOpenedBy(line);
   }
-  return { kept, dropped };
+  return entries;
+}
+
+/** Lines of the unmatched entries only. */
+function keepUnmatched(lines: string[], match: (line: string) => boolean): string[] {
+  return envEntries(lines, match).flatMap((entry) => (entry.matched ? [] : entry.lines));
 }
 
 /** The `.env` without our own pair, the way off strips it. */
 export function withoutOwnedEnv(lines: string[]): string[] {
-  return filterEnvLines(lines, (line) => OWNED_ENV_RE.test(line)).kept;
+  return keepUnmatched(lines, (line) => OWNED_ENV_RE.test(line));
+}
+
+/**
+ * What persistent `on` prefixes each line of a set-aside user entry with.
+ * The entry stays in the user's own `.env`, commented out, so it is never
+ * copied anywhere else (the record used to hold it in plaintext) and a
+ * multi-line value comes back whole.
+ */
+const SET_ASIDE_PREFIX = "# aiand set aside: ";
+
+/** Put set-aside entries back: every line that carries our prefix loses it. */
+export function restoreSetAsideEnv(lines: string[]): string[] {
+  return lines.map((line) =>
+    line.startsWith(SET_ASIDE_PREFIX) ? line.slice(SET_ASIDE_PREFIX.length) : line,
+  );
 }
 
 /**
  * Render the routing `.env`: every other line survives byte-identical
- * (comments, blanks, unrelated keys), shadowed lines are dropped, and our
- * dedicated pair is appended. JSON.stringify quotes each value so a key
- * with spaces or # stays one dotenv entry.
+ * (comments, blanks, unrelated keys), shadowed entries are taken out of
+ * play, and our dedicated pair is appended. JSON.stringify quotes each value
+ * so a key with spaces or # stays one dotenv entry.
+ *
+ * `setAside: "comment"` (persistent `on`) comments the user's shadowing
+ * entries out in place, for `off` to restore; the default drops them, which
+ * is what a throwaway overlay wants, along with any entries a persistent
+ * `on` already set aside, so the overlay never carries a copy.
  */
 export function renderHermesEnv(
   existingText: string,
   { apiKey, baseUrl }: { apiKey: string; baseUrl: string },
+  { setAside = "drop" }: { setAside?: "comment" | "drop" } = {},
 ): { text: string; droppedUserLines: string[] } {
   const droppedUserLines: string[] = [];
   const { lines, trailingNewline, eol } = splitYamlLines(existingText);
-  const { kept, dropped } = filterEnvLines(lines, (line) => SHADOWED_ENV_RE.test(line));
-  // Stale pairs of ours go quietly; the user's own ANTHROPIC_* lines are
-  // reported, so enable() can warn and off can hand them back.
-  for (const line of dropped) {
-    if (!OWNED_ENV_RE.test(line)) droppedUserLines.push(line);
+  const kept: string[] = [];
+  for (const entry of envEntries(lines, (line) => SHADOWED_ENV_RE.test(line))) {
+    const header = entry.lines[0]!;
+    if (!entry.matched) {
+      if (setAside === "drop" && header.startsWith(SET_ASIDE_PREFIX)) continue;
+      kept.push(...entry.lines);
+      continue;
+    }
+    // Stale pairs of ours go quietly; the user's own ANTHROPIC_* entries are
+    // reported, so enable() can warn.
+    if (OWNED_ENV_RE.test(header)) continue;
+    droppedUserLines.push(header);
+    if (setAside === "comment") kept.push(...entry.lines.map((line) => SET_ASIDE_PREFIX + line));
   }
   const joined = joinYamlLines(kept, trailingNewline && kept.length > 0, eol);
   const prefix = joined === "" ? "" : joined.endsWith(eol) ? joined : `${joined}${eol}`;
@@ -128,13 +172,11 @@ export function readEnvValue(text: string, name: string): string | undefined {
   if (at === -1) return undefined;
   // A quoted value that never closes on its own line continues onto the
   // next lines: reading only the header would truncate the user's value.
-  const collected: string[] = [];
-  let open = { single: false, double: false };
-  for (let i = at; i < lines.length; i++) {
-    const line = lines[i]!;
-    collected.push(line);
-    open = quoteState(line, open);
-    if (!open.single && !open.double) break;
+  const collected: string[] = [lines[at]!];
+  let open = quoteOpenedBy(lines[at]!);
+  for (let i = at + 1; open !== null && i < lines.length; i++) {
+    collected.push(lines[i]!);
+    open = scanQuoted(lines[i]!, open);
   }
   const raw = collected
     .map((line, i) => (i === 0 ? (pattern.exec(line)![1] ?? "") : line.trim()))
@@ -162,9 +204,9 @@ export function replaceEnvValue(text: string, name: string, value: string): stri
     idx += 1;
     // The whole multi-line quoted value goes: leaving its continuation lines
     // behind would strand them as a new (invalid) entry.
-    let open = quoteState(line, { single: false, double: false });
-    while (idx < lines.length && (open.single || open.double)) {
-      open = quoteState(lines[idx]!, open);
+    let open = quoteOpenedBy(line);
+    while (idx < lines.length && open !== null) {
+      open = scanQuoted(lines[idx]!, open);
       idx += 1;
     }
   }

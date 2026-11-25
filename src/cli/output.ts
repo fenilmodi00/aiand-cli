@@ -91,6 +91,284 @@ export function json(value: unknown): void {
   writeCoordinated(() => process.stdout.write(JSON.stringify(value, null, 2) + EOL));
 }
 
+/**
+ * An ESC-introduced string (OSC, DCS, SOS, PM, APC) that has not ended after
+ * this many characters is abandoned, so one unterminated sequence cannot
+ * swallow the rest of a stream.
+ */
+const MAX_STRING_LENGTH = 4096;
+
+const BEL = 0x07;
+const TAB = 0x09;
+const LF = 0x0a;
+const CR = 0x0d;
+const CAN = 0x18;
+const SUB = 0x1a;
+const ESC_CODE = 0x1b;
+const DEL = 0x7f;
+const C1_CSI = 0x9b;
+const C1_ST = 0x9c;
+
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+
+function isBidiControl(code: number): boolean {
+  return (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+}
+
+export type SanitizeOptions = {
+  /** Fold newlines and tabs to spaces: table cells, fields, labels, one-line notes. */
+  singleLine?: boolean;
+};
+
+type SanitizerState = "ground" | "esc" | "escIntermediate" | "csi" | "string" | "stringEsc";
+
+/**
+ * Stateful terminal sanitiser for text a server or model controls. `push()`
+ * returns what is safe to print now and holds back only a partial escape
+ * sequence, a trailing CR, or a trailing high surrogate, so a sequence or a
+ * character split across stream chunks is still removed or printed whole.
+ * `flush()` ends the stream.
+ *
+ * Removed: every ESC- or C1-introduced sequence (CSI, OSC to BEL or ST,
+ * DCS/SOS/PM/APC to ST, two-character ESC sequences), C0 controls other than
+ * LF and TAB, DEL, the C1 range, and the bidi embedding/override/isolate
+ * controls (Trojan Source). CR survives only as part of CRLF; a lone CR is
+ * printed as LF, because a bare CR returns the cursor so later text can
+ * overwrite what came before it, and dropping it instead would run two lines
+ * together. Every printable code point, combining marks, ZWJ and variation
+ * selectors included, passes through unchanged.
+ *
+ * A string sequence opened with ESC ends at its terminator, at CAN, SUB or
+ * LF, or after MAX_STRING_LENGTH characters, and prints none of itself. The
+ * 8-bit introducers of a string (U+0090, U+0098, U+009D to U+009F) are dropped
+ * as single code points and open no state: they turn up as stray bytes in
+ * mojibake (`â€\u009d`), where a state would swallow everything after them.
+ */
+export class TerminalSanitizer {
+  private state: SanitizerState = "ground";
+  private pendingCr = false;
+  private pendingHighSurrogate = "";
+  private stringLength = 0;
+  private readonly singleLine: boolean;
+
+  constructor(options: SanitizeOptions = {}) {
+    this.singleLine = options.singleLine ?? false;
+  }
+
+  push(chunk: string): string {
+    let out = "";
+    for (let i = 0; i < chunk.length; i += 1) {
+      out += this.step(chunk.charCodeAt(i), chunk[i]!);
+    }
+    return out;
+  }
+
+  flush(): string {
+    let out = this.pendingCr ? this.newline() : "";
+    out += this.pendingHighSurrogate;
+    this.pendingCr = false;
+    this.pendingHighSurrogate = "";
+    this.state = "ground";
+    this.stringLength = 0;
+    return out;
+  }
+
+  private newline(): string {
+    return this.singleLine ? " " : "\n";
+  }
+
+  private step(code: number, ch: string): string {
+    if (this.pendingHighSurrogate) {
+      const high = this.pendingHighSurrogate;
+      this.pendingHighSurrogate = "";
+      if (isLowSurrogate(code)) return high + ch;
+      return high + this.step(code, ch);
+    }
+    switch (this.state) {
+      case "esc":
+        return this.afterEsc(code, ch);
+      case "escIntermediate":
+        if (code >= 0x20 && code <= 0x2f) return "";
+        this.state = "ground";
+        return code >= 0x30 && code <= 0x7e ? "" : this.ground(code, ch);
+      case "csi":
+        return this.inCsi(code, ch);
+      case "string":
+        return this.inString(code, ch);
+      case "stringEsc":
+        if (code === 0x5c) {
+          this.state = "ground";
+          return "";
+        }
+        this.state = "esc";
+        return this.afterEsc(code, ch);
+      default:
+        return this.ground(code, ch);
+    }
+  }
+
+  private inString(code: number, ch: string): string {
+    if (code === ESC_CODE) {
+      this.state = "stringEsc";
+      return "";
+    }
+    if (code === LF) {
+      this.state = "ground";
+      return this.ground(code, ch);
+    }
+    this.stringLength += 1;
+    if (
+      code === BEL ||
+      code === C1_ST ||
+      code === CAN ||
+      code === SUB ||
+      this.stringLength >= MAX_STRING_LENGTH
+    ) {
+      this.state = "ground";
+    }
+    return "";
+  }
+
+  private afterEsc(code: number, ch: string): string {
+    if (code === 0x5b) {
+      this.state = "csi";
+      return "";
+    }
+    if (code === 0x5d || code === 0x50 || code === 0x58 || code === 0x5e || code === 0x5f) {
+      this.state = "string";
+      this.stringLength = 0;
+      return "";
+    }
+    if (code === ESC_CODE) return "";
+    if (code >= 0x20 && code <= 0x2f) {
+      this.state = "escIntermediate";
+      return "";
+    }
+    this.state = "ground";
+    if (code >= 0x30 && code <= 0x7e) return "";
+    return this.ground(code, ch);
+  }
+
+  private inCsi(code: number, ch: string): string {
+    if (code >= 0x20 && code <= 0x3f) return "";
+    this.state = "ground";
+    return code >= 0x40 && code <= 0x7e ? "" : this.ground(code, ch);
+  }
+
+  private ground(code: number, ch: string): string {
+    let prefix = "";
+    if (this.pendingCr) {
+      this.pendingCr = false;
+      if (code === LF) return this.singleLine ? " " : "\r\n";
+      prefix = this.newline();
+    }
+    if (code === CR) {
+      this.pendingCr = true;
+      return prefix;
+    }
+    if (code === LF) return prefix + this.newline();
+    if (code === TAB) return prefix + (this.singleLine ? " " : "\t");
+    if (code === ESC_CODE) {
+      this.state = "esc";
+      return prefix;
+    }
+    if (code === C1_CSI) {
+      this.state = "csi";
+      return prefix;
+    }
+    if (code < 0x20 || code === DEL || (code >= 0x80 && code <= 0x9f) || isBidiControl(code)) {
+      return prefix;
+    }
+    if (isHighSurrogate(code)) {
+      this.pendingHighSurrogate = ch;
+      return prefix;
+    }
+    return prefix + ch;
+  }
+}
+
+/**
+ * Make server- or model-supplied text safe to print to a terminal (see
+ * TerminalSanitizer for what is removed). Use for anything a person reads:
+ * table cells, fields, prompt labels, error messages. `--json` output needs
+ * none of this; JSON.stringify already escapes every control character.
+ */
+export function sanitizeForTerminal(text: string, options: SanitizeOptions = {}): string {
+  const sanitizer = new TerminalSanitizer(options);
+  return sanitizer.push(text) + sanitizer.flush();
+}
+
+/** One line, unstyled: a server string bound for a table cell, field, label, or note. */
+export function safeLine(text: string): string {
+  return sanitizeForTerminal(text, { singleLine: true });
+}
+
+/** Dim stderr notes built from text a server or an adapter may quote: one safe line each. */
+export function printNotes(lines: readonly string[], indent = ""): void {
+  for (const line of lines) err(style.dim(`${indent}${safeLine(line)}`));
+}
+
+/**
+ * Text plus the `style` function to paint it with. Table and field cells take
+ * these instead of pre-styled strings: the text is sanitised whole and only
+ * then painted, so the escapes in a cell are always the styling layer's, and
+ * none at all when styling is off (piped output, NO_COLOR).
+ */
+export type Styled = { readonly text: string; readonly paint: (text: string) => string };
+
+export const styled = (paint: (text: string) => string, text: string): Styled => ({ text, paint });
+
+/** A cell is plain text, painted text, or a run of both (`name (id)` with a dim id). */
+export type CellValue = string | Styled | (string | Styled)[];
+
+export function renderCell(value: CellValue): string {
+  if (Array.isArray(value)) return value.map(renderCell).join("");
+  if (typeof value === "object" && value !== null && typeof value.paint === "function") {
+    return value.paint(safeLine(String(value.text)));
+  }
+  return safeLine(String(value));
+}
+
+/**
+ * Writer for streamed model output: sanitises when `stream` is a terminal and
+ * passes bytes through untouched when it is a pipe or file, so `aiand run >
+ * out.txt` keeps exactly what the model sent.
+ */
+export function streamWriter(stream: NodeJS.WriteStream): {
+  write(text: string, decorate?: (s: string) => string): void;
+  /** Flush a held sequence, CR or surrogate, then end the line if output did not. */
+  endLine(): void;
+} {
+  const sanitizer = stream.isTTY ? new TerminalSanitizer() : null;
+  // A pipe gets the model's bytes untouched, but a surrogate pair cut between
+  // two chunks must still reach it whole, or each half is written as U+FFFD.
+  let heldHigh = "";
+  let last = "";
+  const emit = (text: string, decorate: (s: string) => string) => {
+    if (!text) return;
+    stream.write(decorate(text));
+    last = text.slice(-1);
+  };
+  const passThrough = (text: string): string => {
+    const whole = heldHigh + text;
+    const tail = whole.charCodeAt(whole.length - 1);
+    heldHigh = isHighSurrogate(tail) ? whole.slice(-1) : "";
+    return heldHigh ? whole.slice(0, -1) : whole;
+  };
+  return {
+    write(text, decorate = (s) => s) {
+      emit(sanitizer ? sanitizer.push(text) : passThrough(text), decorate);
+    },
+    endLine() {
+      emit(sanitizer?.flush() ?? heldHigh, (s) => s);
+      heldHigh = "";
+      if (last && last !== "\n") stream.write("\n");
+      last = "";
+    },
+  };
+}
+
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 const WIDE_RANGES: readonly [number, number][] = [
@@ -193,21 +471,24 @@ function pad(s: string, to: number, align: "left" | "right"): string {
 
 export type Column<T> = {
   header: string;
-  value: (row: T) => string;
+  value: (row: T) => CellValue;
   align?: "left" | "right";
 };
 
+/** Cells print on one line and are sanitised before they are painted, so a
+ * server string cannot break the layout or reach the terminal as a control sequence. */
 export function table<T>(rows: T[], columns: Column<T>[]): void {
   if (rows.length === 0) return;
-  const cells = rows.map((row) => columns.map((c) => c.value(row)));
-  const widths = columns.map((c, i) =>
-    Math.max(width(c.header), ...cells.map((r) => width(r[i] ?? ""))),
+  const headers = columns.map((c) => renderCell(c.header.toUpperCase()));
+  const cells = rows.map((row) => columns.map((c) => renderCell(c.value(row))));
+  const widths = columns.map((_, i) =>
+    Math.max(width(headers[i]!), ...cells.map((r) => width(r[i] ?? ""))),
   );
 
-  if (columns.some((c) => c.header !== "")) {
+  if (headers.some((h) => h !== "")) {
     out(
       columns
-        .map((c, i) => style.dim(pad(c.header.toUpperCase(), widths[i]!, c.align ?? "left")))
+        .map((c, i) => style.dim(pad(headers[i]!, widths[i]!, c.align ?? "left")))
         .join("  ")
         .trimEnd(),
     );
@@ -223,10 +504,10 @@ export function table<T>(rows: T[], columns: Column<T>[]): void {
   }
 }
 
-export function fields(pairs: [string, string][]): void {
+export function fields(pairs: [string, CellValue][]): void {
   const keyWidth = Math.max(...pairs.map(([k]) => k.length));
   for (const [k, v] of pairs) {
-    out(`${style.dim(pad(k, keyWidth, "left"))}  ${v}`);
+    out(`${style.dim(pad(k, keyWidth, "left"))}  ${renderCell(v)}`);
   }
 }
 
@@ -245,11 +526,13 @@ export function num(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export function delta(current: number, previous: number): string {
-  if (previous === 0) return current === 0 ? style.dim("--") : style.green("new");
+export function delta(current: number, previous: number): Styled {
+  if (previous === 0) {
+    return current === 0 ? styled(style.dim, "--") : styled(style.green, "new");
+  }
   const pct = ((current - previous) / previous) * 100;
   const label = `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
-  return pct >= 0 ? style.green(label) : style.red(label);
+  return styled(pct >= 0 ? style.green : style.red, label);
 }
 
 export function relativeTime(iso: string): string {

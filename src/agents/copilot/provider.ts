@@ -43,8 +43,8 @@ export function buildCopilotProvider({
  * One `models[]` row per catalog model. The CLI addresses BYOK models by
  * provider-qualified id, so `id` is what selection strings name (wireModel
  * is what the request body sends); both keep the catalog id verbatim.
- * `maxPromptTokens`/`maxContextWindowTokens` mirror the context window —
- * the catalog has no separate output field (opencode's policy). The
+ * `maxPromptTokens`/`maxContextWindowTokens` mirror the context window,
+ * and no output cap is written. The
  * reasoningEffort toggle is on/off here; the CLI derives the effort menu
  * itself, so only the presence of effort levels is published.
  */

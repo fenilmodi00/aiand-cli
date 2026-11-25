@@ -1,16 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["test/**/*.mjs", "scripts/*.mjs"],
+  "entry": ["test/**/*.mjs", "scripts/*.mjs", "scripts/claude-contract/run.mjs"],
   "project": ["src/**/*.ts", "test/**/*.mjs", "scripts/**/*.mjs"],
-  "ignoreBinaries": [
-    "opencode",
-    "pi",
-    "omp",
-    "copilot",
-    "where",
-    "wslpath",
-    "sqlite3",
-    "pgrep",
-    "tasklist"
-  ]
+  "ignoreBinaries": ["opencode", "pi", "omp", "jouzu", "copilot", "wslpath", "pgrep"]
 }

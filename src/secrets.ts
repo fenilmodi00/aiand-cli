@@ -1,32 +1,54 @@
-import { spawn } from "node:child_process";
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import { join } from "node:path";
 import { CliError } from "./cli/errors.js";
-import { configDir, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, writeFileAtomic } from "./fsutil.js";
+import { windowsSystemTool } from "./cli/win-spawn.js";
+import { withFileLock } from "./filelock.js";
+import {
+  configDir,
+  ownerRestrictionFailedFor,
+  PRIVATE_FILE_MODE,
+  prepareConfigDir,
+  runTool,
+  writeFileAtomic,
+} from "./fsutil.js";
+import {
+  fileSet,
+  fileTierPaths,
+  readStore,
+  removeFileEntry,
+  type SecretMap,
+} from "./secrets-file.js";
 import { SECOND_MS } from "./time.js";
 
-export type Tier = "keychain" | "file" | "plaintext";
+export type Tier = "keychain" | "dpapi" | "file" | "plaintext";
 
 const SERVICE = "aiand";
 const KEYCHAIN_TIMEOUT_MS = 3 * SECOND_MS;
 
-type SecretMap = Record<string, string>;
-
 /**
  * Where secrets live, tried in this order unless AIAND_KEY_STORAGE pins one:
- * the OS keychain (macOS `security`, Linux Secret Service via `secret-tool`),
- * an AES-256-GCM encrypted file, and a plaintext file only when explicitly
- * requested (tests / CI). Selection never silently falls back to plaintext.
+ * the OS store (macOS `security`, Linux Secret Service via `secret-tool`,
+ * Windows DPAPI through PowerShell), an AES-256-GCM encrypted file, and a
+ * plaintext file only when explicitly requested (tests / CI). Selection
+ * never silently falls back to plaintext.
  */
 
 function tierFromEnv(): Tier | null {
   const raw = process.env.AIAND_KEY_STORAGE;
   if (raw === undefined || raw === "") return null;
-  if (raw === "keychain" || raw === "file" || raw === "plaintext") return raw;
-  throw new CliError(`AIAND_KEY_STORAGE must be one of: keychain, file, plaintext (got "${raw}").`);
+  if (raw === "keychain" && process.platform === "win32") {
+    throw new CliError("AIAND_KEY_STORAGE=keychain is not supported on Windows.", {
+      hint: "Use dpapi, file or plaintext.",
+    });
+  }
+  if (raw === "dpapi" && process.platform !== "win32") {
+    throw new CliError("AIAND_KEY_STORAGE=dpapi works only on Windows.");
+  }
+  if (raw === "keychain" || raw === "dpapi" || raw === "file" || raw === "plaintext") return raw;
+  throw new CliError(
+    `AIAND_KEY_STORAGE must be one of: keychain, dpapi, file, plaintext (got "${raw}").`,
+  );
 }
 
 // The keychain probe spawns OS tools, so its verdict is cached for the process
@@ -37,6 +59,9 @@ let probedTier: "keychain" | "file" | null = null;
 export async function detectTier(): Promise<Tier> {
   const forced = tierFromEnv();
   if (forced) return forced;
+  // DPAPI is not probed: a probe would cost a PowerShell start on every
+  // run. Its first real use decides, and a failure sticks for the process.
+  if (process.platform === "win32") return dpapiFailure === null ? "dpapi" : "file";
   if (probedTier === null) probedTier = (await probeKeychain()) ? "keychain" : "file";
   return probedTier;
 }
@@ -44,33 +69,12 @@ export async function detectTier(): Promise<Tier> {
 // The keychain error messages name the tool through this one label.
 const keychainTool = (): string => (process.platform === "darwin" ? "security" : "secret-tool");
 
-async function run(
-  cmd: string,
-  args: string[],
-  input?: string,
-): Promise<{ code: number | null; stdout: string }> {
-  const { promise, resolve, reject } = Promise.withResolvers<{
-    code: number | null;
-    stdout: string;
-  }>();
-  const child = spawn(cmd, args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    timeout: KEYCHAIN_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  });
-  let stdout = "";
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString("utf8");
-  });
-  child.on("error", reject);
-  child.on("close", (code) => resolve({ code, stdout }));
-  // A fast-exiting tool (broken dbus, PATH shim) closes stdin before the write
-  // lands: without this listener that EPIPE is an unhandled crash, not a
-  // fallback to the file tier.
-  child.stdin.on("error", () => {});
-  child.stdin.end(input);
-  return promise;
-}
+// Windows has no keychain tier. `secret-tool` would be a bare name the OS tries
+// in the current directory first, so no helper spawns anything there.
+const NO_KEYCHAIN = "no OS keychain on Windows";
+
+const run = (cmd: string, args: string[], input?: string) =>
+  runTool(cmd, args, { input, timeoutMs: KEYCHAIN_TIMEOUT_MS });
 
 /**
  * The command line handed to `security -i` on stdin, so the secret never
@@ -88,6 +92,7 @@ export function securityInteractiveSetCommand(account: string, secret: string): 
 }
 
 async function keychainSet(account: string, secret: string): Promise<void> {
+  if (process.platform === "win32") throw new Error(NO_KEYCHAIN);
   if (process.platform === "darwin") {
     // `security -i` exit codes are unreliable, so the write counts only when
     // the readback matches. -U replaces an existing item instead of adding a
@@ -114,6 +119,7 @@ async function keychainSet(account: string, secret: string): Promise<void> {
 }
 
 async function keychainGet(account: string): Promise<string> {
+  if (process.platform === "win32") throw new Error(NO_KEYCHAIN);
   const result =
     process.platform === "darwin"
       ? await run("security", ["find-generic-password", "-s", SERVICE, "-a", account, "-w"])
@@ -125,6 +131,7 @@ async function keychainGet(account: string): Promise<string> {
 }
 
 async function keychainDelete(account: string): Promise<void> {
+  if (process.platform === "win32") return;
   const result =
     process.platform === "darwin"
       ? await run("security", ["delete-generic-password", "-s", SERVICE, "-a", account])
@@ -136,7 +143,7 @@ async function keychainDelete(account: string): Promise<void> {
 
 /**
  * Write, read back, and delete a canary: a tool that exists can still fail
- * behind a headless dbus or a locked keyring. No keychain tier on Windows.
+ * behind a headless dbus or a locked keyring. Windows has DPAPI instead.
  */
 async function probeKeychain(): Promise<boolean> {
   if (process.platform === "win32") return false;
@@ -152,15 +159,27 @@ async function probeKeychain(): Promise<boolean> {
   }
 }
 
-// The plaintext map is read-modify-write, and Node interleaves async I/O:
-// two concurrent stores (or a store racing a delete) would each read the
-// same old map and one update would be lost. Every mutation of the file
-// tier chains through this lock — writeFileAtomic keeps each single write
-// atomic, the chain keeps the read-modify-write sequence serial.
+// Each store is a whole-file read-modify-write, and Node interleaves async
+// I/O: two concurrent stores (or a store racing a delete) would each read the
+// same old map and one update would be lost. Every mutation of a store chains
+// through this lock — writeFileAtomic keeps each single write atomic, the
+// chain keeps the sequence serial within the process, and the file lock keeps
+// it serial across processes (Codex starts one aiand per session, each able
+// to migrate a different profile). One lock covers all three stores, so a
+// migration can move a secret between two of them atomically. It is not
+// re-entrant: code that runs under it must not call back into `serialized`.
+// Slow work (PowerShell, and whoami/icacls through prepareConfigDir) stays
+// outside, or a waiter would call the lock stale.
 let fileTierLock: Promise<void> = Promise.resolve();
 
+const storeLockPath = (): string => join(configDir(), "secret-store.lock");
+
 function serialized<T>(op: () => Promise<T>): Promise<T> {
-  const next = fileTierLock.then(op, op);
+  const guarded = async () => {
+    await prepareConfigDir();
+    return withFileLock(storeLockPath(), op);
+  };
+  const next = fileTierLock.then(guarded, guarded);
   fileTierLock = next.then(
     () => undefined,
     () => undefined,
@@ -179,7 +198,22 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
   }
   if (tier === "file") {
     await serialized(() => fileSet(profile, blob));
+    await dropDpapiEntry(profile);
     return "file";
+  }
+  if (tier === "dpapi") {
+    try {
+      await dpapiSet(profile, blob);
+    } catch (error) {
+      const reason = noteDpapiFailure(error);
+      process.stderr.write(
+        `Warning: ${DPAPI_FAILURE_TEXT[reason]}; stored in the owner-only file instead.\n`,
+      );
+      await serialized(() => fileSet(profile, blob));
+      await dropDpapiEntry(profile);
+      return "file";
+    }
+    return "dpapi";
   }
   try {
     // keychainSet verifies its own readback; any failure drops to the
@@ -188,7 +222,7 @@ export async function storeSecret(profile: string, blob: string): Promise<Tier> 
     return "keychain";
   } catch {
     process.stderr.write(
-      "Warning: OS keychain write failed; stored in the encrypted file instead.\n",
+      "Warning: OS keychain write failed; stored in the owner-only file instead.\n",
     );
     await serialized(() => fileSet(profile, blob));
     return "file";
@@ -201,6 +235,26 @@ export async function loadSecret(profile: string, recordedTier?: Tier): Promise<
     return readPlaintextMap()[profile] ?? null;
   }
   if (tier === "file") {
+    const store = await readStore();
+    // A migration into DPAPI drops the file copy before credentials.json
+    // records the new tier; an interrupted one is still readable.
+    return store[profile] ?? (await dpapiGet(profile).catch(() => null));
+  }
+  if (tier === "dpapi") {
+    if (process.platform !== "win32") {
+      throw new CliError("This key was stored with Windows DPAPI; sign in again here.", {
+        hint: "Run `aiand login`. To keep Windows and this system signed in at once, give this one its own AIAND_CONFIG_DIR.",
+      });
+    }
+    try {
+      const secret = await dpapiGet(profile);
+      if (secret !== null) return secret;
+    } catch (error) {
+      noteDpapiFailure(error);
+      process.stderr.write(
+        "Warning: Windows DPAPI could not decrypt the stored key; run `aiand login` again.\n",
+      );
+    }
     const store = await readStore();
     return store[profile] ?? null;
   }
@@ -226,12 +280,12 @@ export async function deleteSecret(profile: string): Promise<void> {
     // already absent (or no keychain on this machine) — a no-op
   }
   try {
-    await serialized(async () => {
-      const store = await readStore();
-      if (!(profile in store)) return;
-      delete store[profile];
-      await writeStore(store);
-    });
+    await dropFileEntry(profile);
+  } catch {
+    // unreadable/missing store means no residue to remove
+  }
+  try {
+    await dropDpapiEntry(profile);
   } catch {
     // unreadable/missing store means no residue to remove
   }
@@ -247,170 +301,202 @@ export async function deleteSecret(profile: string): Promise<void> {
   }
 }
 
-// --- encrypted file tier ---------------------------------------------------
-// AES-256-GCM; on-disk format: [version][iv][auth tag][ciphertext]. The
-// secrets map is re-encrypted whole-file on every change.
-const CIPHER = "aes-256-gcm";
-const KEY_BYTES = 32;
-const IV_BYTES = 12;
-const AUTH_TAG_BYTES = 16;
-const STORE_FORMAT_VERSION = 1;
-const IV_OFFSET = 1; // after the version byte
-const AUTH_TAG_OFFSET = IV_OFFSET + IV_BYTES;
-const CIPHERTEXT_OFFSET = AUTH_TAG_OFFSET + AUTH_TAG_BYTES;
-const MASTER_KEY_HEX = new RegExp(`^[0-9a-fA-F]{${KEY_BYTES * 2}}$`);
-
-const SECRET_STORE_FILE = "secret-store.json";
-const SECRET_KEY_FILE = "secret-store.key";
-/** link() errors that mean the filesystem cannot hard-link at all. */
-const NO_HARD_LINKS = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"]);
-/** How long a first run waits for a racing run's key write to finish. */
-const RACED_KEY_POLL_MS = 20;
-const RACED_KEY_POLLS = 25;
+/** How a migration ended: moved, left alone because the secret changed under it, or why DPAPI failed. */
+export type Migration = "moved" | "changed" | DpapiFailure;
 
 /**
- * Wait until another run's `secret-store.key` holds a full key. With link()
- * it always does; the exclusive-create fallback can be caught mid-write.
- * Gives up after RACED_KEY_POLLS, leaving the length check to report it.
+ * Move a file-tier secret into DPAPI and drop the file copy, but only if the
+ * file still holds `blob`: a sign-in or rotation in another process since the
+ * caller read it would be overwritten with a stale refresh token. Never falls
+ * back or warns, since the caller is only reading.
  */
-async function waitForRacedKey(keyFile: string): Promise<void> {
-  for (let poll = 0; poll < RACED_KEY_POLLS; poll += 1) {
-    if ((await readFile(keyFile)).length >= KEY_BYTES) return;
-    await sleep(RACED_KEY_POLL_MS);
-  }
-}
-const STORE_FILES = `${SECRET_STORE_FILE} and ${SECRET_KEY_FILE}`;
-
-const secretsFilePath = (): string => join(configDir(), SECRET_STORE_FILE);
-
-async function getKeyMaterial(): Promise<Buffer> {
-  const envKey = process.env.AIAND_SECRET_STORE_MASTER_KEY;
-  if (envKey) {
-    if (!MASTER_KEY_HEX.test(envKey)) {
-      throw new CliError(
-        `AIAND_SECRET_STORE_MASTER_KEY must be ${KEY_BYTES * 2} hex characters (${KEY_BYTES} bytes).`,
-      );
-    }
-    return Buffer.from(envKey, "hex");
-  }
-
-  const keyFile = join(configDir(), SECRET_KEY_FILE);
+export async function migrateToDpapi(profile: string, blob: string): Promise<Migration> {
   try {
-    const key = await readFile(keyFile);
-    if (key.length !== KEY_BYTES) {
-      throw new CliError(`${keyFile} must contain exactly ${KEY_BYTES} bytes.`, {
-        hint: `Delete ${STORE_FILES} to start over.`,
-      });
-    }
-    return key;
+    return (await dpapiSet(profile, blob, { migrating: true })) ?? "moved";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-    const key = randomBytes(KEY_BYTES);
-    await mkdir(dirname(keyFile), { recursive: true, mode: PRIVATE_DIR_MODE });
-    // Two first runs racing here must agree on one key, or the store
-    // encrypted under the loser's key can never be read. Write the key to a
-    // private temp file, then publish it with link(), which fails if the key
-    // already exists: the key file only ever appears complete, so the loser
-    // never reads a half-written one.
-    const staged = `${keyFile}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-    try {
-      await writeFile(staged, key, { mode: PRIVATE_FILE_MODE, flag: "wx" });
-      try {
-        await link(staged, keyFile);
-      } catch (linkError) {
-        // FAT, exFAT, and some network or FUSE mounts have no hard links.
-        // An exclusive create still lets exactly one run win; a racer that
-        // catches it mid-write waits in waitForRacedKey.
-        if (!NO_HARD_LINKS.has((linkError as NodeJS.ErrnoException).code ?? "")) throw linkError;
-        await writeFile(keyFile, key, { mode: PRIVATE_FILE_MODE, flag: "wx" });
-      }
-    } catch (writeError) {
-      if ((writeError as NodeJS.ErrnoException).code === "EEXIST") {
-        await waitForRacedKey(keyFile);
-        return getKeyMaterial();
-      }
-      throw writeError;
-    } finally {
-      await unlink(staged).catch(() => {});
-    }
-    return key;
+    return noteDpapiFailure(error);
   }
 }
 
-async function encryptStore(store: SecretMap): Promise<Buffer> {
-  const plaintext = JSON.stringify(store);
-  const key = await getKeyMaterial();
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv(CIPHER, key, iv);
-  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  const version = Buffer.from([STORE_FORMAT_VERSION]);
-  return Buffer.concat([version, iv, authTag, encrypted]);
-}
+// --- Windows DPAPI tier ------------------------------------------------------
+// Each secret is protected for the current Windows user (DPAPI CurrentUser
+// scope, bound to the logon credentials) by Windows PowerShell, which ships
+// with every Windows and needs no native module. The ciphertext map lives in
+// the config dir. The secret crosses into PowerShell base64-encoded on stdin
+// only, so no console code page can mangle it and it never reaches argv or
+// the environment. One PowerShell start per write or cold read.
 
-async function decryptStore(data: Buffer): Promise<SecretMap> {
-  const version = data[0];
-  if (version !== STORE_FORMAT_VERSION) {
-    throw new Error(`Unsupported store format version: ${version}`);
+/** Why DPAPI could not be used: Constrained Language Mode, or anything else. */
+export type DpapiFailure = "clm" | "unavailable";
+
+const DPAPI_STORE_FILE = "secret-store.dpapi.json";
+// PowerShell's first start on a cold machine can take several seconds.
+const DPAPI_TIMEOUT_MS = 20 * SECOND_MS;
+const DPAPI_OUTPUT = "aiand-dpapi:";
+const DPAPI_CLM_EXIT = 3;
+const DPAPI_FAILURE_TEXT: Record<DpapiFailure, string> = {
+  clm: "PowerShell runs in Constrained Language Mode here, which blocks Windows DPAPI",
+  unavailable:
+    "Windows DPAPI could not be reached through PowerShell (AIAND_KEY_STORAGE=file stops aiand trying)",
+};
+
+class DpapiError extends Error {
+  readonly reason: DpapiFailure;
+  constructor(reason: DpapiFailure) {
+    super(DPAPI_FAILURE_TEXT[reason]);
+    this.reason = reason;
   }
-  const iv = data.subarray(IV_OFFSET, AUTH_TAG_OFFSET);
-  const authTag = data.subarray(AUTH_TAG_OFFSET, CIPHERTEXT_OFFSET);
-  const encrypted = data.subarray(CIPHERTEXT_OFFSET);
-  const key = await getKeyMaterial();
-  const decipher = createDecipheriv(CIPHER, key, iv);
-  decipher.setAuthTag(authTag);
-  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-  return JSON.parse(decrypted.toString("utf8")) as SecretMap;
 }
 
-async function readStore(): Promise<SecretMap> {
+let dpapiFailure: DpapiFailure | null = null;
+// Keyed by the ciphertext the plaintext came from: another process rotating
+// the token rewrites the ciphertext, and a read under the refresh lock must
+// then see the new blob, not this process's copy of the one it replaced.
+const dpapiPlaintext = new Map<string, { ciphertext: string; blob: string }>();
+
+/** True when the file tier's dir, store or key could not be made owner-only on Windows. */
+export const fileTierNotOwnerOnly = (): boolean => ownerRestrictionFailedFor(fileTierPaths());
+
+/** The DPAPI failure seen in this process, if any. */
+export const dpapiUnavailable = (): DpapiFailure | null => dpapiFailure;
+
+function noteDpapiFailure(error: unknown): DpapiFailure {
+  dpapiFailure = error instanceof DpapiError ? error.reason : "unavailable";
+  return dpapiFailure;
+}
+
+/**
+ * The -Command script. No double quotes, so the argument survives Windows
+ * command-line quoting untouched. -Command text is not subject to execution
+ * policy (that governs script files), so no -ExecutionPolicy flag is
+ * needed; Constrained Language Mode, which AppLocker and WDAC impose, does
+ * block Add-Type and is reported as its own exit code. Protect reads its own
+ * output back before answering: a write that cannot be read is worse than
+ * none.
+ */
+export function dpapiScript(op: "Protect" | "Unprotect"): string {
+  const pd = "[System.Security.Cryptography.ProtectedData]";
+  const verify =
+    op === "Protect"
+      ? `if ([Convert]::ToBase64String(${pd}::Unprotect($r,$null,$s)) -ne [Convert]::ToBase64String($b)) { exit 4 }`
+      : "";
+  return [
+    "$ErrorActionPreference='Stop'",
+    `if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { exit ${DPAPI_CLM_EXIT} }`,
+    "Add-Type -AssemblyName System.Security",
+    "$s=[System.Security.Cryptography.DataProtectionScope]::CurrentUser",
+    "$b=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())",
+    `$r=${pd}::${op}($b,$null,$s)`,
+    verify,
+    `[Console]::Out.Write('${DPAPI_OUTPUT}'+[Convert]::ToBase64String($r))`,
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+export const powershellPath = (): string =>
+  windowsSystemTool("WindowsPowerShell/v1.0/powershell.exe", process.env);
+
+async function dpapi(op: "Protect" | "Unprotect", inputBase64: string): Promise<string> {
+  // A config dir shared with Windows (WSL, a synced home) can name this tier
+  // on a machine that has no PowerShell to ask: never spawn off Windows.
+  if (process.platform !== "win32") throw new DpapiError("unavailable");
+  let result: { code: number | null; stdout: string };
   try {
-    const data = await readFile(secretsFilePath());
-    return await decryptStore(data);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return {};
-    }
-    if (error instanceof CliError) throw error;
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code) {
-      throw new CliError(
-        `${secretsFilePath()}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    // Wrong-but-valid master key, corrupt ciphertext, bad version, unparseable
-    // JSON: all surface here as GCM/format errors. Point at the fix instead of
-    // leaking "Unsupported state or unable to authenticate data" as exit 70.
-    throw new CliError(`${secretsFilePath()} cannot be decrypted.`, {
-      hint: `Check AIAND_SECRET_STORE_MASTER_KEY, or delete ${STORE_FILES} to start over.`,
-    });
+    result = await runTool(
+      powershellPath(),
+      ["-NoProfile", "-NonInteractive", "-Command", dpapiScript(op)],
+      { input: inputBase64, timeoutMs: DPAPI_TIMEOUT_MS },
+    );
+  } catch {
+    throw new DpapiError("unavailable");
   }
+  if (result.code === DPAPI_CLM_EXIT) throw new DpapiError("clm");
+  const output = result.stdout.match(new RegExp(`${DPAPI_OUTPUT}([A-Za-z0-9+/=]+)`))?.[1];
+  if (result.code !== 0 || !output) throw new DpapiError("unavailable");
+  return output;
 }
 
-async function writeStore(store: SecretMap): Promise<void> {
-  const encrypted = await encryptStore(store);
-  await writeFileAtomic(secretsFilePath(), encrypted, { mode: PRIVATE_FILE_MODE });
+/**
+ * Protect `blob` and record it. The file-tier copy goes last, and only after
+ * a fresh read of the store confirms the entry is there: a lost DPAPI write
+ * must never cost the only copy. A file copy that cannot be dropped (a store
+ * that no longer decrypts) does not fail a write DPAPI already holds.
+ * `migrating` writes only while the file copy still equals `blob`; it
+ * returns "changed" when it does not, and nothing then touches either store.
+ */
+async function dpapiSet(
+  profile: string,
+  blob: string,
+  options: { migrating?: boolean } = {},
+): Promise<"changed" | undefined> {
+  const ciphertext = await dpapi("Protect", Buffer.from(blob, "utf8").toString("base64"));
+  const outcome = await serialized(async (): Promise<"changed" | "raced" | "written"> => {
+    if (options.migrating) {
+      const fileCopy = (await readStore().catch(() => ({}) as SecretMap))[profile];
+      if (fileCopy !== blob) {
+        // Gone because a racing migration moved it is fine; anything else changed.
+        return fileCopy === undefined && profile in readDpapiMap() ? "raced" : "changed";
+      }
+    }
+    const map = readDpapiMap();
+    map[profile] = ciphertext;
+    await writeDpapiMap(map);
+    if (readDpapiMap()[profile] !== ciphertext) throw new DpapiError("unavailable");
+    await removeFileEntry(profile).catch(() => {});
+    return "written";
+  });
+  if (outcome === "changed") return outcome;
+  if (outcome === "written") dpapiPlaintext.set(profile, { ciphertext, blob });
+  return undefined;
 }
 
-async function fileSet(account: string, secret: string): Promise<void> {
-  const store = await readStore();
-  store[account] = secret;
-  await writeStore(store);
+async function dpapiGet(profile: string): Promise<string | null> {
+  const ciphertext = readDpapiMap()[profile];
+  if (ciphertext === undefined) {
+    dpapiPlaintext.delete(profile);
+    return null;
+  }
+  const cached = dpapiPlaintext.get(profile);
+  if (cached?.ciphertext === ciphertext) return cached.blob;
+  const blob = Buffer.from(await dpapi("Unprotect", ciphertext), "base64").toString("utf8");
+  dpapiPlaintext.set(profile, { ciphertext, blob });
+  return blob;
 }
+
+async function dropDpapiEntry(profile: string): Promise<void> {
+  dpapiPlaintext.delete(profile);
+  await serialized(async () => {
+    const map = readDpapiMap();
+    if (!(profile in map)) return;
+    delete map[profile];
+    await writeDpapiMap(map);
+  });
+}
+
+const writeDpapiMap = (map: SecretMap): Promise<void> =>
+  writeFileAtomic(dpapiPath(), `${JSON.stringify(map, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
+
+const dpapiPath = (): string => join(configDir(), DPAPI_STORE_FILE);
+
+const readDpapiMap = (): SecretMap => readJsonMap(dpapiPath());
+
+const dropFileEntry = (account: string): Promise<void> =>
+  serialized(() => removeFileEntry(account));
 
 // --- plaintext tier (AIAND_KEY_STORAGE=plaintext only) ----------------------
 
 const plaintextPath = (): string => join(configDir(), "credentials-plaintext.json");
 
-function readPlaintextMap(): SecretMap {
+const readPlaintextMap = (): SecretMap => readJsonMap(plaintextPath());
+
+function readJsonMap(path: string): SecretMap {
   try {
-    return JSON.parse(readFileSync(plaintextPath(), "utf8")) as SecretMap;
+    return JSON.parse(readFileSync(path, "utf8")) as SecretMap;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     if (error instanceof SyntaxError) {
-      throw new CliError(`${plaintextPath()} is not valid JSON.`, {
+      throw new CliError(`${path} is not valid JSON.`, {
         hint: "Fix it by hand, or delete it to start over.",
       });
     }

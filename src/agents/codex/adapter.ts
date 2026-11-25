@@ -1,20 +1,23 @@
 import { readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Model } from "../../api/models.js";
 import { CliError } from "../../cli/errors.js";
-import { findWindowsExecutable } from "../../cli/win-spawn.js";
 import {
   agentHome,
   commandName,
   DEFAULT_BASE_URL,
   isRoutableBaseUrl,
   loadConfig,
+  loadCredential,
+  normalizeBaseUrl,
+  storedBinding,
   trimSlash,
   writeFileAtomic,
 } from "../../config.js";
 import { existingFileMode } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
-import { detectBinary } from "../detect.js";
+import { detectBinary, findOnPath } from "../detect.js";
 import { readTextIfExists } from "../managed-file.js";
 import {
   clearAddedState,
@@ -31,6 +34,7 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
+  ProbeDetail,
   ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
@@ -94,12 +98,29 @@ function currentProfilePath(): string {
 const codexBaseUrl = (baseUrl?: string): string =>
   `${trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL}/v1`;
 
-function resolveAuthCommand(): string | null {
-  if (process.platform !== "win32") {
-    return detectBinary(AUTH_COMMAND).installed ? AUTH_COMMAND : null;
-  }
-  // Codex spawns the auth command without a PATHEXT lookup, so bare `aiand` misses `aiand.cmd`.
-  return findWindowsExecutable(AUTH_COMMAND, process.env);
+/** What Codex runs for the key: the program and the arguments that precede `key export`. */
+type AuthLauncher = { command: string; lead: string[] };
+
+/** This install's entry point (`dist/index.js`), whichever way aiand was started. */
+const AIAND_ENTRY = fileURLToPath(new URL("../../index.js", import.meta.url));
+
+/**
+ * What to bake as the auth command, or null when no aiand resolves outside
+ * the current directory. Windows bakes `node` and the absolute entry script:
+ * the `aiand.cmd` (or npm) shim would be run by cmd.exe, which tries Codex's
+ * working directory, a project repo, before PATH for the `node` it falls back
+ * to, and a bare `aiand` would search that directory too (Codex also spawns
+ * without a PATHEXT lookup, so it misses `aiand.cmd`). POSIX keeps the bare
+ * name so a Node version switch that moves aiand keeps working; execvp
+ * reaches the working directory only through a PATH entry the user wrote.
+ */
+export function resolveAuthLauncher(
+  platform: NodeJS.Platform = process.platform,
+  find: (bin: string) => string | null = findOnPath,
+  node: { execPath: string; entry: string } = { execPath: process.execPath, entry: AIAND_ENTRY },
+): AuthLauncher | null {
+  if (platform === "win32") return { command: node.execPath, lead: [node.entry] };
+  return find(AUTH_COMMAND) === null ? null : { command: AUTH_COMMAND, lead: [] };
 }
 
 /** Host of the gateway the CLI itself dials, for native-key routing checks. */
@@ -144,7 +165,7 @@ async function codexNativeAiandKeys(): Promise<string[]> {
         auth &&
         typeof auth === "object" &&
         !Array.isArray(auth) &&
-        isAuthCommand((auth as Record<string, unknown>).command)
+        programName((auth as Record<string, unknown>).command) === AUTH_COMMAND
       ) {
         continue;
       }
@@ -175,13 +196,28 @@ async function codexNativeAiandKeys(): Promise<string[]> {
 const spawnableByCodex = (command: unknown): boolean =>
   process.platform !== "win32" || (typeof command === "string" && /[\\/]/.test(command));
 
-const isAuthCommand = (command: unknown): boolean =>
-  typeof command === "string" &&
-  command
-    .split(/[\\/]/)
-    .at(-1)!
-    .toLowerCase()
-    .replace(/\.(?:cmd|exe|bat)$/, "") === AUTH_COMMAND;
+const programName = (command: unknown): string | null =>
+  typeof command === "string"
+    ? command
+        .split(/[\\/]/)
+        .at(-1)!
+        .toLowerCase()
+        .replace(/\.(?:cmd|exe|bat)$/, "")
+    : null;
+
+// `node <install>/dist/index.js`: how Windows reaches this aiand with no shim in between.
+const isNodeEntryLaunch = (command: unknown, args: unknown[]): boolean =>
+  programName(command) === "node" &&
+  typeof args[0] === "string" &&
+  args[0].replaceAll("/", "\\").toLowerCase().endsWith("\\dist\\index.js");
+
+/** The arguments after the aiand program, or undefined when this is not aiand. */
+function authArguments(auth: Record<string, unknown> | undefined): unknown[] | undefined {
+  const args = auth?.args;
+  if (!Array.isArray(args)) return undefined;
+  if (programName(auth?.command) === AUTH_COMMAND) return args;
+  return isNodeEntryLaunch(auth?.command, args) ? args.slice(1) : undefined;
+}
 
 // `/v1/responses` rejects a level the model does not publish, so one it does is always pinned.
 function effortFor(model: Model | undefined, current?: unknown): string | undefined {
@@ -203,8 +239,15 @@ type Session = {
   auth: { command: string; args: string[] };
 };
 
-const authArgs = (profileName?: string): string[] =>
-  profileName ? [...AUTH_ARGS, "--profile", profileName] : [...AUTH_ARGS];
+// `--for` names the origin Codex sends the key to, so `key export` can refuse a stored
+// credential issued for another one. Without it a config wired by `AIAND_API_KEY=k aiand
+// codex on --base-url B` would later pull the stored key to B.
+const authArgs = (profileName: string | undefined, baseUrl: string | undefined): string[] => [
+  ...AUTH_ARGS,
+  ...(profileName ? ["--profile", profileName] : []),
+  "--for",
+  normalizeBaseUrl(trimSlash(baseUrl ?? "") || DEFAULT_BASE_URL),
+];
 
 function ownedTables(session: Session): [string, TomlTable][] {
   return [
@@ -289,21 +332,34 @@ function leftover(section: TomlSection, keep?: (line: string) => boolean): strin
   return `${header}${lines.trim()}\n`;
 }
 
+type AuthPin = { profile: string | null; origin: string | null };
+
 // Other args could select another credential, so they read as someone else's profile.
-function pinnedProfile(keys: Record<string, Record<string, unknown>>): string | null | undefined {
-  const auth = keys[AUTH_TABLE];
-  const args = auth?.args;
-  if (!isAuthCommand(auth?.command) || !Array.isArray(args)) return undefined;
+function authPin(keys: Record<string, Record<string, unknown>>): AuthPin | undefined {
+  const args = authArguments(keys[AUTH_TABLE]);
+  if (args === undefined) return undefined;
   if (!AUTH_ARGS.every((arg, index) => args[index] === arg)) return undefined;
-  if (args.length === AUTH_ARGS.length) return null;
-  const name = args[AUTH_ARGS.length + 1];
-  return args.length === AUTH_ARGS.length + 2 &&
-    args[AUTH_ARGS.length] === "--profile" &&
-    typeof name === "string" &&
-    name !== ""
-    ? name
-    : undefined;
+  const pin: AuthPin = { profile: null, origin: null };
+  let at = AUTH_ARGS.length;
+  const value = (): string | undefined => {
+    const next = args[at + 1];
+    return typeof next === "string" && next !== "" ? next : undefined;
+  };
+  if (args[at] === "--profile") {
+    pin.profile = value() ?? null;
+    if (pin.profile === null) return undefined;
+    at += 2;
+  }
+  if (args[at] === "--for") {
+    pin.origin = value() ?? null;
+    if (pin.origin === null) return undefined;
+    at += 2;
+  }
+  return at === args.length ? pin : undefined;
 }
+
+const pinnedProfile = (keys: Record<string, Record<string, unknown>>): string | null | undefined =>
+  authPin(keys)?.profile;
 
 const markedByUs = (keys: Record<string, Record<string, unknown>>): boolean =>
   pinnedProfile(keys) !== undefined;
@@ -356,12 +412,41 @@ async function readProfile(
   return { raw, sections: foldDottedKeys(splitSections(raw)) };
 }
 
-async function probe(): Promise<ProbeResult> {
+async function probeDetail(): Promise<ProbeDetail> {
   const { sections } = await readProfile();
   const keys = readKeys(sections);
   const active = routedByUs(keys);
   const model = keys[""]?.model;
-  return { active, model: active && typeof model === "string" ? model : null };
+  return {
+    active,
+    model: active && typeof model === "string" ? model : null,
+    ...(active ? { baseUrl: String(keys[PROVIDER_TABLE]?.base_url) } : {}),
+  };
+}
+
+async function probe(): Promise<ProbeResult> {
+  const { active, model } = await probeDetail();
+  return { active, model };
+}
+
+/**
+ * The origin Codex sends `profileName`'s key to, read from a config that predates
+ * `--for` (0.7 and earlier wrote none): its base_url, minus the `/v1` we appended.
+ * Null when there is no such config, or it is not ours, unreadable, or pinned to
+ * another profile; `key export` then judges by the profile's own binding.
+ */
+export async function legacyCodexOrigin(profileName: string): Promise<string | null> {
+  try {
+    const keys = readKeys((await readProfile()).sections);
+    const pin = authPin(keys);
+    if (!pin || pin.origin !== null) return null;
+    if ((pin.profile ?? loadConfig().profile) !== profileName) return null;
+    const baseUrl = keys[PROVIDER_TABLE]?.base_url;
+    if (!isRoutableBaseUrl(baseUrl)) return null;
+    return normalizeBaseUrl(String(baseUrl).replace(/\/v1\/*$/, ""));
+  } catch {
+    return null;
+  }
 }
 
 async function enableGuard({ force }: { force: boolean }): Promise<void> {
@@ -399,10 +484,18 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   const current = keys[""]?.model;
   const keep = !input.pinModel && marked && inCatalog(input.catalog, current);
   const model = keep ? current : input.model;
-  const command = resolveAuthCommand();
-  if (command === null) {
+  const launcher = resolveAuthLauncher();
+  if (launcher === null) {
     warnings.push(
       "Codex runs `aiand key export` for the key, but aiand is not on PATH; run aiand codex on again once it is.",
+    );
+  }
+  const origin = normalizeBaseUrl(trimSlash(input.baseUrl) || DEFAULT_BASE_URL);
+  const stored = process.env.AIAND_API_KEY?.trim() ? await loadCredential(input.profileName) : null;
+  const issuedFor = stored ? storedBinding(stored)?.api_url : undefined;
+  if (issuedFor !== undefined && issuedFor !== origin) {
+    warnings.push(
+      `The login stored for "${input.profileName}" was issued for ${issuedFor}, not ${origin}, so \`aiand key export\` will refuse it for Codex. Keep AIAND_API_KEY exported where Codex runs, or sign in for ${origin} on its own profile.`,
     );
   }
   const catalogModel = input.catalog.find((entry) => entry.id === model);
@@ -418,8 +511,14 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     baseUrl: input.baseUrl,
     // The active profile is left unpinned, so `aiand config use` and logout carry Codex along.
     auth: {
-      command: command ?? AUTH_COMMAND,
-      args: authArgs(input.profileName === loadConfig().profile ? undefined : input.profileName),
+      command: launcher?.command ?? AUTH_COMMAND,
+      args: [
+        ...(launcher?.lead ?? []),
+        ...authArgs(
+          input.profileName === loadConfig().profile ? undefined : input.profileName,
+          input.baseUrl,
+        ),
+      ],
     },
   });
 
@@ -542,8 +641,17 @@ const NON_RUNTIME_COMMANDS = new Set([
   "update",
 ]);
 
+/**
+ * The Codex release `open` installs (check-dist requires every npm install
+ * hint to pin one). The package has no install scripts: bin/codex.js finds
+ * its platform binary in an optional dependency at run time, so
+ * --ignore-scripts costs nothing and keeps a future one from running.
+ * @public read from dist/ by scripts/check-dist.mjs
+ */
+export const CODEX_VERSION = "0.165.0";
+
 const CODEX_INSTALL = {
-  command: "npm install -g @openai/codex",
+  command: `npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION}`,
   url: "https://developers.openai.com/codex/cli",
 };
 
@@ -552,6 +660,7 @@ export const codexAdapter: AgentAdapter = {
   label: "Codex",
   bin: CODEX_BIN,
   install: CODEX_INSTALL,
+  launchModelFlags: ["--model", "-m"],
   detect(): DetectResult {
     return detectBinary(CODEX_BIN);
   },
@@ -559,6 +668,7 @@ export const codexAdapter: AgentAdapter = {
     return [currentProfilePath()];
   },
   probe,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
   enableGuard,
   enable,
   disable,
@@ -577,7 +687,7 @@ export const codexAdapter: AgentAdapter = {
       // This very aiand, so the session works from npx or a checkout with no aiand on PATH.
       auth: {
         command: process.execPath,
-        args: [process.argv[1]!, ...authArgs(input.profileName)],
+        args: [process.argv[1]!, ...authArgs(input.profileName, input.baseUrl)],
       },
     });
     // Codex's `aiand key export` runs as its child and can only find an AIAND_API_KEY session

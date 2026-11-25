@@ -9,8 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach } from "node:test";
-import { KEY } from "../dist/cli/select.js";
-import { captureStdio, waitForListener } from "./helpers.mjs";
+import { captureStdio } from "./helpers.mjs";
 
 /** What the stub gateway mints on every successful sign-in, and whom it signs in. */
 export const MINTED_ACCESS_TOKEN = "sk-minted";
@@ -28,6 +27,8 @@ function stubServer() {
     /** Device-poll interval the stub advertises (seconds). */
     pollInterval: 0,
     revocations: [],
+    /** Refresh tokens /auth/device/logout answers 500 for, to fail one profile's revoke alone. */
+    rejectRefresh: [],
     /** /api/orgs payload; tests set two orgs to reach the picker. */
     orgs: [],
     /** org minted into the device-code grant; null omits it. */
@@ -39,6 +40,13 @@ function stubServer() {
     /** When "down", the device endpoints 500 — the device-to-paste fallback
      * path: service torn down, identity API still serving. */
     deviceMode: "up",
+    /** When set, the device-code poll answers this RFC 8628 error (e.g. "access_denied"): a
+     * sign-in that fails while every other endpoint, revoke included, still works. */
+    tokenError: null,
+    /** An HTTP status /auth/device/logout answers instead of 200 (a host that does not serve it: 404). */
+    logoutStatus: null,
+    /** Runs when a /auth/device/logout request arrives, before it is answered: a slow revoke's window. */
+    onLogout: null,
   };
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://stub");
@@ -96,6 +104,13 @@ function stubServer() {
       req.on("data", (chunk) => (raw += chunk));
       req.on("end", () => {
         const params = JSON.parse(raw || "{}");
+        state.onLogout?.();
+        if (state.logoutStatus !== null) {
+          return reply(state.logoutStatus, { error: "not served here" });
+        }
+        if (state.rejectRefresh.includes(params.refresh_token)) {
+          return reply(500, { error: "revoke failed" });
+        }
         state.revocations.push(params.refresh_token ?? null);
         reply(200, { ok: true });
       });
@@ -117,6 +132,7 @@ function stubServer() {
           });
         }
         if (params.grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
+          if (state.tokenError) return reply(400, { error: state.tokenError });
           return reply(200, {
             access_token: MINTED_ACCESS_TOKEN,
             refresh_token: MINTED_REFRESH_TOKEN,
@@ -167,6 +183,9 @@ export function registerAuthStub() {
   });
 }
 
+/** The binding a sign-in against the stub records (login passes it to saveCredential). */
+export const stubBinding = () => ({ auth_url: baseUrl, api_url: baseUrl });
+
 /** Capture CLI output; node:test's own frames pass through (captureStdio). */
 export function captureOutput() {
   return captureStdio();
@@ -205,15 +224,6 @@ export function browserOpener() {
     await fetch(res.headers.get("location"));
     return true;
   };
-}
-
-/** Wait until the picker is listening, then drive DOWN + ENTER through it.
- * The prompt appears only after deviceLogin's first poll, and keys sent with
- * no listener are lost. */
-export async function pickSecondRow(input) {
-  await waitForListener(input);
-  input.send(KEY.DOWN);
-  input.send(KEY.ENTER_CR);
 }
 
 export const TWO_ORGS = [

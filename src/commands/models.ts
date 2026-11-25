@@ -1,10 +1,10 @@
 import { saveCatalogCache, visionLabel } from "../agents/catalog.js";
-import { openSession } from "../api/client.js";
+import { openSession, type Session } from "../api/client.js";
 import { listModels, type Model, modelLabel } from "../api/models.js";
 import { bool, oneOf, parse, str } from "../cli/args.js";
-import { CliError } from "../cli/errors.js";
-import { currencySymbol, json, num, out, style, table } from "../cli/output.js";
-import { loadCredential, resolveProfile } from "../config.js";
+import { CliError, NotBoundError } from "../cli/errors.js";
+import { currencySymbol, err, json, num, out, style, styled, table } from "../cli/output.js";
+import { loadCredential, type ResolvedProfile, resolveProfile } from "../config.js";
 
 export const help = `${style.bold("aiand models")} -- list the model catalog
 
@@ -19,7 +19,8 @@ Options
   --json                 machine-readable output (full <org>/<model> ids)
 
 Prices are per 1M tokens in your organization's billing currency. Signed out,
-the catalog is still readable and priced in USD.`;
+the catalog is still readable and priced in USD, as it is for an endpoint your
+sign-in was not issued for (--base-url).`;
 
 const MODEL_SORTS = ["id", "input", "output", "context"] as const;
 type ModelSort = (typeof MODEL_SORTS)[number];
@@ -40,8 +41,7 @@ export async function run(argv: string[]): Promise<void> {
 
   const profile = resolveProfile(str(parsed, "profile"));
 
-  const hasKey = Boolean(process.env.AIAND_API_KEY?.trim() ?? (await loadCredential(profile.name)));
-  const session = hasKey ? await openSession(profile) : null;
+  const session = await catalogSession(profile);
 
   let models = await listModels(session, profile.apiUrl);
   // The report/overview savings read this cache offline; `models` is the
@@ -78,13 +78,14 @@ export async function run(argv: string[]): Promise<void> {
     {
       header: "vision",
       // Text-only entries read dimmed so the vision-capable ones stand out.
-      value: (m) => (visionLabel(m) === "vision" ? visionLabel(m) : style.dim(visionLabel(m))),
+      value: (m) =>
+        visionLabel(m) === "vision" ? visionLabel(m) : styled(style.dim, visionLabel(m)),
     },
     { header: "in/1m", value: (m) => price(m.input_per_1m, m.currency), align: "right" },
     { header: "out/1m", value: (m) => price(m.output_per_1m, m.currency), align: "right" },
-    { header: "capabilities", value: (m) => style.dim(m.capabilities.join(",")) },
+    { header: "capabilities", value: (m) => styled(style.dim, m.capabilities.join(",")) },
     ...(bool(parsed, "long")
-      ? [{ header: "description", value: (m: Model) => style.dim(m.description ?? "") }]
+      ? [{ header: "description", value: (m: Model) => styled(style.dim, m.description ?? "") }]
       : []),
   ]);
 
@@ -96,6 +97,27 @@ export async function run(argv: string[]): Promise<void> {
         `Pass -m auto to let ai& pick per request when your account supports it (aiand run -m, aiand chat -m).`,
     ),
   );
+}
+
+/**
+ * The catalog is public, so a sign-in for another endpoint is not an error
+ * here: `--base-url X` while signed in elsewhere reads X's public catalog, and
+ * the stored key stays home.
+ */
+async function catalogSession(profile: ResolvedProfile): Promise<Session | null> {
+  const hasKey = Boolean(process.env.AIAND_API_KEY?.trim() || (await loadCredential(profile.name)));
+  if (!hasKey) return null;
+  try {
+    return await openSession(profile);
+  } catch (error) {
+    if (!(error instanceof NotBoundError)) throw error;
+    err(
+      style.dim(
+        `Your sign-in for profile "${profile.name}" is for another endpoint, so it was not sent to ${profile.apiUrl}; showing its public catalog.`,
+      ),
+    );
+    return null;
+  }
 }
 
 function trimZeros(value: string): string {

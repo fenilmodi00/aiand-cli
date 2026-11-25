@@ -47,6 +47,8 @@ const E2E_MODEL = {
   output_per_1m: "2.40",
   cached_input_per_1m: "0.10",
 };
+// The refresh tokens the purge cases mint; the double endpoint logs only these by value.
+const E2E_FIXTURE_REFRESH_TOKENS = ["rt-e2e-minted", "rt-fail-e2e"];
 const E2E_API_MODELS = {
   "zai-org/glm-5.3": {
     id: "zai-org/glm-5.3",
@@ -90,9 +92,11 @@ function writeOfflineApiMap(cfgDir, baseUrl) {
 function startApiDouble(sandboxDir) {
   writeFileSync(
     join(sandboxDir, "api-double.mjs"),
-    `import { createServer } from "node:http";
+    `import { appendFileSync } from "node:fs";
+import { createServer } from "node:http";
 const E2E_MODEL = ${JSON.stringify(E2E_MODEL)};
 const E2E_API_MODELS = ${JSON.stringify(E2E_API_MODELS)};
+const KNOWN_TOKENS = new Set(${JSON.stringify(E2E_FIXTURE_REFRESH_TOKENS)});
 const server = createServer((req, res) => {
   if (req.url === "/v1/api.json") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -100,6 +104,18 @@ const server = createServer((req, res) => {
   } else if (req.url === "/v1/models") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ object: "list", data: [E2E_MODEL] }));
+  } else if (req.method === "POST" && req.url === "/auth/device/logout") {
+    // The revoke the purge's sign-out sends: logged, and refused for rt-fail*.
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const token = JSON.parse(body || "{}").refresh_token ?? "";
+      // Only this test's own fixture tokens are written down: a real refresh token that reached this
+      // loopback endpoint must not land in a log.
+      appendFileSync(process.env.E2E_REVOKE_LOG, (KNOWN_TOKENS.has(token) ? token : "(unrecognised token)") + "\\n");
+      res.writeHead(token.startsWith("rt-fail") ? 500 : 200, { "content-type": "application/json" });
+      res.end("{}");
+    });
   } else {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
@@ -112,6 +128,7 @@ server.listen(0, "127.0.0.1", () => {
   );
   const child = spawn(process.execPath, [join(sandboxDir, "api-double.mjs")], {
     stdio: ["ignore", "pipe", "inherit"],
+    env: { ...process.env, E2E_REVOKE_LOG: join(sandboxDir, "revocations.log") },
   });
   return new Promise((resolve, reject) => {
     let buf = "";
@@ -153,6 +170,7 @@ const SCRUB = [
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
   "HERMES_HOME",
+  "JOUZU_HOME",
   "PI_CODING_AGENT_DIR",
   "PI_CONFIG_DIR",
   "XDG_DATA_HOME",
@@ -193,6 +211,7 @@ async function tmpEnv() {
     "copilot",
     "copilot-app",
     "hermes",
+    "jouzu",
   ]) {
     const stub = join(bin, name);
     writeFileSync(
@@ -228,6 +247,12 @@ async function tmpEnv() {
   // (no match) and tasklist prints nothing: "the app is not running".
   writeFileSync(join(bin, "pgrep"), "#!/bin/sh\nexit 1\n");
   chmodSync(join(bin, "pgrep"), 0o755);
+  // logout --all sweeps every storage tier, keychains included: those tools
+  // must fail here rather than reach the host's real keychain.
+  for (const tool of ["security", "secret-tool"]) {
+    writeFileSync(join(bin, tool), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(bin, tool), 0o755);
+  }
   writeFileSync(join(bin, "tasklist"), "#!/bin/sh\nexit 0\n");
   chmodSync(join(bin, "tasklist"), 0o755);
   if (process.platform === "win32") {
@@ -253,6 +278,13 @@ async function tmpEnv() {
   env.AIAND_API_KEY = "sk-e2e-test-key-0000000000000000000000";
   env.AIAND_BASE_URL = baseUrl;
   env.PATH = `${bin}${delimiter}${process.env.PATH ?? ""}`;
+  // Launches and logout sweep finished aiand overlays out of the temp dir;
+  // the sandbox's CLI runs only ever see their own.
+  const scratch = join(S, "tmp");
+  mkdirSync(scratch, { recursive: true });
+  env.TMPDIR = scratch;
+  env.TMP = scratch;
+  env.TEMP = scratch;
 
   return { S, cfg, bin, home, configPath, BEFORE, env, apiDouble, baseUrl };
 }
@@ -413,7 +445,7 @@ try {
   );
 
   // --- codex on/off/status ----------------------------------------------------
-  // Codex runs `aiand key export` itself, so aiand must be on PATH for the profile to be on.
+  // Codex runs `aiand key export` itself; off Windows aiand must be on PATH for the profile to be on.
   const aiandLaunchers =
     process.platform === "win32"
       ? [[join(bin, "aiand.cmd"), `@echo off\r\n"${process.execPath}" "${DIST}" %*\r\n`]]
@@ -429,7 +461,11 @@ try {
   );
   check(
     "codex on asks aiand for the key instead of writing it",
-    /^command = "(?:aiand|.*\\\\aiand\.cmd)"$/m.test(codexProfile) &&
+    // Windows bakes node and this checkout's entry script: no shim, no PATH walk.
+    (process.platform === "win32"
+      ? codexProfile.includes(`command = ${JSON.stringify(process.execPath)}`) &&
+        codexProfile.includes(`args = [${JSON.stringify(DIST)}, "key", "export", `)
+      : /^command = "aiand"$/m.test(codexProfile)) &&
       !codexProfile.includes("sk-e2e-test-key-0000000000000000000000"),
   );
   const codexStatus = JSON.parse(cli("codex status --json"));
@@ -564,6 +600,69 @@ try {
     PI_MODELS_BEFORE.equals(readFileSync(piModelsPath)) &&
       PI_AUTH_BEFORE.equals(readFileSync(piAuthPath)) &&
       PI_SETTINGS_BEFORE.equals(readFileSync(piSettingsPath)),
+  );
+
+  // --- jouzu on/off/status ----------------------------------------------------
+  // Jouzu keeps Pi's three files in its own per-platform agent dir. With
+  // JOUZU_HOME scrubbed, AIAND_HOME stands in for the OS home, so this also
+  // checks the dir resolution on each CI platform.
+  const jouzuDir =
+    process.platform === "darwin"
+      ? join(home, "Library", "Application Support", "Jouzu", "agent")
+      : process.platform === "win32"
+        ? join(home, "AppData", "Roaming", "Jouzu", "agent")
+        : join(home, ".config", "jouzu", "agent");
+  mkdirSync(jouzuDir, { recursive: true });
+  const jouzuModelsPath = join(jouzuDir, "models.json");
+  const jouzuAuthPath = join(jouzuDir, "auth.json");
+  const jouzuSettingsPath = join(jouzuDir, "settings.json");
+  writeFileSync(
+    jouzuAuthPath,
+    `${JSON.stringify({ shisa: { type: "api_key", key: "sk-user-shisa" } }, null, 2)}\n`,
+  );
+  writeFileSync(jouzuSettingsPath, `${JSON.stringify({ tuiMode: "regular" }, null, 2)}\n`);
+  const JOUZU_AUTH_BEFORE = readFileSync(jouzuAuthPath);
+  const JOUZU_SETTINGS_BEFORE = readFileSync(jouzuSettingsPath);
+
+  const jouzuOn = JSON.parse(cli("jouzu on --json"));
+  check("jouzu on succeeds", jouzuOn.state === "on" && jouzuOn.agent === "jouzu");
+  const jouzuModels = JSON.parse(readFileSync(jouzuModelsPath, "utf8"));
+  check(
+    "jouzu on writes providers.aiand into Jouzu's own agent dir",
+    jouzuModels.providers?.aiand?.baseUrl === `${baseUrl}/v1` &&
+      jouzuModels.providers?.aiand?.api === "openai-completions",
+    String(jouzuModels.providers?.aiand?.baseUrl),
+  );
+  const jouzuAuth = JSON.parse(readFileSync(jouzuAuthPath, "utf8"));
+  check(
+    "jouzu on bakes the key with the marker and keeps the user's credential",
+    jouzuAuth.aiand?.managedBy === "aiand" && jouzuAuth.shisa?.key === "sk-user-shisa",
+  );
+  check(
+    "jouzu on leaves Pi's own dir alone",
+    !existsSync(join(piDir, "models.json")) ||
+      !JSON.parse(readFileSync(join(piDir, "models.json"), "utf8")).providers?.aiand,
+  );
+  const jouzuStatus = JSON.parse(cli("jouzu status --json"));
+  check(
+    "jouzu status: on with the default model",
+    jouzuStatus.state === "on" && jouzuStatus.model === "zai-org/glm-5.3",
+    JSON.stringify(jouzuStatus),
+  );
+  cli("jouzu off --json");
+  check(
+    "jouzu off restores Jouzu's files and removes the models.json it created",
+    JOUZU_AUTH_BEFORE.equals(readFileSync(jouzuAuthPath)) &&
+      JOUZU_SETTINGS_BEFORE.equals(readFileSync(jouzuSettingsPath)) &&
+      !existsSync(jouzuModelsPath),
+  );
+  cli("jouzu on --json");
+  cli("restore jouzu --force");
+  check(
+    "restore jouzu --force puts the seeded files back",
+    JOUZU_AUTH_BEFORE.equals(readFileSync(jouzuAuthPath)) &&
+      JOUZU_SETTINGS_BEFORE.equals(readFileSync(jouzuSettingsPath)) &&
+      !existsSync(jouzuModelsPath),
   );
 
   // --- omp on/off/status ------------------------------------------------------
@@ -991,9 +1090,10 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
         "--",
         "--provider",
         "anthropic",
-        "--model=y",
+        // Hermes's own model flags name the session model, so they must agree.
+        "--model=zai-org/glm-5.3",
         "-m",
-        "z",
+        "zai-org/glm-5.3",
         "--keep",
       ],
       {
@@ -1032,7 +1132,7 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     (hermesChildEnv.match(/^HERMES_\w+=.*$/gm) ?? []).join(" "),
   );
   check(
-    "run-agent hermes leads with its routing args and strips --provider/--model/-m from the passthrough (both forms)",
+    "run-agent hermes leads with its routing args, takes --model/-m from the passthrough as the session model and strips --provider (both forms)",
     JSON.stringify(hermesArgs) ===
       JSON.stringify(["--provider", "aiand", "--model", "zai-org/glm-5.3", "--keep"]),
     JSON.stringify(hermesArgs),
@@ -1203,7 +1303,9 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
   );
   check(
     "hermes on keeps unrelated env lines and sets aside the user's ANTHROPIC key",
-    hermesWiredEnv.includes("USER_KEY=keep") && !hermesWiredEnv.includes("user-key"),
+    hermesWiredEnv.includes("USER_KEY=keep") &&
+      !/^ANTHROPIC_API_KEY=/m.test(hermesWiredEnv) &&
+      /^# aiand set aside: ANTHROPIC_API_KEY=/m.test(hermesWiredEnv),
   );
   check(
     "hermes on ships the aiand provider plugin",
@@ -1499,11 +1601,98 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     JSON.stringify(trickyArgs),
   );
 
+  // An npm shim with no node.exe beside it (the default Node installer's
+  // layout) runs a bare `node`, which cmd.exe resolves in the current directory
+  // first. Windows only: only cmd.exe has the problem and the fix.
+  if (process.platform === "win32") {
+    const shims = join(S, "npm-shims");
+    const repo = join(S, "planted-repo");
+    mkdirSync(shims, { recursive: true });
+    mkdirSync(repo, { recursive: true });
+    const shimCapture = join(S, "capture-shim");
+    const plantedMarker = join(S, "planted-node-ran");
+    writeFileSync(
+      join(shims, "shim-stub.cjs"),
+      "require('fs').writeFileSync(process.env.AIAND_CAPTURE + '.args', process.argv.slice(2).join('\\n') + '\\n');\n",
+    );
+    // The text npm's cmd-shim writes, node.exe lookup and bare-`node` fallback included.
+    writeFileSync(
+      join(shims, "opencode.cmd"),
+      [
+        "@ECHO off",
+        "GOTO start",
+        ":find_dp0",
+        "SET dp0=%~dp0",
+        "EXIT /b",
+        ":start",
+        "SETLOCAL",
+        "CALL :find_dp0",
+        "",
+        'IF EXIST "%dp0%\\node.exe" (',
+        '  SET "_prog=%dp0%\\node.exe"',
+        ") ELSE (",
+        '  SET "_prog=node"',
+        "  SET PATHEXT=%PATHEXT:;.JS;=;%",
+        ")",
+        "",
+        'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\shim-stub.cjs" %*',
+        "",
+      ].join("\r\n"),
+    );
+    writeFileSync(join(repo, "node.cmd"), `@echo off\r\necho planted> "${plantedMarker}"\r\n`);
+    const system32 = join(process.env.SystemRoot ?? "C:\\Windows", "System32");
+    const shimEnv = {
+      ...env,
+      AIAND_CAPTURE: shimCapture,
+      PATH: [shims, dirname(process.execPath), system32].join(delimiter),
+    };
+
+    // Premise: with the switch off, the shim does run the planted node.cmd.
+    const unguarded = { ...shimEnv };
+    for (const key of Object.keys(unguarded)) {
+      if (key.toUpperCase() === "NODEFAULTCURRENTDIRECTORYINEXEPATH") delete unguarded[key];
+    }
+    const { cmdShimArgv } = await import(
+      pathToFileURL(join(ROOT, "dist", "cli", "win-spawn.js")).href
+    );
+    execFileSync(
+      join(system32, "cmd.exe"),
+      cmdShimArgv(join(shims, "opencode.cmd"), ["--version"]),
+      {
+        cwd: repo,
+        env: unguarded,
+        stdio: "ignore",
+        windowsVerbatimArguments: true,
+      },
+    );
+    check(
+      "premise: an npm shim runs a node.cmd planted in the current directory when unguarded",
+      existsSync(plantedMarker),
+      plantedMarker,
+    );
+    rmSync(plantedMarker, { force: true });
+
+    try {
+      execFileSync(process.execPath, [DIST, "run-agent", "opencode", "--", "--version"], {
+        cwd: repo,
+        env: shimEnv,
+        encoding: "utf8",
+      });
+    } catch {
+      // the stub exits 0, but a refusal to resolve must not hide the checks below
+    }
+    check(
+      "run-agent runs the real node for an npm shim, never a node.cmd in the current directory",
+      existsSync(`${shimCapture}.args`) && !existsSync(plantedMarker),
+      `stub ran=${existsSync(`${shimCapture}.args`)} planted ran=${existsSync(plantedMarker)}`,
+    );
+  }
+
   // --- registry: exactly the shipped agents --------------------------------------
   const { AGENTS } = await import(pathToFileURL(join(ROOT, "dist", "agents", "registry.js")).href);
   const agentIds = AGENTS.map((row) => row.id).sort();
   check(
-    "registry ships exactly claude, codex, copilot, copilot-app, hermes, omp, opencode and pi",
+    "registry ships exactly claude, codex, copilot, copilot-app, hermes, jouzu, omp, opencode and pi",
     JSON.stringify(agentIds) ===
       JSON.stringify([
         "claude",
@@ -1511,6 +1700,7 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
         "copilot",
         "copilot-app",
         "hermes",
+        "jouzu",
         "omp",
         "opencode",
         "pi",
@@ -1795,6 +1985,179 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
       missingCheckoutOk && !existsSync(fakeLauncher),
       missingCheckoutDetail,
     );
+
+    // uninstall --purge against the real CLI. This dist has `logout --all`,
+    // which refuses to run unconfirmed off a terminal, so the installer must
+    // pass --force; the per-profile fallback for a CLI without --all is
+    // covered by scripts/install-behavior.mjs.
+    const purgeCheckout = join(home, ".aiand", "cli");
+    mkdirSync(purgeCheckout, { recursive: true });
+    writeFileSync(
+      join(purgeCheckout, "package.json"),
+      JSON.stringify({ name: "@aiand/cli" }, null, 2),
+    );
+    writeFileSync(join(purgeCheckout, OWNERSHIP_MARKER), "aiand-cli installer ownership marker\n");
+    writeFileSync(fakeLauncher, FAKE_LAUNCHER);
+    chmodSync(fakeLauncher, 0o755);
+    const purgeConfig = join(home, "purge", "aiand");
+    mkdirSync(purgeConfig, { recursive: true });
+    writeFileSync(
+      join(purgeConfig, "config.json"),
+      JSON.stringify({ profile: "default", profiles: { default: {}, work: {} } }),
+    );
+    let purgeOk = true;
+    let purgeOut = "";
+    try {
+      purgeOut = execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--purge"], {
+        env: {
+          ...env,
+          HOME: home,
+          AIAND_CONFIG_DIR: purgeConfig,
+          AIAND_DIR: undefined,
+          AIAND_UNINSTALL_FORCE: undefined,
+          AIAND_SOURCE: undefined,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      purgeOk = false;
+      purgeOut = String(error.stderr ?? error.message ?? error);
+    }
+    check("uninstall --purge exits zero", purgeOk, purgeOut.trim().split("\n").pop() ?? "");
+    check(
+      "uninstall --purge passes sign-out (nothing minted to revoke) before deleting",
+      /Removed profiles, credentials, and agent snapshots/.test(purgeOut),
+      purgeOut.trim().split("\n").slice(0, 3).join(" | "),
+    );
+    check("uninstall --purge removes the config directory", !existsSync(purgeConfig), purgeConfig);
+    check("uninstall --purge removes the checkout", !existsSync(purgeCheckout), purgeCheckout);
+    check("uninstall --purge removes the launcher", !existsSync(fakeLauncher), fakeLauncher);
+
+    // The purge decides from the JSON `logout --all --force --json` prints, so
+    // run it against the real CLI, with no stub in between: a minted key must
+    // be revoked at the endpoint it is bound to (AIAND_BASE_URL points at a
+    // closed port here, so an override would fail it), a pasted key is left
+    // for the console, and a revoke the gateway refuses must stop the purge.
+    const revokeLog = join(S, "revocations.log");
+    const purgeAgainstRealCli = ({ mintedRefresh, label }) => {
+      writeFileSync(revokeLog, "");
+      mkdirSync(purgeCheckout, { recursive: true });
+      writeFileSync(
+        join(purgeCheckout, "package.json"),
+        JSON.stringify({ name: "@aiand/cli" }, null, 2),
+      );
+      writeFileSync(
+        join(purgeCheckout, OWNERSHIP_MARKER),
+        "aiand-cli installer ownership marker\n",
+      );
+      writeFileSync(fakeLauncher, FAKE_LAUNCHER);
+      chmodSync(fakeLauncher, 0o755);
+      rmSync(purgeConfig, { recursive: true, force: true });
+      mkdirSync(purgeConfig, { recursive: true });
+      writeFileSync(
+        join(purgeConfig, "config.json"),
+        JSON.stringify({ profile: "default", profiles: { default: {}, mine: {} } }),
+      );
+      const binding = { auth_url: baseUrl, api_url: baseUrl };
+      const farFuture = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+      writeFileSync(
+        join(purgeConfig, "credentials.json"),
+        JSON.stringify({
+          ...(mintedRefresh
+            ? {
+                default: {
+                  origin: "device",
+                  bound_to: binding,
+                  expires_at: farFuture,
+                  storage: "plaintext",
+                },
+              }
+            : {}),
+          mine: { origin: "paste", bound_to: binding, storage: "plaintext" },
+        }),
+      );
+      writeFileSync(
+        join(purgeConfig, "credentials-plaintext.json"),
+        JSON.stringify({
+          ...(mintedRefresh
+            ? {
+                default: JSON.stringify({
+                  access_token: "sk-e2e-minted-0000000000000000",
+                  refresh_token: mintedRefresh,
+                }),
+              }
+            : {}),
+          mine: JSON.stringify({ access_token: "sk-e2e-pasted-0000000000000000" }),
+        }),
+      );
+      let ok = true;
+      let out = "";
+      try {
+        out = execFileSync("bash", [join(ROOT, "install.sh"), "uninstall", "--purge"], {
+          env: {
+            ...env,
+            HOME: home,
+            AIAND_CONFIG_DIR: purgeConfig,
+            AIAND_API_KEY: undefined,
+            AIAND_BASE_URL: "http://127.0.0.1:9",
+            AIAND_AUTH_URL: undefined,
+            AIAND_DIR: undefined,
+            AIAND_UNINSTALL_FORCE: undefined,
+            AIAND_SOURCE: undefined,
+          },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        ok = false;
+        out = `${error.stdout ?? ""}${error.stderr ?? error.message ?? error}`;
+      }
+      const revoked = readFileSync(revokeLog, "utf8").trim().split("\n").filter(Boolean);
+      return { ok, out, revoked, label };
+    };
+
+    const minted = purgeAgainstRealCli({
+      mintedRefresh: E2E_FIXTURE_REFRESH_TOKENS[0],
+      label: "minted",
+    });
+    check("real-CLI purge: exits zero", minted.ok, minted.out.trim().split("\n").pop() ?? "");
+    check(
+      "real-CLI purge: revokes the minted key at its bound endpoint, once, and never the pasted one",
+      JSON.stringify(minted.revoked) === JSON.stringify(["rt-e2e-minted"]),
+      JSON.stringify(minted.revoked),
+    );
+    check(
+      "real-CLI purge: deletes the config directory, checkout and launcher",
+      !existsSync(purgeConfig) && !existsSync(purgeCheckout) && !existsSync(fakeLauncher),
+      purgeConfig,
+    );
+
+    const refused = purgeAgainstRealCli({
+      mintedRefresh: E2E_FIXTURE_REFRESH_TOKENS[1],
+      label: "refused",
+    });
+    check(
+      "real-CLI purge: a revoke the gateway refuses aborts and names the profile",
+      !refused.ok && /could not revoke the keys of: default/.test(refused.out),
+      refused.out.trim().split("\n").pop() ?? "",
+    );
+    check(
+      "real-CLI purge: the aborted purge leaves the checkout, launcher and the kept sign-in",
+      existsSync(purgeCheckout) &&
+        existsSync(fakeLauncher) &&
+        existsSync(join(purgeConfig, "credentials.json")) &&
+        readFileSync(join(purgeConfig, "credentials-plaintext.json"), "utf8").includes(
+          "rt-fail-e2e",
+        ),
+      refused.out.trim().split("\n").slice(-2).join(" | "),
+    );
+    const pastedOnly = purgeAgainstRealCli({ mintedRefresh: null, label: "pasted only" });
+    check(
+      "real-CLI purge: a pasted key alone is not a failed revoke, and nothing is sent to revoke it",
+      pastedOnly.ok && pastedOnly.revoked.length === 0 && !existsSync(purgeConfig),
+      pastedOnly.out.trim().split("\n").pop() ?? "",
+    );
   } // posix install.sh uninstall coverage (win32: install.ps1 block below)
 
   // --- install.ps1 uninstall (Windows only; skipped on Linux CI) ---------------
@@ -1875,10 +2238,14 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     const aiandConfigDir = join(home, ".config", "aiand");
     mkdirSync(aiandConfigDir, { recursive: true });
     writeFileSync(join(aiandConfigDir, "sentinel"), "keep");
+    // The config dir is the one under this HOME: the suite's own AIAND_CONFIG_DIR
+    // sits outside it, which --purge rightly refuses.
     const winEnv = {
       ...env,
       HOME: home,
       USERPROFILE: home,
+      AIAND_CONFIG_DIR: undefined,
+      XDG_CONFIG_HOME: undefined,
       AIAND_DIR: undefined,
       AIAND_UNINSTALL_FORCE: undefined,
       AIAND_SOURCE: undefined,
@@ -1976,6 +2343,80 @@ INSERT INTO model_providers (id, name, type, settings_json) VALUES ('user-1', 'm
     check(
       "install.ps1 uninstall keeps profiles/credentials/snapshots",
       existsSync(join(aiandConfigDir, "sentinel")),
+      aiandConfigDir,
+    );
+
+    // --purge must not delete through a junction inside the config directory:
+    // Windows PowerShell 5.1's Remove-Item -Recurse follows it into the target.
+    const junctionTarget = join(S, "junction-target");
+    mkdirSync(junctionTarget, { recursive: true });
+    writeFileSync(join(junctionTarget, "victim.txt"), "keep");
+    const junction = join(aiandConfigDir, "linked");
+    execFileSync("cmd.exe", ["/d", "/c", "mklink", "/J", junction, junctionTarget]);
+    const junctionRun = runPs1(["uninstall", "--force", "--purge"]);
+    check(
+      "install.ps1 uninstall --purge refuses a junction inside the config directory",
+      junctionRun.ok === false && junctionRun.err.includes("a link or junction"),
+      junctionRun.err.split("\n")[0],
+    );
+    check(
+      "install.ps1 uninstall --purge left the junction target and the config directory",
+      existsSync(join(junctionTarget, "victim.txt")) &&
+        existsSync(join(aiandConfigDir, "sentinel")),
+      junctionTarget,
+    );
+    execFileSync("cmd.exe", ["/d", "/c", "rmdir", junction]);
+    const purged = runPs1(["uninstall", "--force", "--purge"]);
+    check(
+      "install.ps1 uninstall --purge removes a config directory with no links",
+      purged.ok && !existsSync(aiandConfigDir) && existsSync(join(junctionTarget, "victim.txt")),
+      (purged.err || purged.out).trim().split("\n").pop() ?? "",
+    );
+
+    // The checkout gets the same guard: a junction inside it must stop the
+    // uninstall before anything is deleted, not be followed into its target.
+    mkdirSync(winCheckout, { recursive: true });
+    writeFileSync(join(winCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }));
+    writeFileSync(join(winCheckout, OWNERSHIP_MARKER), "aiand-cli installer ownership marker\n");
+    const checkoutJunction = join(winCheckout, "linked");
+    execFileSync("cmd.exe", ["/d", "/c", "mklink", "/J", checkoutJunction, junctionTarget]);
+    const checkoutJunctionRun = runPs1(["uninstall", "--force"]);
+    check(
+      "install.ps1 uninstall refuses a junction inside the checkout",
+      checkoutJunctionRun.ok === false && checkoutJunctionRun.err.includes("a link or junction"),
+      checkoutJunctionRun.err.split("\n")[0],
+    );
+    check(
+      "install.ps1 uninstall left the checkout junction target and the checkout",
+      existsSync(join(junctionTarget, "victim.txt")) &&
+        existsSync(join(winCheckout, "package.json")),
+      junctionTarget,
+    );
+    execFileSync("cmd.exe", ["/d", "/c", "rmdir", checkoutJunction]);
+
+    // Through the real launcher: `logout --all` deletes the config directory
+    // itself, so the purge finds it gone and must still finish.
+    mkdirSync(winCheckout, { recursive: true });
+    writeFileSync(join(winCheckout, "package.json"), JSON.stringify({ name: "@aiand/cli" }));
+    writeFileSync(join(winCheckout, OWNERSHIP_MARKER), "aiand-cli installer ownership marker\n");
+    writeFileSync(
+      winCmd,
+      `@echo off\r\nREM ${LAUNCHER_HEADER}\r\n"${process.execPath}" "${DIST}" %*\r\n`,
+    );
+    mkdirSync(aiandConfigDir, { recursive: true });
+    writeFileSync(
+      join(aiandConfigDir, "config.json"),
+      JSON.stringify({ profile: "default", profiles: { default: {}, work: {} } }),
+    );
+    const realPurge = runPs1(["uninstall", "--purge"], { AIAND_API_KEY: undefined });
+    check(
+      "install.ps1 uninstall --purge through the real CLI exits zero",
+      realPurge.ok,
+      (realPurge.err || realPurge.out).trim().split("\n").pop() ?? "",
+    );
+    check(
+      "install.ps1 uninstall --purge through the real CLI removes the config directory, checkout and launcher",
+      !existsSync(aiandConfigDir) && !existsSync(winCheckout) && !existsSync(winCmd),
       aiandConfigDir,
     );
   }

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { enableInput as baseEnableInput, catalogModel, withTestEnv } from "./helpers.mjs";
+import {
+  assertMode,
+  enableInput as baseEnableInput,
+  catalogModel,
+  withEnv,
+  withTestEnv,
+} from "./helpers.mjs";
 
 withTestEnv("aiand-claude-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
@@ -47,6 +53,18 @@ const enableInput = (overrides = {}) =>
     ...overrides,
   });
 
+/**
+ * Every model setting holds `model`: each env key naming a model (the slots,
+ * ANTHROPIC_MODEL, and any added later such as the safety-check model) and
+ * the startup `model`.
+ */
+function assertOnlyModel(settings, model) {
+  if (settings.model !== undefined) assert.equal(settings.model, model, "model");
+  const keys = Object.keys(settings.env).filter((key) => /_MODEL$/.test(key));
+  assert.ok(keys.includes("ANTHROPIC_DEFAULT_HAIKU_MODEL"), "the fast slot is written");
+  for (const key of keys) assert.equal(settings.env[key], model, key);
+}
+
 beforeEach(() => {
   rmSync(join(process.env.AIAND_HOME, ".claude"), { recursive: true, force: true });
   rmSync(join(process.env.AIAND_CONFIG_DIR, "snapshots", "claude"), {
@@ -73,9 +91,7 @@ describe("claude on", () => {
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "200000");
     assert.deepEqual(permissions.deny, ["WebSearch"]);
-    if (process.platform !== "win32") {
-      assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
-    }
+    assertMode(settingsPath(), 0o600);
     assert.equal(result.model, MAIN);
     assert.equal(result.catalogModel, MAIN);
     assert.doesNotMatch(readFileSync(addedJsonPath(), "utf8"), /sk-test-key/);
@@ -83,17 +99,181 @@ describe("claude on", () => {
     assert.deepEqual(await claudeAdapter.probe(), { active: true, model: MAIN });
   });
 
+  // Auto mode's safety checks default to the Sonnet slot, ~30k
+  // uncached input tokens each, and cost several times the coding work.
+  test("auto-mode safety checks run on the fast model, on Claude Code's own requests", async () => {
+    await claudeAdapter.enable(enableInput());
+    const { env } = readSettings();
+    assert.equal(env.CLAUDE_CODE_AUTO_MODE_MODEL, FAST);
+    assert.equal(env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+    // --model puts every slot on the chosen model, safety checks included.
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    assert.equal(
+      readSettings().env.CLAUDE_CODE_AUTO_MODE_MODEL,
+      OTHER,
+      "--model moves the checks too",
+    );
+    assert.equal(readSettings().env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+  });
+
+  test("with no fast model in the catalog, safety checks share the main model", async () => {
+    await claudeAdapter.enable(enableInput({ catalog: CATALOG.filter((m) => m.id !== FAST) }));
+    assert.equal(readSettings().env.CLAUDE_CODE_AUTO_MODE_MODEL, MAIN);
+  });
+
+  test("a safety-check model the user set on a catalog model stays, and comes back on off", async () => {
+    seed({ env: { CLAUDE_CODE_AUTO_MODE_MODEL: OTHER, CLAUDE_CODE_AUTO_MODE_SERVER: "1" } });
+    await claudeAdapter.enable(enableInput());
+    const { env } = readSettings();
+    assert.equal(env.CLAUDE_CODE_AUTO_MODE_MODEL, OTHER);
+    assert.equal(env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
+    await claudeAdapter.disable();
+    assert.deepEqual(readSettings().env, {
+      CLAUDE_CODE_AUTO_MODE_MODEL: OTHER,
+      CLAUDE_CODE_AUTO_MODE_SERVER: "1",
+    });
+  });
+
+  test("a safety-check model ai& cannot serve is replaced and handed back on off", async () => {
+    seed({ env: { CLAUDE_CODE_AUTO_MODE_MODEL: "claude-haiku-5-5" } });
+    await claudeAdapter.enable(enableInput());
+    assert.equal(readSettings().env.CLAUDE_CODE_AUTO_MODE_MODEL, FAST);
+    await claudeAdapter.disable();
+    assert.deepEqual(readSettings().env, { CLAUDE_CODE_AUTO_MODE_MODEL: "claude-haiku-5-5" });
+  });
+
   test("the profile's model wins over the Claude order", async () => {
     await claudeAdapter.enable(enableInput({ profileModel: OTHER }));
     assert.equal(readSettings().env.ANTHROPIC_DEFAULT_SONNET_MODEL, OTHER);
   });
 
-  test("--model sets the main slots only; haiku stays fast", async () => {
+  // 0.8.0 left the fast slot on DeepSeek while the user chose another model.
+  test("--model puts every slot on that model, the fast slot too", async () => {
     await claudeAdapter.enable(enableInput());
-    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    const result = await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    assertOnlyModel(readSettings(), OTHER);
+    assert.deepEqual(result.warnings, []);
+    const status = await claudeAdapter.modelSlots();
+    assert.deepEqual(status.warnings, []);
+    assert.deepEqual(
+      status.slots.map((slot) => slot.model),
+      Array(status.slots.length).fill(OTHER),
+    );
+  });
+
+  test("--fast-model is the one other model, for the fast slot", async () => {
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true, fastModel: FAST }));
     const { env } = readSettings();
     for (const slot of MAIN_SLOTS) assert.equal(env[slot], OTHER, slot);
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+    assert.deepEqual((await claudeAdapter.modelSlots()).warnings, [], "both were chosen");
+    // A re-on keeps both choices.
+    await claudeAdapter.enable(enableInput());
+    assert.equal(readSettings().env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+    assert.equal(readSettings().env.ANTHROPIC_DEFAULT_SONNET_MODEL, OTHER);
+    // --model alone drops the separate fast model.
+    await claudeAdapter.enable(enableInput({ model: MAIN, pinModel: true }));
+    assertOnlyModel(readSettings(), MAIN);
+  });
+
+  test("a re-on without --model keeps every slot on the model last chosen", async () => {
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    await claudeAdapter.enable(enableInput());
+    assertOnlyModel(readSettings(), OTHER);
+  });
+
+  test("the profile's model is a choice: every slot follows it", async () => {
+    await claudeAdapter.enable(enableInput({ profileModel: OTHER }));
+    assertOnlyModel(readSettings(), OTHER);
+  });
+
+  test("with no model chosen, the fast slot takes the fast default and status says so", async () => {
+    await claudeAdapter.enable(enableInput());
+    const status = await claudeAdapter.modelSlots();
+    const fast = status.slots.find((slot) => slot.key === "ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    assert.equal(fast.model, FAST);
+    assert.match(
+      status.warnings.join("\n"),
+      /fast \(haiku\) model .* is deepseek-ai\/deepseek-v4\.1-flash-1017, not moonshotai\/kimi-k3/,
+    );
+    // No choice was made, so the hint names no model.
+    assert.equal(
+      status.warnings.at(-1),
+      "To put every slot on one model, run aiand claude on --model <id>.",
+    );
+  });
+
+  test("a 0.8.0 wiring with the fast slot left on DeepSeek moves it on a re-on", async () => {
+    // What 0.8.0's `on --model OTHER` wrote, and recorded without `chosen`.
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    const record = JSON.parse(readFileSync(addedJsonPath(), "utf8"));
+    delete record.choice;
+    record.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = FAST;
+    writeFileSync(addedJsonPath(), JSON.stringify(record));
+    const settings = readSettings();
+    settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = FAST;
+    seed(settings);
+    assert.match((await claudeAdapter.modelSlots()).warnings.join(" "), /is deepseek/);
+    await claudeAdapter.enable(enableInput());
+    assertOnlyModel(readSettings(), OTHER);
+  });
+
+  test("with no model chosen, a re-on keeps the defaults even after the default order moves", async () => {
+    const QWEN = "qwen/qwen3.8-27b";
+    const withoutKimi = [...CATALOG.filter((m) => m.id !== MAIN), catalogModel(QWEN)];
+    await claudeAdapter.enable(enableInput({ catalog: withoutKimi }));
+    assert.equal(readSettings().env.ANTHROPIC_DEFAULT_SONNET_MODEL, QWEN);
+    // Kimi is back: QWEN was our default, not the user's choice, so the
+    // slots follow the default order again and the fast slot keeps its own.
+    await claudeAdapter.enable(enableInput({ catalog: [...withoutKimi, CATALOG[1]] }));
+    const { env } = readSettings();
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, MAIN);
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+  });
+
+  test("a 0.8.0 wiring on the default follows a profile model set since", async () => {
+    await claudeAdapter.enable(enableInput());
+    const record = JSON.parse(readFileSync(addedJsonPath(), "utf8"));
+    delete record.choice;
+    writeFileSync(addedJsonPath(), JSON.stringify(record));
+    await claudeAdapter.enable(enableInput({ profileModel: OTHER }));
+    assertOnlyModel(readSettings(), OTHER);
+  });
+
+  test("a startup model setting other than the profile's choice is warned about", async () => {
+    seed({ model: FAST });
+    const result = await claudeAdapter.enable(enableInput({ profileModel: OTHER }));
+    assert.match(
+      result.warnings.join(" "),
+      /still starts on your model setting \(deepseek-ai\/deepseek-v4\.1-flash-1017\).*switch to zai-org\/glm-5\.3/,
+    );
+  });
+
+  test("a fast slot the user set stays without --model, with a warning; --model replaces it", async () => {
+    seed({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: FAST } });
+    const result = await claudeAdapter.enable(enableInput({ profileModel: OTHER }));
+    assert.equal(readSettings().env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+    assert.match(
+      result.warnings.join(" "),
+      /fast \(haiku\) model .* is deepseek.*not zai-org\/glm-5\.3/,
+    );
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    assertOnlyModel(readSettings(), OTHER);
+  });
+
+  test("status reports a safety-check model the user set elsewhere", async () => {
+    await claudeAdapter.enable(enableInput({ model: OTHER, pinModel: true }));
+    const settings = readSettings();
+    settings.env.CLAUDE_CODE_AUTO_MODE_MODEL = MAIN;
+    seed(settings);
+    const status = await claudeAdapter.modelSlots();
+    const auto = status.slots.find((slot) => slot.label === "auto-mode checks");
+    assert.deepEqual(auto, {
+      key: "CLAUDE_CODE_AUTO_MODE_MODEL",
+      label: "auto-mode checks",
+      model: MAIN,
+    });
+    assert.match(status.warnings.join(" "), /auto-mode checks model/);
   });
 
   test("a re-on without --model keeps a slot already on a catalog model", async () => {
@@ -107,7 +287,11 @@ describe("claude on", () => {
   test("native writes no model keys and says so", async () => {
     const result = await claudeAdapter.enable(enableInput({ model: "native" }));
     const { env } = readSettings();
-    for (const slot of [...MAIN_SLOTS, "ANTHROPIC_DEFAULT_HAIKU_MODEL"]) {
+    for (const slot of [
+      ...MAIN_SLOTS,
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "CLAUDE_CODE_AUTO_MODE_MODEL",
+    ]) {
       assert.equal(env[slot], undefined, slot);
     }
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
@@ -226,7 +410,7 @@ describe("claude modelPicker", () => {
       CATALOG.map((model) => model.id),
     );
     const kimi = modelPicker.options.find((row) => row.model === MAIN);
-    assert.equal(kimi.description, "ai& · vision · 1M context");
+    assert.equal(kimi.description, "ai& · 200K context");
   });
 
   test("a re-on refreshes the list from the current catalog", async () => {
@@ -235,7 +419,16 @@ describe("claude modelPicker", () => {
     await claudeAdapter.enable(enableInput({ catalog }));
     const rows = readSettings().modelPicker.options;
     assert.equal(rows.length, catalog.length);
-    assert.equal(rows.at(-1).description, "ai& · text-only · 256K context");
+    assert.equal(rows.at(-1).description, "ai& · 200K context · text only");
+  });
+
+  test("a window under the context cap shows as the model's own", async () => {
+    const catalog = [...CATALOG, catalogModel("qwen/qwen3.8-27b", { context_window: 131072 })];
+    await claudeAdapter.enable(enableInput({ catalog }));
+    assert.equal(
+      readSettings().modelPicker.options.at(-1).description,
+      "ai& · 128K context · text only",
+    );
   });
 
   test("the user's own modelPicker is kept, with a warning, and off leaves it", async () => {
@@ -265,6 +458,66 @@ describe("claude modelPicker", () => {
 });
 
 describe("claude off", () => {
+  test("bakedBaseUrl(): reads back the https://api.aiand.com `on` baked, and nothing once off", async () => {
+    assert.equal(await claudeAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await claudeAdapter.enable(enableInput());
+    assert.equal(await claudeAdapter.bakedBaseUrl(), "https://api.aiand.com");
+    await claudeAdapter.disable();
+    assert.equal(await claudeAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
+  test("on warns that running sessions switch, once; off says they switch back", async () => {
+    const first = await claudeAdapter.enable(enableInput());
+    assert.match(first.warnings.join(" "), /they now send requests to ai&\. .*type \/exit/);
+    const again = await claudeAdapter.enable(enableInput());
+    assert.doesNotMatch(again.warnings.join(" "), /send requests to ai&/);
+    const off = await claudeAdapter.disable();
+    assert.deepEqual(off.notes, []);
+    assert.match(
+      off.warnings.join(" "),
+      /switch back too\. .*type \/exit, then run claude --continue/,
+    );
+  });
+
+  test("off empties the keys it removes before deleting them, so running sessions leave ai&", async () => {
+    await claudeAdapter.enable(enableInput());
+    const seen = [];
+    const watcher = watch(dirname(settingsPath()), () => {
+      try {
+        seen.push(JSON.parse(readFileSync(settingsPath(), "utf8")));
+      } catch {}
+    });
+    await withEnv({ AIAND_CLAUDE_RELOAD_MS: "200" }, () => claudeAdapter.disable());
+    watcher.close();
+    const emptied = seen.find((s) => s.env?.ANTHROPIC_BASE_URL === "");
+    assert.ok(emptied, "a write with the routing keys emptied came first");
+    assert.equal(emptied.env.ANTHROPIC_AUTH_TOKEN, "");
+    assert.equal(emptied.env.ANTHROPIC_DEFAULT_OPUS_MODEL, "");
+    assert.equal(
+      emptied.env.AIAND_MANAGED,
+      "1",
+      "still marked, so a failed second write can be redone by off",
+    );
+    assert.equal(existsSync(settingsPath()), false, "then the file on created is gone");
+  });
+
+  test("off retried after an interrupted wait removes the emptied keys without blaming the user", async () => {
+    const original = { theme: "dark", env: { FOO: "bar" } };
+    seed(original);
+    await claudeAdapter.enable(enableInput());
+    // The first off emptied every key it was removing, then died in its wait.
+    const { env } = readSettings();
+    for (const key of Object.keys(env)) {
+      if (key !== "AIAND_MANAGED" && key !== "FOO") env[key] = "";
+    }
+    seed({ theme: "dark", env });
+
+    const off = await claudeAdapter.disable();
+    assert.deepEqual(off.notes, []);
+    assert.deepEqual(readSettings(), original);
+    assert.deepEqual(await claudeAdapter.probe(), { active: false, model: null });
+  });
+
   test("a file on created is removed again", async () => {
     await claudeAdapter.enable(enableInput());
     const result = await claudeAdapter.disable();
@@ -286,9 +539,7 @@ describe("claude off", () => {
     await claudeAdapter.enable(enableInput());
     await claudeAdapter.disable();
     assert.equal(readFileSync(settingsPath(), "utf8"), original);
-    if (process.platform !== "win32") {
-      assert.equal(statSync(settingsPath()).mode & 0o777, 0o644);
-    }
+    assertMode(settingsPath(), 0o644);
   });
 
   test("a client setting the user already had comes back on off", async () => {
@@ -423,13 +674,15 @@ describe("claude re-on bookkeeping", () => {
     assert.deepEqual(await claudeAdapter.probe(), { active: true, model: OTHER });
   });
 
-  test("a haiku alias starts Claude Code on the fast slot: status says so, --model warns", async () => {
+  test("a haiku alias starts Claude Code on the fast slot, which --model also moves", async () => {
     seed({ model: "haiku" });
+    await claudeAdapter.enable(enableInput());
+    assert.deepEqual(await claudeAdapter.probe(), { active: true, model: FAST });
     const result = await claudeAdapter.enable(enableInput({ model: MAIN, pinModel: true }));
     assert.equal(readSettings().model, "haiku");
-    assert.equal(result.model, FAST);
-    assert.match(result.warnings.join(" "), /still starts on your model setting \(haiku → /);
-    assert.deepEqual(await claudeAdapter.probe(), { active: true, model: FAST });
+    assert.equal(result.model, MAIN);
+    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(await claudeAdapter.probe(), { active: true, model: MAIN });
   });
 
   test("env.ANTHROPIC_MODEL ai& cannot serve is set aside, and off puts it back", async () => {
@@ -472,6 +725,8 @@ describe("claude re-on bookkeeping", () => {
     seed({ model: SMALL });
     await claudeAdapter.enable(enableInput({ catalog }));
     assert.equal(readSettings().env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "32768");
+    const kimi = readSettings().modelPicker.options.find((row) => row.model === MAIN);
+    assert.equal(kimi.description, "ai& · 32K context");
   });
 
   test("opusplan starts outside plan mode on the sonnet slot", async () => {
@@ -498,9 +753,7 @@ describe("claude refreshKey", () => {
       false,
     );
     assert.equal(readSettings().env.ANTHROPIC_AUTH_TOKEN, "sk-new");
-    if (process.platform !== "win32") {
-      assert.equal(statSync(settingsPath()).mode & 0o777, 0o600);
-    }
+    assertMode(settingsPath(), 0o600);
   });
 
   test("an unmarked config is not touched", async () => {
@@ -520,9 +773,7 @@ describe("claude sessionLaunch", () => {
     assert.deepEqual(launch.env, {});
     assert.equal(launch.args[0], "--settings");
     const file = launch.args[1];
-    if (process.platform !== "win32") {
-      assert.equal(statSync(file).mode & 0o777, 0o600);
-    }
+    assertMode(file, 0o600);
     const settings = JSON.parse(readFileSync(file, "utf8"));
     assert.equal(settings.model, MAIN);
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "sk-launch-1");
@@ -534,9 +785,44 @@ describe("claude sessionLaunch", () => {
     // Beat a switch or ANTHROPIC_MODEL set in the shell or a lower settings file.
     assert.equal(settings.env.CLAUDE_CODE_USE_BEDROCK, "0");
     assert.equal(settings.env.ANTHROPIC_MODEL, MAIN);
+    // Auto-mode safety checks: the fast model, on Claude Code's own requests.
+    assert.equal(settings.env.CLAUDE_CODE_AUTO_MODE_MODEL, FAST);
+    assert.equal(settings.env.CLAUDE_CODE_AUTO_MODE_SERVER, "0");
     await launch.cleanup();
     assert.equal(existsSync(file), false);
     assert.equal(existsSync(settingsPath()), false, "user settings untouched");
+  });
+
+  // 0.8.0: `aiand claude --model X` left the slots on Kimi K3 and DeepSeek.
+  test("--model puts every slot of the launch on it; --fast-model the fast slot", async () => {
+    const launch = await claudeAdapter.sessionLaunch({
+      apiKey: "sk-x",
+      model: OTHER,
+      catalog: CATALOG,
+    });
+    assertOnlyModel(JSON.parse(readFileSync(launch.args[1], "utf8")), OTHER);
+    await launch.cleanup();
+    const both = await claudeAdapter.sessionLaunch({
+      apiKey: "sk-x",
+      model: OTHER,
+      fastModel: FAST,
+      catalog: CATALOG,
+    });
+    const { env } = JSON.parse(readFileSync(both.args[1], "utf8"));
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, OTHER);
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+    await both.cleanup();
+  });
+
+  test("the profile's model is a choice at launch too", async () => {
+    const launch = await claudeAdapter.sessionLaunch({
+      apiKey: "sk-x",
+      model: undefined,
+      profileModel: OTHER,
+      catalog: CATALOG,
+    });
+    assertOnlyModel(JSON.parse(readFileSync(launch.args[1], "utf8")), OTHER);
+    await launch.cleanup();
   });
 
   test("a window smaller than the context cap wins over it", () => {
@@ -545,6 +831,7 @@ describe("claude sessionLaunch", () => {
       apiKey: "sk-x",
       baseUrl: "https://api.aiand.com",
       main: small,
+      fast: small,
       catalog: [...CATALOG, catalogModel(small, { context_window: 131072 })],
     });
     assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "131072");
@@ -555,10 +842,11 @@ describe("claude sessionLaunch", () => {
       apiKey: "sk-x",
       baseUrl: "http://127.0.0.1:8787",
       main: OTHER,
+      fast: OTHER,
       catalog: CATALOG,
     });
     assert.equal(settings.model, OTHER);
-    assert.equal(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
+    assertOnlyModel(settings, OTHER);
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8787");
     assert.deepEqual(settings.permissions.deny, ["WebSearch"]);
   });

@@ -9,6 +9,7 @@ import {
   runCli,
   startMockGateway,
   withTestEnv,
+  writeConfigMarker,
 } from "./helpers.mjs";
 
 // Behavior-level coverage for the config, login, and whoami commands, driven
@@ -39,7 +40,9 @@ function fresh(overrides = {}) {
   return { env, cfg };
 }
 
-/** Seed a stored credential the way a login would leave it behind. */
+/** Seed a stored credential the way a login would leave it behind: a trusted
+ * config dir (marker + matching config_id) beside the credential files, and,
+ * for a sign-in made against one endpoint, the `bound_to` a login records. */
 function seedCredential(
   cfg,
   {
@@ -50,9 +53,16 @@ function seedCredential(
     user = { id: "u1", email: "dev@example.com" },
     org,
     token = "sk-stored-key",
+    boundTo,
   } = {},
 ) {
-  const meta = { origin, storage, ...(expiresAt === undefined ? {} : { expires_at: expiresAt }) };
+  writeConfigMarker(cfg);
+  const meta = {
+    origin,
+    storage,
+    ...(boundTo === undefined ? {} : { bound_to: boundTo }),
+    ...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
+  };
   if (user) meta.user = user;
   if (org) meta.org = org;
   writeFileSync(join(cfg, "credentials.json"), `${JSON.stringify({ [profile]: meta })}\n`);
@@ -385,14 +395,19 @@ describe("login", () => {
     assert.equal(result.storage, "plaintext");
   });
 
-  test("multiple orgs without a picker picks the first and says so", async () => {
-    const { env } = fresh({ AIAND_BASE_URL: `${gateway.url}/stub/two-orgs` });
+  test("multiple orgs without a picker records the key's own (first) org", async () => {
+    const { env, cfg } = fresh({ AIAND_BASE_URL: `${gateway.url}/stub/two-orgs` });
     const r = await runCli(["login", "--with-token", "--json"], {
       env,
       input: "sk-pasted-test-key",
     });
     assert.equal(r.code, 0, r.stderr);
-    assert.match(r.stderr, /multiple organizations; using First Org/);
+    // v0.8.0: a pasted key is already org-scoped, so there is no picker and
+    // no warning; the credential records the org the account API lists first.
+    assert.doesNotMatch(r.stderr, /multiple organizations/);
+    const credentials = JSON.parse(readFileSync(join(cfg, "credentials.json"), "utf8"));
+    assert.equal(credentials.default.org.id, "org_1");
+    assert.equal(credentials.default.org.name, "First Org");
   });
 
   test("a rejected key fails with the gateway's message", async () => {
@@ -471,7 +486,10 @@ describe("whoami", () => {
 
   test("an unreachable gateway fails loudly instead of printing cached data", async () => {
     const { env, cfg } = fresh({ AIAND_BASE_URL: CLOSED_URL });
-    seedCredential(cfg, { expiresAt: FUTURE });
+    seedCredential(cfg, {
+      expiresAt: FUTURE,
+      boundTo: { auth_url: CLOSED_URL, api_url: CLOSED_URL },
+    });
     const r = await runCli(["whoami"], { env });
     assert.equal(r.code, 1, r.stderr);
     assert.match(r.stderr, /Could not reach/);
@@ -479,7 +497,10 @@ describe("whoami", () => {
 
   test("a stored key prints the verified identity", async () => {
     const { env, cfg } = fresh({ AIAND_BASE_URL: gateway.url });
-    seedCredential(cfg, { expiresAt: FUTURE });
+    seedCredential(cfg, {
+      expiresAt: FUTURE,
+      boundTo: { auth_url: gateway.url, api_url: gateway.url },
+    });
     const r = await runCli(["whoami"], { env });
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /happy@example\.com/);
@@ -491,7 +512,10 @@ describe("whoami", () => {
 
   test("--json carries the identity, masked key, and source", async () => {
     const { env, cfg } = fresh({ AIAND_BASE_URL: gateway.url });
-    seedCredential(cfg, { expiresAt: FUTURE });
+    seedCredential(cfg, {
+      expiresAt: FUTURE,
+      boundTo: { auth_url: gateway.url, api_url: gateway.url },
+    });
     const r = await runCli(["whoami", "--json"], { env });
     assert.equal(r.code, 0, r.stderr);
     const identity = JSON.parse(r.stdout);
@@ -554,7 +578,11 @@ describe("whoami", () => {
 
   test("--profile inspects another profile", async () => {
     const { env, cfg } = fresh({ AIAND_BASE_URL: gateway.url });
-    seedCredential(cfg, { profile: "work", expiresAt: FUTURE });
+    seedCredential(cfg, {
+      profile: "work",
+      expiresAt: FUTURE,
+      boundTo: { auth_url: gateway.url, api_url: gateway.url },
+    });
     const r = await runCli(["whoami", "--profile", "work", "--json"], { env });
     assert.equal(r.code, 0, r.stderr);
     assert.equal(JSON.parse(r.stdout).profile, "work");

@@ -67,6 +67,7 @@ export const FOREIGN_LIST_HINT =
  * so this builder covers the provider block, the `.env`, and the plugin.
  * `reasoningLevels` rides the plugin so Hermes clamps user picks onto the
  * levels each model publishes rather than letting the engine default decide.
+ * `setAside` is how shadowing `.env` entries leave play (see renderHermesEnv).
  */
 export function buildHermesWrites({
   apiKey,
@@ -75,6 +76,7 @@ export function buildHermesWrites({
   reasoningLevels,
   envText,
   configText,
+  setAside,
 }: {
   apiKey: string;
   baseUrl: string;
@@ -82,6 +84,7 @@ export function buildHermesWrites({
   reasoningLevels: ReadonlyMap<string, readonly string[]>;
   envText: string;
   configText: string;
+  setAside?: "comment" | "drop";
 }): {
   env: string;
   config: string;
@@ -89,7 +92,7 @@ export function buildHermesWrites({
   pluginYaml: string;
   droppedEnvLines: string[];
 } {
-  const rendered = renderHermesEnv(envText, { apiKey, baseUrl });
+  const rendered = renderHermesEnv(envText, { apiKey, baseUrl }, { setAside });
   return {
     env: rendered.text,
     droppedEnvLines: rendered.droppedUserLines,

@@ -1,14 +1,22 @@
-import { AGENTS } from "../agents/registry.js";
+import { sweepOverlays } from "../agents/overlays.js";
+import { AGENTS, wiringCheckFor } from "../agents/registry.js";
+import { scrubSnapshotKeys } from "../agents/snapshot.js";
+import { forgetWired } from "../agents/wired.js";
 import { revokeTokens } from "../api/device.js";
 import { CliError } from "../cli/errors.js";
-import { err, out, style } from "../cli/output.js";
+import { err, out, safeLine, style } from "../cli/output.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
+import { redactSecrets } from "../cli/redact.js";
 import {
+  CONSOLE_KEYS_URL,
   CREDENTIAL_ORIGIN,
   clearCredential,
+  issuerBinding,
   loadConfig,
   loadCredential,
+  redactUrl,
   resolveProfile,
+  unprovenIssuer,
 } from "../config.js";
 import { classifySource } from "./identity.js";
 
@@ -67,23 +75,45 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
   // {refresh_token} — the server contract sends exactly that. No refresh
   // token means nothing to revoke: the local clear below is the whole job.
   const revokeToken = credential.refresh_token;
+  let attempt = false;
   if (pasted) {
     keepRemote = true;
   } else if (keepRemote || !revokeToken) {
     // keepRemote: caller said keep; no refresh token: local clear only.
-  } else if (opts.revoke) {
-    revoked = await revokeTokens(profile.authUrl, revokeToken);
-  } else if (isInteractive()) {
-    const yes = await confirm("Revoke the ai& key this machine minted?", {
-      default: true,
-    });
-    if (yes) {
-      revoked = await revokeTokens(profile.authUrl, revokeToken);
-    } else {
-      keepRemote = true;
-    }
+  } else if (opts.revoke || !isInteractive()) {
+    attempt = true;
+  } else if (await confirm("Revoke the ai& key this machine minted?", { default: true })) {
+    attempt = true;
   } else {
-    revoked = await revokeTokens(profile.authUrl, revokeToken);
+    keepRemote = true;
+  }
+  if (attempt && revokeToken) {
+    const binding = await issuerBinding(profile.name, credential);
+    if (!binding) {
+      const { message, hint } = unprovenIssuer(
+        profile.name,
+        "its key was not revoked; you are still signed in",
+      );
+      throw new CliError(message, { hint });
+    }
+    const issuer = binding.auth_url;
+    const result = await revokeTokens(issuer, revokeToken);
+    revoked = result.revoked;
+    if (!revoked) {
+      // The refresh token is the only way this CLI can ever revoke the key:
+      // deleting it now would leave a live key nobody here can revoke. Keep
+      // the whole sign-in, untouched, for a retry.
+      const cause =
+        result.status === undefined
+          ? "Check your connection"
+          : `${safeLine(redactUrl(issuer))} answered HTTP ${result.status} to the sign-out request, so the key was not revoked. Check that this sign-in was issued there`;
+      throw new CliError(
+        `Could not revoke the key this machine minted for "${profile.name}"; you are still signed in.`,
+        {
+          hint: `${cause}, then run \`aiand logout\` again. To forget it here anyway, run \`aiand logout --keep-remote\` and revoke the key at ${CONSOLE_KEYS_URL}.`,
+        },
+      );
+    }
   }
 
   // Strip aiand's writes from every agent before the credential goes, so no
@@ -97,10 +127,11 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
       if (adapter.launcherOnly) continue;
       try {
         await adapter.disable({ loggingOut: profile.name });
+        await forgetWired(adapter.id);
       } catch (error) {
         err(
           style.dim(
-            `[${adapter.id}] Could not strip its key: ${(error as Error).message ?? String(error)} Re-run \`aiand ${adapter.id} off\`.`,
+            `[${adapter.id}] Could not strip its key: ${redactSecrets(safeLine((error as Error).message ?? String(error)))} Re-run \`aiand ${adapter.id} off\`.`,
           ),
         );
       }
@@ -115,7 +146,22 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
     );
   }
 
+  // A snapshot taken by an older aiand may have copied a file that already
+  // held this key; the copy would outlive logout. Best-effort, like the strip.
+  try {
+    await scrubSnapshotKeys([credential.access_token], wiringCheckFor);
+  } catch (error) {
+    err(
+      style.dim(
+        `Could not scrub snapshot copies: ${redactSecrets(safeLine((error as Error).message ?? String(error)))}`,
+      ),
+    );
+  }
+
   await clearCredential(profile.name);
+
+  // A launcher session killed before its cleanup left its key in tmp.
+  await sweepOverlays().catch(() => {});
 
   // openSession prefers the Env key over any stored Credential, so clearing
   // alone does not end the Session while AIAND_API_KEY is set — the same
@@ -141,11 +187,15 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
 
   out(style.green(`Signed out of "${profile.name}".`));
   if (pasted) {
-    out(style.dim("The pasted key was removed locally; it is still valid in the console."));
+    out(
+      style.dim(
+        `The pasted key was removed locally; it is still valid. Revoke it at ${CONSOLE_KEYS_URL} if you no longer need it.`,
+      ),
+    );
   } else if (!revoked && !keepRemote) {
     out(
       style.dim(
-        "The server could not be reached, so the key was only removed locally. Revoke it in the console if this machine is untrusted.",
+        `No refresh token was stored, so the key was only removed locally. Revoke it at ${CONSOLE_KEYS_URL} if this machine is untrusted.`,
       ),
     );
   }

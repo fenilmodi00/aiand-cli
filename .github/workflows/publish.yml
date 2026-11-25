@@ -22,7 +22,20 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest # trusted publishing does not support self-hosted runners
-    timeout-minutes: 15
+    timeout-minutes: 25
+    # What lets a person other than the one who pushed the tag decide whether
+    # this run publishes. npm's trusted publishing does not look at the ref, so
+    # without the environment, write access to this repository is all the
+    # publish credential there is. These settings live outside this file, and
+    # a release is only as controlled as they are (docs/adr/0001, "What has to
+    # be set up outside this repository"):
+    #   - GitHub environment `release`: required reviewers, and deployments
+    #     limited to `v*` tags (no branches).
+    #   - npm trusted publisher for @aiand/cli: this repository, workflow
+    #     `publish.yml`, environment `release`.
+    #   - A tag ruleset on `v*` (creation, update, and deletion restricted to
+    #     the release maintainers).
+    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,8 +43,11 @@ jobs:
           fetch-depth: 0 # the main-ancestry check needs history
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          # Exact, not `22`: a resumed run must not pack with a different Node than the
+          # first, and a floating major moves without a commit here. Bump deliberately.
+          node-version: 22.23.4
+          # No registry-url: setup-node would write an .npmrc that reads a token
+          # from NODE_AUTH_TOKEN, the one place a token could come back in.
           cache: npm
       - name: Check the tag, main, CI, and npm
         run: |
@@ -58,28 +74,120 @@ jobs:
             echo "::error::CHANGELOG.md has no [$VERSION] section; add it and re-push the tag"
             exit 1
           fi
-          if [ -n "$(npm view "@aiand/cli@$VERSION" version 2>/dev/null || true)" ]; then
-            echo "::error::@aiand/cli@$VERSION is already on npm; bump package.json and tag the new version"
+          # A run can die after `npm publish` (npm slow to serve the version,
+          # `gh release create` failing), and npm never lets a version be
+          # published twice. So "already on npm" is a dead end only once the
+          # GitHub release is out too; otherwise this run resumes: it publishes
+          # nothing, checks that npm holds the very bytes it just packed, and
+          # creates the release.
+          PUBLISHED="$(gh release view "$TAG" --json isDraft,assets --jq '(.isDraft | not) and ([.assets[].name] | index("SHA256SUMS") != null)' 2>/dev/null || echo false)"
+          if [ "$PUBLISHED" = "true" ]; then
+            echo "::error::$TAG already has a published GitHub release with SHA256SUMS; bump package.json and tag the new version"
             exit 1
+          fi
+          if [ -n "$(npm view "@aiand/cli@$VERSION" version 2>/dev/null || true)" ]; then
+            echo "::warning::@aiand/cli@$VERSION is already on npm but $TAG has no complete GitHub release: resuming without publishing"
+            echo "RESUME=1" >> "$GITHUB_ENV"
           fi
         env:
           GH_TOKEN: ${{ github.token }}
       # Node 22 bundles npm 10, which has no OIDC support at all. On npm 10 a
-      # trusted-publishing publish falls back to an empty auth token, publishes
-      # unauthenticated, and the registry answers with a misleading 404 rather
+      # trusted-publishing publish goes out with no credential at all, and the
+      # registry answers with a misleading 404 rather
       # than a 403. Trusted publishing needs npm 11.5.1 or newer, so install it
       # explicitly instead of inheriting whatever Node ships. Exact-pinned:
-      # this binary later handles NODE_AUTH_TOKEN, so bump it deliberately.
+      # this binary later holds the OIDC publish credential, so bump it
+      # deliberately.
       - name: Install an npm that speaks OIDC
         run: npm install -g npm@11.20.0
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run check:dist
       - run: npm run check:public
-      # With a trusted publisher configured for this repository and workflow
-      # filename, npm authenticates over OIDC and NPM_TOKEN goes unused — the
-      # secret can then be deleted without touching this file. Until then the
-      # token is what authenticates the publish.
+      # Pack once and publish exactly those bytes, so the SHA256SUMS attached
+      # to the GitHub release below hashes the tarball npm serves. The
+      # installers refuse a release whose npm tarball disagrees with either
+      # npm's sha512 or this file (docs/adr/0001-installers-verify-npm-release.md).
+      #
+      # A resumed run cannot rely on `npm pack` reproducing a dead run's
+      # bytes: the toolchain can move between runs. So the first run uploads
+      # the tarball to the draft release, with the commit it was packed from,
+      # BEFORE it publishes, and a resumed run (npm already has the version,
+      # RESUME=1) takes those bytes from there instead of packing again. Only
+      # a resumed run reuses an uploaded tarball, and the next step then
+      # requires npm to serve exactly those bytes.
+      #
+      # A first run never reuses one: it packs from this checkout, and an
+      # asset already on the release has to be byte-identical to that pack or
+      # the run stops. Anyone with write access can create a draft release and
+      # attach a file, so a name and a `packed-from` line in its notes prove
+      # nothing about where the bytes came from.
+      - name: Pack the release tarball and SHA256SUMS
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          VERSION="${TAG#v}"
+          TGZ="aiand-cli-$VERSION.tgz"
+          OUT="$RUNNER_TEMP/release"
+          mkdir -p "$OUT"
+          MARK="packed-from: $GITHUB_SHA"
+          HAVE_RELEASE=false
+          HAVE_ASSET=false
+          PACKED_FROM=""
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            HAVE_RELEASE=true
+            HAVE_ASSET="$(gh release view "$TAG" --json assets --jq "[.assets[].name] | index(\"$TGZ\") != null")"
+            PACKED_FROM="$(gh release view "$TAG" --json body --jq '.body' | sed -n 's/^packed-from: //p' | head -n 1 | tr -d '\r')"
+          fi
+          if [ "${RESUME:-}" = "1" ]; then
+            # npm already has this version. Take the bytes the first run
+            # uploaded, if that run packed them from this very commit; the
+            # npm check below still has to find them on the registry.
+            if [ "$HAVE_ASSET" = "true" ]; then
+              if [ "$PACKED_FROM" != "$GITHUB_SHA" ]; then
+                echo "::error::npm already has @aiand/cli@$VERSION, packed from ${PACKED_FROM:-an unknown commit}, but $TAG now points at $GITHUB_SHA. The tag moved after the publish: do not retag, investigate first"
+                exit 1
+              fi
+              echo "Resuming: reusing the tarball the first run uploaded to the $TAG release."
+              gh release download "$TAG" --pattern "$TGZ" --dir "$OUT"
+            else
+              echo "::warning::npm already has this version but the release holds no tarball to reuse: packing again. The check below still requires npm to serve exactly these bytes"
+              npm pack --ignore-scripts --pack-destination "$OUT"
+            fi
+          else
+            npm pack --ignore-scripts --pack-destination "$OUT"
+            if [ "$HAVE_ASSET" = "true" ]; then
+              # A leftover from an earlier run is fine when it is these bytes.
+              EXISTING="$RUNNER_TEMP/existing"
+              mkdir -p "$EXISTING"
+              gh release download "$TAG" --pattern "$TGZ" --dir "$EXISTING"
+              if ! cmp -s "$EXISTING/$TGZ" "$OUT/$TGZ"; then
+                echo "::error::the $TAG release already holds $TGZ (sha512 $(openssl dgst -sha512 -r "$EXISTING/$TGZ" | cut -d' ' -f1)), which differs from what this checkout packs (sha512 $(openssl dgst -sha512 -r "$OUT/$TGZ" | cut -d' ' -f1)). Nothing was published. Find out who attached it; if it is a leftover of an earlier run you trust, delete that asset from the draft release and re-run"
+                exit 1
+              fi
+              echo "The $TAG release already holds this exact tarball."
+            elif [ "$HAVE_RELEASE" = "true" ]; then
+              # Before `npm publish`, so a run that dies after it can resume from these bytes.
+              gh release upload "$TAG" "$OUT/$TGZ"
+            else
+              gh release create "$TAG" --verify-tag --draft --notes "$MARK" --title "$TAG" "$OUT/$TGZ"
+            fi
+            if [ "$HAVE_RELEASE" = "true" ]; then
+              gh release edit "$TAG" --notes "$MARK"
+            fi
+          fi
+          test -f "$OUT/$TGZ"
+          cp install.sh install.ps1 "$OUT/"
+          (cd "$OUT" && sha256sum "$TGZ" install.sh install.ps1 > SHA256SUMS)
+          cat "$OUT/SHA256SUMS"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      # npm authenticates this step over OIDC, through the trusted publisher
+      # bound to this repository, publish.yml and the `release` environment.
+      # No token is passed on purpose. This job already waits for the
+      # environment's approval; the reason is that an npm token can publish
+      # from anywhere, not only from this workflow, so the package disallows
+      # tokens and nothing here should need one.
       #
       # Provenance is gated on visibility, not hardcoded. npm refuses to verify
       # an attestation from a private source repository, and it writes the
@@ -87,18 +195,91 @@ jobs:
       # rejects the upload — so passing the flag unconditionally burns a public
       # log entry on every failed run. Gating it means this publishes either way
       # and starts attesting on its own once the repository is public.
-      - run: |
-          if [ "${{ github.event.repository.private }}" = "false" ]; then
-            npm publish --provenance --access public
+      - name: Publish to npm
+        run: |
+          TARBALL="$RUNNER_TEMP/release/aiand-cli-${GITHUB_REF_NAME#v}.tgz"
+          if [ "${RESUME:-}" = "1" ]; then
+            echo "Resuming: npm already has this version; not publishing again."
+          elif [ "${{ github.event.repository.private }}" = "false" ]; then
+            npm publish "$TARBALL" --provenance --access public
           else
             echo "::warning::Source repository is private — publishing without provenance."
-            npm publish --access public
+            npm publish "$TARBALL" --access public
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # The release must not advertise a SHA256SUMS that npm's copy fails:
+      # wait for the registry to serve this version and compare its sha512.
+      # npm can take minutes to serve a fresh publish, so back off up to about
+      # ten minutes (10, 20, 40, then 60 seconds apart). A resumed run holds
+      # the same check: npm must serve the bytes this run just packed.
+      - name: Check npm serves the packed tarball
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          WANT="sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/release/aiand-cli-$VERSION.tgz" | base64 -w0)"
+          DELAY=10
+          ELAPSED=0
+          while true; do
+            GOT="$(npm view "@aiand/cli@$VERSION" dist.integrity 2>/dev/null || true)"
+            if [ "$GOT" = "$WANT" ]; then exit 0; fi
+            if [ -n "$GOT" ] && [ "${RESUME:-}" = "1" ]; then
+              echo "::error::npm already holds a different tarball ($GOT) for @aiand/cli@$VERSION than this run packed ($WANT); the GitHub release was not created. Do not retag: investigate the difference first"
+              exit 1
+            fi
+            if [ "$ELAPSED" -ge 600 ]; then break; fi
+            sleep "$DELAY"
+            ELAPSED=$((ELAPSED + DELAY))
+            DELAY=$((DELAY * 2 > 60 ? 60 : DELAY * 2))
+          done
+          echo "::error::npm lists ${GOT:-nothing} for @aiand/cli@$VERSION, expected $WANT after ${ELAPSED}s; the GitHub release was not created. Re-run this workflow: it resumes without publishing again"
+          exit 1
       # Release notes are the version's CHANGELOG section, not generated ones.
-      - run: |
-          node scripts/release.mjs notes "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" --verify-tag --notes-file "$RUNNER_TEMP/notes.md" --title "$GITHUB_REF_NAME"
+      # SHA256SUMS is what the installers verify against. install.sh and
+      # install.ps1 ride along because the README one-liners fetch them from
+      # releases/latest/download/, so a push to main cannot change what a new
+      # install runs (the bootstrap is still GitHub alone: the ADR's
+      # "trusted on first use").
+      #
+      # The release is created as a draft and published once every asset is
+      # attached, so `releases/latest` never serves one without SHA256SUMS. A
+      # re-run after a failure here finds the leftover release and completes it.
+      # Publishing a draft publishes everything on it, and anyone with write
+      # access can attach to one, so the draft is published only when it holds
+      # exactly the four assets this workflow attached (the tarball above, the
+      # three here) and nothing else.
+      - name: Create the GitHub release
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+          ASSETS=("$RUNNER_TEMP/release/SHA256SUMS" "$RUNNER_TEMP/release/install.sh" "$RUNNER_TEMP/release/install.ps1")
+          EXPECTED=("aiand-cli-${TAG#v}.tgz" SHA256SUMS install.sh install.ps1)
+          node scripts/release.mjs notes "${TAG#v}" > "$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            gh release create "$TAG" --verify-tag --draft --notes-file "$RUNNER_TEMP/notes.md" --title "$TAG" "${ASSETS[@]}"
+          fi
+          HAVE="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          EXTRA=""
+          MISSING=""
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            case " ${EXPECTED[*]} " in
+              *" $name "*) ;;
+              *) EXTRA="$EXTRA $(printf '%q' "$name")" ;;
+            esac
+          done <<< "$HAVE"
+          for name in "${EXPECTED[@]}"; do
+            printf '%s\n' "$HAVE" | grep -qxF -- "$name" || MISSING="$MISSING $name"
+          done
+          if [ -n "$EXTRA" ] || [ -n "$MISSING" ]; then
+            if [ -n "$EXTRA" ]; then
+              echo "::error::the $TAG release holds assets this workflow did not attach:$EXTRA. Nothing was published. Find out who attached them, remove each from the draft release (gh release delete-asset $TAG <name>), and re-run"
+            fi
+            if [ -n "$MISSING" ]; then
+              echo "::error::the $TAG release is missing$MISSING. Nothing was published. Re-run this workflow so the missing asset is attached"
+            fi
+            exit 1
+          fi
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --title "$TAG" --draft=false --latest
         env:
           GH_TOKEN: ${{ github.token }}

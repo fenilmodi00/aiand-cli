@@ -3,7 +3,20 @@ import { getLogs, getLogsPaged, LOG_PAGE_MAX, LOG_RANGES, type LogEntry } from "
 import { modelLabel } from "../api/models.js";
 import { bool, int, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, err, json, num, out, relativeTime, style, table } from "../cli/output.js";
+import {
+  type CellValue,
+  currencySymbol,
+  err,
+  json,
+  num,
+  out,
+  relativeTime,
+  renderCell,
+  type Styled,
+  style,
+  styled,
+  table,
+} from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import { requestTps } from "../obs/tps.js";
@@ -92,32 +105,34 @@ export async function run(argv: string[]): Promise<void> {
   );
 }
 
+/**
+ * A numeric log field for a cell. The gateway's value is untrusted until it
+ * has been through Number(), so a string or object where a number belongs
+ * prints `-` instead of reaching the terminal.
+ */
+function metric(value: unknown, format: (n: number) => string = String): string {
+  if (value === null || value === undefined || value === "") return "-";
+  const n = Number(value);
+  return Number.isFinite(n) ? format(n) : "-";
+}
+
+const milliseconds = (value: unknown): string => metric(value, (n) => `${n}ms`);
+
 function printTable(entries: LogEntry[]): void {
   table<LogEntry>(entries, [
     { header: "when", value: (e) => relativeTime(e.created_at) },
     { header: "status", value: (e) => statusCell(e.status_code), align: "right" },
     { header: "model", value: (e) => modelLabel(e.model) },
-    {
-      header: "in",
-      value: (e) => (e.input_tokens === null ? "-" : num(e.input_tokens)),
-      align: "right",
-    },
-    {
-      header: "out",
-      value: (e) => (e.output_tokens === null ? "-" : num(e.output_tokens)),
-      align: "right",
-    },
+    { header: "in", value: (e) => metric(e.input_tokens, num), align: "right" },
+    { header: "out", value: (e) => metric(e.output_tokens, num), align: "right" },
     {
       header: "cached",
-      value: (e) => (e.cached_tokens ? num(e.cached_tokens) : style.dim("-")),
+      value: (e) =>
+        Number(e.cached_tokens) ? metric(e.cached_tokens, num) : styled(style.dim, "-"),
       align: "right",
     },
-    { header: "ttft", value: (e) => (e.ttft_ms === null ? "-" : `${e.ttft_ms}ms`), align: "right" },
-    {
-      header: "latency",
-      value: (e) => (e.latency_ms === null ? "-" : `${e.latency_ms}ms`),
-      align: "right",
-    },
+    { header: "ttft", value: (e) => milliseconds(e.ttft_ms), align: "right" },
+    { header: "latency", value: (e) => milliseconds(e.latency_ms), align: "right" },
     {
       header: "tok/s",
       value: (e) => {
@@ -127,18 +142,21 @@ function printTable(entries: LogEntry[]): void {
       align: "right",
     },
     { header: "cost", value: (e) => costCell(e), align: "right" },
-    { header: "key", value: (e) => style.dim(e.api_key) },
+    { header: "key", value: (e) => styled(style.dim, e.api_key) },
   ]);
 }
 
-function statusCell(status: number): string {
-  if (status >= 500) return style.red(String(status));
-  if (status >= 400) return style.yellow(String(status));
-  return style.green(String(status));
+function statusCell(value: unknown): Styled {
+  if (value === null || value === undefined || value === "") return styled(style.dim, "-");
+  const status = Number(value);
+  if (!Number.isFinite(status)) return styled(style.dim, "-");
+  if (status >= 500) return styled(style.red, String(status));
+  if (status >= 400) return styled(style.yellow, String(status));
+  return styled(style.green, String(status));
 }
 
-function costCell(entry: LogEntry): string {
-  if (!entry.cost) return style.dim("-");
+function costCell(entry: LogEntry): CellValue {
+  if (!entry.cost) return styled(style.dim, "-");
   return `${currencySymbol(entry.currency)}${entry.cost}`;
 }
 
@@ -203,16 +221,17 @@ async function follow(
 }
 
 function followRow(entry: LogEntry): string {
-  const tokens = `${entry.input_tokens ?? "-"}/${entry.output_tokens ?? "-"}`;
-  const latency = entry.latency_ms === null ? "-" : `${entry.latency_ms}ms`;
+  const tokens = `${metric(entry.input_tokens)}/${metric(entry.output_tokens)}`;
   return [
-    style.dim(entry.created_at.slice(11, 19)),
+    styled(style.dim, String(entry.created_at).slice(11, 19)),
     statusCell(entry.status_code),
     modelLabel(entry.model),
-    style.dim(`${tokens} tok`),
-    style.dim(latency),
+    styled(style.dim, `${tokens} tok`),
+    styled(style.dim, milliseconds(entry.latency_ms)),
     costCell(entry),
-  ].join("  ");
+  ]
+    .map(renderCell)
+    .join("  ");
 }
 
 // Abortable sleep that resolves (never rejects) on abort, so --follow treats

@@ -1,7 +1,7 @@
 import { ApiError, CliError, EXIT, loginCancelled } from "../cli/errors.js";
 import { isLoopbackHost } from "../config.js";
 import { SECOND_MS } from "../time.js";
-import { parseJsonResponse, publicRequest } from "./client.js";
+import { parseJsonResponse, publicRequest, readBoundedText } from "./client.js";
 
 export const CLIENT_ID = "aiand-cli";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -25,13 +25,17 @@ export type TokenResponse = {
 
 type TokenErrorBody = { error: string; error_description?: string };
 
-function devicePost(url: string, body: unknown): Promise<Response> {
+function devicePost(url: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   return publicRequest(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
 }
+
+/** Long enough for a slow gateway, short enough that the refresh lock is not held for good. */
+const ROTATE_TIMEOUT_MS = 30_000;
 
 export async function startDeviceAuthorization(
   authUrl: string,
@@ -107,7 +111,20 @@ export async function pollForToken(
 
     if (response.ok) return parseJsonResponse<TokenResponse>(response);
 
-    const body = (await response.json().catch(() => ({}))) as Partial<TokenErrorBody>;
+    let body: Partial<TokenErrorBody> = {};
+    try {
+      // Any JSON parses: `null`, an array or a number must not reach the field reads below.
+      const parsed: unknown = JSON.parse(await readBoundedText(response));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const { error, error_description } = parsed as Record<string, unknown>;
+        body = {
+          error: typeof error === "string" ? error : undefined,
+          error_description: typeof error_description === "string" ? error_description : undefined,
+        };
+      }
+    } catch {
+      // Not JSON: falls to the default case below.
+    }
     switch (body.error) {
       case "authorization_pending":
         continue;
@@ -122,18 +139,23 @@ export async function pollForToken(
       default:
         throw new ApiError(
           response.status,
-          body.error_description ?? body.error ?? "Device login failed.",
+          (body.error_description || body.error || "Device login failed.").slice(0, 500),
           { hint: "Run `aiand login` again." },
         );
     }
   }
 }
 
-export async function rotateTokens(authUrl: string, refreshToken: string): Promise<TokenResponse> {
-  const response = await devicePost(`${authUrl}/auth/device/token`, {
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
+export async function rotateTokens(
+  authUrl: string,
+  refreshToken: string,
+  { timeoutMs = ROTATE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<TokenResponse> {
+  const response = await devicePost(
+    `${authUrl}/auth/device/token`,
+    { grant_type: "refresh_token", refresh_token: refreshToken },
+    AbortSignal.timeout(timeoutMs),
+  );
   if (!response.ok) {
     throw new CliError("Your CLI session could not be refreshed.", {
       exitCode: EXIT.NOT_SIGNED_IN,
@@ -143,14 +165,23 @@ export async function rotateTokens(authUrl: string, refreshToken: string): Promi
   return parseJsonResponse<TokenResponse>(response);
 }
 
-export async function revokeTokens(authUrl: string, refreshToken: string): Promise<boolean> {
+/**
+ * Ask the issuer to revoke a refresh token. The gateway answers 200 for a token
+ * it does not know or already revoked, so anything else means the key was not
+ * revoked: `status` is the HTTP status when the server answered at all, and
+ * absent when it could not be reached.
+ */
+export async function revokeTokens(
+  authUrl: string,
+  refreshToken: string,
+): Promise<{ revoked: boolean; status?: number }> {
   try {
     const response = await devicePost(`${authUrl}/auth/device/logout`, {
       refresh_token: refreshToken,
     });
-    return response.ok;
+    return response.ok ? { revoked: true } : { revoked: false, status: response.status };
   } catch {
-    return false;
+    return { revoked: false };
   }
 }
 

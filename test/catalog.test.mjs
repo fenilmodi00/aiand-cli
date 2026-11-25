@@ -119,13 +119,11 @@ describe("getCatalog cache", () => {
     const { ApiError } = await import("../dist/cli/errors.js");
     rmSync(join(process.env.AIAND_CONFIG_DIR, "model-catalog.json"), { force: true });
     await withFetch(
-      async () => ({
-        ok: false,
-        status: 401,
-        statusText: "Unauthorized",
-        headers: { get: () => undefined },
-        text: async () => JSON.stringify({ error: { message: "bad key" } }),
-      }),
+      async () =>
+        new Response(JSON.stringify({ error: { message: "bad key" } }), {
+          status: 401,
+          statusText: "Unauthorized",
+        }),
       async () => {
         await assert.rejects(
           () => catalog.getCatalog("https://api.aiand.com"),

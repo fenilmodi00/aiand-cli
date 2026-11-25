@@ -1,6 +1,6 @@
 import process from "node:process";
 import { CliError, cancelled } from "./errors.js";
-import { clipToWidth, style, visibleWidth, withoutSpinner } from "./output.js";
+import { clipToWidth, safeLine, style, visibleWidth, withoutSpinner } from "./output.js";
 import { GLYPH } from "./ui/glyphs.js";
 import { createTheme, hexTo256, type Theme } from "./ui/theme.js";
 
@@ -146,6 +146,7 @@ async function runPrompt<T>({
   return await withoutSpinner(async () => {
     input.setRawMode(true);
     input.resume();
+    input.setEncoding("utf8");
     output.write(HIDE_CURSOR);
 
     let prevLines = 0;
@@ -339,11 +340,15 @@ function renderRows<T>({
 }
 
 function summaryLine(output: PromptOutput, message: string, answer: string): void {
-  output.write(`${style.cyan(OK)} ${message} ${style.bold(answer)}\n`);
+  output.write(`${style.cyan(OK)} ${message} ${style.bold(safeLine(answer))}\n`);
 }
 
-function rowHint(choice: Choice): string {
-  return choice.hint ?? "";
+/** Labels and hints can be server text (org names); keep them one plain line. */
+function choiceText(choice: Choice): { label: string; hint: string } {
+  return {
+    label: safeLine(choice.label),
+    hint: choice.hint ? safeLine(choice.hint) : "",
+  };
 }
 
 /**
@@ -385,16 +390,16 @@ export async function promptCheckbox({
         pageSize,
         renderRow: (choice, active, i) => {
           const box = checked[i] ? style.cyan(`[${OK}]`) : style.dim("[ ]");
-          const hint = rowHint(choice);
+          const { label, hint } = choiceText(choice);
           if (active) {
             return focusedRow(
               createTheme({ isTTY: true }),
-              `${box} ${choice.label}`,
+              `${box} ${label}`,
               hint,
               rowWidth(output),
             );
           }
-          const body = `${ROW_GUTTER}${box} ${choice.label}`;
+          const body = `${ROW_GUTTER}${box} ${label}`;
           return hint ? `${body}  ${style.dim(hint)}` : body;
         },
       }),
@@ -462,11 +467,11 @@ export async function promptSelect({
         index,
         pageSize,
         renderRow: (choice, active) => {
-          const hint = rowHint(choice);
+          const { label, hint } = choiceText(choice);
           if (active) {
-            return focusedRow(createTheme({ isTTY: true }), choice.label, hint, rowWidth(output));
+            return focusedRow(createTheme({ isTTY: true }), label, hint, rowWidth(output));
           }
-          const body = `${ROW_GUTTER}${choice.label}`;
+          const body = `${ROW_GUTTER}${label}`;
           return hint ? `${body}  ${style.dim(hint)}` : body;
         },
       }),

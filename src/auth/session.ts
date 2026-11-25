@@ -6,6 +6,8 @@ import { resolveProfile } from "../config.js";
 
 export type ResolvedSession = {
   key: string;
+  /** Null under AIAND_API_KEY: the key is the user's own and goes where they point it. */
+  credential: Session["credential"];
 };
 
 /**
@@ -14,7 +16,10 @@ export type ResolvedSession = {
  */
 export async function requireSessionKey(profileOverride?: string): Promise<ResolvedSession> {
   const profile = resolveProfile(profileOverride);
-  const toKey = (session: Session): ResolvedSession => ({ key: session.token });
+  const toKey = (session: Session): ResolvedSession => ({
+    key: session.token,
+    credential: session.credential,
+  });
 
   try {
     return toKey(await openSession(profile));

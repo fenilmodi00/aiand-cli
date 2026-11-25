@@ -6,7 +6,17 @@ import { loadSavedSweep, type SavedSweep } from "../benchmark/sweep-store.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
-import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import {
+  currencySymbol,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  renderCell,
+  style,
+  table,
+} from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import {
   annotatedPairRow,
@@ -354,7 +364,7 @@ function markdownTable(rows: PairStatsRow[], showP90: boolean): string[] {
   const columns: Column<PairStatsRow>[] = pairColumns(showP90).map((c) => ({
     header: c.header,
     align: c.align,
-    value: (r: PairStatsRow) => stripAnsi(c.value(r)),
+    value: (r: PairStatsRow) => stripAnsi(renderCell(c.value(r))),
   }));
   const header = `| ${columns.map((c) => c.header).join(" | ")} |`;
   const align = `|${columns.map((c) => (c.align === "right" ? "---:" : "---")).join("|")}|`;

@@ -4,16 +4,14 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { CliError } from "../cli/errors.js";
-import { configDir, writeFileAtomic } from "../fsutil.js";
+import { configDir, makePrivateTempDirSync, writeFileAtomic } from "../fsutil.js";
 
 /**
  * Personal task packs for harness comparison (ticket #129, plan §2.2): a task
@@ -304,7 +302,7 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
  * file changes, run verify there. Must PASS for the task to validate.
  */
 function replayGolden(taskDir: string, goldenDir: string): VerifyResult {
-  const runDir = mkdtempSync(join(tmpdir(), `aiand-compare-${basename(taskDir)}-`));
+  const runDir = makePrivateTempDirSync(`aiand-compare-${basename(taskDir)}-`);
   try {
     cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
     cpSync(goldenDir, runDir, { recursive: true, force: true });

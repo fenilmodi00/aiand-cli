@@ -1,15 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  appendFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getCatalog, resolveDefault, validateCatalogModel } from "../agents/catalog.js";
 import { notInstalledError } from "../agents/launch.js";
@@ -25,6 +16,7 @@ import { CliError } from "../cli/errors.js";
 import { err, heading, json, out, style } from "../cli/output.js";
 import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { configDir, type ResolvedProfile, resolveProfile } from "../config.js";
+import { makePrivateTempDirSync } from "../fsutil.js";
 import { oneShotRetry } from "../model-efficiency.js";
 import { listEnvelopes } from "../store/envelopes.js";
 import { openStore, storePath, syncStore } from "../store/index.js";
@@ -309,9 +301,16 @@ function parseHarnessIds(raw: string[]): string[] {
 }
 
 function freshWorkspace(taskDir: string): string {
-  const runDir = mkdtempSync(join(tmpdir(), `aiand-compare-${basename(taskDir)}-`));
-  cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
-  cpSync(join(taskDir, INSTRUCTION_FILE), join(runDir, INSTRUCTION_FILE));
+  const runDir = makePrivateTempDirSync(`aiand-compare-${basename(taskDir)}-`);
+  try {
+    cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
+    cpSync(join(taskDir, INSTRUCTION_FILE), join(runDir, INSTRUCTION_FILE));
+  } catch (error) {
+    // Never hand back a half-copied private dir; the failure is the only thing
+    // the caller can act on.
+    rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    throw error;
+  }
   return runDir;
 }
 
@@ -523,24 +522,27 @@ async function runDry(task: string, layoutIds: string[], trials: number): Promis
     // fail-before control `compare validate` applies, so a dry-run row
     // honestly reports success=false (or the task's untouched score).
     const runDir = freshWorkspace(taskDir);
-    const verify = runVerify(taskDir, runDir, VERIFY_TIMEOUT_MS);
-    rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    for (let trial = 1; trial <= trials; trial++) {
-      rows.push({
-        ...baseRow(layout.id, PINNED_MODEL, task, trial, null),
-        success: verify.ok,
-        score: verify.ok ? verify.score : null,
-        completed: true,
-        turns: bench.requests,
-        retries: bench.retries,
-        tokens_in: bench.inputTokens,
-        tokens_cached: bench.cachedTokens,
-        tokens_out: bench.outputTokens,
-        cost_usd: bench.effective_cost_units,
-        token_basis: "recorded",
-        cost_basis: "recorded",
-        verify_exit: verify.exitCode,
-      });
+    try {
+      const verify = runVerify(taskDir, runDir, VERIFY_TIMEOUT_MS);
+      for (let trial = 1; trial <= trials; trial++) {
+        rows.push({
+          ...baseRow(layout.id, PINNED_MODEL, task, trial, null),
+          success: verify.ok,
+          score: verify.ok ? verify.score : null,
+          completed: true,
+          turns: bench.requests,
+          retries: bench.retries,
+          tokens_in: bench.inputTokens,
+          tokens_cached: bench.cachedTokens,
+          tokens_out: bench.outputTokens,
+          cost_usd: bench.effective_cost_units,
+          token_basis: "recorded",
+          cost_basis: "recorded",
+          verify_exit: verify.exitCode,
+        });
+      }
+    } finally {
+      rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
   for (const row of rows) appendRow(task, row);

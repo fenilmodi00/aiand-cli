@@ -1,6 +1,6 @@
 {
   "name": "@aiand/cli",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Command line interface for the ai& API.",
   "license": "Apache-2.0",
   "author": "ai&",
@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/aiandlabs/aiand-cli.git"
   },
-  "homepage": "https://docs.aiand.com",
+  "homepage": "https://docs.aiand.com/cli/",
   "bugs": {
     "url": "https://github.com/aiandlabs/aiand-cli/issues"
   },
@@ -29,12 +29,15 @@
   },
   "files": [
     "dist",
+    "install.sh",
+    "install.ps1",
     "README.md",
+    "README.ja.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.21.0"
   },
   "devEngines": {
     "packageManager": {
@@ -57,7 +60,7 @@
     "pretest": "npm run build",
     "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "benchmark:recorded": "node scripts/benchmark-recorded.mjs",
-    "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95 test/*.test.mjs"
+    "test:coverage": "npm run build && node --import ./test/setup.mjs --test --experimental-test-coverage --test-coverage-include=\"dist/**\" --test-coverage-lines=95 --test-coverage-branches=86 --test-coverage-functions=95 test/*.test.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",

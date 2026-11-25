@@ -18,8 +18,20 @@ function cfgDir(name) {
   return dir;
 }
 
-const MONDAY_10 = Date.parse("2026-10-19T10:00:00.000Z");
 const HOUR = 3_600_000;
+const DAY_MS = 86_400_000;
+// Fixture rows sit two days back at 10:00 UTC: inside the default 7d/30d
+// windows whenever the suite runs, with hourly spacing that never straddles a
+// UTC midnight.
+const SEED_BASE = new Date(Date.now() - 2 * DAY_MS);
+SEED_BASE.setUTCHours(10, 0, 0, 0);
+const SEED_AT = SEED_BASE.getTime();
+const FIXTURE_WINDOW = [
+  "--since",
+  new Date(SEED_AT - DAY_MS).toISOString(),
+  "--until",
+  new Date(SEED_AT + DAY_MS).toISOString(),
+];
 
 async function seedTwoHarnesses(cfg, n = 8) {
   const { openStore, storePath } = await import("../dist/store/index.js");
@@ -35,7 +47,7 @@ async function seedTwoHarnesses(cfg, n = 8) {
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     for (let i = 0; i < n; i += 1) {
-      const at = new Date(MONDAY_10 + i * HOUR).toISOString();
+      const at = new Date(SEED_AT + i * HOUR).toISOString();
       insert.run(
         `f${i}`,
         i % 2 === 0 ? "zai-org/glm-5.3" : "openai/gpt-5.2",
@@ -92,7 +104,7 @@ test("harness compare: cost and no-cost renders, winners marked, samples flag", 
         "input_tokens, output_tokens, cached_tokens, cost, cost_value, currency, created_at, synced_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
-    const at = new Date(MONDAY_10).toISOString();
+    const at = new Date(SEED_AT).toISOString();
     insert.run(
       "s1",
       "zai-org/glm-5.3",
@@ -203,7 +215,7 @@ test("efficiency: empty and seeded stores both exit clean with json", async () =
     ["efficiency", "--no-sync"],
     ["efficiency", "--no-sync", "--last", "30d"],
     ["efficiency", "--no-sync", "--json"],
-    ["efficiency", "--no-sync", "--since", "2026-10-18", "--until", "2026-10-21"],
+    ["efficiency", "--no-sync", ...FIXTURE_WINDOW],
   ]) {
     const out = await runCli(args, { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
     assert.equal(out.code, 0, `${args.join(" ")}\n${out.stdout}${out.stderr}`);

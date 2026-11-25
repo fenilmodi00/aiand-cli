@@ -26,12 +26,22 @@ is in scope.
 In scope:
 
 - a key leaking outside the user's own account: into logs, error output,
-  crash reports, process arguments other users can read, world-readable
-  files, or requests to any host other than the configured ai& endpoint
+  crash reports, process arguments other users can read, or world-readable
+  files
+- a stored credential (key or refresh token) sent anywhere but the endpoint
+  that issued it
+- the key shown on screen: in prompts, echoed input, or error messages
 - a key written somewhere the documentation does not say it goes
 - a file or directory created with broader permissions than documented
+- running `aiand` in an untrusted current directory or cloned repository,
+  where a program or a project-level agent config planted there gets run or
+  followed instead of the user's own
+- server- or model-controlled bytes reaching the terminal as control
+  sequences
 - the installers (`install.sh`, `install.ps1`) writing, deleting, or executing
   outside their documented paths
+- the integrity of releases, the installers, and the update path, and the
+  secrets held by CI
 - sign-in flaws: device-code phishing that the CLI could have prevented, or
   accepting a token for the wrong account or organization
 
@@ -47,3 +57,12 @@ Out of scope:
   agent needs it there; `aiand <agent> off` removes it.
 - `AIAND_KEY_STORAGE=plaintext`, which stores the key in plaintext on request
 - vulnerabilities in the coding agents themselves (report those upstream)
+
+## Shared and loaner computers
+
+The trust boundary is the operating-system account, not the person. Anyone
+who can sign in to the same account can use what `aiand` stored there. Before
+you hand a machine back, run `aiand logout --all`, or the installer's
+`uninstall --purge`. Both try to revoke the keys `aiand` minted and stop if
+revocation fails. Neither can revoke a key you pasted in: revoke that one in
+the ai& console.

@@ -5,14 +5,15 @@ import { agentHome, DEFAULT_BASE_URL, isRoutableBaseUrl, writeFileAtomic } from 
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
+import { keyFingerprint, knownKeys } from "../known-keys.js";
 import {
   asObject,
   createSessionOverlay,
   jsoncDelete,
   jsoncSet,
-  parseWrittenObject,
   readJsoncObject,
   readTextIfExists,
+  writeKeyFile,
   writeStrippedJsonc,
 } from "../managed-file.js";
 import {
@@ -27,9 +28,18 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
+  ProbeDetail,
   ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
+import {
+  aiandRow,
+  type CopilotRecord,
+  handBackSelection,
+  isOurRow,
+  keyedRowWeWrote,
+  withoutRowKey,
+} from "./ownership.js";
 import {
   buildCopilotModelEntries,
   buildCopilotProvider,
@@ -43,30 +53,6 @@ const COPILOT_BIN = "copilot";
 
 /** Recovery hint for a Copilot config file that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand copilot on again.";
-
-/**
- * What enable() recorded so off can tell its values from the user's. The
- * baked key never appears here: only selections, the baseUrl we wrote,
- * previous values, modes, and the paths we wrote (not secrets; the
- * snapshot manifest already stores them).
- */
-type CopilotRecord = {
-  /** settings.json's `model` before on overwrote it (undefined = absent). */
-  previousModelSelection?: string;
-  /** The `aiand/<id>` selection this on wrote; off hands back or removes it. */
-  wroteModelSelection?: string;
-  /**
-   * The provider row's baseUrl this on wrote — names only, never
-   * the key: off/refresh-key prove the row ours by it.
-   */
-  wroteBaseUrl?: string;
-  /** File mode before `on` wrote it, per file off rewrites. */
-  previousProvidersMode?: number;
-  previousSettingsMode?: number;
-  /** Where `on` actually wrote the files; off strips them if the dir moved. */
-  providersPath?: string;
-  settingsPath?: string;
-};
 
 /** The CLI's config dir: ~/.copilot/, or $COPILOT_HOME when set. */
 function copilotHomeDir(): string {
@@ -86,33 +72,6 @@ export function copilotProvidersPath(): string {
 
 export function copilotSettingsPath(): string {
   return join(copilotHomeDir(), "settings.json");
-}
-
-/** The `aiand` provider row in providers.json `providers[]`, when shaped like one. */
-function aiandRow(providers: Record<string, unknown>): Record<string, unknown> | undefined {
-  const rows = Array.isArray(providers.providers) ? providers.providers : [];
-  return rows.map(asObject).find((row) => row?.name === COPILOT_PROVIDER_NAME);
-}
-
-/**
- * Ownership proof, mirroring the shared stamp-or-record gating: the
- * provider name alone is not proof — the CLI ignores unknown provider
- * fields (neither errors on nor preserves them), so a marker field would
- * not survive as durable proof, and a routable `aiand` row can be the
- * user's own hand write. With
- * a live record the row is ours only while its baseUrl still names where
- * `on` wrote it (a repointed row is the user's, key inside); without a
- * record (state dir wiped) only the baked shape for `expectedBaseUrl`
- * (default profile's URL, probe's case), key included, is ours.
- */
-function isOurRow(
-  row: Record<string, unknown> | undefined,
-  added: CopilotRecord | null,
-  expectedBaseUrl: string = copilotBaseUrl(),
-): boolean {
-  if (row === undefined || !isRoutableBaseUrl(row.baseUrl)) return false;
-  if (added?.wroteBaseUrl !== undefined) return row.baseUrl === added.wroteBaseUrl;
-  return row.baseUrl === expectedBaseUrl && typeof row.apiKey === "string";
 }
 
 /**
@@ -156,7 +115,7 @@ async function copilotNativeAiandKeys(): Promise<string[]> {
   return keys;
 }
 
-async function probe(): Promise<ProbeResult> {
+async function probeDetail(): Promise<ProbeDetail> {
   let providers: Record<string, unknown>;
   let settings: Record<string, unknown>;
   try {
@@ -178,7 +137,16 @@ async function probe(): Promise<ProbeResult> {
     typeof selection === "string" && selection.startsWith(COPILOT_SELECTION_PREFIX)
       ? selection.slice(COPILOT_SELECTION_PREFIX.length)
       : null;
-  return { active: true, model };
+  return {
+    active: true,
+    model,
+    ...(typeof row.baseUrl === "string" ? { baseUrl: row.baseUrl } : {}),
+  };
+}
+
+async function probe(): Promise<ProbeResult> {
+  const { active, model } = await probeDetail();
+  return { active, model };
 }
 
 async function enable(input: EnableInput): Promise<EnableResult> {
@@ -297,7 +265,10 @@ async function enable(input: EnableInput): Promise<EnableResult> {
       ? DEFAULT_FILE_MODE
       : ((await existingFileMode(paths.settings)) ?? DEFAULT_FILE_MODE));
 
-  await writeFileAtomic(paths.providers, providersText, { mode: PRIVATE_FILE_MODE });
+  await writeKeyFile(paths.providers, providersText, {
+    mode: PRIVATE_FILE_MODE,
+    agentId: COPILOT_ID,
+  });
   // native and a kept pick never edit settingsText; an unchanged
   // file is not rewritten, so a missing settings.json is never
   // created empty (the CLI could not parse it and off's
@@ -311,6 +282,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     previousModelSelection,
     wroteModelSelection,
     wroteBaseUrl: expectedBaseUrl,
+    wroteKeyHash: keyFingerprint(input.apiKey),
     previousProvidersMode,
     previousSettingsMode,
     providersPath: paths.providers,
@@ -332,33 +304,31 @@ async function enable(input: EnableInput): Promise<EnableResult> {
 }
 
 /**
- * The settings.json selection hand-back off performs on one file, current
- * dir or moved: an `aiand/`-prefixed `model` is ours to undo (off just
- * deleted every row that could serve it, so leaving it dangles a dead
- * model); the user's own value stays, with a note.
+ * Refuse to wire a second Copilot dir while the recorded one still holds
+ * our row: one record cannot hand back two dirs, so the old key would
+ * outlive `off`, and the new snapshot would copy it. Runs before the
+ * snapshot.
  */
-function handBackSelection(
-  text: string,
-  added: CopilotRecord | null,
-): { text: string; notes: string[] } {
-  const notes: string[] = [];
-  const model = text.trim() ? parseWrittenObject(text).model : undefined;
-  const isOurSelection = typeof model === "string" && model.startsWith(COPILOT_SELECTION_PREFIX);
-  let out = text;
-  if (isOurSelection) {
-    out =
-      added?.previousModelSelection !== undefined
-        ? jsoncSet(out, ["model"], added.previousModelSelection)
-        : jsoncDelete(out, ["model"]);
-  } else if (added?.wroteModelSelection !== undefined && model !== undefined) {
-    notes.push("left model because you edited it");
+async function enableGuard(): Promise<void> {
+  const added = await getAddedState<CopilotRecord>(COPILOT_ID);
+  const wired = added?.providersPath;
+  if (!wired || resolve(wired) === resolve(copilotProvidersPath())) return;
+  let providers: Record<string, unknown>;
+  try {
+    providers = await readJsoncObject(wired, INVALID_CONFIG_HINT);
+  } catch {
+    return;
   }
-  return { text: out, notes };
+  if (!isOurRow(aiandRow(providers), added)) return;
+  throw new CliError(`The Copilot CLI is already wired through ${wired}.`, {
+    hint: "Run aiand copilot off first, then aiand copilot on for the new COPILOT_HOME.",
+  });
 }
 
 async function disable(): Promise<DisableResult> {
   const paths = { providers: copilotProvidersPath(), settings: copilotSettingsPath() };
   const added = await getAddedState<CopilotRecord>(COPILOT_ID);
+  const known = await knownKeys();
   const raw = {
     providers: await readTextIfExists(paths.providers),
     settings: await readTextIfExists(paths.settings),
@@ -417,9 +387,22 @@ async function disable(): Promise<DisableResult> {
       providersText,
       added?.previousProvidersMode ?? PRIVATE_FILE_MODE,
     );
+  } else if (keyedRowWeWrote(row, added, known)) {
+    // Repointed with a live record: the row is the user's now, but the key
+    // in it is still ours. Leaving it would keep the key on disk with
+    // nothing left to remove it (the record clears below).
+    await writeStrippedJsonc(
+      COPILOT_ID,
+      paths.providers,
+      raw.providers,
+      withoutRowKey(raw.providers, providersFile),
+      added?.previousProvidersMode ?? PRIVATE_FILE_MODE,
+    );
+    stripped = true;
+    notes.push("left the aiand provider because you edited it, minus its ai& key");
   } else if (row !== undefined && isRoutableBaseUrl(row.baseUrl)) {
-    // Ours by name and routability, but not by proof (repointed with
-    // a live record, or foreign with none): the user's key stays.
+    // Ours by name and routability, but no record says we wrote it:
+    // the user's key stays.
     notes.push("left the aiand provider because you edited it");
   }
 
@@ -470,26 +453,34 @@ async function disable(): Promise<DisableResult> {
       // record names the baseUrl of is the user's and stays.
       const staleRow = aiandRow(stale);
       if (!isOurRow(staleRow, added)) {
-        if (staleRow !== undefined && isRoutableBaseUrl(staleRow.baseUrl)) {
-          notes.push("left the aiand provider because you edited it");
+        if (keyedRowWeWrote(staleRow, added, known)) {
+          staleText = withoutRowKey(rawStale, stale);
+          notes.push(
+            `left the aiand provider in ${stalePath} because you edited it, minus its ai& key`,
+          );
+        } else {
+          if (staleRow !== undefined && isRoutableBaseUrl(staleRow.baseUrl)) {
+            notes.push("left the aiand provider because you edited it");
+          }
+          continue;
         }
-        continue;
-      }
-      const leftProviders = (Array.isArray(stale.providers) ? stale.providers : []).filter(
-        (entry) => asObject(entry)?.name !== COPILOT_PROVIDER_NAME,
-      );
-      const leftModels = (Array.isArray(stale.models) ? stale.models : []).filter(
-        (entry) => asObject(entry)?.provider !== COPILOT_PROVIDER_NAME,
-      );
-      if (leftProviders.length > 0) {
-        staleText = jsoncSet(staleText, ["providers"], leftProviders);
-      } else if (stale.providers !== undefined) {
-        staleText = jsoncDelete(staleText, ["providers"]);
-      }
-      if (leftModels.length > 0) {
-        staleText = jsoncSet(staleText, ["models"], leftModels);
-      } else if (stale.models !== undefined) {
-        staleText = jsoncDelete(staleText, ["models"]);
+      } else {
+        const leftProviders = (Array.isArray(stale.providers) ? stale.providers : []).filter(
+          (entry) => asObject(entry)?.name !== COPILOT_PROVIDER_NAME,
+        );
+        const leftModels = (Array.isArray(stale.models) ? stale.models : []).filter(
+          (entry) => asObject(entry)?.provider !== COPILOT_PROVIDER_NAME,
+        );
+        if (leftProviders.length > 0) {
+          staleText = jsoncSet(staleText, ["providers"], leftProviders);
+        } else if (stale.providers !== undefined) {
+          staleText = jsoncDelete(staleText, ["providers"]);
+        }
+        if (leftModels.length > 0) {
+          staleText = jsoncSet(staleText, ["models"], leftModels);
+        } else if (stale.models !== undefined) {
+          staleText = jsoncDelete(staleText, ["models"]);
+        }
       }
     } else {
       // settings.json: the same selection hand-back as the current dir,
@@ -529,7 +520,9 @@ async function disable(): Promise<DisableResult> {
 export const COPILOT_VERSION = "1.0.89";
 
 const COPILOT_INSTALL = {
-  command: `npm install -g @github/copilot@${COPILOT_VERSION}`,
+  // No scripts field in the package, so --ignore-scripts is free (ci.yml
+  // installs it the same way).
+  command: `npm install -g --ignore-scripts @github/copilot@${COPILOT_VERSION}`,
   // The features/ai page 404s; the quickstart doc is the canonical install
   // surface for the CLI.
   url: "https://docs.github.com/en/copilot/get-started/cli-quickstart",
@@ -540,6 +533,7 @@ export const copilotAdapter: AgentAdapter = {
   label: "GitHub Copilot",
   bin: COPILOT_BIN,
   install: COPILOT_INSTALL,
+  launchModelFlags: ["--model"],
   detect(): DetectResult {
     return detectBinary(COPILOT_BIN);
   },
@@ -554,6 +548,8 @@ export const copilotAdapter: AgentAdapter = {
     return files;
   },
   probe,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
+  enableGuard,
   enable,
   disable,
   async bakedKey(): Promise<string | null> {
@@ -619,8 +615,9 @@ export const copilotAdapter: AgentAdapter = {
     const updated = rows.map((entry, at) =>
       at === index ? { ...(entry as Record<string, unknown>), apiKey: input.apiKey } : entry,
     );
-    await writeFileAtomic(path, jsoncSet(raw, ["providers"], updated), {
+    await writeKeyFile(path, jsoncSet(raw, ["providers"], updated), {
       mode: PRIVATE_FILE_MODE,
+      agentId: COPILOT_ID,
     });
     return true;
   },

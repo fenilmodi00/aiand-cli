@@ -10,7 +10,7 @@ import {
 import { modelLabel } from "../api/models.js";
 import { bool, float, int, parse, str } from "../cli/args.js";
 import { CANCELLED_MESSAGE, CliError, EXIT } from "../cli/errors.js";
-import { err, out, style } from "../cli/output.js";
+import { err, out, safeLine, sanitizeForTerminal, streamWriter, style } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { inferenceModel } from "./run.js";
 
@@ -29,7 +29,8 @@ Options
 
 Omitting -m resolves a concrete catalog model (profile model when still listed,
 else the curated preferred default). Pass -m auto to let ai& choose per request
-when your account supports it.
+when your account supports it. Escape and control sequences in the model's
+replies are removed before they reach the terminal.
 
 In-session commands
   /model <id>     switch model for the next turn
@@ -38,6 +39,12 @@ In-session commands
   /tokens         show tokens used so far
   /help           list these commands
   /exit           leave (Ctrl-D also works)`;
+
+/** A usage count from the gateway, which the session totals add up and print: 0 unless a finite number. */
+function tokenCount(value: unknown): number {
+  const n = Number(value);
+  return value === null || value === undefined || !Number.isFinite(n) ? 0 : n;
+}
 
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
@@ -69,7 +76,11 @@ export async function run(argv: string[]): Promise<void> {
   let transcript: Message[] = [];
   const totals = { input: 0, output: 0 };
 
-  out(style.dim(`ai& chat -- model ${modelLabel(model)}. /help for commands, /exit to leave.`));
+  out(
+    style.dim(
+      `ai& chat -- model ${modelLabel(safeLine(model))}. /help for commands, /exit to leave.`,
+    ),
+  );
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const prompt = () => style.cyan("> ");
@@ -104,11 +115,11 @@ export async function run(argv: string[]): Promise<void> {
         }
         if (command === "model") {
           if (!argument) {
-            out(style.dim(`Model is ${modelLabel(model)}.`));
+            out(style.dim(`Model is ${modelLabel(safeLine(model))}.`));
             continue;
           }
           model = argument;
-          out(style.dim(`Model set to ${modelLabel(model)}.`));
+          out(style.dim(`Model set to ${modelLabel(safeLine(model))}.`));
           continue;
         }
         if (command === "system") {
@@ -119,7 +130,7 @@ export async function run(argv: string[]): Promise<void> {
           );
           continue;
         }
-        out(style.yellow(`Unknown command /${command}. Try /help.`));
+        out(style.yellow(`Unknown command /${safeLine(command ?? "")}. Try /help.`));
         continue;
       }
 
@@ -139,36 +150,44 @@ export async function run(argv: string[]): Promise<void> {
 
       let answer = "";
       let usage: Usage | null = null;
+      const answerOut = streamWriter(process.stdout);
+      const reasoningOut = streamWriter(process.stderr);
       try {
         const { meta, chunks } = await streamChatCompletion(session, body, controller.signal);
         for await (const chunk of chunks) {
-          if (chunk.reasoning && showReasoning) process.stderr.write(style.dim(chunk.reasoning));
+          if (chunk.reasoning && showReasoning) reasoningOut.write(chunk.reasoning, style.dim);
           if (chunk.text) {
+            reasoningOut.endLine();
             answer += chunk.text;
-            process.stdout.write(chunk.text);
+            answerOut.write(chunk.text);
           }
           if (chunk.usage) usage = chunk.usage;
         }
-        if (answer && !answer.endsWith("\n")) process.stdout.write("\n");
+        reasoningOut.endLine();
+        answerOut.endLine();
 
         if (usage) {
-          totals.input += usage.prompt_tokens ?? 0;
-          totals.output += usage.completion_tokens ?? 0;
+          totals.input += tokenCount(usage.prompt_tokens);
+          totals.output += tokenCount(usage.completion_tokens);
         }
         if (meta.model && meta.model !== model) {
-          err(style.dim(`(${modelLabel(meta.model)})`));
+          err(style.dim(`(${modelLabel(safeLine(meta.model))})`));
         }
       } catch (e) {
         const failure = withModelHint(e, model);
         if (failure instanceof CliError && failure.exitCode === EXIT.INTERRUPTED) {
           // Ctrl-C mid-turn cancels the turn, not the session.
-          if (answer) process.stdout.write("\n");
+          reasoningOut.endLine();
+          answerOut.endLine();
           err(style.dim(CANCELLED_MESSAGE));
           transcript.pop();
           continue;
         }
-        err(style.red(failure instanceof Error ? failure.message : String(failure)));
-        if (failure instanceof CliError && failure.hint) err(style.dim(failure.hint));
+        const message = failure instanceof Error ? failure.message : String(failure);
+        err(style.red(sanitizeForTerminal(message)));
+        if (failure instanceof CliError && failure.hint) {
+          err(style.dim(sanitizeForTerminal(failure.hint)));
+        }
         transcript.pop();
         continue;
       } finally {

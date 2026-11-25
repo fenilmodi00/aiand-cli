@@ -45,6 +45,9 @@ function updateDisabled(env: NodeJS.ProcessEnv): boolean {
   return env.AIAND_UPDATE_CHECK === "0" || env.NO_UPDATE_CHECK === "1" || env.CI !== undefined;
 }
 
+/** A registry `version` is printed in the update notice, so only a version-shaped string counts. */
+const VERSION_SHAPE = /^v?\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+
 function updateCachePath(): string {
   return join(configDir(), "update-check.json");
 }
@@ -56,7 +59,10 @@ function readUpdateCache(): UpdateCache | null {
     return {
       checkedAt: parsed.checkedAt,
       ok: parsed.ok,
-      latest: typeof parsed.latest === "string" ? parsed.latest : undefined,
+      latest:
+        typeof parsed.latest === "string" && VERSION_SHAPE.test(parsed.latest)
+          ? parsed.latest
+          : undefined,
     };
   } catch {
     return null;
@@ -139,7 +145,9 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       clearTimeout(timer);
     }
     const latest = data?.version;
-    if (typeof latest !== "string") throw new Error("registry response missing version");
+    if (typeof latest !== "string" || !VERSION_SHAPE.test(latest)) {
+      throw new Error("registry response has no usable version");
+    }
     const payload: UpdateCache = { checkedAt: Date.now(), ok: true, latest };
     await writeUpdateCache(payload).catch(() => {});
     return shouldOfferUpdate(latest, VERSION) ? { current: VERSION, latest } : null;

@@ -1,10 +1,11 @@
 import { chmod, mkdir, rm, rmdir, unlink } from "node:fs/promises";
 import { CliError } from "../../cli/errors.js";
+import { safeLine } from "../../cli/output.js";
 import { DEFAULT_BASE_URL, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
-import { readTextIfExists } from "../managed-file.js";
+import { readTextIfExists, writeKeyFile } from "../managed-file.js";
 import { clearAddedState, fileCreatedByUs, getAddedState, recordAddedState } from "../snapshot.js";
 import type {
   AgentAdapter,
@@ -18,10 +19,11 @@ import {
   HERMES_PROVIDER_API_KEY_ENV,
   readEnvValue,
   replaceEnvValue,
+  restoreSetAsideEnv,
   withoutOwnedEnv,
 } from "./env.js";
 import { HERMES_INSTALL } from "./install.js";
-import { buildHermesOverlay, restoreShims, snapshotShims } from "./overlay.js";
+import { buildHermesOverlay } from "./overlay.js";
 import {
   buildHermesWrites,
   dropStaleModelBaseUrl,
@@ -42,6 +44,7 @@ import {
   setHermesModelProvider,
   stripHermesProvider,
 } from "./routing.js";
+import { persistShims, restoreShims, snapshotShims } from "./shims.js";
 import {
   HERMES_BIN,
   HERMES_ID,
@@ -55,6 +58,7 @@ import {
   hermesPluginYamlPath,
   hermesProviderDir,
   probe,
+  probeDetail,
 } from "./state.js";
 import { joinYamlLines, splitYamlLines } from "./yaml.js";
 
@@ -233,6 +237,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     envText: rawEnv,
     configText,
     reasoningLevels: hermesReasoningLevels(input.catalog),
+    setAside: "comment",
   });
   if (writes.droppedEnvLines.length > 0) {
     const one = writes.droppedEnvLines.length === 1;
@@ -251,21 +256,17 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   const previousEnvMode = prior?.previousEnvMode ?? envModeBefore ?? PRIVATE_FILE_MODE;
   const previousConfigMode = prior?.previousConfigMode ?? configModeBefore ?? DEFAULT_FILE_MODE;
 
-  await writeFileAtomic(envPath, writes.env, { mode: PRIVATE_FILE_MODE });
+  await writeKeyFile(envPath, writes.env, { mode: PRIVATE_FILE_MODE, agentId: HERMES_ID });
   await writeFileAtomic(configPath, writes.config, { mode: previousConfigMode });
   await mkdir(providerDir, { recursive: true });
   await writeFileAtomic(initPyPath, writes.initPy, { mode: DEFAULT_FILE_MODE });
   await writeFileAtomic(pluginYamlPath, writes.pluginYaml, { mode: DEFAULT_FILE_MODE });
 
-  // The record tells off what to hand back. The key literal never appears.
-  // The set-aside list carries forward: a re-`on` finds no shadowed lines
-  // left to drop (the first run already set them aside), so without the
-  // carry-forward it would clobber the first run's list and off could never
-  // hand the lines back. New drops merge in, deduplicated.
-  const strippedEnvLines = [
-    ...(prior?.strippedEnvLines ?? []),
-    ...writes.droppedEnvLines.filter((line) => !(prior?.strippedEnvLines ?? []).includes(line)),
-  ];
+  // The record tells off what to hand back. The key literal never appears,
+  // and neither do the user's set-aside entries: those stay commented out in
+  // their own .env. A list an older aiand recorded carries forward until off
+  // hands it back.
+  const strippedEnvLines = prior?.strippedEnvLines ?? [];
   await recordAddedState(HERMES_ID, {
     previousProviderSpot,
     previousDefaultSpot: wroteDefault !== undefined ? previousDefaultSpot : undefined,
@@ -379,10 +380,11 @@ async function disable(): Promise<DisableResult> {
 
   // The dedicated vars leave the .env; the user's own lines survive. A file
   // our on created that is now empty is unlinked, never left as a stray.
-  // Set-aside ANTHROPIC_* lines come back, deduplicated against lines the
+  // Set-aside ANTHROPIC_* entries are uncommented where they sit; a list an
+  // older aiand recorded instead is appended, deduplicated against lines the
   // user added back themselves mid-wire.
   const envLines = splitYamlLines(rawEnv);
-  const keptEnvLines = withoutOwnedEnv(envLines.lines);
+  const keptEnvLines = restoreSetAsideEnv(withoutOwnedEnv(envLines.lines));
   let envText = joinYamlLines(
     keptEnvLines,
     envLines.trailingNewline && keptEnvLines.length > 0,
@@ -464,6 +466,7 @@ export const hermesAdapter: AgentAdapter = {
   label: "Hermes Agent",
   bin: HERMES_BIN,
   install: HERMES_INSTALL,
+  launchModelFlags: ["--model", "-m"],
   // The product's full name (install domain, docs): `aiand hermes-agent
   // on` and `aiand run-agent hermes-agent` resolve like `hermes`, the way
   // `claude-code` resolves to `claude`.
@@ -492,10 +495,13 @@ export const hermesAdapter: AgentAdapter = {
     return detectBinary(HERMES_BIN);
   },
   nativeAiandKeys: hermesNativeAiandKeys,
+  carriesWiring: (text) =>
+    hasHermesMarker(text) || readEnvValue(text, HERMES_PROVIDER_API_KEY_ENV) !== undefined,
   managedFiles(): string[] {
     return [hermesEnvPath(), hermesConfigPath(), hermesInitPyPath(), hermesPluginYamlPath()];
   },
   probe,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
   enable,
   disable,
   async refreshKey(input: { apiKey: string; previousKey?: string }): Promise<boolean> {
@@ -539,12 +545,10 @@ export const hermesAdapter: AgentAdapter = {
     if (input.previousKey !== undefined && current !== input.previousKey) return false;
     // The swap touches only the baked literal; every other byte survives.
     // The key stays 0600 for as long as it lives here.
-    await writeFileAtomic(
+    await writeKeyFile(
       hermesEnvPath(),
       replaceEnvValue(raw, HERMES_PROVIDER_API_KEY_ENV, input.apiKey),
-      {
-        mode: PRIVATE_FILE_MODE,
-      },
+      { mode: PRIVATE_FILE_MODE, agentId: HERMES_ID },
     );
     return true;
   },
@@ -575,10 +579,19 @@ export const hermesAdapter: AgentAdapter = {
       model,
       reasoningLevels: hermesReasoningLevels(input.catalog),
     });
+    // The overlay carries its own copy of the snapshot, so a sweep that finds
+    // it after a crash can still put the shims back before deleting it.
+    try {
+      await persistShims(overlay, shims);
+    } catch (error) {
+      await restoreShims(shims, overlay);
+      await rm(overlay, { recursive: true, force: true });
+      throw error;
+    }
     if (process.env.AIAND_DEBUG === "1") {
       process.stderr.write("[aiand hermes] mode: pinned\n");
-      process.stderr.write(`[aiand hermes] model: ${model}\n`);
-      process.stderr.write(`[aiand hermes] base URL: ${baseUrl}\n`);
+      process.stderr.write(`[aiand hermes] model: ${safeLine(model)}\n`);
+      process.stderr.write(`[aiand hermes] base URL: ${safeLine(baseUrl)}\n`);
       process.stderr.write(`[aiand hermes] home overlay: ${overlay}\n`);
     }
     return {

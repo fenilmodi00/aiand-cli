@@ -1,22 +1,8 @@
 import type { Dirent } from "node:fs";
-import {
-  copyFile,
-  link,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  readlink,
-  realpath,
-  rm,
-  symlink,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { copyFile, link, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { PRIVATE_FILE_MODE } from "../../fsutil.js";
+import { makeOverlayDir } from "../overlays.js";
 import { buildHermesWrites, HERMES_PROVIDER_ID, pinHermesModel } from "./routing.js";
 
 /**
@@ -47,7 +33,7 @@ export async function buildHermesOverlay(
     reasoningLevels: ReadonlyMap<string, readonly string[]>;
   },
 ): Promise<string> {
-  const overlay = await mkdtemp(join(tmpdir(), "aiand-hermes-"));
+  const overlay = await makeOverlayDir("aiand-hermes-");
   try {
     await linkRealHomeEntries(overlay, realHome);
     const envText = await readFile(join(realHome, ".env"), "utf8").catch(() => "");
@@ -188,123 +174,5 @@ async function cp(source: string, target: string): Promise<void> {
     if (entry.isDirectory()) await cp(from, to);
     // copyFile follows a symlink: the entry arrives as a plain file.
     else await copyFile(from, to);
-  }
-}
-
-/** What the checkout's store shims held before a session: bytes or link target. */
-type ShimSnapshot = {
-  dir: string;
-  entries: Record<string, { body?: Buffer; link?: string; mode: number }>;
-};
-
-/**
- * Locate hermes's store shims (checkout/.hermes/bin/hermes{,-acp}) from the
- * PATH binary: either the PATH entry is that directory already, or it is the
- * install's convenience shim `exec <root>/.hermes/bin/hermes "$@"`.
- */
-async function shimDirFor(binPath: string | null): Promise<string | null> {
-  if (binPath === null) return null;
-  // The PATH entry may be the store shim itself, reached directly or through
-  // a symlink: resolve it first, then check where it lives.
-  const resolved = await realpath(binPath).catch(() => binPath);
-  if (resolved.includes("/.hermes/bin/")) return dirname(resolved);
-  // A convenience shim: `exec <checkout>/.hermes/bin/hermes "$@"`.
-  let text: string;
-  try {
-    text = await readFile(resolved, "utf8");
-  } catch {
-    return null;
-  }
-  const exec = /^exec (\S+) "\$@"$/m.exec(text);
-  const target = exec?.[1];
-  return target?.includes("/.hermes/bin/") ? dirname(target) : null;
-}
-
-/**
- * Snapshot the store shims before a launch. Hermes self-relocates them to
- * whatever HERMES_HOME the session runs under, so an overlay launch rewrites
- * them to the overlay's tools path — which dies with cleanup, stranding the
- * user's own `hermes` binary. The cleanup restores these bytes. Best effort:
- * a PATH binary that reveals no checkout (a `.cmd` shim, an exotic install)
- * simply gets no snapshot. Concurrent launches race on the same shims;
- * the launcher assumes sessions run one at a time.
- */
-export async function snapshotShims(binPath: string | null): Promise<ShimSnapshot | null> {
-  const dir = await shimDirFor(binPath);
-  if (dir === null) return null;
-  const entries: ShimSnapshot["entries"] = {};
-  for (const name of await readdir(dir).catch(() => [])) {
-    const path = join(dir, name);
-    try {
-      const info = await lstat(path);
-      if (info.isSymbolicLink()) {
-        entries[name] = { link: await readlink(path), mode: info.mode & 0o777 };
-      } else if (info.isFile()) {
-        entries[name] = { body: await readFile(path), mode: info.mode & 0o777 };
-      }
-    } catch {
-      // A racing hermes process touched it: leave that entry to hers.
-    }
-  }
-  return { dir, entries };
-}
-
-/**
- * Whether a session-added entry points at the removed overlay: a symlink
- * into it, or a file whose bytes name it (a relocated shim script). Only
- * those are cleanup's to remove — anything else added mid-session (a user
- * drop, another installer) is legitimate and stays.
- */
-async function pointsAtOverlay(path: string, overlay: string): Promise<boolean> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink()) {
-      const target = await readlink(path);
-      return target === overlay || target.startsWith(`${overlay}/`);
-    }
-    if (info.isFile()) {
-      const body = await readFile(path, "utf8").catch(() => null);
-      return body?.includes(overlay) ?? false;
-    }
-    return false;
-  } catch {
-    return false; // Vanished mid-cleanup: nothing to remove.
-  }
-}
-
-/** Put the shims back; delete only session additions that point at the removed overlay. */
-export async function restoreShims(snapshot: ShimSnapshot | null, overlay: string): Promise<void> {
-  if (snapshot === null) return;
-  for (const name of await readdir(snapshot.dir).catch(() => [])) {
-    if (snapshot.entries[name] === undefined) {
-      if (await pointsAtOverlay(join(snapshot.dir, name), overlay)) {
-        await unlink(join(snapshot.dir, name)).catch(() => {});
-      }
-    }
-  }
-  for (const [name, entry] of Object.entries(snapshot.entries)) {
-    const path = join(snapshot.dir, name);
-    try {
-      const info = await lstat(path);
-      if (entry.link !== undefined) {
-        const target = await readlink(path);
-        if (info.isSymbolicLink() && target === entry.link) continue;
-        await unlink(path);
-        await symlink(entry.link, path);
-        continue;
-      }
-      if (info.isFile() && entry.body !== undefined) {
-        const current = await readFile(path);
-        if (current.equals(entry.body)) continue;
-      }
-      await unlink(path);
-    } catch {
-      // Missing entry: fall through to the rewrite below.
-    }
-    if (entry.link !== undefined) {
-      await symlink(entry.link, path).catch(() => {});
-    } else if (entry.body !== undefined) {
-      await writeFile(path, entry.body, { mode: entry.mode }).catch(() => {});
-    }
   }
 }

@@ -12,7 +12,7 @@ agent's native wire format, so the CLI never runs a local proxy, translator,
 or daemon to serve one. _Avoid:_ relay, proxy.
 
 **Wire format** - the request/response dialect an agent speaks: OpenAI-compatible chat
-(OpenCode, Pi, Oh My Pi, the Copilot CLI, the Copilot app, and Hermes through
+(OpenCode, Pi, Jouzu, Oh My Pi, the Copilot CLI, the Copilot app, and Hermes through
 its dedicated `aiand` provider) or Anthropic Messages
 (Claude Code) or OpenAI Responses (Codex).
 The CLI points the agent at the gateway in its own dialect; it never translates between dialects.
@@ -27,7 +27,7 @@ primary product surface; `init` and the launcher are conveniences layered
 over the same adapters.
 
 **Agent** - a local coding-agent CLI identified by its short id, one of the agents
-shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app and hermes.
+shipped, currently opencode, claude, codex, pi, omp, copilot, copilot-app, hermes and jouzu.
 One adapter per agent. _Avoid:_ harness, integration, connector.
 
 **Adapter** - the module that knows one agent: how to detect its binary,
@@ -46,12 +46,22 @@ spawning anything. Only what the binary still needs to
 start on ai& is added, never written: Codex's `--profile aiand` unless the
 args pick a profile or run a management command that refuses one, and for
 OpenCode an ai& model it was wired with, inline, when a model of the user's
-own still decides. `aiand code` opens the default agent, OpenCode. _Avoid:_ launch (the Launcher's word).
+own still decides, and for Jouzu `--provider aiand --model <id>`
+unless the args already pick a model, a session or a subcommand (Jouzu's
+last-used model outranks its settings). `aiand code` opens the default agent, OpenCode. Claude Code
+opens through the Launcher instead, never `on`: Claude Code re-applies
+`settings.json` to sessions already running, so wiring it would move every
+open session to ai&. Other agents move over the same way once it has been
+tried on Claude Code. _Avoid:_ launch (the Launcher's word).
 
 **on** - wire the agent permanently so the stock binary reaches the gateway
 afterwards, with no wrapper process required. The adapter adds to the
 agent's own native config, marking what is ours. `open` runs it for an
-agent not routed yet.
+agent not routed yet (Claude Code excepted). Claude Code applies `on` and
+`off` to sessions already running, but keeps a value that disappears from
+`settings.json`; Claude Code's `off` therefore first writes what it removes
+as empty (read as unset), waits for running sessions to reload, then
+deletes it.
 
 **off** - remove exactly what aiand added, leaving the user's own edits in
 place. `off` never replays the snapshot; that is `aiand restore <agent>
@@ -89,11 +99,13 @@ stamp lives on `provider.aiand.options`, not the root object — OpenCode's
 schema rejects unknown top-level keys. For Claude Code it is
 `env.AIAND_MANAGED` in `settings.json`: an unknown top-level key makes Claude
 Code warn on every start, while `env` takes any name. For Codex it is the
-profile's auth command, `aiand key export`: Codex rejects unknown keys under
+profile's auth command, `aiand key export` (on Windows, this install's `node`
+and `dist\index.js` run directly, never the `.cmd` shim): Codex rejects unknown keys under
 `--strict-config`, and a hand-written profile prints its key another way. For Pi it is
 `managedBy: "aiand"` on the `auth.json` credential: models.json is the one
 Pi file with a schema behind it (TypeBox), while auth.json passes unknown
-credential keys through. For omp it is `managedBy: "aiand"` on the models.yml
+credential keys through. Jouzu runs Pi on its own agent dir, so its marker is
+Pi's, in that dir's auth.json. For omp it is `managedBy: "aiand"` on the models.yml
 provider block: omp has no auth.json, and its provider schema tolerates
 unknown keys. For the Copilot CLI it is the provider row itself, the one
 named `aiand` in providers.json: the CLI silently ignores unknown provider
@@ -117,12 +129,21 @@ never what plain `off` does. _Avoid:_ rollback.
 `install.ps1 uninstall`): turn every aiand-routed agent off (`init --off`),
 then remove the launcher and the `~/.aiand/cli` checkout. Aborts before
 deleting anything if off fails; profiles, credentials, and snapshots under
-`~/.config/aiand` are always kept. The removal target must canonicalize to a
-path strictly inside HOME.
+`~/.config/aiand` are kept unless `--purge` asks for the loaner-machine
+wipe (`aiand logout --all` is the same wipe without uninstalling). `--purge`
+signs out with `aiand logout --all --force --json` (falling back to
+`logout --profile <name> --json` per profile on an older CLI) before anything
+is deleted, and decides from that JSON, not the exit code: every minted key
+must report `revoked`, a pasted one is the console's to revoke, and anything
+unreadable counts as not revoked, so the purge then deletes nothing. It then
+also deletes the config directory. Every removal target must canonicalize to a path strictly inside
+HOME, and a purged config directory must be named `aiand`.
 
 **Launcher** - `aiand run-agent <agent>`: run one agent process with routing
 injected into its environment or a throwaway overlay, leaving user files
-untouched. Works without a prior `on`; an optional convenience beside
+untouched. Each overlay carries a marker file naming the aiand process that
+made it, so a launch (for day-old ones) and logout can sweep an overlay a
+crashed session left, and never a temp dir that is not ours. Works without a prior `on`; an optional convenience beside
 permanent `on`, never a replacement. _Avoid:_ wrapper, session alias.
 
 **Store shims** - the executables in a Hermes checkout's `.hermes/bin`
@@ -130,7 +151,8 @@ permanent `on`, never a replacement. _Avoid:_ wrapper, session alias.
 self-relocates them to whatever `HERMES_HOME` is active, so a Launcher
 overlay would repoint them at the throwaway home and stranding the user's
 own `hermes` binary when cleanup deletes it; a Hermes session therefore
-snapshots the shims before launch and restores them on cleanup. _Avoid:_
+snapshots the shims before launch and restores them on cleanup, and keeps
+a copy inside the overlay so the sweep of a crashed session restores them too. _Avoid:_
 PATH aliases, bin wrappers.
 
 **Install hint** - the official install command and docs URL printed for a
@@ -149,14 +171,18 @@ primary setup path.
 be wired to agents separately.
 
 **Credential** - the stored sign-in material for a profile: the identity
-(user, org) plus the secret, held in the active storage tier. _Avoid:_ token
-pair.
+(user, org) plus the secret, held in the active storage tier, and bound to
+the endpoints that issued it (`bound_to`). Its key is never sent, nor its
+refresh token, to any other endpoint, whatever the overrides say. Codex
+pulls it through `aiand key export --for <origin>`, which refuses unless that
+origin is the one it was issued for. _Avoid:_ token pair.
 
 **Session** - an authenticated request context opened from the env key or the
 active profile's credential. Every API call goes through one.
 
 **Browser sign-in** - the default interactive sign-in: authorization code
-+ PKCE against the gateway, redirect caught on a loopback port. A preflight
++ PKCE against the gateway, redirect caught on a loopback port. An SSH
+session skips it entirely for device login. Otherwise a preflight
 `GET /auth/authorize` decides the path: 404/501 (no browser flow) falls
 back to device login, any other answer attempts the browser. A recoverable
 browser failure falls back to device login too (browser-side cancels and
@@ -164,7 +190,9 @@ Ctrl-C still abort); a missing browser opener only prints the authorization
 URL and waits.
 
 **Device login** - the fallback sign-in for unsupported gateways,
-recoverable browser failures, and non-interactive terminals: the OAuth
+recoverable browser failures, SSH sessions (`SSH_CONNECTION`/`SSH_CLIENT`/
+`SSH_TTY`, whose loopback redirect would reach the wrong machine), and
+non-interactive terminals: the OAuth
 device authorization grant against the gateway, which mints an org-scoped
 key for this machine.
 
@@ -172,30 +200,64 @@ key for this machine.
 revoke a minted key server-side by posting its refresh token; it also strips
 the baked key from active agent configs on this machine. Whether the minted
 `sk-` remains valid on the gateway after the refresh token is revoked is the
-server's contract. _Avoid:_ generated key.
+server's contract. Its org is the one the token response names, else the
+first `/api/orgs` lists; there is no picker. _Avoid:_ generated key.
+
+**logout --all** - hand a shared or loaner machine back: revoke every minted
+key (per profile; one whose revoke failed keeps its secret, credential entry
+and the config dir, exit 1, like single `logout`: the refresh token is the
+only way to revoke it, and `--keep-remote` is the way to give up), run every
+adapter's `off` whichever profile wired it, sweep finished launcher overlays,
+delete every other stored secret (keychain included) and the config dir with
+its snapshots. Pasted keys are
+listed with the console page that revokes them. A config dir outside HOME is
+refused unless `AIAND_WIPE_OUTSIDE_HOME=1`, and one that does not prove it is
+aiand's is refused too: the proof is the `.aiand-config` marker aiand writes
+on its first write into a dir that is new, empty or holds only aiand's own
+files (never into one with other files in it, so a cache write cannot vouch
+for `~/.docker`), carrying a random id that `config.json` records as
+`config_id`, so an empty or copied marker proves nothing; or a `config.json`
+in aiand's schema from before the ids. The dir is checked again right before
+the deletion, since the revokes take time. Even
+in a proven dir it deletes by name, and never removes an entry of `locks/` or
+`snapshots/` it did not make. An agent whose `off` failed or whose config
+still holds a key keeps its `snapshots/<id>` and recorded state, so a retry
+strips exactly what `on` added. _Avoid:_ wipe, reset.
 
 **Pasted key** - a key the user supplied (`--paste`, `--with-token`) and
 the CLI validated before storing. Logout clears it
-locally and never revokes it - the CLI did not mint it. A multi-org
-account picks its organization just as a minted sign-in does. _Avoid:_
-manual key, console key.
+locally and never revokes it - the CLI did not mint it. Its org is the
+one the key is scoped to (the first `/api/orgs` lists); there is no
+picker. _Avoid:_ manual key, console key.
 
 **Env key** - `AIAND_API_KEY`: a key supplied per-process, never stored, that
 takes precedence over any credential until unset. The CI escape hatch.
 
-**Storage tier** - where a profile's secret actually lives: OS keychain,
-encrypted file, or protected plaintext file. Selected by availability, never
-silently downgraded to plaintext.
+**Storage tier** - where a profile's secret actually lives: OS keychain
+(macOS Keychain, Linux Secret Service), Windows DPAPI, `file (owner-only, not
+encrypted at rest)`, or protected plaintext file. Selected by availability,
+never silently downgraded to plaintext. A Windows secret that lands in the file
+because PowerShell could not reach DPAPI says why, and `status` says so;
+Constrained Language Mode is remembered for good, a failure that may pass
+(a timeout, a PowerShell that would not start) is remembered for ten minutes of
+reads and tried again at the next sign-in. Cost, rolling back and a Windows
+test plan: `docs/windows-key-storage.md`.
 
 **Session key** - the active session's resolved key, baked into agent config
 at `on` time and printed raw by `key export`. Agent flows never prompt for a
 raw key - pasting belongs to `aiand login`.
 
 **Rebake** - the sign-in follow-through: storing a fresh credential swaps the
-key literal in every active agent config. An automatic key rotation swaps it
-only where the rotated key is the one baked, so a config wired from another
-profile keeps its org. Adapters with no plaintext key to
-swap are skipped, with a re-run-`on` note where one applies. _Avoid:_ rewire, resync.
+key literal in every active agent config wired for the credential's API
+origin (the base URL the agent's own config bakes decides, else what `on` recorded
+in `wired.json`; an agent with neither, a missing or corrupt record included, is left alone).
+An agent wired for another origin
+keeps its key and gets a note naming `aiand --profile <name> <agent> on`. An
+automatic key rotation follows the same origin rule and also swaps only where
+the rotated key is the one baked, so a config wired from another profile
+keeps its org. Adapters with no
+plaintext key to swap are skipped, with a re-run-`on` note where one applies.
+_Avoid:_ rewire, resync.
 
 ## Models
 
@@ -228,5 +290,5 @@ with none, the stock binary sends an empty model and every turn is rejected
 
 - Product surface: `README.md`; shipped decisions: `CHANGELOG.md`.
 - Agent matrix: `src/agents/registry.ts`, one `src/agents/<id>/` folder per agent.
-- ADRs: none yet - create `docs/adr/` when a decision is load-bearing.
+- ADRs: `docs/adr/`, numbered; add one when a decision is load-bearing.
 - This file is the domain model; update it as terms crystallise.

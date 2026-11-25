@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
-import { captureOutput, cliStdout, registerAuthStub, state } from "./auth-stub.mjs";
+import { captureOutput, cliStdout, registerAuthStub, state, stubBinding } from "./auth-stub.mjs";
 
 // Behavioral tests through the real src/auth modules (dist build), against
 // the localhost stub server in ./auth-stub.mjs.
@@ -10,6 +10,7 @@ import { captureOutput, cliStdout, registerAuthStub, state } from "./auth-stub.m
 
 const authLogout = await import("../dist/auth/logout.js");
 const config = await import("../dist/config.js");
+const snapshot = await import("../dist/agents/snapshot.js");
 
 registerAuthStub();
 
@@ -20,6 +21,7 @@ describe("auth logout integration (serial)", { concurrency: 1 }, () => {
         access_token: "sk-device",
         refresh_token: "rt-device",
         origin: "device",
+        bound_to: stubBinding(),
         storage: "plaintext",
       });
 
@@ -129,6 +131,7 @@ describe("auth logout integration (serial)", { concurrency: 1 }, () => {
         access_token: "sk-device",
         refresh_token: "rt-device",
         origin: "device",
+        bound_to: stubBinding(),
         storage: "plaintext",
       });
 
@@ -148,6 +151,125 @@ describe("auth logout integration (serial)", { concurrency: 1 }, () => {
       const cfg = JSON.parse(readFileSync(configPath, "utf8"));
       assert.ok(!("aiand" in (cfg.provider ?? {})));
       assert.ok(!readFileSync(configPath, "utf8").includes("sk-device"));
+    });
+
+    test("logout deletes snapshot copies that hold the logged-out key", async () => {
+      const home = process.env.AIAND_HOME;
+      const file = join(home, "leaky", "auth.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, '{"aiand":{"key":"sk-device-leaky"}}\n');
+      // An older aiand copied the wired file; the copy holds the key.
+      await snapshot.snapshotFiles("leaky-agent", [file]);
+      await config.saveCredential("default", {
+        access_token: "sk-device-leaky",
+        refresh_token: "rt-device",
+        origin: "device",
+        // Unbound, the revoke would go to the production auth URL, not the stub.
+        bound_to: stubBinding(),
+        storage: "plaintext",
+      });
+      const captured = captureOutput();
+      try {
+        await authLogout.logout({ profile: "default" });
+      } finally {
+        captured.restore();
+      }
+      const root = join(process.env.AIAND_CONFIG_DIR, "snapshots", "leaky-agent");
+      for (const stamp of readdirSync(root)) {
+        const dir = join(root, stamp);
+        if (!statSync(dir).isDirectory()) continue;
+        for (const name of readdirSync(dir)) {
+          assert.ok(!readFileSync(join(dir, name), "utf8").includes("sk-device-leaky"));
+        }
+      }
+      assert.deepEqual(state.revocations, ["rt-device"]);
+    });
+
+    test("a failed revoke keeps the whole sign-in for a retry, and strips nothing", async () => {
+      const home = process.env.AIAND_HOME;
+      const configPath = join(home, ".config", "opencode", "opencode.json");
+      mkdirSync(dirname(configPath), { recursive: true });
+      const wired = `${JSON.stringify({
+        provider: {
+          aiand: {
+            options: { baseURL: "https://api.aiand.com/v1", apiKey: "sk-device", "x-aiand": true },
+          },
+        },
+      })}\n`;
+      writeFileSync(configPath, wired);
+      await config.saveCredential("default", {
+        access_token: "sk-device",
+        refresh_token: "rt-device",
+        origin: "device",
+        bound_to: stubBinding(),
+        storage: "plaintext",
+      });
+      state.deviceMode = "down";
+      const captured = captureOutput();
+      try {
+        await assert.rejects(
+          () => authLogout.logout({ profile: "default", revoke: true }),
+          (error) =>
+            /you are still signed in/.test(error.message) &&
+            /--keep-remote/.test(error.hint) &&
+            error.hint.includes("https://console.aiand.com/api-keys"),
+        );
+      } finally {
+        captured.restore();
+        state.deviceMode = "up";
+      }
+      assert.equal((await config.loadCredential("default")).refresh_token, "rt-device");
+      assert.equal(readFileSync(configPath, "utf8"), wired, "nothing stripped");
+
+      // The retry, once ai& answers, completes normally.
+      const again = captureOutput();
+      try {
+        await authLogout.logout({ profile: "default", revoke: true });
+      } finally {
+        again.restore();
+      }
+      assert.deepEqual(state.revocations, ["rt-device"]);
+      assert.equal(await config.loadCredential("default"), null);
+    });
+
+    test("--keep-remote forgets the sign-in without trying to revoke", async () => {
+      await config.saveCredential("default", {
+        access_token: "sk-device",
+        refresh_token: "rt-device",
+        origin: "device",
+        bound_to: stubBinding(),
+        storage: "plaintext",
+      });
+      state.deviceMode = "down";
+      const captured = captureOutput();
+      try {
+        await authLogout.logout({ profile: "default", keepRemote: true });
+      } finally {
+        captured.restore();
+        state.deviceMode = "up";
+      }
+      assert.deepEqual(state.revocations, []);
+      assert.equal(await config.loadCredential("default"), null);
+    });
+
+    test("pasted and refresh-token-less logouts name the console page", async () => {
+      await config.saveCredential("default", { access_token: "sk-paste", origin: "paste" });
+      let captured = captureOutput();
+      try {
+        await authLogout.logout({ profile: "default" });
+      } finally {
+        captured.restore();
+      }
+      assert.match(cliStdout(captured), /still valid\. Revoke it at https:\/\/console\.aiand\.com/);
+
+      await config.saveCredential("default", { access_token: "sk-no-rt", origin: "device" });
+      captured = captureOutput();
+      try {
+        await authLogout.logout({ profile: "default" });
+      } finally {
+        captured.restore();
+      }
+      assert.match(cliStdout(captured), /No refresh token was stored/);
     });
 
     test("stored credential + AIAND_API_KEY still clears, then warns the Env key session remains", async () => {

@@ -108,10 +108,16 @@ const withStoreEnv = (dir, fn) =>
     fn,
   );
 
-// Fixture window: fixed instants so sessions and windows are deterministic.
-const T0 = "2026-10-24T10:00:00.000Z";
-const T1 = "2026-10-24T10:05:00.000Z"; // 5 min after T0 — same session (10 min gap)
-const T2 = "2026-10-24T10:30:00.000Z"; // 25 min after T1 — new session
+// Fixture window: relative instants (two days back at 10:00 UTC) so the
+// default 30-day range always covers the rows, with fixed offsets that keep
+// sessions (10-minute rule) and histogram buckets deterministic. The ±minutes
+// never straddle a UTC midnight.
+const FIXTURE_BASE = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+FIXTURE_BASE.setUTCHours(10, 0, 0, 0);
+const fixtureAt = (offsetMs) => new Date(FIXTURE_BASE.getTime() + offsetMs).toISOString();
+const T0 = fixtureAt(0);
+const T1 = fixtureAt(5 * 60_000); // 5 min after T0 — same session (10 min gap)
+const T2 = fixtureAt(30 * 60_000); // 25 min after T1 — new session
 const WINDOW = { range: "30days" };
 
 async function buildFixturePayload(dir, { extraRows = [] } = {}) {
@@ -562,13 +568,13 @@ describe("otel export: harness + store gauges (#149)", () => {
 
   test.before(async () => {
     // Two harnesses (two masked keys → two agents), one with imported
-    // behavioral markers. Window: fixed instants, 30days range.
+    // behavioral markers. Window: relative instants, 30days range.
     dir = freshDir("gauges-store");
     seedAgentKey(dir);
     await seedStore(dir, [
       row(T0),
       row(T1, { cost: "0.0010", cost_value: 0.001 }),
-      row("2026-10-24T11:00:00.000Z", { api_key: "sk-ffff...9999" }),
+      row(fixtureAt(60 * 60_000), { api_key: "sk-ffff...9999" }),
     ]);
     await withEnv({ AIAND_CONFIG_DIR: dir }, async () => {
       const { openStore, storePath: sp } = await import("../dist/store/index.js");
@@ -678,7 +684,7 @@ describe("otel export: harness + store gauges (#149)", () => {
       return metric.gauge.dataPoints;
     };
     // Two harnesses (claude + the unkeyed row → unknown), 2 sessions for
-    // claude (T0/T1 same session, 11:00 is a separate unkeyed harness)…
+    // claude (T0/T1 same session, T0+1h is a separate unkeyed harness)…
     const sessions = gauge("aiand.harness.sessions");
     const byAgent = Object.fromEntries(
       sessions.map((p) => [
@@ -931,8 +937,8 @@ describe("otel export: output_tokens_per_second histogram (#155)", () => {
       row(T0, { ttft_ms: null }),
       row(T1, { latency_ms: null }),
       row(T2, { ttft_ms: 800, latency_ms: 800, output_tokens: 300 }),
-      row("2026-10-24T10:40:00.000Z", { ttft_ms: 900, latency_ms: 800, output_tokens: 300 }),
-      row("2026-10-24T10:50:00.000Z", { ttft_ms: 100, latency_ms: 500, output_tokens: 0 }),
+      row(fixtureAt(40 * 60_000), { ttft_ms: 900, latency_ms: 800, output_tokens: 300 }),
+      row(fixtureAt(50 * 60_000), { ttft_ms: 100, latency_ms: 500, output_tokens: 0 }),
     ]);
     const payload = await withStoreEnv(dir, async () => {
       const otel = await import("../dist/obs/otel.js");

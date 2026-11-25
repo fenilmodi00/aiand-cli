@@ -63,7 +63,7 @@ Seven parallel research lanes:
 | LiteLLM spend | `proxy/spend_tracking/` (24), `management_endpoints/` (66), `schema.prisma`, auth spend scope | Server spend/keys/teams/budgets/audit. Confirms #80 gaps. |
 | LiteLLM observability | `integrations/` (247), `tracing/` (16), Prometheus server, logging endpoints, guardrails (253), policy engine | Rich labels/semconv; most emission requires proxy state. |
 | aiand current state | Commands, `src/obs/`, `src/store/`, `src/compare/`, `src/benchmark/`, `src/api/` | Capability matrix + duplicate surfaces + gaps. |
-| External landscape | Terminal-Bench 2.0, SWE-bench Verified audit, Artificial Analysis Coding Agent Index v2.0, Vals, METR, LMArena, pass@k/pass^k | Cost-to-solve, task cohorts, confidence, pass^k are the credible signals. |
+| External landscape | Terminal-Bench 2.0, SWE-bench Verified audit, Artificial Analysis Coding Agent Index v2.0, Vals, METR, LMArena, pass@k / pass^k | Cost-to-solve, task cohorts, confidence, pass^k are the credible signals. |
 | aiand constraints | `src/api/*`, gateway OpenAPI (HTTP 200), docs, open issues | Endpoint/field matrix; `session_id` / harness echo remains the top ask. |
 
 Evidence rules: every LiteLLM claim below names the file that contains it;
@@ -130,7 +130,7 @@ task classification stay envelope-only.
    "imported markers, N sessions, opt-in local files".
 2. Only if live capture is required, restore `envelope-capture` and wire it to
    adapters/launchers as an opt-in (`envelopeCapture: true`). That is a larger
-   change; do not ship it as part of a reporting feature.
+   change; keep it out of a reporting feature.
 
 Acceptance: after `aiand harness import`, `harness stats` shows behavioral
 coverage and non-null rates for the imported harnesses; without import, columns
@@ -406,12 +406,12 @@ per-cohort cost join. Until live capture or the gateway echo lands, `harness
 profile` should show behavioral rates for imported harnesses and `—` for the
 cost columns, with the coverage note — never a time-window approximation.
 
-### 5.4 P3 — Compare statistics v2: cost/solve CI, pass@k/pass^k
+### 5.4 P3 — Compare statistics v2: cost/solve CI, pass@k / pass^k
 
 **Problem.** `compare` has a Wilson solve-rate CI but `costPerSolve` is a point
 estimate (`src/compare/table.ts:136`). Trials are treated as independent; when
 one task is run three times, the effective n is smaller than `trials`. There is
-no pass@k/pass^k distinction for stochastic agents.
+no pass@k / pass^k distinction for stochastic agents.
 
 **What to build.**
 
@@ -639,7 +639,7 @@ synthetic sweeps stay display-only.
 | P1 | §5.5 export decision metrics + `# HELP` | Turns the CLI into an observability source; small. |
 | P2 | §5.7 attribution readers | Improves every ranking; data quality. |
 | P2 | §5.6 regression watch | Depends on P0/P1 evidence. |
-| P3 | §5.4 compare pass@k/cluster bootstrap | High-value controlled eval, larger surface. |
+| P3 | §5.4 compare pass@k / cluster bootstrap | High-value controlled eval, larger surface. |
 | P3 | Deferred items (profile, trace spans, compaction, ROI) | Only with a concrete user pull. |
 
 Suggested first PR: `evidence.ts` + `harness compare` CIs + `recommend` verdict,

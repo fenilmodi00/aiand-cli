@@ -1,6 +1,7 @@
 import { AGENTS, findAgent } from "../agents/registry.js";
 import { hasSnapshot, restoreSnapshot } from "../agents/snapshot.js";
 import type { AgentAdapter } from "../agents/types.js";
+import { forgetWired } from "../agents/wired.js";
 import { bool, parse } from "../cli/args.js";
 import { CliError, cancelled } from "../cli/errors.js";
 import { json, out, style } from "../cli/output.js";
@@ -26,12 +27,49 @@ Options
   --json              machine-readable output
   -h, --help          show this help`;
 
+/**
+ * Restore one agent's snapshot with what restoreSnapshot needs to report the
+ * files it leaves alone: `wired` paths held ai& wiring at capture time and
+ * have no pre-aiand copy, `unmanaged` paths are no longer where the agent
+ * reads its config.
+ */
+async function restoreAgent(
+  adapter: AgentAdapter,
+): Promise<{ restored: boolean; wired: string[]; unmanaged: string[] }> {
+  const wired: string[] = [];
+  const unmanaged: string[] = [];
+  const restored = await restoreSnapshot(
+    adapter.id,
+    adapter.managedFiles(),
+    (path, reason) => (reason === "wired" ? wired : unmanaged).push(path),
+    adapter.carriesWiring?.bind(adapter),
+  );
+  return { restored, wired, unmanaged };
+}
+
+/** The dim lines for files restore deliberately left in place. */
+function reportSkips(adapter: AgentAdapter, wired: string[], unmanaged: string[]): void {
+  for (const path of wired) {
+    out(
+      style.dim(
+        `${path} already held ai& wiring when it was captured, so it has no copy; run aiand ${adapter.id} off to strip it.`,
+      ),
+    );
+  }
+  for (const path of unmanaged) {
+    out(
+      style.dim(
+        `${path} is not where ${adapter.label} reads its config now; its copy stays in the snapshot. Restore again from a shell that points ${adapter.label} there.`,
+      ),
+    );
+  }
+}
+
 export async function run(argv: string[]): Promise<void> {
   const parsed = parse(argv, {
     force: { type: "boolean", default: false },
   });
   if (bool(parsed, "help")) return out(help);
-
   const [name, ...extra] = parsed.positionals;
   if (!name) {
     if (!isInteractive() || bool(parsed, "json")) {
@@ -66,12 +104,14 @@ export async function run(argv: string[]): Promise<void> {
     for (const id of picked) {
       const adapter = findAgent(id);
       if (!adapter) continue;
-      const restored = await restoreSnapshot(adapter.id, adapter.managedFiles());
+      const { restored, wired, unmanaged } = await restoreAgent(adapter);
       if (!restored) {
         out(`${adapter.label}: no snapshot found, skipped.`);
         continue;
       }
+      await forgetWired(adapter.id);
       out(`${adapter.label} config restored from snapshot.`);
+      reportSkips(adapter, wired, unmanaged);
     }
     return;
   }
@@ -94,15 +134,23 @@ export async function run(argv: string[]): Promise<void> {
     });
   }
 
-  const restored = await restoreSnapshot(adapter.id, adapter.managedFiles());
+  const { restored, wired, unmanaged } = await restoreAgent(adapter);
   if (!restored) {
     throw new CliError(`No snapshot found for ${adapter.label}.`, {
       hint: `Wire ${adapter.label} first with \`aiand init ${adapter.id}\` or \`aiand ${adapter.id} on\`.`,
     });
   }
 
+  await forgetWired(adapter.id);
+
   if (bool(parsed, "json")) {
-    return json({ agent: adapter.id, state: "restored" });
+    return json({
+      agent: adapter.id,
+      state: "restored",
+      ...(wired.length > 0 ? { not_captured: wired } : {}),
+      ...(unmanaged.length > 0 ? { kept: unmanaged } : {}),
+    });
   }
   out(`${adapter.label} config restored from snapshot.`);
+  reportSkips(adapter, wired, unmanaged);
 }

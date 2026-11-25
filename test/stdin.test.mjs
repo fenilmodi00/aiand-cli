@@ -9,7 +9,7 @@ import { CliError } from "../dist/cli/errors.js";
 import { confirm, readLineVisible, readSecret } from "../dist/cli/prompt.js";
 import { KEY } from "../dist/cli/select.js";
 import { stdinLooksPiped } from "../dist/cli/stdin.js";
-import { runCli } from "./helpers.mjs";
+import { asWin32, runCli } from "./helpers.mjs";
 
 // Piped stdin reaches the CLI however the parent provides it: real shells
 // hand over a FIFO, redirections a file — and Node's child_process hands over
@@ -155,8 +155,7 @@ class FakeSecretOutput {
   }
 }
 
-// Raw-mode secret path is Unix-only; Windows uses visible readline input.
-describe("readSecret raw mode", { skip: process.platform === "win32" }, () => {
+describe("readSecret raw mode", () => {
   test("arrow keys add no stars and no key material", async () => {
     const input = new FakeSecretInput();
     const output = new FakeSecretOutput();
@@ -236,6 +235,95 @@ describe("readSecret raw mode", { skip: process.platform === "win32" }, () => {
   });
 });
 
+// Windows consoles under Node raw mode: Enter is \r, Backspace \b, Ctrl+C
+// \x03, and a Ctrl+V or right-click paste lands as one burst, often with the
+// clipboard's own CRLF. The key must stay masked there too (projectors,
+// screen shares), so the visible fallback is only for a TTY with no raw mode.
+describe("readSecret on a Windows console", () => {
+  const onWindows = (fn) => asWin32(fn);
+
+  test("a pasted burst is masked and its CRLF ends the prompt", () =>
+    onWindows(async () => {
+      const input = new FakeSecretInput();
+      const output = new FakeSecretOutput();
+      const promise = readSecret("key: ", { input, output });
+      assert.equal(input.raw, true, "raw mode on win32");
+      input.send("sk-pasted-key\r\n");
+      assert.equal(await promise, "sk-pasted-key");
+      assert.equal(output.text, `key: ${"*".repeat(13)}\n`);
+      assert.ok(!output.text.includes("sk-"), "never echoed");
+      assert.equal(input.raw, false);
+    }));
+
+  test("Backspace as \\b and as DEL each erase one char", () =>
+    onWindows(async () => {
+      const input = new FakeSecretInput();
+      const output = new FakeSecretOutput();
+      const promise = readSecret("key: ", { input, output });
+      input.send("abcd");
+      input.send("\x08");
+      input.send("\x7f");
+      input.send("Z\r");
+      assert.equal(await promise, "abZ");
+    }));
+
+  test("Ctrl+V arriving as a literal \\x16 is not key material", () =>
+    onWindows(async () => {
+      const input = new FakeSecretInput();
+      const output = new FakeSecretOutput();
+      const promise = readSecret("key: ", { input, output });
+      input.send("\x16sk-a\r");
+      assert.equal(await promise, "sk-a");
+    }));
+
+  test("Ctrl+C exits 130 and restores the console", () =>
+    onWindows(async () => {
+      const input = new FakeSecretInput();
+      const output = new FakeSecretOutput();
+      const promise = readSecret("key: ", { input, output });
+      input.send("sk-");
+      input.send("\x03");
+      await assert.rejects(promise, (error) => error.exitCode === 130);
+      assert.equal(input.raw, false);
+    }));
+
+  for (const [label, setRawMode] of [
+    [
+      "setRawMode throws",
+      () => {
+        throw new Error("EINVAL");
+      },
+    ],
+    ["setRawMode is missing", undefined],
+  ]) {
+    test(`${label}: falls back to visible input with the note`, () =>
+      onWindows(async () => {
+        const input = new PassThrough();
+        input.isTTY = true;
+        input.setRawMode = setRawMode;
+        input.write("sk-visible\n");
+        const output = new FakeSecretOutput();
+        assert.equal(await readSecret("key: ", { input, output }), "sk-visible");
+        assert.match(output.text, /^Note: input is visible on Windows\.\n/);
+      }));
+  }
+
+  test("off Windows the same fallback names the terminal, not the OS", async () => {
+    const input = new PassThrough();
+    input.isTTY = true;
+    input.write("sk-visible\n");
+    const output = new FakeSecretOutput();
+    const real = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { ...real, value: "linux" });
+    try {
+      assert.equal(await readSecret("key: ", { input, output }), "sk-visible");
+    } finally {
+      Object.defineProperty(process, "platform", real);
+    }
+    assert.match(output.text, /^Note: input is visible on this terminal\.\n/);
+  });
+});
+
 describe("readSecret non-TTY", () => {
   test("empty line rejects CliError with exit 1 and the env-key hint (#141)", async () => {
     const input = new PassThrough();
@@ -254,9 +342,7 @@ describe("readSecret non-TTY", () => {
 // functions already take an `output` seam; use it. Patching process.stdout
 // captures node:test's own TAP frames and fails under `npm test` on CI.
 describe("prompt output defaults to stderr", () => {
-  test("readSecret raw mode: prompt and mask go to the output seam", {
-    skip: process.platform === "win32",
-  }, async () => {
+  test("readSecret raw mode: prompt and mask go to the output seam", async () => {
     const input = new FakeSecretInput();
     const output = new FakeSecretOutput();
     const promise = readSecret("key: ", { input, output });
