@@ -27,6 +27,8 @@ import {
   readConfigId,
   readMarkerId,
 } from "./config-files.js";
+import { existingFileMode } from "./filemode.js";
+import { refuseDirectSecretStoreWrite } from "./secrets-git.js";
 
 /**
  * Config paths, containment checks, and the atomic writer, shared by config,
@@ -535,15 +537,6 @@ export async function configMarkerId(): Promise<string | null> {
   return readMarkerId(root);
 }
 
-export async function existingFileMode(filePath: string): Promise<number | undefined> {
-  try {
-    return (await stat(filePath)).mode & 0o777;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 /**
  * Windows rename-over-existing fails transiently with EPERM/EACCES while a
  * concurrent process still holds the destination (an antivirus scan, a
@@ -581,6 +574,7 @@ export async function writeFileAtomic(
   options: { mode?: number } = {},
 ): Promise<void> {
   const dir = dirname(filePath);
+  await refuseDirectSecretStoreWrite(filePath, configDir());
   try {
     await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   } catch (error) {
@@ -662,3 +656,4 @@ export async function writeFileAtomic(
  * always imported it from this module; there is no second implementation.
  */
 export { withFileLock } from "./filelock.js";
+export { existingFileMode } from "./filemode.js";

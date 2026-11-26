@@ -10,6 +10,7 @@ import {
   restrictToOwner,
   writeFileAtomic,
 } from "./fsutil.js";
+import { refuseGitWorkTree } from "./secrets-git.js";
 
 /** Account → secret blob, as every tier stores it. */
 export type SecretMap = Record<string, string>;
@@ -82,6 +83,7 @@ async function getKeyMaterial(): Promise<Buffer> {
       throw error;
     }
     const key = randomBytes(KEY_BYTES);
+    await refuseGitWorkTree(keyFile);
     await mkdir(dirname(keyFile), { recursive: true, mode: PRIVATE_DIR_MODE });
     await restrictToOwner(dirname(keyFile), { dir: true });
     // Two first runs racing here must agree on one key, or the store
@@ -170,6 +172,8 @@ async function writeStore(store: SecretMap): Promise<void> {
 }
 
 export async function fileSet(account: string, secret: string): Promise<void> {
+  // The encrypted store can create its key before writing the store itself.
+  for (const path of fileTierPaths().slice(1)) await refuseGitWorkTree(path);
   const store = await readStore();
   store[account] = secret;
   await writeStore(store);
@@ -177,6 +181,7 @@ export async function fileSet(account: string, secret: string): Promise<void> {
 
 /** Drop an entry from the file store; the caller holds `serialized`. */
 export async function removeFileEntry(account: string): Promise<void> {
+  for (const path of fileTierPaths().slice(1)) await refuseGitWorkTree(path);
   const store = await readStore();
   if (!(account in store)) return;
   delete store[account];

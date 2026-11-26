@@ -19,7 +19,9 @@ withTestEnv("aiand-claude-test-", (dir) => {
 });
 
 const { claudeAdapter } = await import("../dist/agents/claude/adapter.js");
-const { buildClaudeSettings, contextTokens } = await import("../dist/agents/claude/settings.js");
+const { DENIED_TOOLS, buildClaudeSettings, contextTokens } = await import(
+  "../dist/agents/claude/settings.js"
+);
 const { CliError } = await import("../dist/cli/errors.js");
 
 const MAIN = "moonshotai/kimi-k3";
@@ -90,7 +92,11 @@ describe("claude on", () => {
     for (const slot of MAIN_SLOTS) assert.equal(env[slot], MAIN, slot);
     assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, FAST);
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1048576");
-    assert.deepEqual(permissions.deny, ["WebSearch"]);
+    assert.deepEqual(permissions.deny, [
+      "WebSearch",
+      `Read(${settingsPath()})`,
+      "Bash(aiand key export*)",
+    ]);
     assertMode(settingsPath(), 0o600);
     assert.equal(result.model, MAIN);
     assert.equal(result.catalogModel, MAIN);
@@ -462,6 +468,7 @@ describe("claude context parity", () => {
         main: MAIN,
         fast: MAIN,
         catalog: invalid,
+        settingsPath: settingsPath(),
       });
       assert.equal(settings.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "");
       seed({ env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000" } });
@@ -720,11 +727,47 @@ describe("claude off", () => {
       permissions: { deny: ["Bash(rm:*)"] },
     });
     await claudeAdapter.enable(enableInput());
-    assert.deepEqual(readSettings().permissions.deny, ["Bash(rm:*)", "WebSearch"]);
+    assert.deepEqual(readSettings().permissions.deny, [
+      "Bash(rm:*)",
+      "WebSearch",
+      `Read(${settingsPath()})`,
+      "Bash(aiand key export*)",
+    ]);
     await claudeAdapter.disable();
     const after = readSettings();
     assert.deepEqual(after.env, { ANTHROPIC_API_KEY: "their-anthropic-key" });
     assert.deepEqual(after.permissions.deny, ["Bash(rm:*)"]);
+  });
+
+  test("permanent and launcher settings deny reads of their own key file", async () => {
+    const customDeny = "Bash(rm:*)";
+    seed({ permissions: { deny: [customDeny] } });
+    await claudeAdapter.enable(enableInput());
+    const permanentDeny = [
+      customDeny,
+      ...DENIED_TOOLS,
+      `Read(${settingsPath()})`,
+      "Bash(aiand key export*)",
+    ];
+    assert.deepEqual(readSettings().permissions.deny, permanentDeny);
+
+    const launch = await claudeAdapter.sessionLaunch({
+      apiKey: "sk-launch-deny",
+      model: MAIN,
+      catalog: CATALOG,
+    });
+    const overlayPath = launch.args[1];
+    const overlay = JSON.parse(readFileSync(overlayPath, "utf8"));
+    assert.deepEqual(overlay.permissions.deny, [
+      "WebSearch",
+      `Read(${overlayPath})`,
+      "Bash(aiand key export*)",
+    ]);
+    assert.deepEqual(readSettings().permissions.deny, permanentDeny);
+    await launch.cleanup();
+
+    await claudeAdapter.disable();
+    assert.deepEqual(readSettings().permissions.deny, [customDeny]);
   });
 
   test("a slot edited after on is left, with a note", async () => {
@@ -972,8 +1015,14 @@ describe("claude sessionLaunch", () => {
     const small = "openai/gpt-oss-120b";
     const catalog = [...CATALOG, catalogModel(small, { context_window: 131072 })];
     const build = (main, fast) =>
-      buildClaudeSettings({ apiKey: "sk-x", baseUrl: "https://api.aiand.com", main, fast, catalog })
-        .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+      buildClaudeSettings({
+        apiKey: "sk-x",
+        baseUrl: "https://api.aiand.com",
+        main,
+        fast,
+        catalog,
+        settingsPath: settingsPath(),
+      }).env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
     assert.equal(build(small, small), "131072");
     // --fast-model's window does not shrink the main model's budget.
     assert.equal(build(MAIN, small), "1048576");
@@ -986,10 +1035,15 @@ describe("claude sessionLaunch", () => {
       main: OTHER,
       fast: OTHER,
       catalog: CATALOG,
+      settingsPath: settingsPath(),
     });
     assert.equal(settings.model, OTHER);
     assertOnlyModel(settings, OTHER);
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8787");
-    assert.deepEqual(settings.permissions.deny, ["WebSearch"]);
+    assert.deepEqual(settings.permissions.deny, [
+      "WebSearch",
+      `Read(${settingsPath()})`,
+      "Bash(aiand key export*)",
+    ]);
   });
 });

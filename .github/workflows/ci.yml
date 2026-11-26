@@ -79,13 +79,14 @@ jobs:
       - run: npm run benchmark:recorded
       - run: npm run check:dist
       - run: npm run check:public
-  # The two live jobs need the AIAND_API_KEY secret. Fork PRs never reach them
-  # (the `if` below), and Dependabot PRs from this repository get no repository
-  # secrets, so they are skipped here with a notice. Anyone else with an empty
-  # key is a misconfigured secret, and fails loudly instead of letting
-  # test/e2e-live.test.mjs skip itself into a green check.
+  # The live jobs need the AIAND_API_KEY secret, which lives in the `live`
+  # environment, and only `main` may deploy to it. PRs never reach these jobs,
+  # whoever opened them, so code nobody has merged never runs with the key.
+  # An empty key on `main` is a misconfigured secret, and fails loudly instead
+  # of letting test/e2e-live.test.mjs skip itself into a green check.
   key:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push'
+    environment: live
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -94,15 +95,11 @@ jobs:
       - id: check
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
-          ACTOR: ${{ github.actor }}
         run: |
           if [ -n "$AIAND_API_KEY" ]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
-          elif [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Live gateway tests skipped::Dependabot runs receive no repository secrets, so the live and live-opencode jobs did not run."
           else
-            echo "::error title=AIAND_API_KEY is empty::The live jobs would pass without testing the gateway. Set the repository secret."
+            echo "::error title=AIAND_API_KEY is empty::The live jobs would pass without testing the gateway. Set the secret in the live environment."
             exit 1
           fi
   # The live OpenCode e2e (test/e2e-live.test.mjs): `aiand opencode on`, then
@@ -117,7 +114,8 @@ jobs:
   live-opencode:
     needs: key
     if: needs.key.outputs.available == 'true'
-    # `key` already limited this to pushes and same-repository PRs.
+    environment: live
+    # `key` already limited this to pushes to main.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -141,11 +139,11 @@ jobs:
   # status, run, models, usage, orgs, config, logout, `opencode on/status/off`,
   # `restore --force`, `init`, and the `run-agent` launcher, all in a fresh
   # temp state dir. Needs the AIAND_API_KEY secret, so it runs on pushes to
-  # main and on PRs from branches of this repository (fork PRs get no
-  # secrets and skip). Spends a few cents of credit per run.
+  # main only. Spends a few cents of credit per run.
   live:
     needs: key
     if: needs.key.outputs.available == 'true'
+    environment: live
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -306,40 +304,53 @@ jobs:
       - run: node scripts/e2e.mjs
       # Real DPAPI and icacls, which the unit suite only reaches through stubs.
       - run: node scripts/windows-secrets-smoke.mjs
+  # The Windows half of the live checks, split out of installer-windows so
+  # the key lives in the main-only `live` environment and the required
+  # installer-windows check never needs it.
+  live-windows:
+    needs: key
+    if: needs.key.outputs.available == 'true'
+    environment: live
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
       # Real npm-installed OpenCode and Pi (a .cmd shim on Windows) launched
-      # through `aiand run-agent`, against the live gateway. Needs the key, so
-      # same events as the live job, and like the `key` job not Dependabot's
-      # PRs, which get no secrets. This is also the Windows install
-      # tripwire for the Pi pin — check-dist keeps the version in step.
+      # through `aiand run-agent`, against the live gateway. This is also the
+      # Windows install tripwire for the Pi pin — check-dist keeps the
+      # version in step.
       # The only install code that runs before the key step is opencode-ai's
       # postinstall, which needs to link its binary. Pi and Copilot install
       # with --ignore-scripts, and omp is a digest-checked binary. Each of the
       # four is an agent the key step launches with the key by design.
-      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-        run: npm install -g opencode-ai@1.18.32
+      - run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       # check-dist keeps the pin in step with the CLI's install hint; the
-      # gated run-agent copilot smoke below needs the same-repo key.
+      # run-agent copilot smoke below needs the key.
       # No scripts field in the package (npm view @github/copilot@1.0.89
       # scripts is empty; bin is a plain node npm-loader.js), so
       # --ignore-scripts is a no-op here — it matches the pi pin's
       # discipline and keeps a future postinstall from running CI-side.
-      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-        run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      - run: npm install -g --ignore-scripts @github/copilot@1.0.89
       # Windows downloads the same pinned release asset as the Linux job
       # (check-dist keeps the two in step). RUNNER_TEMP is not on PATH, so
-      # expose the dir via GITHUB_PATH. Gated with the run-agent check
-      # below so fork PRs skip the download.
-      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-        run: |
+      # expose the dir via GITHUB_PATH.
+      - run: |
           $dir = Join-Path $env:RUNNER_TEMP 'omp'
           New-Item -ItemType Directory -Path $dir | Out-Null
           $exe = Join-Path $dir 'omp.exe'
           Invoke-WebRequest -Uri https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-windows-x64.exe -OutFile $exe
           if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne '5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54') { throw 'omp-windows-x64.exe sha256 mismatch' }
           $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-        run: |
+      - run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
           New-Item -ItemType Directory -Path $state | Out-Null
           $env:AIAND_HOME = $state

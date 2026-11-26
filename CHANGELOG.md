@@ -334,6 +334,16 @@ breaking changes while the command surface settles.
 - Table output keeps its palette on cli-v2's status and verdict cells
   (`usage --verify`, `cache`, `forecast`, `harness`, `harness stats`,
   `harness matrix`, `status`) instead of stripping their color.
+- Device sign-in and token refresh now reject incomplete token responses instead of saving
+  unusable or irrevocable credentials.
+- The file-based key store refuses to create its key inside a git work tree, including
+  when the first access is a read, unless `AIAND_ALLOW_GIT_TRACKED=1` is set.
+- `--json` output escapes DEL, C1, Unicode line separators, bidi controls, and tag
+  characters, so a value from the store cannot drive the terminal.
+- Claude Code's generated settings deny reading the routed settings file and running
+  `aiand key export`, so a prompt or hook cannot print the key.
+- Sign-out waits for an in-flight token refresh before revoking or clearing the
+  credential, so a rotation cannot overwrite the sign-out.
 - Bare `aiand copilot --model <id>` and `--model=<id>` launches now validate the
   requested id against the catalog and refuse to spawn when GitHub Copilot is
   already configured for a different model, instead of overriding that model

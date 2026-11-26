@@ -14,6 +14,8 @@ const {
   clipToWidth,
   spinner,
   out,
+  json,
+  escapeJsonForTerminal,
 } = await import("../dist/cli/output.js");
 
 function capture(fn) {
@@ -48,6 +50,50 @@ function columns(s) {
   }
   return n;
 }
+
+describe("json output", () => {
+  const range = (start, end) =>
+    Array.from({ length: end - start + 1 }, (_, i) => String.fromCodePoint(start + i)).join("");
+  const c1Controls = range(0x80, 0x9f);
+  const bidiControls = `${range(0x202a, 0x202e)}${range(0x2066, 0x2069)}`;
+  const tagCharacters = range(0xe0000, 0xe007f);
+  const escapedCodeUnits = (text) =>
+    Array.from(
+      { length: text.length },
+      (_, i) => `\\u${text.charCodeAt(i).toString(16).padStart(4, "0")}`,
+    ).join("");
+
+  test("json output escapes DEL, C1 controls and line separators", () => {
+    const value = `\x7f${c1Controls}\u2028\u2029`;
+    assert.deepEqual(
+      capture(() => json(value)),
+      [`"${escapedCodeUnits(value)}"`],
+    );
+  });
+
+  test("json output escapes bidi controls and tag characters", () => {
+    const value = `${bidiControls}${tagCharacters}`;
+    assert.deepEqual(
+      capture(() => json(value)),
+      [`"${escapedCodeUnits(value)}"`],
+    );
+  });
+
+  test("json output parses back to the same value", () => {
+    const everyListedCharacter = `\x7f${c1Controls}\u2028\u2029${bidiControls}${tagCharacters}`;
+    const value = {
+      text: `ordinary text, emoji 🚀 and Japanese こんにちは: ${everyListedCharacter}`,
+      nested: [{ all: everyListedCharacter }],
+    };
+    const output = capture(() => json(value)).join("\n");
+    assert.deepEqual(JSON.parse(output), value);
+  });
+
+  test("escapeJsonForTerminal leaves ordinary text unchanged", () => {
+    const ordinary = 'ASCII abc 123\n\t"quoted" \\ / {}[] café 日本語 🚀 \u200d\ufe0f';
+    assert.equal(escapeJsonForTerminal(ordinary), ordinary);
+  });
+});
 
 describe("table", () => {
   test("aligns a column across ASCII, CJK, and emoji cells", () => {

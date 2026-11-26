@@ -33,6 +33,7 @@ import type {
   ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
+import { startupModel as startupModelFromArgs } from "./launch.js";
 import { applyModelPicker, buildModelPicker, stripModelPicker } from "./picker.js";
 import { launchDefault, putBackUserDefault, type UserDefault } from "./put-back.js";
 import {
@@ -52,7 +53,7 @@ import {
   claudeBaseUrl,
   claudeDefaultModel,
   contextTokens,
-  DENIED_TOOLS,
+  deniedTools,
   ENV_OFF,
   ENV_ON,
   type Env,
@@ -332,7 +333,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
 
   const addedDeny = [...(prior?.addedDeny ?? [])];
   const denyList: unknown[] = Array.isArray(deny) ? deny : [];
-  const missing = DENIED_TOOLS.filter((tool) => !denyList.includes(tool));
+  const missing = deniedTools(path).filter((tool) => !denyList.includes(tool));
   if (missing.length > 0) {
     if (permissions === undefined) createdKeys.add("permissions");
     if (deny === undefined) createdKeys.add("permissions.deny");
@@ -592,24 +593,19 @@ export const claudeAdapter: AgentAdapter = {
     const main = chosen ?? claudeDefaultModel(input.catalog, input.profileModel);
     // A Claude Code alias (`--model haiku`) stays in the passthrough and
     // outranks the overlay's model, so the budget must follow its slot too.
-    let startup: string | undefined;
-    const args = input.args ?? [];
-    for (let i = 0; i < args.length && args[i] !== "--"; i++) {
-      const arg = args[i]!;
-      if (arg === "--model") startup = args[++i];
-      else if (arg.startsWith("--model=")) startup = arg.slice("--model=".length);
-    }
-    const settings = buildClaudeSettings({
-      apiKey: input.apiKey,
-      baseUrl: claudeBaseUrl(input.baseUrl),
-      main,
-      fast: fastModel(input.catalog, main, { chosen, fast: input.fastModel ?? sticky.fast }),
-      startup,
-      catalog: input.catalog,
-    });
+    const startup = startupModelFromArgs(input.args ?? []);
     const dir = await makeOverlayDir("aiand-claude-");
     const file = join(dir, "settings.json");
     try {
+      const settings = buildClaudeSettings({
+        apiKey: input.apiKey,
+        baseUrl: claudeBaseUrl(input.baseUrl),
+        main,
+        fast: fastModel(input.catalog, main, { chosen, fast: input.fastModel ?? sticky.fast }),
+        startup,
+        catalog: input.catalog,
+        settingsPath: file,
+      });
       await writeFile(file, JSON.stringify(settings), { mode: PRIVATE_FILE_MODE, flag: "wx" });
     } catch (error) {
       await rm(dir, { recursive: true, force: true });

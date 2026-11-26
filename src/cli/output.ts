@@ -87,8 +87,22 @@ export function err(line = ""): void {
   writeCoordinated(() => process.stderr.write(line + EOL));
 }
 
+/** Escape characters that JSON.stringify leaves literal but a terminal may act on. */
+export function escapeJsonForTerminal(text: string): string {
+  return text.replace(
+    /[\u007f\u0080-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\u{e0000}-\u{e007f}]/gu,
+    (character) =>
+      Array.from(
+        { length: character.length },
+        (_, index) => `\\u${character.charCodeAt(index).toString(16).padStart(4, "0")}`,
+      ).join(""),
+  );
+}
+
 export function json(value: unknown): void {
-  writeCoordinated(() => process.stdout.write(JSON.stringify(value, null, 2) + EOL));
+  writeCoordinated(() =>
+    process.stdout.write(escapeJsonForTerminal(String(JSON.stringify(value, null, 2))) + EOL),
+  );
 }
 
 /**
@@ -291,8 +305,8 @@ export class TerminalSanitizer {
 /**
  * Make server- or model-supplied text safe to print to a terminal (see
  * TerminalSanitizer for what is removed). Use for anything a person reads:
- * table cells, fields, prompt labels, error messages. `--json` output needs
- * none of this; JSON.stringify already escapes every control character.
+ * table cells, fields, prompt labels, error messages. `--json` output instead
+ * uses escapeJsonForTerminal so JSON.parse still recovers every character.
  */
 export function sanitizeForTerminal(text: string, options: SanitizeOptions = {}): string {
   const sanitizer = new TerminalSanitizer(options);

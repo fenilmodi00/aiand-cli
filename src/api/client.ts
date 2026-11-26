@@ -196,6 +196,11 @@ function assertTargetBound(session: Session, base: string): void {
 const sameBinding = (a: CredentialBinding, b: CredentialBinding): boolean =>
   a.auth_url === b.auth_url && a.api_url === b.api_url;
 
+export function withRefreshLock<T>(profileName: string, fn: () => Promise<T>): Promise<T> {
+  const lock = join(configDir(), "locks", `refresh-${profileName}`);
+  return withFileLock(lock, fn);
+}
+
 async function refresh(
   profile: ResolvedProfile,
   stored: LoadedCredential,
@@ -206,8 +211,7 @@ async function refresh(
 
   // Across processes too: Codex runs `aiand key export` in every session, and two
   // rotations with one refresh token can get the whole grant revoked for reuse.
-  const lock = join(configDir(), "locks", `refresh-${profile.name}`);
-  const promise = withFileLock(lock, async () => {
+  const promise = withRefreshLock(profile.name, async () => {
     // Another process may have rotated since this session loaded `stored`;
     // the persisted credential is what agents were last baked with.
     const reloaded = await loadCredential(profile.name);

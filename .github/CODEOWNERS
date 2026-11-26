@@ -1,0 +1,16 @@
+# Changes to these paths need a review from one of the owners below, once
+# code-owner review is required on main. Everything else merges on green CI.
+
+/src/auth/              @jethac @aiand-atul @islomjon-aiand
+/src/config.ts          @jethac @aiand-atul @islomjon-aiand
+/src/config-files.ts    @jethac @aiand-atul @islomjon-aiand
+/src/secrets.ts          @jethac @aiand-atul @islomjon-aiand
+/src/secrets-file.ts     @jethac @aiand-atul @islomjon-aiand
+/src/secrets-git.ts      @jethac @aiand-atul @islomjon-aiand
+/src/agents/managed-file.ts @jethac @aiand-atul @islomjon-aiand
+/install.sh             @jethac @aiand-atul @islomjon-aiand
+/install.ps1            @jethac @aiand-atul @islomjon-aiand
+/package.json           @jethac @aiand-atul @islomjon-aiand
+/package-lock.json      @jethac @aiand-atul @islomjon-aiand
+/scripts/release.mjs    @jethac @aiand-atul @islomjon-aiand
+/.github/               @jethac @aiand-atul @islomjon-aiand

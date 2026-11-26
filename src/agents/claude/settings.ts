@@ -60,6 +60,11 @@ const ALIAS_SLOTS: Record<string, string> = {
 };
 export const CONTEXT_KEY = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
 export const DENIED_TOOLS = ["WebSearch"];
+
+export function deniedTools(settingsPath: string): string[] {
+  return [...DENIED_TOOLS, `Read(${settingsPath})`, "Bash(aiand key export*)"];
+}
+
 export const FOREIGN_PROVIDER_KEYS = [
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
@@ -283,6 +288,7 @@ export function buildClaudeSettings({
   main,
   fast,
   catalog,
+  settingsPath,
   startup,
 }: {
   apiKey: string;
@@ -290,6 +296,7 @@ export function buildClaudeSettings({
   main: string;
   fast: string;
   catalog: Model[];
+  settingsPath: string;
   startup?: string;
 }): Record<string, unknown> {
   // ANTHROPIC_MODEL too: a shell export of it would beat the `model` below.
@@ -305,7 +312,7 @@ export function buildClaudeSettings({
   return {
     model: main,
     env,
-    permissions: { deny: DENIED_TOOLS },
+    permissions: { deny: deniedTools(settingsPath) },
     modelPicker: buildModelPicker(catalog),
   };
 }

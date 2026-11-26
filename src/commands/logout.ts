@@ -1,4 +1,4 @@
-import { logout as logoutFlow } from "../auth/logout.js";
+import { logout } from "../auth/logout.js";
 import { logoutAll, WIPE_OUTSIDE_HOME_ENV } from "../auth/logout-all.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
@@ -68,7 +68,7 @@ export async function run(argv: string[]): Promise<void> {
     throw new CliError("--force only applies to logout --all.");
   }
 
-  await logoutFlow({
+  await logout({
     profile: str(parsed, "profile"),
     revoke: bool(parsed, "revoke"),
     keepRemote: bool(parsed, "keep-remote"),

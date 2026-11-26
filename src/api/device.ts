@@ -1,4 +1,5 @@
 import { ApiError, CliError, EXIT, loginCancelled } from "../cli/errors.js";
+import { isValidKeyShape } from "../cli/redact.js";
 import { isLoopbackHost } from "../config.js";
 import { SECOND_MS } from "../time.js";
 import { parseJsonResponse, publicRequest, readBoundedText } from "./client.js";
@@ -22,6 +23,54 @@ export type TokenResponse = {
   expires_in: number;
   org?: { id: string; name: string };
 };
+
+function incompleteTokenResponse(): CliError {
+  return new CliError("The sign-in service returned an incomplete token response.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+export function validTokenResponse(body: unknown): TokenResponse {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw incompleteTokenResponse();
+  }
+  const candidate = body as Record<string, unknown>;
+  const { access_token, refresh_token, expires_in, token_type } = candidate;
+  if (
+    typeof access_token !== "string" ||
+    !isValidKeyShape(access_token) ||
+    typeof refresh_token !== "string" ||
+    refresh_token.length === 0 ||
+    typeof expires_in !== "number" ||
+    !Number.isFinite(expires_in) ||
+    expires_in <= 0 ||
+    typeof token_type !== "string" ||
+    token_type.length === 0
+  ) {
+    throw incompleteTokenResponse();
+  }
+
+  if (Object.hasOwn(candidate, "org")) {
+    const org = candidate.org;
+    const fields =
+      org !== null && typeof org === "object" ? (org as Record<string, unknown>) : null;
+    if (
+      fields === null ||
+      Array.isArray(fields) ||
+      typeof fields.id !== "string" ||
+      typeof fields.name !== "string"
+    ) {
+      const result = { ...candidate };
+      delete result.org;
+      return result as TokenResponse;
+    }
+    return {
+      ...candidate,
+      org: { id: fields.id, name: fields.name },
+    } as TokenResponse;
+  }
+  return body as TokenResponse;
+}
 
 type TokenErrorBody = { error: string; error_description?: string };
 
@@ -109,7 +158,7 @@ export async function pollForToken(
       device_code: device.device_code,
     });
 
-    if (response.ok) return parseJsonResponse<TokenResponse>(response);
+    if (response.ok) return validTokenResponse(await parseJsonResponse<unknown>(response));
 
     let body: Partial<TokenErrorBody> = {};
     try {
@@ -162,7 +211,18 @@ export async function rotateTokens(
       hint: "Run `aiand login` to sign in again.",
     });
   }
-  return parseJsonResponse<TokenResponse>(response);
+  const body = await parseJsonResponse<unknown>(response);
+  try {
+    return validTokenResponse(body);
+  } catch (error) {
+    if (error instanceof CliError) {
+      throw new CliError(error.message, {
+        exitCode: EXIT.NOT_SIGNED_IN,
+        hint: error.hint,
+      });
+    }
+    throw error;
+  }
 }
 
 /**
