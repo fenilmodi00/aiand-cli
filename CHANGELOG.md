@@ -340,8 +340,9 @@ breaking changes while the command surface settles.
   when the first access is a read, unless `AIAND_ALLOW_GIT_TRACKED=1` is set.
 - `--json` output escapes DEL, C1, Unicode line separators, bidi controls, and tag
   characters, so a value from the store cannot drive the terminal.
-- Claude Code's generated settings deny reading the routed settings file and running
-  `aiand key export`, so a prompt or hook cannot print the key.
+- Claude Code's generated settings deny the `Read` tool access to the routed
+  settings file and deny `aiand key export`; the key is still exported to Bash
+  tools for the session, so this narrows exposure rather than closing it.
 - Sign-out waits for an in-flight token refresh before revoking or clearing the
   credential, so a rotation cannot overwrite the sign-out.
 - Bare `aiand copilot --model <id>` and `--model=<id>` launches now validate the

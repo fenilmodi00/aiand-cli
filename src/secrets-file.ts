@@ -181,7 +181,8 @@ export async function fileSet(account: string, secret: string): Promise<void> {
 
 /** Drop an entry from the file store; the caller holds `serialized`. */
 export async function removeFileEntry(account: string): Promise<void> {
-  for (const path of fileTierPaths().slice(1)) await refuseGitWorkTree(path);
+  // A removal only shrinks what is exposed; never refuse it, even when the
+  // store lives in a git work tree, or logout would leave the secret behind.
   const store = await readStore();
   if (!(account in store)) return;
   delete store[account];

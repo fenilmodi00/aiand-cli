@@ -11,7 +11,7 @@ export type DeviceCodeResponse = {
   device_code: string;
   user_code: string;
   verification_uri: string;
-  verification_uri_complete: string;
+  verification_uri_complete?: string;
   expires_in: number;
   interval: number;
 };
@@ -86,6 +86,52 @@ function devicePost(url: string, body: unknown, signal?: AbortSignal): Promise<R
 /** Long enough for a slow gateway, short enough that the refresh lock is not held for good. */
 const ROTATE_TIMEOUT_MS = 30_000;
 
+function incompleteDeviceCodeResponse(): CliError {
+  return new CliError("The sign-in service returned an incomplete device-code response.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+export function validDeviceCodeResponse(body: unknown): DeviceCodeResponse {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw incompleteDeviceCodeResponse();
+  }
+  const candidate = body as Record<string, unknown>;
+  const {
+    device_code,
+    user_code,
+    verification_uri,
+    verification_uri_complete,
+    expires_in,
+    interval,
+  } = candidate;
+  if (
+    typeof device_code !== "string" ||
+    device_code.length === 0 ||
+    typeof user_code !== "string" ||
+    user_code.length === 0 ||
+    typeof verification_uri !== "string" ||
+    verification_uri.length === 0 ||
+    (verification_uri_complete !== undefined && typeof verification_uri_complete !== "string") ||
+    typeof expires_in !== "number" ||
+    !Number.isFinite(expires_in) ||
+    expires_in <= 0 ||
+    typeof interval !== "number" ||
+    !Number.isFinite(interval) ||
+    interval < 0
+  ) {
+    throw incompleteDeviceCodeResponse();
+  }
+  return {
+    device_code,
+    user_code,
+    verification_uri,
+    expires_in,
+    interval,
+    ...(typeof verification_uri_complete === "string" ? { verification_uri_complete } : {}),
+  };
+}
+
 export async function startDeviceAuthorization(
   authUrl: string,
   opts: { keyName?: string } = {},
@@ -98,7 +144,7 @@ export async function startDeviceAuthorization(
       hint: `${authUrl} did not accept the request (HTTP ${response.status}).`,
     });
   }
-  return parseJsonResponse<DeviceCodeResponse>(response);
+  return validDeviceCodeResponse(await parseJsonResponse<unknown>(response));
 }
 
 export function verificationUrl(authUrl: string, device: DeviceCodeResponse): string {

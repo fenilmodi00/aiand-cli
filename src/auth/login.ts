@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { printRebakeNotes, rebakeForBinding } from "../agents/rebake.js";
 import { getUser, listOrgs, validateKey } from "../api/account.js";
-import { assertValidKey, openSession, type Session } from "../api/client.js";
+import { assertValidKey, openSession, type Session, withRefreshLock } from "../api/client.js";
 import {
   type DeviceCodeResponse,
   pollForToken,
@@ -15,6 +15,7 @@ import { link } from "../cli/links.js";
 import {
   err,
   fields,
+  json,
   out,
   safeLine,
   sanitizeForTerminal,
@@ -245,15 +246,17 @@ async function completeSignIn(
   const [user, orgs] = await Promise.all([getUser(pending), listOrgs(pending)]);
   const org = tokens.org ?? orgs[0] ?? null;
 
-  await saveCredential(profile.name, {
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: nowSeconds() + tokens.expires_in,
-    origin: CREDENTIAL_ORIGIN.DEVICE,
-    bound_to,
-    user,
-    ...(org ? { org } : {}),
-  });
+  await withRefreshLock(profile.name, () =>
+    saveCredential(profile.name, {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: nowSeconds() + tokens.expires_in,
+      origin: CREDENTIAL_ORIGIN.DEVICE,
+      bound_to,
+      user,
+      ...(org ? { org } : {}),
+    }),
+  );
 
   await activateProfile(profile.name, bound_to);
 
@@ -262,18 +265,12 @@ async function completeSignIn(
   await rebakeAfterSignIn(profile, session.token, bound_to);
 
   if (opts.json) {
-    return out(
-      JSON.stringify(
-        {
-          profile: profile.name,
-          user,
-          org: org ?? null,
-          key: maskKey(session.token),
-        },
-        null,
-        2,
-      ),
-    );
+    return json({
+      profile: profile.name,
+      user,
+      org: org ?? null,
+      key: maskKey(session.token),
+    });
   }
 
   out(style.green("Signed in."));
@@ -382,21 +379,21 @@ export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
     credential: { access_token: key, origin: CREDENTIAL_ORIGIN.PASTE, bound_to },
   };
   const [org = null] = await listOrgs(pending);
-  const storage = await saveCredential(profile.name, {
-    access_token: key,
-    origin: CREDENTIAL_ORIGIN.PASTE,
-    bound_to,
-    user,
-    ...(org ? { org } : {}),
-  });
+  const storage = await withRefreshLock(profile.name, () =>
+    saveCredential(profile.name, {
+      access_token: key,
+      origin: CREDENTIAL_ORIGIN.PASTE,
+      bound_to,
+      user,
+      ...(org ? { org } : {}),
+    }),
+  );
 
   await activateProfile(profile.name, bound_to);
   await rebakeAfterSignIn(profile, key, bound_to);
 
   if (opts.json) {
-    return out(
-      JSON.stringify({ profile: profile.name, source: CREDENTIAL_SOURCE.PASTED, storage }, null, 2),
-    );
+    return json({ profile: profile.name, source: CREDENTIAL_SOURCE.PASTED, storage });
   }
 
   out(style.green("Signed in with a pasted key."));

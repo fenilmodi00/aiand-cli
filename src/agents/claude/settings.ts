@@ -62,7 +62,12 @@ export const CONTEXT_KEY = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
 export const DENIED_TOOLS = ["WebSearch"];
 
 export function deniedTools(settingsPath: string): string[] {
-  return [...DENIED_TOOLS, `Read(${settingsPath})`, "Bash(aiand key export*)"];
+  // Best-effort: the session env block still exports the key to Bash tools,
+  // so this stops the Read tool and `aiand key export`, not `printenv`.
+  // A single leading `/` anchors at the settings source; an absolute path
+  // needs `//` (Claude Code permission syntax).
+  const absolute = settingsPath.startsWith("/") ? `/${settingsPath}` : settingsPath;
+  return [...DENIED_TOOLS, `Read(${absolute})`, "Bash(aiand key export*)"];
 }
 
 export const FOREIGN_PROVIDER_KEYS = [

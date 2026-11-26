@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pollForToken, rotateTokens, validTokenResponse } from "../dist/api/device.js";
+import {
+  pollForToken,
+  rotateTokens,
+  startDeviceAuthorization,
+  validDeviceCodeResponse,
+  validTokenResponse,
+} from "../dist/api/device.js";
 import { CliError, EXIT } from "../dist/cli/errors.js";
 import { withFetch } from "./helpers.mjs";
 
@@ -11,6 +17,15 @@ const complete = {
   refresh_token: "refresh-token-secret",
   token_type: "Bearer",
   expires_in: 3600,
+};
+
+const DEVICE_MESSAGE = "The sign-in service returned an incomplete device-code response.";
+const completeDevice = {
+  device_code: "device-code",
+  user_code: "ABCD-EFGH",
+  verification_uri: "https://example.test/device",
+  expires_in: 600,
+  interval: 5,
 };
 
 function checkIncompleteError(error, exitCode = EXIT.ERROR) {
@@ -106,6 +121,57 @@ test("a missing access_token or a non-positive expires_in is refused", () => {
   ]) {
     assertIncomplete(body);
   }
+});
+
+test("a complete device-code response is returned unchanged", () => {
+  assert.deepEqual(validDeviceCodeResponse(completeDevice), completeDevice);
+  assert.deepEqual(
+    validDeviceCodeResponse({ ...completeDevice, verification_uri_complete: "https://x.test" }),
+    { ...completeDevice, verification_uri_complete: "https://x.test" },
+  );
+});
+
+test("an incomplete device-code response is refused", () => {
+  for (const body of [
+    null,
+    [],
+    {},
+    { ...completeDevice, device_code: "" },
+    { ...completeDevice, user_code: 7 },
+    { ...completeDevice, verification_uri: "" },
+    { ...completeDevice, verification_uri_complete: 7 },
+    { ...completeDevice, expires_in: null },
+    { ...completeDevice, expires_in: 0 },
+    { ...completeDevice, expires_in: Number.POSITIVE_INFINITY },
+    { ...completeDevice, interval: null },
+    { ...completeDevice, interval: -1 },
+    { ...completeDevice, interval: Number.NaN },
+  ]) {
+    assert.throws(
+      () => validDeviceCodeResponse(body),
+      (error) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.message, DEVICE_MESSAGE);
+        return true;
+      },
+    );
+  }
+});
+
+test("startDeviceAuthorization refuses an incomplete device-code response", async () => {
+  await withFetch(
+    async () => Response.json({ device_code: "device-code" }),
+    async () => {
+      await assert.rejects(
+        () => startDeviceAuthorization("https://example.test"),
+        (error) => {
+          assert.ok(error instanceof CliError);
+          assert.equal(error.message, DEVICE_MESSAGE);
+          return true;
+        },
+      );
+    },
+  );
 });
 
 test("a malformed org is dropped, not trusted", () => {

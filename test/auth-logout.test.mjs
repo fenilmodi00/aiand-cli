@@ -309,6 +309,20 @@ describe("auth logout integration (serial)", { concurrency: 1 }, () => {
       }
     });
 
+    test("json not-signed-in escapes a profile name a terminal would act on", async () => {
+      delete process.env.AIAND_API_KEY;
+      const name = "evil\u001b]0;pwned\u0007";
+      const captured = captureOutput();
+      try {
+        await authLogout.logout({ profile: name, json: true });
+        const stdout = cliStdout(captured);
+        assert.doesNotMatch(stdout, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+        assert.equal(JSON.parse(stdout).profile, name);
+      } finally {
+        captured.restore();
+      }
+    });
+
     test("json not-signed-in with AIAND_API_KEY includes the Env-key note", async () => {
       process.env.AIAND_API_KEY = "sk-env-12345";
       const captured = captureOutput();

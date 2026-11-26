@@ -99,8 +99,19 @@ def main():
     blob = gh(f"repos/{REPO}/contents/.github/CODEOWNERS?ref={base_sha}")
     rules = parse_codeowners(base64.b64decode(blob["content"]).decode())
 
+    files = gh(f"repos/{REPO}/pulls/{PR}/files?per_page=100")
+    changed_files = pr.get("changed_files")
+    # GitHub's PR-files endpoint caps at 3000 rows; pagination cannot pass it.
+    # A list shorter than the PR's own count could hide a protected path, so
+    # fail closed instead of reporting "No protected path changed."
+    if not isinstance(changed_files, int) or len(files) < changed_files:
+        print(
+            "::error::Could not enumerate every changed file "
+            f"({len(files)} of {changed_files}); refusing to pass this check."
+        )
+        return 1
     paths = set()
-    for f in gh(f"repos/{REPO}/pulls/{PR}/files?per_page=100"):
+    for f in files:
         paths.add(f["filename"])
         if f.get("previous_filename"):
             paths.add(f["previous_filename"])

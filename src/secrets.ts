@@ -306,7 +306,7 @@ export async function deleteSecret(profile: string): Promise<void> {
       const map = readPlaintextMap();
       if (!(profile in map)) return;
       delete map[profile];
-      await writePlaintextMap(map);
+      await writePlaintextMap(map, true);
     });
   } catch {
     // unreadable/missing map means no residue to remove
@@ -492,7 +492,11 @@ async function dropDpapiEntry(profile: string): Promise<void> {
 }
 
 const writeDpapiMap = (map: SecretMap): Promise<void> =>
-  writeFileAtomic(dpapiPath(), `${JSON.stringify(map, null, 2)}\n`, { mode: PRIVATE_FILE_MODE });
+  writeFileAtomic(dpapiPath(), `${JSON.stringify(map, null, 2)}\n`, {
+    mode: PRIVATE_FILE_MODE,
+    // A deletion only shrinks the store; never refuse it for living in a repo.
+    allowGitWorkTree: true,
+  });
 
 const dpapiPath = (): string => join(configDir(), DPAPI_STORE_FILE);
 
@@ -521,8 +525,9 @@ function readJsonMap(path: string): SecretMap {
   }
 }
 
-async function writePlaintextMap(map: SecretMap): Promise<void> {
+async function writePlaintextMap(map: SecretMap, removal = false): Promise<void> {
   await writeFileAtomic(plaintextPath(), `${JSON.stringify(map, null, 2)}\n`, {
     mode: PRIVATE_FILE_MODE,
+    allowGitWorkTree: removal,
   });
 }

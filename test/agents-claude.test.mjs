@@ -24,6 +24,9 @@ const { DENIED_TOOLS, buildClaudeSettings, contextTokens } = await import(
 );
 const { CliError } = await import("../dist/cli/errors.js");
 
+/** Claude Code's absolute-path Read rule: `//` for a filesystem path. */
+const readRule = (path) => `Read(${path.startsWith("/") ? `/${path}` : path})`;
+
 const MAIN = "moonshotai/kimi-k3";
 const FAST = "deepseek-ai/deepseek-v4.1-flash-1017";
 const OTHER = "zai-org/glm-5.3";
@@ -94,7 +97,7 @@ describe("claude on", () => {
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "1048576");
     assert.deepEqual(permissions.deny, [
       "WebSearch",
-      `Read(${settingsPath()})`,
+      readRule(settingsPath()),
       "Bash(aiand key export*)",
     ]);
     assertMode(settingsPath(), 0o600);
@@ -730,7 +733,7 @@ describe("claude off", () => {
     assert.deepEqual(readSettings().permissions.deny, [
       "Bash(rm:*)",
       "WebSearch",
-      `Read(${settingsPath()})`,
+      readRule(settingsPath()),
       "Bash(aiand key export*)",
     ]);
     await claudeAdapter.disable();
@@ -746,7 +749,7 @@ describe("claude off", () => {
     const permanentDeny = [
       customDeny,
       ...DENIED_TOOLS,
-      `Read(${settingsPath()})`,
+      readRule(settingsPath()),
       "Bash(aiand key export*)",
     ];
     assert.deepEqual(readSettings().permissions.deny, permanentDeny);
@@ -760,7 +763,7 @@ describe("claude off", () => {
     const overlay = JSON.parse(readFileSync(overlayPath, "utf8"));
     assert.deepEqual(overlay.permissions.deny, [
       "WebSearch",
-      `Read(${overlayPath})`,
+      readRule(overlayPath),
       "Bash(aiand key export*)",
     ]);
     assert.deepEqual(readSettings().permissions.deny, permanentDeny);
@@ -1042,7 +1045,7 @@ describe("claude sessionLaunch", () => {
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8787");
     assert.deepEqual(settings.permissions.deny, [
       "WebSearch",
-      `Read(${settingsPath()})`,
+      readRule(settingsPath()),
       "Bash(aiand key export*)",
     ]);
   });

@@ -51,6 +51,14 @@ test("AIAND_ALLOW_GIT_TRACKED=1 allows it", async () => {
   });
 });
 
+test("a removal from an existing store is allowed", async () => {
+  await withEnv({ AIAND_ALLOW_GIT_TRACKED: "1" }, async () => {
+    assert.equal(await secrets.storeSecret("profile", "blob"), "file");
+  });
+  await secrets.deleteSecret("profile");
+  assert.equal(await secrets.loadSecret("profile"), null);
+});
+
 test("a config directory outside any git work tree is unaffected", async () => {
   const config = join(env.dir, "outside", "config");
   await withEnv({ AIAND_CONFIG_DIR: config }, async () => {

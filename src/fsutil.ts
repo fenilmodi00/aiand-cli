@@ -571,10 +571,12 @@ async function renameWithWin32Retry(from: string, to: string): Promise<void> {
 export async function writeFileAtomic(
   filePath: string,
   data: string | Uint8Array,
-  options: { mode?: number } = {},
+  options: { mode?: number; allowGitWorkTree?: boolean } = {},
 ): Promise<void> {
   const dir = dirname(filePath);
-  await refuseDirectSecretStoreWrite(filePath, configDir());
+  if (options.allowGitWorkTree !== true) {
+    await refuseDirectSecretStoreWrite(filePath, configDir());
+  }
   try {
     await mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   } catch (error) {

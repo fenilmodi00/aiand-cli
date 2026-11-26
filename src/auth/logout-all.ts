@@ -249,8 +249,11 @@ export async function logoutAll(opts: LogoutAllOptions = {}): Promise<void> {
   for (const name of Object.keys(stored)) {
     // Taking another lock would create locks/ in a directory swapped in for
     // the one we proved. Leave that directory completely untouched.
+    await checkTarget();
     if (targetMoved) break;
     await withRefreshLock(name, async () => {
+      await checkTarget();
+      if (targetMoved) return;
       const clear = async (): Promise<void> => {
         await checkTarget();
         if (!targetMoved) await clearLocked(name);

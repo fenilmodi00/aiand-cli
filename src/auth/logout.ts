@@ -5,7 +5,7 @@ import { forgetWired } from "../agents/wired.js";
 import { withRefreshLock } from "../api/client.js";
 import { revokeTokens } from "../api/device.js";
 import { CliError } from "../cli/errors.js";
-import { err, out, safeLine, style } from "../cli/output.js";
+import { err, json, out, safeLine, style } from "../cli/output.js";
 import { confirm, isInteractive } from "../cli/prompt.js";
 import { redactSecrets } from "../cli/redact.js";
 import {
@@ -35,20 +35,14 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
   const initial = await loadCredential(profile.name);
   const reportNotSignedIn = (): void => {
     if (opts.json) {
-      out(
-        JSON.stringify(
-          {
-            profile: profile.name,
-            revoked: false,
-            signed_in: false,
-            ...(process.env.AIAND_API_KEY?.trim()
-              ? { note: "AIAND_API_KEY still applies until unset" }
-              : {}),
-          },
-          null,
-          2,
-        ),
-      );
+      json({
+        profile: profile.name,
+        revoked: false,
+        signed_in: false,
+        ...(process.env.AIAND_API_KEY?.trim()
+          ? { note: "AIAND_API_KEY still applies until unset" }
+          : {}),
+      });
       return;
     }
     if (process.env.AIAND_API_KEY?.trim()) {
@@ -192,17 +186,11 @@ export async function logout(opts: LogoutOptions = {}): Promise<void> {
   }
 
   if (opts.json) {
-    return out(
-      JSON.stringify(
-        {
-          profile: profile.name,
-          revoked,
-          source: classifySource(credential),
-        },
-        null,
-        2,
-      ),
-    );
+    return json({
+      profile: profile.name,
+      revoked,
+      source: classifySource(credential),
+    });
   }
 
   out(style.green(`Signed out of "${profile.name}".`));
