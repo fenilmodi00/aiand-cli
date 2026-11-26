@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { withEnv, withTestEnv } from "./helpers.mjs";
+import { assertMode, withEnv, withTestEnv } from "./helpers.mjs";
 
 const MASTER_KEY = randomBytes(32).toString("hex");
 
@@ -46,9 +46,7 @@ describe("plaintext tier", () => {
     process.env.AIAND_KEY_STORAGE = "plaintext";
     try {
       await secrets.storeSecret("p1", "x");
-      if (process.platform !== "win32") {
-        assert.equal(statSync(join(env.dir, "credentials-plaintext.json")).mode & 0o777, 0o600);
-      }
+      assertMode(join(env.dir, "credentials-plaintext.json"), 0o600);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -116,13 +114,9 @@ describe("encrypted file tier", () => {
     try {
       await secrets.storeSecret("p1", "x");
       const keyFile = join(env.dir, "secret-store.key");
-      if (process.platform !== "win32") {
-        assert.equal(statSync(keyFile).mode & 0o777, 0o600);
-      }
+      assertMode(keyFile, 0o600);
       assert.equal(statSync(keyFile).size, 32);
-      if (process.platform !== "win32") {
-        assert.equal(statSync(join(env.dir, "secret-store.json")).mode & 0o777, 0o600);
-      }
+      assertMode(join(env.dir, "secret-store.json"), 0o600);
     } finally {
       delete process.env.AIAND_KEY_STORAGE;
     }
@@ -149,7 +143,10 @@ describe("tier selection", () => {
     // Without the env var, the answer is keychain or file — never plaintext.
     delete process.env.AIAND_KEY_STORAGE;
     const tier = await secrets.detectTier();
-    assert.ok(tier === "keychain" || tier === "file");
+    // Windows has DPAPI instead of a keychain.
+    assert.ok(
+      tier === "keychain" || tier === "file" || (process.platform === "win32" && tier === "dpapi"),
+    );
   });
 
   test("an invalid AIAND_KEY_STORAGE is an error, not a fallback", async () => {
@@ -356,46 +353,42 @@ describe("macOS security interactive write", {
     assert.equal(command, `add-generic-password -s aiand -a 'p' -U -w 'it'\\''s'\n`);
   });
 
-  test("storeSecret feeds security over stdin; the secret never rides argv", async () => {
+  test("storeSecret feeds security over stdin; the secret never rides argv", {
+    skip:
+      process.platform === "win32" &&
+      "a shebang stub cannot stand in for macOS `security` on Windows",
+  }, async () => {
     // A stub `security` binary stands in for the real one (the darwin branch
     // can't run on this CI): it records argv and stdin per call, persists the
     // -w value from the interactive command, and serves it back for
     // find-generic-password — enough to prove the write path end to end.
     const sandbox = mkdtempSync(join(env.dir, "security-stub-"));
+    // A shell script, not a node one: the 3 s keychain timeout is the product's
+    // and a node cold start (after a wake, under load) can eat all of it, which
+    // sent the write to the file tier and failed this test.
     writeFileSync(
       join(sandbox, "security"),
-      `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const dir = __dirname;
-const argv = process.argv.slice(2);
-let stdin = "";
-process.stdin.on("data", (chunk) => (stdin += chunk));
-process.stdin.on("end", () => {
-  fs.appendFileSync(path.join(dir, "argv.log"), JSON.stringify(argv) + "\\n");
-  if (stdin) fs.appendFileSync(path.join(dir, "stdin.log"), stdin);
-  if (argv[0] === "-i") {
-    const line = stdin.trim().split("\\n").pop();
-    const match = line.match(/-w '(.*)'\\s*$/);
-    if (match) fs.writeFileSync(path.join(dir, "value"), match[1]);
-    process.exit(0);
-  }
-  if (argv[0] === "find-generic-password") {
-    try {
-      process.stdout.write(fs.readFileSync(path.join(dir, "value"), "utf8"));
-      process.exit(0);
-    } catch {
-      process.exit(44);
-    }
-  }
-  if (argv[0] === "delete-generic-password") {
-    try {
-      fs.unlinkSync(path.join(dir, "value"));
-    } catch {}
-    process.exit(0);
-  }
-  process.exit(0);
-});
+      String.raw`#!/bin/sh
+dir=$(dirname "$0")
+json="["
+sep=""
+for a in "$@"; do json="$json$sep\"$a\""; sep=","; done
+printf '%s]\n' "$json" >> "$dir/argv.log"
+case "$1" in
+  -i)
+    cat > "$dir/in.tmp"
+    cat "$dir/in.tmp" >> "$dir/stdin.log"
+    sed -n "s/.*-w '\(.*\)'[[:space:]]*\$/\1/p" "$dir/in.tmp" | tail -n 1 | tr -d '\n' > "$dir/value"
+    exit 0;;
+  find-generic-password)
+    [ -f "$dir/value" ] || exit 44
+    cat "$dir/value"
+    exit 0;;
+  delete-generic-password)
+    rm -f "$dir/value"
+    exit 0;;
+esac
+exit 0
 `,
       { mode: 0o755 },
     );

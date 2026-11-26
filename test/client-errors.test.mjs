@@ -40,12 +40,13 @@ function freshCfg(tag) {
  * org id deliberately differs from the gateway's so probeIdentity surfaces
  * the fresh org instead of the cached one.
  */
-function seedRefreshCredential(cfg) {
+function seedRefreshCredential(cfg, baseUrl) {
   writeFileSync(
     join(cfg, "credentials.json"),
     `${JSON.stringify({
       default: {
         origin: "device",
+        bound_to: { auth_url: baseUrl, api_url: baseUrl },
         expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
         storage: "plaintext",
         user: { id: "u1", email: "stale@example.com" },
@@ -85,7 +86,7 @@ describe("client error paths (mock gateway)", () => {
   test("401-then-200 rotates the stored credential and returns the fresh identity", async () => {
     await withMockGateway(async ({ url }) => {
       const { cfg, home } = freshCfg("refresh");
-      seedRefreshCredential(cfg);
+      seedRefreshCredential(cfg, `${url}/stub/401-then-200`);
       const { code, stdout } = await cli(["whoami", "--json"], {
         AIAND_CONFIG_DIR: cfg,
         AIAND_HOME: home,

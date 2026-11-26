@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
+import { recordWired } from "../dist/agents/wired.js";
 import { KEY } from "../dist/cli/select.js";
 import {
   baseUrl,
@@ -11,14 +12,14 @@ import {
   fastSleep,
   MINTED_ACCESS_TOKEN,
   MINTED_REFRESH_TOKEN,
-  pickSecondRow,
   registerAuthStub,
   STUB_USER_EMAIL,
   state,
+  stubBinding,
   stubTTY,
   TWO_ORGS,
 } from "./auth-stub.mjs";
-import { FakeInput, FakeOutput, waitForListener } from "./helpers.mjs";
+import { FakeInput, FakeOutput, waitForListener, withEnv, withOpener } from "./helpers.mjs";
 
 // Behavioral tests through the real src/auth modules (dist build), against
 // the localhost stub server in ./auth-stub.mjs.
@@ -203,12 +204,15 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
         `${JSON.stringify({
           provider: {
             aiand: {
-              options: { baseURL: "https://api.aiand.com/v1", apiKey: "sk-old", "x-aiand": true },
+              options: { baseURL: `${baseUrl}/v1`, apiKey: "sk-old", "x-aiand": true },
             },
           },
           model: "aiand/m-default",
         })}\n`,
       );
+
+      // The stub is this run's endpoint, so that is where the agent was wired.
+      await recordWired("opencode", "default", baseUrl);
 
       const captured = captureOutput();
       try {
@@ -310,82 +314,65 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
       }
     });
 
-    test("(b) two orgs without a minted org picks the row chosen interactively", async () => {
+    // A minted key is scoped to one org too, so
+    // when the token response names none, /api/orgs' first row is the key's
+    // own and nothing is offered.
+    test("(b) two orgs without a minted org records the key's own org, with no picker", async () => {
       state.orgs = [...TWO_ORGS];
       const restoreTTY = stubTTY();
       const input = new FakeInput();
       const output = new FakeOutput();
       const captured = captureOutput();
       try {
-        const login = authLogin.deviceLogin({
-          sleep: fastSleep,
-          profile: "default",
-          input,
-          output,
-        });
-        await pickSecondRow(input);
-        await login;
-        const cred = await config.loadCredential("default");
-        assert.equal(cred.org.id, "org_2");
+        await authLogin.deviceLogin({ sleep: fastSleep, profile: "default", input, output });
+        assert.equal(input.listenerCount("data"), 0, "no picker was shown");
+        assert.equal((await config.loadCredential("default")).org.id, "org_1");
+        assert.doesNotMatch(captured.log.err.join(""), /multiple organizations/);
       } finally {
         captured.restore();
         restoreTTY();
       }
     });
 
-    test("(c) two orgs non-interactively keeps orgs[0] with a stderr note", async () => {
+    test("(c) the same holds non-interactively and for --json", async () => {
       state.orgs = [...TWO_ORGS];
+      const captured = captureOutput();
+      try {
+        await authLogin.deviceLogin({ sleep: fastSleep, profile: "default", json: true });
+        assert.equal((await config.loadCredential("default")).org.id, "org_1");
+        assert.equal(JSON.parse(captured.log.out.join("")).org.id, "org_1");
+        assert.doesNotMatch(captured.log.err.join(""), /multiple organizations/);
+      } finally {
+        captured.restore();
+      }
+    });
+
+    test("(c2) a minted org in the token response wins over the first listed org", async () => {
+      state.orgs = [...TWO_ORGS];
+      state.tokenOrg = { id: "org_2", name: "Second" };
       const captured = captureOutput();
       try {
         await authLogin.deviceLogin({ sleep: fastSleep, profile: "default" });
-        const cred = await config.loadCredential("default");
-        assert.equal(cred.org.id, "org_1");
-        assert.match(captured.log.err.join(""), /multiple organizations/);
+        assert.equal((await config.loadCredential("default")).org.id, "org_2");
       } finally {
         captured.restore();
       }
     });
 
-    test("(cancel-device) Esc at the org picker throws 130 and stores no Credential", async () => {
+    // A pasted key is already scoped to
+    // one org; a picker let the user record another, so status/whoami named
+    // the wrong billing org. /api/orgs lists the key's own org first.
+    test("(paste-org) a multi-org paste stores the key's org, with no picker", async () => {
       state.orgs = [...TWO_ORGS];
       const restoreTTY = stubTTY();
       const input = new FakeInput();
       const output = new FakeOutput();
       const captured = captureOutput();
       try {
-        const login = authLogin.deviceLogin({
-          sleep: fastSleep,
-          profile: "default",
-          input,
-          output,
-        });
-        await waitForListener(input);
-        input.send(KEY.ESC);
-        await assert.rejects(login, /Login cancelled/);
-        assert.equal(await config.loadCredential("default"), null);
-      } finally {
-        captured.restore();
-        restoreTTY();
-      }
-    });
-
-    test("(cancel-paste) Esc at the org picker stores no Credential on the paste path", async () => {
-      state.orgs = [...TWO_ORGS];
-      const restoreTTY = stubTTY();
-      const input = new FakeInput();
-      const output = new FakeOutput();
-      const captured = captureOutput();
-      try {
-        const login = authLogin.pasteLogin({
-          profile: "default",
-          key: "sk-abc123",
-          input,
-          output,
-        });
-        await waitForListener(input);
-        input.send(KEY.ESC);
-        await assert.rejects(login, /Login cancelled/);
-        assert.equal(await config.loadCredential("default"), null);
+        await authLogin.pasteLogin({ profile: "default", key: "sk-abc123", input, output });
+        assert.equal(input.listenerCount("data"), 0, "no picker was shown");
+        const stored = await config.loadCredential("default");
+        assert.deepEqual(stored.org, TWO_ORGS[0]);
       } finally {
         captured.restore();
         restoreTTY();
@@ -432,10 +419,70 @@ describe("auth login integration (serial)", { concurrency: 1 }, () => {
       }
     });
 
+    // The opener stub records a launch, so these fail if a remote browser opens.
+    const ssh = { SSH_CONNECTION: "10.0.0.2 50000 10.0.0.1 22" };
+    const opened = (dir) => existsSync(join(dir, "opened"));
+    const noWin = { skip: process.platform === "win32" };
+
+    test("(e2) an SSH session skips the browser and signs in with a device code", noWin, () =>
+      withOpener(
+        (dir) => `touch "${join(dir, "opened")}"`,
+        async (dir) => {
+          state.tokenOrg = { id: "org_2", name: "Second" };
+          const captured = captureOutput();
+          try {
+            await withEnv(ssh, () =>
+              authLogin.browserLogin({
+                profile: "default",
+                open: () => assert.fail("the browser must not open over SSH"),
+                timeoutMs: CALLBACK_WAIT_MS,
+              }),
+            );
+            const cred = await config.loadCredential("default");
+            assert.ok(captured.log.err.join("").includes("SSH session detected"));
+            assert.equal(opened(dir), false, "no browser opens on the remote host");
+            assert.equal(cred.access_token, MINTED_ACCESS_TOKEN);
+          } finally {
+            captured.restore();
+          }
+        },
+      ),
+    );
+
+    // Each variable alone marks an SSH session.
+    for (const [name, value] of [
+      ["SSH_CONNECTION", ssh.SSH_CONNECTION],
+      ["SSH_CLIENT", "10.0.0.2 50000 22"],
+      ["SSH_TTY", "/dev/pts/0"],
+    ]) {
+      test(
+        `(e3) non-interactive device login with ${name} doesn't open a remote browser`,
+        noWin,
+        () =>
+          withOpener(
+            (dir) => `touch "${join(dir, "opened")}"`,
+            async (dir) => {
+              const captured = captureOutput();
+              try {
+                await withEnv({ [name]: value }, () =>
+                  authLogin.deviceLogin({ sleep: fastSleep, profile: "default" }),
+                );
+                const cred = await config.loadCredential("default");
+                assert.equal(opened(dir), false, "no browser opens on the remote host");
+                assert.equal(cred.access_token, MINTED_ACCESS_TOKEN);
+              } finally {
+                captured.restore();
+              }
+            },
+          ),
+      );
+    }
+
     test("(f) probeIdentity prefers the cached org when the orgs list has it", async () => {
       await config.saveCredential("default", {
         access_token: MINTED_ACCESS_TOKEN,
         refresh_token: MINTED_REFRESH_TOKEN,
+        bound_to: stubBinding(),
         expires_at: Math.floor(Date.now() / 1000) + 2592000,
         origin: "device",
         storage: "plaintext",

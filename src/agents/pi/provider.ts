@@ -64,19 +64,25 @@ export function piModelEntry(model: Model): Record<string, unknown> {
 export function buildPiProvider({
   baseUrl,
   catalog,
+  agentId,
 }: {
   baseUrl: string;
   catalog: Model[];
+  /** The agent this block is written for: "pi" itself, or "jouzu" on Pi. */
+  agentId: string;
 }): Record<string, unknown> {
   return {
     name: "ai&",
     baseUrl,
     api: "openai-completions",
     // Attribution: the gateway logs this per request to identify the agent.
-    // Documented provider-level `headers` field in models-configuration.md
-    // (values may be literals); it rides inside the block `off` strips,
-    // so it needs no separate removal.
-    headers: { "x-aiand-agent": "pi" },
+    // It names the agent that wrote the block, not the Pi family: Jouzu runs
+    // on Pi's engine but is its own harness, and crediting its requests to
+    // "pi" would split nothing and lie about the other. Documented
+    // provider-level `headers` field in models-configuration.md (values may
+    // be literals); it rides inside the block `off` strips, so it needs no
+    // separate removal.
+    headers: { "x-aiand-agent": agentId },
     models: catalog.map(piModelEntry),
   };
 }

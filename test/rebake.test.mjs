@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test, { describe } from "node:test";
 import { captureStdio, withEnv, withFetch, withTestEnv } from "./helpers.mjs";
@@ -26,20 +26,20 @@ function inHome(name, fn) {
 }
 
 const { opencodeAdapter } = await import("../dist/agents/opencode/adapter.js");
-const { rebakeAgentKeys } = await import("../dist/agents/rebake.js");
+const { rebakeAgentKeys, rebakeForBinding } = await import("../dist/agents/rebake.js");
 const { registerAgent, AGENTS } = await import("../dist/agents/registry.js");
 
 // Resolved from the live AIAND_HOME: tests switch homes mid-file and the seed
 // must land where the adapter under test actually reads.
 const opencodeConfig = () => join(process.env.AIAND_HOME, ".config", "opencode", "opencode.json");
 
-function seedOpencodeConfig(key = K1, model = "m-default") {
+function seedOpencodeConfig(key = K1, model = "m-default", baseURL = "https://api.aiand.com/v1") {
   mkdirSync(dirname(opencodeConfig()), { recursive: true });
   writeFileSync(
     opencodeConfig(),
     `${JSON.stringify({
       provider: {
-        aiand: { options: { baseURL: "https://api.aiand.com/v1", apiKey: key, "x-aiand": true } },
+        aiand: { options: { baseURL, apiKey: key, "x-aiand": true } },
       },
       model: `aiand/${model}`,
     })}\n`,
@@ -368,6 +368,7 @@ describe("automatic key rotation rebakes", () => {
       `${JSON.stringify({
         default: {
           origin: "device",
+          bound_to: { auth_url: rotationEnv.AIAND_AUTH_URL, api_url: rotationEnv.AIAND_BASE_URL },
           expires_at: Math.floor(Date.now() / 1000) + 3600,
           storage: "plaintext",
         },
@@ -395,14 +396,17 @@ describe("automatic key rotation rebakes", () => {
   };
 
   const rotationEnv = {
+    AIAND_BASE_URL: "https://api.example.test",
     AIAND_AUTH_URL: "https://auth.example.test",
     AIAND_KEY_STORAGE: "plaintext",
   };
 
+  const boundV1 = `${rotationEnv.AIAND_BASE_URL}/v1`;
+
   test("a rotated key replaces the old one in opencode's config", () =>
     inHome("rotate-swap", () =>
       withEnv(rotationEnv, async () => {
-        seedOpencodeConfig(K1);
+        seedOpencodeConfig(K1, undefined, boundV1);
         seedExpiringCredential(K1);
         const { openSession } = await client();
         const { resolveProfile } = await config();
@@ -426,14 +430,19 @@ describe("automatic key rotation rebakes", () => {
         // This long-lived session (chat, logs --follow) still holds K1, but
         // another process already rotated to ROTATED and baked it.
         const ROTATED = "sk-test-sync-key-rotated";
-        seedOpencodeConfig(ROTATED);
+        seedOpencodeConfig(ROTATED, undefined, boundV1);
         seedExpiringCredential(ROTATED);
         const { request } = await client();
         const { resolveProfile } = await config();
         const session = {
           profile: resolveProfile("default"),
           token: K1,
-          credential: { access_token: K1, refresh_token: "rt-stale", origin: "device" },
+          credential: {
+            access_token: K1,
+            refresh_token: "rt-stale",
+            origin: "device",
+            bound_to: { auth_url: rotationEnv.AIAND_AUTH_URL, api_url: rotationEnv.AIAND_BASE_URL },
+          },
         };
         const rotate = rotateTo(K2);
         let apiCalls = 0;
@@ -457,7 +466,7 @@ describe("automatic key rotation rebakes", () => {
   test("a config baked from another profile's key is left alone", () =>
     inHome("rotate-other-profile", () =>
       withEnv(rotationEnv, async () => {
-        seedOpencodeConfig("sk-test-other-profile");
+        seedOpencodeConfig("sk-test-other-profile", undefined, boundV1);
         seedExpiringCredential(K1);
         const before = readFileSync(opencodeConfig(), "utf8");
         const { openSession } = await client();
@@ -472,4 +481,251 @@ describe("automatic key rotation rebakes", () => {
         assert.doesNotMatch(muted.log.err.join(""), /\[opencode\]/);
       }),
     ));
+  // #55: rotation holds the swap to the endpoint each agent is wired for, like login does.
+  const ROTATE_TAG = "__rotate_fixture__";
+  const fixture = { baked: undefined, held: K1, swapped: [] };
+  registerAgent({
+    id: ROTATE_TAG,
+    label: "Rotate Fixture",
+    bin: ROTATE_TAG,
+    install: { command: "", url: "" },
+    detect: () => ({ installed: true, path: null }),
+    managedFiles: () => [],
+    // Active only under the home the test marks, so it never leaks into other tests.
+    probe: async () => ({
+      active: existsSync(join(process.env.AIAND_HOME, ".rotate-fixture")),
+      model: null,
+    }),
+    bakedBaseUrl: async () => {
+      if (fixture.baked === "throw") throw new Error("config unreadable");
+      return fixture.baked;
+    },
+    enable: async () => ({ model: "x", filesWritten: [] }),
+    disable: async () => undefined,
+    refreshKey: async ({ apiKey, previousKey }) => {
+      if (!existsSync(join(process.env.AIAND_HOME, ".rotate-fixture"))) return false;
+      if (previousKey !== undefined && fixture.held !== previousKey) return false;
+      fixture.held = apiKey;
+      fixture.swapped.push(apiKey);
+      return true;
+    },
+  });
+
+  /** Rotate the seeded credential to K2 and return the stderr notes. */
+  async function rotate() {
+    const { openSession } = await client();
+    const { resolveProfile } = await config();
+    const muted = captureStdio();
+    try {
+      const session = await withFetch(rotateTo(K2), () => openSession(resolveProfile("default")));
+      assert.equal(session.token, K2, "rotation itself succeeds");
+    } finally {
+      muted.restore();
+      // The config dir outlives each test's home: no record leaks into the next.
+      rmSync(join(process.env.AIAND_CONFIG_DIR, "wired.json"), { force: true });
+    }
+    return muted.log.err.join("");
+  }
+
+  const writeWired = (agent, apiUrl) =>
+    writeFileSync(
+      join(process.env.AIAND_CONFIG_DIR, "wired.json"),
+      `${JSON.stringify({ [agent]: { profile: "default", api_url: apiUrl } })}\n`,
+    );
+
+  test("an agent whose config points at another origin keeps its key and is told how to move it", () =>
+    inHome("rotate-other-origin", () =>
+      withEnv(rotationEnv, async () => {
+        seedOpencodeConfig(K1, undefined, "https://other.example.test/v1");
+        seedExpiringCredential(K1);
+        const before = readFileSync(opencodeConfig(), "utf8");
+        const stderr = await rotate();
+        assert.equal(readFileSync(opencodeConfig(), "utf8"), before, "old key left in place");
+        assert.match(
+          stderr,
+          /\[opencode\] Wired to https:\/\/other\.example\.test, but profile "default" is bound to https:\/\/api\.example\.test/,
+        );
+        assert.match(stderr, /aiand --profile default opencode on/);
+        assert.doesNotMatch(stderr, /Key refreshed/);
+      }),
+    ));
+
+  test("an unrecorded agent whose config differs from the binding is skipped, whatever the profile says", () =>
+    inHome("rotate-unrecorded-other", () =>
+      withEnv(rotationEnv, async () => {
+        // No wired.json: wired before 0.8 with an override pointing elsewhere.
+        seedOpencodeConfig(K1, undefined, "https://override.example.test/v1");
+        seedExpiringCredential(K1);
+        const stderr = await rotate();
+        assert.equal(
+          JSON.parse(readFileSync(opencodeConfig(), "utf8")).provider.aiand.options.apiKey,
+          K1,
+        );
+        assert.match(stderr, /\[opencode\] Wired to https:\/\/override\.example\.test/);
+      }),
+    ));
+
+  test("the config's own base URL outranks a record that says the binding's origin", () =>
+    inHome("rotate-stale-record", () =>
+      withEnv(rotationEnv, async () => {
+        seedOpencodeConfig(K1, undefined, "https://override.example.test/v1");
+        writeWired("opencode", rotationEnv.AIAND_BASE_URL);
+        seedExpiringCredential(K1);
+        await rotate();
+        assert.equal(
+          JSON.parse(readFileSync(opencodeConfig(), "utf8")).provider.aiand.options.apiKey,
+          K1,
+        );
+      }),
+    ));
+
+  test("an agent recorded for another origin that cannot read its config is skipped with a note", () =>
+    inHome("rotate-record-other", (dir) =>
+      withEnv(rotationEnv, async () => {
+        writeFileSync(join(dir, ".rotate-fixture"), "on\n");
+        Object.assign(fixture, { baked: undefined, held: K1, swapped: [] });
+        writeWired(ROTATE_TAG, "https://other.example.test");
+        seedExpiringCredential(K1);
+        const stderr = await rotate();
+        assert.deepEqual(fixture.swapped, []);
+        assert.match(stderr, /\[__rotate_fixture__\] Wired to https:\/\/other\.example\.test/);
+      }),
+    ));
+
+  test("an agent recorded for the binding's origin is rebaked even when it cannot read its config", () =>
+    inHome("rotate-record-match", (dir) =>
+      withEnv(rotationEnv, async () => {
+        writeFileSync(join(dir, ".rotate-fixture"), "on\n");
+        Object.assign(fixture, { baked: undefined, held: K1, swapped: [] });
+        writeWired(ROTATE_TAG, `${rotationEnv.AIAND_BASE_URL}/`);
+        seedExpiringCredential(K1);
+        await rotate();
+        assert.deepEqual(fixture.swapped, [K2]);
+      }),
+    ));
+
+  test("a recorded match still keeps the previous-key restriction", () =>
+    inHome("rotate-record-match-other-key", (dir) =>
+      withEnv(rotationEnv, async () => {
+        writeFileSync(join(dir, ".rotate-fixture"), "on\n");
+        Object.assign(fixture, { baked: undefined, held: "sk-test-other-profile", swapped: [] });
+        writeWired(ROTATE_TAG, rotationEnv.AIAND_BASE_URL);
+        seedExpiringCredential(K1);
+        await rotate();
+        assert.deepEqual(fixture.swapped, [], "a config holding another key is not swapped");
+      }),
+    ));
+
+  for (const [label, baked] of [
+    ["says nothing", undefined],
+    ["throws", "throw"],
+  ]) {
+    test(`an unrecorded agent whose config ${label} is skipped with a note, and rotation still succeeds`, () =>
+      inHome(`rotate-unreadable-${label.replace(" ", "-")}`, (dir) =>
+        withEnv(rotationEnv, async () => {
+          writeFileSync(join(dir, ".rotate-fixture"), "on\n");
+          Object.assign(fixture, { baked, held: K1, swapped: [] });
+          seedExpiringCredential(K1);
+          const stderr = await rotate();
+          assert.deepEqual(fixture.swapped, []);
+          assert.match(stderr, /\[__rotate_fixture__\] .*cannot tell for which endpoint/);
+          assert.match(stderr, /aiand --profile default __rotate_fixture__ on/);
+        }),
+      ));
+  }
+
+  test("a matching opencode config is rebaked and nothing else is noted", () =>
+    inHome("rotate-match-quiet", () =>
+      withEnv(rotationEnv, async () => {
+        seedOpencodeConfig(K1, undefined, boundV1);
+        seedExpiringCredential(K1);
+        const stderr = await rotate();
+        assert.equal(
+          JSON.parse(readFileSync(opencodeConfig(), "utf8")).provider.aiand.options.apiKey,
+          K2,
+        );
+        assert.doesNotMatch(stderr, /Wired to|cannot tell/);
+      }),
+    ));
+});
+
+describe("rebakeForBinding with an adapter that cannot read its base URL back", () => {
+  const TAG = "__cannot_tell__";
+  const swapped = [];
+  registerAgent({
+    id: TAG,
+    label: "Cannot Tell",
+    bin: TAG,
+    install: { command: "", url: "" },
+    detect: () => ({ installed: true, path: null }),
+    managedFiles: () => [],
+    // Active only under the home this test sets up, so it never leaks into other tests.
+    probe: async () => ({
+      active: existsSync(join(process.env.AIAND_HOME, ".cannot-tell")),
+      model: null,
+    }),
+    enable: async () => ({ model: "x", filesWritten: [] }),
+    disable: async () => undefined,
+    refreshKey: async ({ apiKey }) => {
+      if (!existsSync(join(process.env.AIAND_HOME, ".cannot-tell"))) return false;
+      swapped.push(apiKey);
+      return true;
+    },
+  });
+
+  const mark = (dir) => writeFileSync(join(dir, ".cannot-tell"), "on\n");
+
+  test("an unrecorded one is left alone and told how to move it", () =>
+    inHome("cannot-tell-unrecorded", async (dir) => {
+      mark(dir);
+      swapped.length = 0;
+      const notes = await rebakeForBinding(K2, "work", { api_url: "https://api.aiand.com" });
+      assert.deepEqual(swapped, [], "no key baked where nothing says where it points");
+      const note = notes.find((n) => n.agent === TAG);
+      assert.equal(note?.state, "skipped");
+      assert.match(note.note, /aiand --profile work __cannot_tell__ on/);
+    }));
+
+  test("a wired URL with a password or query reaches the note without them", () =>
+    inHome("cannot-tell-credentials", async (dir) => {
+      mark(dir);
+      swapped.length = 0;
+      writeFileSync(
+        join(process.env.AIAND_CONFIG_DIR, "wired.json"),
+        `${JSON.stringify({ [TAG]: { profile: "work", api_url: "https://me:hunter2-pw@old.example/v1?k=qs-secret" } })}\n`,
+      );
+      const notes = await rebakeForBinding(K2, "work", {
+        api_url: "https://other:hunter3-pw@api.aiand.com",
+      });
+      assert.deepEqual(swapped, []);
+      const note = notes.find((n) => n.agent === TAG)?.note ?? "";
+      assert.match(
+        note,
+        /Wired to https:\/\/old\.example\/v1, but profile "work" is bound to https:\/\/api\.aiand\.com,/,
+      );
+      assert.doesNotMatch(note, /hunter\d-pw|qs-secret/);
+      rmSync(join(process.env.AIAND_CONFIG_DIR, "wired.json"), { force: true });
+    }));
+
+  test("a corrupt wired.json reads the same: left alone", () =>
+    inHome("cannot-tell-corrupt", async (dir) => {
+      mark(dir);
+      swapped.length = 0;
+      writeFileSync(join(process.env.AIAND_CONFIG_DIR, "wired.json"), "{ nope");
+      await rebakeForBinding(K2, "work", { api_url: "https://api.aiand.com" });
+      assert.deepEqual(swapped, []);
+    }));
+
+  test("a recorded one for the same origin is still rebaked", () =>
+    inHome("cannot-tell-recorded", async (dir) => {
+      mark(dir);
+      swapped.length = 0;
+      writeFileSync(
+        join(process.env.AIAND_CONFIG_DIR, "wired.json"),
+        `${JSON.stringify({ [TAG]: { profile: "work", api_url: "https://api.aiand.com/" } })}\n`,
+      );
+      await rebakeForBinding(K2, "work", { api_url: "https://api.aiand.com" });
+      assert.deepEqual(swapped, [K2]);
+      rmSync(join(process.env.AIAND_CONFIG_DIR, "wired.json"), { force: true });
+    }));
 });

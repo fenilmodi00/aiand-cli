@@ -22,24 +22,31 @@ const ASSET_SHA256: Record<string, string> = {
 };
 
 /**
- * The release asset for this platform, in the naming the release publishes
+ * The release asset for a platform, in the naming the release publishes
  * (omp-darwin-arm64, omp-linux-x64, omp-windows-x64.exe, ...).
  */
-function ompReleaseAsset(): string {
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
-  if (process.platform === "darwin") return `omp-darwin-${arch}`;
-  if (process.platform === "win32") return `omp-windows-${arch}.exe`;
-  return `omp-linux-${arch}`;
+function ompReleaseAsset(platform: NodeJS.Platform, arch: string): string {
+  const cpu = arch === "arm64" ? "arm64" : "x64";
+  if (platform === "darwin") return `omp-darwin-${cpu}`;
+  if (platform === "win32") return `omp-windows-${cpu}.exe`;
+  return `omp-linux-${cpu}`;
 }
 
 /**
- * The install hint downloads the pinned v18.4.4 asset, verifies it against
- * the digest the release publishes, marks it executable, and leaves it at
- * omp's own default location (`~/.local/bin/omp`). macOS has no `sha256sum`
- * before Sequoia, so its verifier is the Perl `shasum -a 256`.
+ * The install hint downloads the pinned asset to a temp file, verifies it
+ * against the digest the release publishes, and only then moves it to omp's
+ * own default location (`~/.local/bin/omp`), so an unverified binary never
+ * sits on PATH. macOS has no `sha256sum` before Sequoia, so its verifier is
+ * the Perl `shasum -a 256`. The Windows hint is plain PowerShell statements to
+ * paste at a PowerShell prompt, the shell the Hermes hint already assumes.
+ * Wrapping them in `powershell -Command "..."` broke on the nested quotes, and
+ * the outer shell expanded `$d` first.
  */
-function ompInstallCommand(): string {
-  const asset = ompReleaseAsset();
+export function ompInstallCommand(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): string {
+  const asset = ompReleaseAsset(platform, arch);
   const url = `${BASE_URL}/${asset}`;
   const digest = ASSET_SHA256[asset];
   // Every asset has a digest; guard the table against a future asset rename
@@ -47,11 +54,18 @@ function ompInstallCommand(): string {
   if (digest === undefined) {
     return `Download ${url} and add it to your PATH`;
   }
-  if (process.platform === "win32") {
-    return `powershell -Command "$d = Join-Path $env:USERPROFILE '.local\\bin'; New-Item -ItemType Directory -Force $d | Out-Null; Invoke-WebRequest ${url} -OutFile "$d\\omp.exe"; if ((Get-FileHash "$d\\omp.exe" -Algorithm SHA256).Hash -ne '${digest}') { throw 'sha256 mismatch' }"`;
+  if (platform === "win32") {
+    return [
+      `$t = Join-Path $env:TEMP 'omp-${OMP_VERSION}.exe'`,
+      `Invoke-WebRequest -UseBasicParsing '${url}' -OutFile $t`,
+      `if ((Get-FileHash $t -Algorithm SHA256).Hash -ne '${digest}') { Remove-Item $t; throw 'omp sha256 mismatch' }`,
+      `$d = Join-Path $env:USERPROFILE '.local\\bin'`,
+      "New-Item -ItemType Directory -Force $d | Out-Null",
+      "Move-Item -Force $t (Join-Path $d 'omp.exe')",
+    ].join("; ");
   }
-  const verifier = process.platform === "darwin" ? "shasum -a 256 -c -" : "sha256sum -c -";
-  return `mkdir -p ~/.local/bin && curl -fsSLo ~/.local/bin/omp ${url} && cd ~/.local/bin && echo "${digest}  omp" | ${verifier} && chmod +x omp`;
+  const verifier = platform === "darwin" ? "shasum -a 256 -c -" : "sha256sum -c -";
+  return `t="$(mktemp)" && curl -fsSLo "$t" ${url} && echo "${digest}  $t" | ${verifier} && chmod +x "$t" && mkdir -p ~/.local/bin && mv "$t" ~/.local/bin/omp`;
 }
 
 export const OMP_INSTALL = {

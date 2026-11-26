@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import { chmod, unlink } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { CliError } from "../../cli/errors.js";
 import { isRoutableBaseUrl, writeFileAtomic } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { detectBinary } from "../detect.js";
-import { asObject, readTextIfExists } from "../managed-file.js";
+import { isAiandKey, keyFingerprint, knownKeys } from "../known-keys.js";
+import { asObject, readTextIfExists, writeKeyFile } from "../managed-file.js";
 import {
   clearAddedState,
   fileCreatedByUs,
@@ -18,6 +20,7 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
+  ProbeDetail,
   ProbeResult,
 } from "../types.js";
 import { ompNativeAiandKeys } from "./auth-store.js";
@@ -35,6 +38,11 @@ import { readYamlMapping, yamlDelete, yamlSet } from "./yaml.js";
 
 const OMP_MANAGED_FILES = [ompModelsPath, ompConfigPath] as const;
 const OMP_ID = "omp";
+/** The stamp as a models.yml line, bare or quoted. */
+const OMP_MARKER_RE = new RegExp(
+  `^[ \\t]*["']?${OMP_MARKER_KEY}["']?[ \\t]*:[ \\t]*["']?${OMP_MARKER}["']?[ \\t]*$`,
+  "m",
+);
 const OMP_BIN = "omp";
 
 /** Recovery hint for an omp config file that cannot be parsed or edited. */
@@ -53,6 +61,8 @@ type OmpRecord = {
   wroteDefaultModel?: string;
   /** The providers.aiand.baseUrl this on wrote; off's ownership proof. */
   wroteBaseUrl?: string;
+  /** SHA-256 of the key this on wrote: lets off recognise it after rotation. */
+  wroteKeyHash?: string;
   /** File mode before `on` wrote it, per file off rewrites. */
   previousModelsMode?: number;
   previousConfigMode?: number;
@@ -134,7 +144,7 @@ function ownsProviderBlock(models: Record<string, unknown>, added: OmpRecord | n
   return typeof baseUrl === "string" && baseUrl === added.wroteBaseUrl;
 }
 
-async function probe(): Promise<ProbeResult> {
+async function probeDetail(): Promise<ProbeDetail> {
   let models: Record<string, unknown>;
   let config: Record<string, unknown>;
   let added: OmpRecord | null;
@@ -162,7 +172,12 @@ async function probe(): Promise<ProbeResult> {
     typeof defaultModel === "string" && defaultModel.startsWith(`${OMP_PROVIDER_ID}/`)
       ? defaultModel.slice(OMP_PROVIDER_ID.length + 1)
       : null;
-  return { active: true, model };
+  return { active: true, model, baseUrl: String(baseUrl) };
+}
+
+async function probe(): Promise<ProbeResult> {
+  const { active, model } = await probeDetail();
+  return { active, model };
 }
 
 async function enable(input: EnableInput): Promise<EnableResult> {
@@ -268,7 +283,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   const previousConfigMode =
     prior?.previousConfigMode ?? (await existingFileMode(paths.config)) ?? DEFAULT_FILE_MODE;
 
-  await writeFileAtomic(paths.models, modelsText, { mode: PRIVATE_FILE_MODE });
+  await writeKeyFile(paths.models, modelsText, { mode: PRIVATE_FILE_MODE, agentId: OMP_ID });
   if (modelsText === raw.models) await chmod(paths.models, PRIVATE_FILE_MODE);
   await writeFileAtomic(paths.config, configText, { mode: previousConfigMode });
 
@@ -281,6 +296,7 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     modelsPath: paths.models,
     configPath: paths.config,
     wroteBaseUrl: ompBaseUrl(input.baseUrl),
+    wroteKeyHash: keyFingerprint(input.apiKey),
   });
 
   // The model now in effect, as the catalog id: this run's write, else what
@@ -299,6 +315,25 @@ function stripSelector(ref: string): string {
   return ref.startsWith(`${OMP_PROVIDER_ID}/`) ? ref.slice(OMP_PROVIDER_ID.length + 1) : ref;
 }
 
+/**
+ * A marked block the user repointed, minus the stamp we put in it and the key
+ * only when it is one of ours: a key the user put there stays.
+ */
+function withoutOurKey(
+  path: string,
+  text: string,
+  models: Record<string, unknown>,
+  known: readonly string[],
+  added: OmpRecord | null,
+): { text: string; keyDropped: boolean } {
+  const keyDropped = isAiandKey(aiandProvider(models)?.apiKey, known, added?.wroteKeyHash);
+  const stripped = editOmpYaml(path, () => {
+    const keyless = keyDropped ? yamlDelete(text, ["providers", OMP_PROVIDER_ID, "apiKey"]) : text;
+    return yamlDelete(keyless, ["providers", OMP_PROVIDER_ID, OMP_MARKER_KEY]);
+  });
+  return { text: stripped, keyDropped };
+}
+
 /** Write a stripped file back, or unlink it when our `on` created it and nothing is left. */
 async function writeStripped(
   path: string,
@@ -314,9 +349,24 @@ async function writeStripped(
   }
 }
 
+/**
+ * Refuse to wire a second omp dir while the recorded one still holds our
+ * block: one record cannot hand back two dirs, so the old key would outlive
+ * `off`, and the new snapshot would copy it. Runs before the snapshot.
+ */
+async function enableGuard(): Promise<void> {
+  const wired = (await getAddedState<OmpRecord>(OMP_ID))?.modelsPath;
+  if (!wired || resolve(wired) === resolve(ompModelsPath())) return;
+  if (!OMP_MARKER_RE.test(await readTextIfExists(wired).catch(() => ""))) return;
+  throw new CliError(`Oh My Pi is already wired through ${dirname(wired)}.`, {
+    hint: "Run aiand omp off first, then aiand omp on for the new agent dir.",
+  });
+}
+
 async function disable(): Promise<DisableResult> {
   const paths = { models: ompModelsPath(), config: ompConfigPath() };
   const added = await getAddedState<OmpRecord>(OMP_ID);
+  const known = await knownKeys();
   const raw = {
     models: await readTextIfExists(paths.models),
     config: await readTextIfExists(paths.config),
@@ -385,9 +435,26 @@ async function disable(): Promise<DisableResult> {
         modelsText,
         added?.previousModelsMode ?? DEFAULT_FILE_MODE,
       );
+    } else if (marked) {
+      // Repointed: the block is the user's now, but the key and stamp in
+      // it are still ours. Leaving them would keep the key on disk with
+      // nothing left to remove it (the record clears below).
+      const kept = withoutOurKey(paths.models, raw.models, models, known, added);
+      await writeStripped(
+        paths.models,
+        raw.models,
+        kept.text,
+        added?.previousModelsMode ?? DEFAULT_FILE_MODE,
+      );
+      stripped = true;
+      notes.push(
+        kept.keyDropped
+          ? "left providers.aiand because you edited it, minus its ai& key"
+          : "left providers.aiand because you edited it, with the key you set",
+      );
     } else if (aiandProvider(models) !== undefined) {
-      // Repointed or foreign: the block is the user's, so it
-      // stays exactly as they left it.
+      // Foreign or stamp-less and repointed: the block is the user's, so
+      // it stays exactly as they left it.
       notes.push("left providers.aiand because you edited it");
     }
 
@@ -446,17 +513,28 @@ async function disable(): Promise<DisableResult> {
       // The same ownership rule as the current dir: a foreign
       // block is left alone, and so is one the user repointed.
       if (!ownsProviderBlock(stale, added)) {
-        if (aiandProvider(stale) !== undefined) {
-          notes.push(`left providers.aiand in ${stalePath} because you edited it`);
+        if (hasOwnershipMarker(stale)) {
+          const kept = withoutOurKey(stalePath, rawStale, stale, known, added);
+          staleText = kept.text;
+          notes.push(
+            kept.keyDropped
+              ? `left providers.aiand in ${stalePath} because you edited it, minus its ai& key`
+              : `left providers.aiand in ${stalePath} because you edited it, with the key you set`,
+          );
+        } else {
+          if (aiandProvider(stale) !== undefined) {
+            notes.push(`left providers.aiand in ${stalePath} because you edited it`);
+          }
+          continue;
         }
-        continue;
-      }
-      staleText = editOmpYaml(stalePath, () =>
-        yamlDelete(rawStale, ["providers", OMP_PROVIDER_ID]),
-      );
-      const left = aiandProviderParent(readYamlMapping(staleText));
-      if (left && Object.keys(left).length === 0) {
-        staleText = editOmpYaml(stalePath, () => yamlDelete(staleText, ["providers"]));
+      } else {
+        staleText = editOmpYaml(stalePath, () =>
+          yamlDelete(rawStale, ["providers", OMP_PROVIDER_ID]),
+        );
+        const left = aiandProviderParent(readYamlMapping(staleText));
+        if (left && Object.keys(left).length === 0) {
+          staleText = editOmpYaml(stalePath, () => yamlDelete(staleText, ["providers"]));
+        }
       }
     } else if (added?.wroteDefaultModel !== undefined) {
       // config.yml: the same hand-back logic as the current dir, same
@@ -495,6 +573,7 @@ export const ompAdapter: AgentAdapter = {
   bin: OMP_BIN,
   aliases: ["oh-my-pi"],
   install: OMP_INSTALL,
+  launchModelFlags: ["--model"],
   // The launcher routes through a throwaway overlay dir (a
   // generated models.yml + config.yml), so these inherited
   // names would shadow or bypass that file routing. Literal
@@ -532,6 +611,7 @@ export const ompAdapter: AgentAdapter = {
   detect(): DetectResult {
     return detectBinary(OMP_BIN);
   },
+  carriesWiring: (text) => OMP_MARKER_RE.test(text),
   managedFiles(): string[] {
     // The recorded paths too, so restore works from a shell
     // without the PI_CODING_AGENT_DIR that relocated the agent
@@ -544,6 +624,8 @@ export const ompAdapter: AgentAdapter = {
     return files;
   },
   probe,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
+  enableGuard,
   enable,
   disable,
   async bakedKey(): Promise<string | null> {

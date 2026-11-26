@@ -1,18 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  appendFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { getCatalog, resolveDefault, validateCatalogModel } from "../agents/catalog.js";
-import { notInstalledError } from "../agents/launch.js";
+import { agentBaseEnv, notInstalledError } from "../agents/launch.js";
 import { findAgent } from "../agents/registry.js";
 import type { AgentAdapter, SessionLaunchInput } from "../agents/types.js";
 import { maskKey, recordAgentKey } from "../api/agent-keys.js";
@@ -23,8 +14,10 @@ import { PINNED_MODEL, runRecordedBenchmark } from "../benchmark/recorded.js";
 import { bool, int, list, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
 import { err, heading, json, out, style } from "../cli/output.js";
+import { scrubAgentEnv } from "../cli/spawn-env.js";
 import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { configDir, type ResolvedProfile, resolveProfile } from "../config.js";
+import { makePrivateTempDirSync } from "../fsutil.js";
 import { oneShotRetry } from "../model-efficiency.js";
 import { listEnvelopes } from "../store/envelopes.js";
 import { openStore, storePath, syncStore } from "../store/index.js";
@@ -122,9 +115,14 @@ function instant(value: string): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** Best-effort `bin --version`, first line; null when it cannot be probed. */
+/** Best-effort `bin --version`, first line; null when it cannot be probed.
+ * The probe is still third-party code: it gets PATH/HOME but no CLI secret. */
 function harnessVersion(bin: string): string | null {
-  const proc = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 });
+  const proc = spawnSync(bin, ["--version"], {
+    encoding: "utf8",
+    timeout: 10_000,
+    env: scrubAgentEnv(process.env),
+  });
   const line = `${proc.stdout ?? ""}`.split("\n")[0]?.trim();
   return proc.status === 0 && line ? line : null;
 }
@@ -309,9 +307,16 @@ function parseHarnessIds(raw: string[]): string[] {
 }
 
 function freshWorkspace(taskDir: string): string {
-  const runDir = mkdtempSync(join(tmpdir(), `aiand-compare-${basename(taskDir)}-`));
-  cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
-  cpSync(join(taskDir, INSTRUCTION_FILE), join(runDir, INSTRUCTION_FILE));
+  const runDir = makePrivateTempDirSync(`aiand-compare-${basename(taskDir)}-`);
+  try {
+    cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
+    cpSync(join(taskDir, INSTRUCTION_FILE), join(runDir, INSTRUCTION_FILE));
+  } catch (error) {
+    // Never hand back a half-copied private dir; the failure is the only thing
+    // the caller can act on.
+    rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    throw error;
+  }
   return runDir;
 }
 
@@ -412,11 +417,12 @@ async function runLive(task: string, id: string, options: LiveOptions): Promise<
     const runDir = freshWorkspace(taskDir);
     const row = baseRow(adapter.id, options.model, task, trial, version);
     try {
-      // Child env = inherited, scrubbed like agentSession: the adapter's own
-      // injection carries the key; a leaked AIAND_API_KEY would hand it to
-      // every process the agent spawns.
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      delete env.AIAND_API_KEY;
+      // Child env = agentBaseEnv(adapter), same base as agentSession: the
+      // adapter's own injection carries the session key, and both CLI secrets
+      // (AIAND_API_KEY, the store master key) stay out of every process the
+      // agent spawns. Codex alone keeps the master key for its `aiand key
+      // export` child, as everywhere else.
+      const env: NodeJS.ProcessEnv = agentBaseEnv(adapter);
       for (const key of adapter.shadowEnv ?? []) delete env[key];
       Object.assign(env, launch.env);
 
@@ -523,24 +529,27 @@ async function runDry(task: string, layoutIds: string[], trials: number): Promis
     // fail-before control `compare validate` applies, so a dry-run row
     // honestly reports success=false (or the task's untouched score).
     const runDir = freshWorkspace(taskDir);
-    const verify = runVerify(taskDir, runDir, VERIFY_TIMEOUT_MS);
-    rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    for (let trial = 1; trial <= trials; trial++) {
-      rows.push({
-        ...baseRow(layout.id, PINNED_MODEL, task, trial, null),
-        success: verify.ok,
-        score: verify.ok ? verify.score : null,
-        completed: true,
-        turns: bench.requests,
-        retries: bench.retries,
-        tokens_in: bench.inputTokens,
-        tokens_cached: bench.cachedTokens,
-        tokens_out: bench.outputTokens,
-        cost_usd: bench.effective_cost_units,
-        token_basis: "recorded",
-        cost_basis: "recorded",
-        verify_exit: verify.exitCode,
-      });
+    try {
+      const verify = runVerify(taskDir, runDir, VERIFY_TIMEOUT_MS);
+      for (let trial = 1; trial <= trials; trial++) {
+        rows.push({
+          ...baseRow(layout.id, PINNED_MODEL, task, trial, null),
+          success: verify.ok,
+          score: verify.ok ? verify.score : null,
+          completed: true,
+          turns: bench.requests,
+          retries: bench.retries,
+          tokens_in: bench.inputTokens,
+          tokens_cached: bench.cachedTokens,
+          tokens_out: bench.outputTokens,
+          cost_usd: bench.effective_cost_units,
+          token_basis: "recorded",
+          cost_basis: "recorded",
+          verify_exit: verify.exitCode,
+        });
+      }
+    } finally {
+      rmSync(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }
   for (const row of rows) appendRow(task, row);

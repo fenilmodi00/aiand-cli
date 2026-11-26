@@ -3,16 +3,7 @@
 // matcher. The schema is undocumented and reverse-engineered upstream, so
 // every assertion here pins the exact columns ai& writes.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test, { beforeEach, describe } from "node:test";
@@ -20,7 +11,8 @@ import {
   enableInput as baseEnableInput,
   catalogModel,
   plantStub,
-  waitFor,
+  plantWindowsTools,
+  withEnv,
   withTestEnv,
 } from "./helpers.mjs";
 
@@ -45,6 +37,11 @@ const { copilotAppAdapter, copilotDataDbPath, copilotAppProcessSpec, copilotAppP
   await import("../dist/agents/copilot-app/adapter.js");
 
 const dbPath = () => join(process.env.COPILOT_HOME, "data.db");
+// Windows asks `tasklist.exe` under SystemRoot, not a PATH stub: a fake root whose tasklist lists the app.
+const runningAppSystemRoot = () =>
+  plantWindowsTools(join(process.env.AIAND_HOME, "sysroot"), {
+    "System32/tasklist.exe": 'process.stdout.write("github.exe\\r\\n");',
+  });
 
 // COPILOT_HOME is relocated (withTestEnv), so detect()'s GUI-install probe
 // never reads the host's absolute paths (/Applications, LOCALAPPDATA) for
@@ -168,6 +165,15 @@ describe("copilot-app adapter", () => {
     assert.equal(existsSync(dbPath()), false, "never create the app's db shell");
   });
 
+  test("bakedBaseUrl(): reads back the URL `on` baked, and nothing once off", async () => {
+    createAppDb();
+    assert.equal(await copilotAppAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await copilotAppAdapter.enable(enableInput());
+    assert.equal(await copilotAppAdapter.bakedBaseUrl(), "https://api.aiand.com/v1");
+    await copilotAppAdapter.disable();
+    assert.equal(await copilotAppAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
   test("enable(): inserts the provider row and every catalog model", async () => {
     createAppDb();
     seedForeignProvider();
@@ -198,14 +204,44 @@ describe("copilot-app adapter", () => {
     const glm = models.find((row) => row.model_id === "zai-org/glm-5.3");
     assert.equal(glm.wire_model, "zai-org/glm-5.3");
     assert.equal(glm.display_name, "zai-org/glm-5.3");
-    assert.equal(glm.max_prompt_tokens, 128000);
-    assert.equal(glm.max_output_tokens, 128000);
+    assert.equal(glm.max_prompt_tokens, 128000 - 32768);
+    assert.equal(glm.max_output_tokens, 32768, "the published output cap, not the context window");
     assert.equal(glm.wire_api_override, "completions");
     assert.deepEqual(JSON.parse(glm.supported_reasoning_efforts), []);
     const qwen = models.find((row) => row.model_id === "qwen/qwen3.8-27b");
     assert.deepEqual(JSON.parse(qwen.supported_reasoning_efforts), ["low", "high"]);
 
     assert.equal(rows("SELECT * FROM model_providers").length, 2, "foreign provider survives");
+  });
+
+  test("enable(): splits each context window so prompt plus output fits", async () => {
+    createAppDb();
+    const catalog = [
+      catalogModel("motif-technologies/motif-3", {
+        context_window: 262144,
+        max_output_tokens: 262144,
+      }),
+      catalogModel("deepseek-ai/deepseek-v4.1-flash-1017", {
+        context_window: 1048576,
+        max_output_tokens: 384000,
+      }),
+      catalogModel("zai-org/glm-5.3", { max_output_tokens: null }),
+      catalogModel("tiny/model", { context_window: 1, max_output_tokens: 1 }),
+      catalogModel("unset/cap", { max_output_tokens: undefined }),
+      catalogModel("zero/cap", { max_output_tokens: 0 }),
+      catalogModel("negative/cap", { max_output_tokens: -5 }),
+    ];
+    await copilotAppAdapter.enable(enableInput({ catalog }));
+    const budget = Object.fromEntries(
+      ourModels().map((row) => [row.model_id, [row.max_prompt_tokens, row.max_output_tokens]]),
+    );
+    assert.deepEqual(budget["motif-technologies/motif-3"], [131072, 131072]);
+    assert.deepEqual(budget["deepseek-ai/deepseek-v4.1-flash-1017"], [664576, 384000]);
+    assert.deepEqual(budget["zai-org/glm-5.3"], [128000, null]);
+    assert.deepEqual(budget["tiny/model"], [1, null]);
+    for (const id of ["unset/cap", "zero/cap", "negative/cap"]) {
+      assert.deepEqual(budget[id], [128000, null], id);
+    }
   });
 
   test("enable(): --model warns the app keeps its own pick; native stays quiet", async () => {
@@ -388,43 +424,55 @@ describe("copilot-app adapter", () => {
     createAppDb();
     seedForeignProvider();
     await copilotAppAdapter.enable(enableInput());
+    const stubBin = join(process.env.AIAND_HOME, "stub-bin");
+    plantStub(stubBin, "pgrep", `printf '%s\\n' "/opt/GitHub Copilot/GitHub Copilot"\nexit 0`);
+    plantStub(stubBin, "tasklist", `printf '%s\\n' "github.exe"\nexit 0`);
     const before = readFileSync(dbPath());
-    // POSIX fakes the probe with a pgrep stub; Windows probes the real
-    // tasklist, so the app's image name has to exist for real: node.exe
-    // copied as github.exe and spawned for the guard to find.
-    let app = null;
+    // POSIX fakes the probe with a pgrep stub; Windows resolves tasklist under
+    // SystemRoot, so a fake root whose tasklist lists the app keeps the answer
+    // hermetic instead of depending on the host's process table.
     const originalPath = process.env.PATH;
     try {
-      if (process.platform === "win32") {
-        const stubBin = join(process.env.AIAND_HOME, "stub-bin");
-        mkdirSync(stubBin, { recursive: true });
-        copyFileSync(process.execPath, join(stubBin, "github.exe"));
-        app = spawn(join(stubBin, "github.exe"), ["-e", "setInterval(() => {}, 1 << 30)"], {
-          stdio: "ignore",
-        });
-        // Wait until the real tasklist actually lists the image, or the
-        // guard's probe races the process table.
-        await waitFor(
-          () =>
-            spawnSync("tasklist", ["/FI", "IMAGENAME eq github.exe", "/NH"], {
-              encoding: "utf8",
-            }).stdout?.includes("github.exe") === true,
-          15_000,
-          "github.exe visible to tasklist",
-        );
-      } else {
-        const stubBin = join(process.env.AIAND_HOME, "stub-bin");
-        plantStub(stubBin, "pgrep", `printf '%s\\n' "/opt/GitHub Copilot/GitHub Copilot"\nexit 0`);
-        process.env.PATH = [stubBin, originalPath].join(delimiter);
-      }
-      await assert.rejects(copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), (error) =>
-        error.message.includes("Quit the GitHub Copilot app first"),
+      process.env.PATH = [stubBin, originalPath].join(delimiter);
+      await withEnv({ SystemRoot: runningAppSystemRoot() }, () =>
+        assert.rejects(copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), (error) =>
+          error.message.includes("Quit the GitHub Copilot app first"),
+        ),
       );
     } finally {
       process.env.PATH = originalPath;
-      app?.kill();
     }
     assert.equal(readFileSync(dbPath()).equals(before), true);
+  });
+
+  // The quit-guard asks `pgrep` by bare name. A repo holding its own `pgrep`
+  // must not answer for the real one through an empty or `.` PATH entry.
+  test("refreshKey(): a pgrep planted in the current directory is not the one asked", {
+    skip: process.platform === "win32",
+  }, async () => {
+    createAppDb();
+    seedForeignProvider();
+    await copilotAppAdapter.enable(enableInput());
+    const stubBin = join(process.env.AIAND_HOME, "stub-bin");
+    plantStub(stubBin, "pgrep", `printf '%s\\n' "/opt/GitHub Copilot/GitHub Copilot"\nexit 0`);
+    const repo = join(process.env.AIAND_HOME, "planted-repo");
+    const marker = join(repo, "planted-ran");
+    plantStub(repo, "pgrep", `echo ran > "${marker}"\nexit 1`);
+    const originalPath = process.env.PATH;
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(repo);
+      for (const entry of ["", ".", "./"]) {
+        process.env.PATH = [entry, stubBin, originalPath].join(delimiter);
+        await assert.rejects(copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), (error) =>
+          error.message.includes("Quit the GitHub Copilot app first"),
+        );
+        assert.equal(existsSync(marker), false, `planted pgrep ran with PATH entry "${entry}"`);
+      }
+    } finally {
+      process.chdir(originalCwd);
+      process.env.PATH = originalPath;
+    }
   });
 
   // rebakeAgentKeys calls refreshKey on
@@ -442,7 +490,9 @@ describe("copilot-app adapter", () => {
     const originalPath = process.env.PATH;
     try {
       process.env.PATH = [stubBin, originalPath].join(delimiter);
-      assert.equal(await copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), false);
+      await withEnv({ SystemRoot: runningAppSystemRoot() }, async () =>
+        assert.equal(await copilotAppAdapter.refreshKey({ apiKey: "sk-new" }), false),
+      );
     } finally {
       process.env.PATH = originalPath;
     }
@@ -520,7 +570,9 @@ describe("copilot-app adapter", () => {
 });
 
 describe("copilot-app db hygiene", () => {
-  test("enable/disable on an unreadable db fail as CliError, never a stack", async () => {
+  test("enable/disable on an unreadable db fail as CliError, never a stack", {
+    skip: process.platform === "win32" && "chmod 000 does not make a file unreadable on Windows",
+  }, async () => {
     createAppDb();
     // Wire first: on win32 chmod 0o000 only sets the read-only flag, so the
     // db stays readable and `off` with nothing of ours to remove would

@@ -15,7 +15,7 @@ import {
   withTestEnv,
 } from "./helpers.mjs";
 
-const { installIfMissing, runAgentBinary } = await import("../dist/agents/launch.js");
+const { agentBaseEnv, installIfMissing, runAgentBinary } = await import("../dist/agents/launch.js");
 
 const CAPTURE_STUB = `env > "$AIAND_CAPTURE.env"
 printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
@@ -24,7 +24,7 @@ exit 42`;
 let binDir;
 const box = withTestEnv("aiand-open-", (dir) => {
   binDir = join(dir, "bin");
-  for (const agent of ["opencode", "claude", "codex", "hermes"])
+  for (const agent of ["opencode", "claude", "codex", "hermes", "jouzu", "copilot"])
     plantStub(binDir, agent, CAPTURE_STUB);
 });
 
@@ -47,6 +47,12 @@ const cli = (args, state, env = {}) =>
       ...env,
     }),
   });
+
+/** OpenCode's model map with both seeded catalog models. */
+const OPENCODE_BOTH = {
+  "zai-org/glm-5.3": { id: "zai-org/glm-5.3", name: "GLM 5.3" },
+  "other/model": { id: "other/model", name: "Other" },
+};
 
 const capturedArgs = (state) =>
   readFileSync(`${state.capture}.args`, "utf8").split("\n").slice(0, -1);
@@ -96,7 +102,32 @@ describe("aiand <agent> opens the agent", () => {
       "anthropic/claude-sonnet-4-5",
     );
     const inline = capturedEnv(state).match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
-    assert.deepEqual(JSON.parse(inline[1]), { model: "aiand/zai-org/glm-5.3" });
+    // Titles and summaries too (small_model): OpenCode's own pick could be another model.
+    assert.deepEqual(JSON.parse(inline[1]), {
+      model: "aiand/zai-org/glm-5.3",
+      small_model: "aiand/zai-org/glm-5.3",
+    });
+  });
+
+  // A model named in the agent's own args is the one wired and used.
+  test("a fresh opencode opened with its own -m is wired on that model", async () => {
+    const state = freshState();
+    seedCatalogCache(state.cfg, { opencodeModels: OPENCODE_BOTH });
+    const { code } = await cli(["opencode", "-m", "aiand/other/model", "run", "hi"], state);
+    assert.equal(code, 42);
+    assert.equal(JSON.parse(readFileSync(opencodeJson(state), "utf8")).model, "aiand/other/model");
+    assert.deepEqual(capturedArgs(state), ["-m", "aiand/other/model", "run", "hi"]);
+  });
+
+  test("a model in OpenCode's args is not overridden by an inline default", async () => {
+    const state = freshState();
+    seedCatalogCache(state.cfg, { opencodeModels: OPENCODE_BOTH });
+    mkdirSync(dirname(opencodeJson(state)), { recursive: true });
+    writeFileSync(opencodeJson(state), '{ "model": "anthropic/claude-sonnet-4-5" }\n');
+    assert.equal((await cli(["opencode", "--model=aiand/other/model"], state)).code, 42);
+    // Not the inline default model; titles and summaries on the one named.
+    const inline = capturedEnv(state).match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m);
+    assert.deepEqual(JSON.parse(inline[1]), { small_model: "aiand/other/model" });
   });
 
   test("OpenCode opens on a model its wired provider lists, catalog or not", async () => {
@@ -105,11 +136,41 @@ describe("aiand <agent> opens the agent", () => {
     writeFileSync(opencodeJson(state), '{ "model": "anthropic/claude-sonnet-4-5" }\n');
     assert.equal((await cli(["config", "set", "model", "other/model"], state)).code, 0);
     const inline = () => JSON.parse(capturedEnv(state).match(/^OPENCODE_CONFIG_CONTENT=(.*)$/m)[1]);
+    const glm = { model: "aiand/zai-org/glm-5.3", small_model: "aiand/zai-org/glm-5.3" };
     assert.equal((await cli(["opencode"], state)).code, 42);
-    assert.deepEqual(inline(), { model: "aiand/zai-org/glm-5.3" });
+    assert.deepEqual(inline(), glm);
     rmSync(join(state.cfg, "model-catalog.json"));
     assert.equal((await cli(["opencode"], state)).code, 42);
-    assert.deepEqual(inline(), { model: "aiand/zai-org/glm-5.3" });
+    assert.deepEqual(inline(), glm);
+  });
+
+  test("a fresh jouzu is wired in Jouzu's dir and opens on the ai& model it wired", async () => {
+    const state = freshState();
+    const { code, stderr } = await cli(["jouzu", "fix the build"], state, {
+      JOUZU_HOME: join(state.home, "jz"),
+    });
+    assert.equal(code, 42);
+    assert.match(stderr, /Jouzu is now using ai&\./);
+    const settings = JSON.parse(
+      readFileSync(join(state.home, "jz", "agent", "settings.json"), "utf8"),
+    );
+    assert.equal(settings.defaultProvider, "aiand");
+    assert.deepEqual(capturedArgs(state), [
+      "--provider",
+      "aiand",
+      "--model",
+      settings.defaultModel,
+      "fix the build",
+    ]);
+  });
+
+  test("aiand jz is Jouzu, and a model in the args is left to Jouzu", async () => {
+    const state = freshState();
+    const env = { JOUZU_HOME: join(state.home, "jz") };
+    assert.equal((await cli(["jz", "--model", "shisa/x"], state, env)).code, 42);
+    assert.deepEqual(capturedArgs(state), ["--model", "shisa/x"]);
+    assert.equal((await cli(["jz", "doctor"], state, env)).code, 42);
+    assert.deepEqual(capturedArgs(state), ["doctor"]);
   });
 
   test("`--` passes a verb through to the agent", async () => {
@@ -158,13 +219,124 @@ describe("aiand <agent> opens the agent", () => {
     assert.match(capturedEnv(state), /^OPENCODE_CONFIG_CONTENT=\{"theme":"mine"\}$/m);
   });
 
-  test("claude opens with only its own args once wired", async () => {
+  test("claude opens one session on ai& and leaves settings.json alone", async () => {
     const state = freshState();
-    const { code } = await cli(["claude", "-p", "hi"], state);
+    const { code, stderr } = await cli(["claude", "-p", "hi"], state);
     assert.equal(code, 42);
-    const settings = JSON.parse(readFileSync(join(state.home, ".claude", "settings.json"), "utf8"));
-    assert.ok(settings.env.AIAND_MANAGED);
-    assert.deepEqual(capturedArgs(state), ["-p", "hi"]);
+    assert.doesNotMatch(stderr, /now using ai&/);
+    assert.equal(existsSync(join(state.home, ".claude", "settings.json")), false);
+    const [flag, overlay, ...rest] = capturedArgs(state);
+    assert.equal(flag, "--settings");
+    assert.deepEqual(rest, ["-p", "hi"]);
+    assert.equal(existsSync(overlay), false, "overlay removed after the session");
+  });
+
+  test("claude off says it is off, then what happens to open windows on its own line", async () => {
+    const state = freshState();
+    assert.equal((await cli(["claude", "on"], state)).code, 0);
+    const { code, stdout, stderr } = await cli(["claude", "off"], state);
+    assert.equal(code, 0);
+    assert.equal(stdout.trim(), "Claude Code is off.");
+    assert.match(stderr, /^If you have Claude Code open in other windows, they switch back too\./m);
+  });
+
+  describe("a default model picked inside the claude session", () => {
+    const SAVE = `[ -n "$AIAND_SAVE" ] && printf '%s' "$AIAND_SAVE" > "$CLAUDE_CONFIG_DIR/settings.json"`;
+    const WIRED = { env: { AIAND_MANAGED: "1", ANTHROPIC_BASE_URL: "https://api.aiand.com" } };
+    const settingsWith = (model, extra = {}) => JSON.stringify({ model, theme: "dark", ...extra });
+    const open = (state, { before, save = "", after = "", noDir = false }) => {
+      const dir = join(state.home, "claude-config");
+      const bin = join(state.home, "bin");
+      if (!noDir) mkdirSync(dir, { recursive: true });
+      plantStub(bin, "claude", `mkdir -p "$CLAUDE_CONFIG_DIR"\n${SAVE}\n${after}\nexit 0`);
+      if (before !== undefined) writeFileSync(join(dir, "settings.json"), before);
+      return cli(["claude"], state, {
+        CLAUDE_CONFIG_DIR: dir,
+        AIAND_SAVE: save,
+        PATH: hermeticPath(bin, "/usr/bin", "/bin"),
+      }).then((result) => ({
+        ...result,
+        settings: JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")),
+      }));
+    };
+
+    test("an ai& pick is replaced by the user's own default while the session runs", async () => {
+      const state = freshState();
+      const { settings, stderr } = await open(state, {
+        before: '{"model":"opus"}',
+        save: settingsWith("zai-org/glm-5.3"),
+        after: `i=0
+while grep -q zai-org "$CLAUDE_CONFIG_DIR/settings.json" && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+cp "$CLAUDE_CONFIG_DIR/settings.json" "$AIAND_CAPTURE.during"`,
+      });
+      assert.equal(JSON.parse(readFileSync(`${state.capture}.during`, "utf8")).model, "opus");
+      assert.deepEqual(settings, { model: "opus", theme: "dark" });
+      assert.match(stderr, /Your default Claude Code model is opus again\./);
+    });
+
+    test("the put-back note stays one plain line when the model it names carries escape bytes", async () => {
+      const { stderr, settings } = await open(freshState(), {
+        before: JSON.stringify({ model: "opus\u001b]0;pwned\u0007\u001b[2J" }),
+        save: settingsWith("zai-org/glm-5.3"),
+      });
+      assert.equal(settings.model, "opus\u001b]0;pwned\u0007\u001b[2J", "the file keeps its bytes");
+      assert.match(stderr, /Your default Claude Code model is opus.* again\./);
+      assert.doesNotMatch(stderr, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+    });
+
+    test("a settings directory Claude Code creates on start is watched too", async () => {
+      const state = freshState();
+      const { settings } = await open(state, {
+        noDir: true,
+        save: settingsWith("zai-org/glm-5.3"),
+        after: `i=0
+while grep -q zai-org "$CLAUDE_CONFIG_DIR/settings.json" && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+cp "$CLAUDE_CONFIG_DIR/settings.json" "$AIAND_CAPTURE.during"`,
+      });
+      assert.deepEqual(JSON.parse(readFileSync(`${state.capture}.during`, "utf8")), {
+        theme: "dark",
+      });
+      assert.deepEqual(settings, { theme: "dark" });
+    });
+
+    test("an ai& pick over no default is removed", async () => {
+      const { settings } = await open(freshState(), { save: settingsWith("zai-org/glm-5.3") });
+      assert.deepEqual(settings, { theme: "dark" });
+    });
+
+    test("an ai& default left by an earlier session is removed, so a plain claude starts again", async () => {
+      const { settings, stderr } = await open(freshState(), {
+        before: settingsWith("zai-org/glm-5.3"),
+      });
+      assert.deepEqual(settings, { theme: "dark" });
+      assert.match(stderr, /Cleared zai-org\/glm-5\.3 as your default Claude Code model/);
+    });
+
+    test("a pick ai& does not serve is the user's own and stays", async () => {
+      const { settings, stderr } = await open(freshState(), {
+        before: '{"model":"opus"}',
+        save: settingsWith("sonnet"),
+      });
+      assert.equal(settings.model, "sonnet");
+      assert.doesNotMatch(stderr, /default Claude Code model/);
+    });
+
+    test("a file wired by on keeps an ai& pick, which is meant for every session", async () => {
+      const { settings } = await open(freshState(), {
+        before: settingsWith("opus", WIRED),
+        save: settingsWith("zai-org/glm-5.3", WIRED),
+      });
+      assert.equal(settings.model, "zai-org/glm-5.3");
+    });
+
+    test("once on wires the file mid-session, off's kept model is left alone too", async () => {
+      const { settings } = await open(freshState(), {
+        before: '{"model":"opus"}',
+        save: settingsWith("zai-org/glm-5.3", WIRED),
+        after: `sleep 1\nprintf '%s' '${settingsWith("zai-org/glm-5.3")}' > "$CLAUDE_CONFIG_DIR/settings.json"\nsleep 0.5`,
+      });
+      assert.equal(settings.model, "zai-org/glm-5.3");
+    });
   });
 
   test("a leading --profile wires again, so the agent runs on that profile", async () => {
@@ -238,6 +410,67 @@ describe("aiand <agent> opens the agent", () => {
     const { code } = await cli(["codex", "exec", "hi"], state, { AIAND_API_KEY: FAKE_API_KEY });
     assert.equal(code, 42);
     assert.match(capturedEnv(state), new RegExp(`^AIAND_API_KEY=${FAKE_API_KEY}$`, "m"));
+  });
+
+  test("open drops the store master key from every agent but Codex", async () => {
+    const MASTER = "cd".repeat(32);
+    const state = freshState();
+    await cli(["opencode"], state, { AIAND_SECRET_STORE_MASTER_KEY: MASTER });
+    assert.doesNotMatch(capturedEnv(state), /AIAND_SECRET_STORE_MASTER_KEY/);
+    const codex = freshState();
+    await cli(["codex", "exec", "hi"], codex, { AIAND_SECRET_STORE_MASTER_KEY: MASTER });
+    assert.match(capturedEnv(codex), new RegExp(`^AIAND_SECRET_STORE_MASTER_KEY=${MASTER}$`, "m"));
+  });
+
+  test("on Windows a lowercase aiand_api_key is scrubbed from every agent, the master key kept for Codex", () => {
+    const env = {
+      aiand_api_key: "sk-x",
+      aiand_secret_store_master_key: "ab".repeat(32),
+      Path: "C:\\bin",
+    };
+    const opencode = agentBaseEnv({ id: "opencode" }, env, "win32");
+    assert.deepEqual(opencode, { Path: "C:\\bin" });
+    const codex = agentBaseEnv({ id: "codex" }, env, "win32");
+    assert.deepEqual(codex, { aiand_secret_store_master_key: "ab".repeat(32), Path: "C:\\bin" });
+  });
+
+  test("copilot open: rejects --model and --model= values outside the catalog before spawning", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    for (const flag of [["--model", "not-served/model"], ["--model=not-served/model"]]) {
+      const { code, stderr } = await cli(["copilot", ...flag], state);
+      assert.equal(code, 1);
+      assert.match(stderr, /--model "not-served\/model" is not in the catalog\./);
+      assert.match(stderr, /Valid ids: zai-org\/glm-5\.3, other\/model/);
+      assert.equal(existsSync(`${state.capture}.args`), false, "Copilot was never spawned");
+    }
+  });
+
+  test("copilot open: rejects a served model that differs from the configured model", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    const managedFiles = ["providers.json", "settings.json"].map((file) =>
+      join(state.home, ".copilot", file),
+    );
+    const before = managedFiles.map((file) => readFileSync(file, "utf8"));
+    const { code, stderr } = await cli(["copilot", "--model", "other/model"], state);
+    assert.equal(code, 1);
+    assert.match(stderr, /GitHub Copilot is already configured for a different model\./);
+    assert.match(stderr, /Run `aiand copilot on --model other\/model` to change it\./);
+    assert.equal(existsSync(`${state.capture}.args`), false, "Copilot was never spawned");
+    assert.deepEqual(
+      managedFiles.map((file) => readFileSync(file, "utf8")),
+      before,
+      "the configured model was not rewritten",
+    );
+  });
+
+  test("copilot open: a served model matching the configured model launches with verbatim args", async () => {
+    const state = freshState();
+    assert.equal((await cli(["copilot", "on", "--model", "zai-org/glm-5.3"], state)).code, 0);
+    const { code } = await cli(["copilot", "--model=zai-org/glm-5.3"], state);
+    assert.equal(code, 42);
+    assert.deepEqual(capturedArgs(state), ["--model=zai-org/glm-5.3"]);
   });
 
   test("copilot-app open wires and never spawns", async () => {
@@ -378,6 +611,42 @@ describe("installIfMissing", () => {
     ]);
   });
 
+  // Auto-install ran whatever npm's latest was, scripts and all.
+  test("Claude Code and Codex install a pinned release; Codex skips install scripts", async () => {
+    const { claudeAdapter, CLAUDE_CODE_VERSION } = await import("../dist/agents/claude/adapter.js");
+    const { codexAdapter, CODEX_VERSION } = await import("../dist/agents/codex/adapter.js");
+    assert.match(CLAUDE_CODE_VERSION, /^\d+\.\d+\.\d+$/);
+    assert.match(CODEX_VERSION, /^\d+\.\d+\.\d+$/);
+    assert.equal(
+      claudeAdapter.install.command,
+      `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}`,
+    );
+    assert.equal(
+      codexAdapter.install.command,
+      `npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION}`,
+    );
+  });
+
+  test("the install question names the exact command, version included", async () => {
+    const { adapter, dir } = installable();
+    let asked = "";
+    await withNpm(dir, "exit 0", () =>
+      onTty("n", async () => {
+        const quiet = process.stderr.write;
+        process.stderr.write = (chunk) => {
+          asked += String(chunk);
+          return true;
+        };
+        try {
+          await installIfMissing(adapter).catch(() => {});
+        } finally {
+          process.stderr.write = quiet;
+        }
+      }),
+    );
+    assert.match(asked, /Install it with npm install -g fixture-agent@1\.2\.3\?/);
+  });
+
   test("no leaves it uninstalled: 127 + Install hint, npm never runs", async () => {
     const { adapter, dir } = installable();
     const marker = join(dir, "npm-ran");
@@ -442,6 +711,17 @@ describe("installIfMissing", () => {
     );
     assert.doesNotMatch(readFileSync(captured, "utf8"), /^AIAND_API_KEY=/m);
   });
+
+  test("npm install never sees the store master key either", async () => {
+    const { adapter, agent, dir } = installable();
+    const captured = join(dir, "npm-env");
+    await withEnv({ AIAND_SECRET_STORE_MASTER_KEY: "ef".repeat(32) }, () =>
+      withNpm(dir, `env > "${captured}"\ntouch "${agent}"`, () =>
+        onTty("", () => installIfMissing(adapter)),
+      ),
+    );
+    assert.doesNotMatch(readFileSync(captured, "utf8"), /AIAND_SECRET_STORE_MASTER_KEY/);
+  });
 });
 
 describe("runAgentBinary", () => {
@@ -456,6 +736,49 @@ describe("runAgentBinary", () => {
       assert.equal(process.stdin.isPaused(), true);
     } finally {
       process.stdin.pause();
+    }
+  });
+
+  test("an agent reachable only through `.` on PATH in the cwd is not run", {
+    skip: process.platform === "win32",
+  }, async () => {
+    const dir = mkdtempSync(join(box.dir, "repo-"));
+    const ran = join(dir, "ran");
+    plantStub(dir, "fixture-agent", `touch "${ran}"`);
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try {
+      await withEnv({ PATH: hermeticPath(".", "/usr/bin", "/bin") }, () =>
+        assert.rejects(runAgentBinary(installable().adapter, [], process.env), (error) => {
+          assert.equal(error.exitCode, 127);
+          return true;
+        }),
+      );
+    } finally {
+      process.chdir(cwd);
+      process.stdin.pause();
+    }
+    assert.equal(existsSync(ran), false);
+  });
+
+  test("a SIGTERM that lands during cleanup still decides the exit code", {
+    skip:
+      process.platform === "win32" &&
+      "Windows has no SIGTERM to send itself: kill() ends the test process outright",
+  }, async () => {
+    const dir = mkdtempSync(join(box.dir, "run-"));
+    plantStub(dir, "fixture-agent", "exit 0");
+    const before = process.exitCode;
+    try {
+      await withEnv({ PATH: hermeticPath(dir, "/usr/bin", "/bin") }, () =>
+        runAgentBinary(installable().adapter, [], process.env, async () => {
+          process.kill(process.pid, "SIGTERM");
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }),
+      );
+      assert.equal(process.exitCode, 143);
+    } finally {
+      process.exitCode = before;
     }
   });
 });

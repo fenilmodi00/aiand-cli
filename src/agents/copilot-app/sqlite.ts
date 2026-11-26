@@ -1,7 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncOptionsWithStringEncoding, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { systemToolEnv } from "../../cli/spawn-env.js";
+import { findWindowsExecutable, type PathLookup } from "../../cli/win-spawn.js";
 
 /**
  * SQLite access to the Copilot desktop app's provider store in data.db.
@@ -39,14 +41,39 @@ async function loadDatabaseSync(): Promise<typeof DatabaseSync | null> {
   return databaseSync;
 }
 
+/**
+ * What to spawn for the sqlite3 CLI, or null. On Windows it is resolved by our
+ * PATH walk and spawned by absolute path, since a bare name would let libuv try
+ * the current directory first. Only a real `sqlite3.exe` counts: spawnSync
+ * cannot run a `.cmd` or `.bat` (CVE-2024-27980), and routing one through
+ * cmd.exe would put the SQL on a command line. Asking for the `.exe` by name
+ * also finds one that sits after a shim on PATH.
+ */
+export function sqlite3Command(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  lookup?: PathLookup,
+): string | null {
+  return platform === "win32" ? findWindowsExecutable("sqlite3.exe", env, lookup) : "sqlite3";
+}
+
+function runSqlite3(args: string[], options: SpawnSyncOptionsWithStringEncoding) {
+  const command = sqlite3Command();
+  if (command === null) {
+    const error = Object.assign(new Error("spawn sqlite3 ENOENT"), { code: "ENOENT" });
+    return { error, status: null, stdout: "", stderr: "" };
+  }
+  return spawnSync(command, args, { ...options, env: systemToolEnv() });
+}
+
 /** Escape a JS string into a SQL string literal body (single quotes doubled). */
 export function sqlString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
 /** A finite number as a SQL literal, else NULL. */
-function sqlNumberOrNull(value: number): string {
-  return Number.isFinite(value) ? String(Math.trunc(value)) : "NULL";
+function sqlNumberOrNull(value: number | null): string {
+  return value !== null && Number.isFinite(value) ? String(Math.trunc(value)) : "NULL";
 }
 
 /** A non-empty string as a quoted SQL literal, else NULL. */
@@ -76,9 +103,33 @@ export function isCopilotDbAccessError(error: unknown): boolean {
   );
 }
 
+/**
+ * Fail closed when the file's own mode has no bit for the operation. SQLite
+ * already reports EACCES for every non-root user, but root bypasses mode
+ * bits: without this probe a root-run `on` would commit rows into a 0o000
+ * db the app can never read, and the command would report success. A file
+ * with no read (or, for writes, no write) bit is a deliberate lock, not a
+ * usable store, whoever runs the CLI.
+ */
+function assertCopilotDbMode(dbPath: string, action: "read" | "write"): void {
+  let mode: number;
+  try {
+    mode = statSync(dbPath).mode;
+  } catch {
+    // Missing/unstattable: let SQLite (or the caller's existsSync gate)
+    // report it with its own message.
+    return;
+  }
+  if ((mode & (action === "read" ? 0o444 : 0o222)) !== 0) return;
+  throw Object.assign(new Error(`unable to open database file: EACCES '${dbPath}'`), {
+    code: "EACCES",
+  });
+}
+
 /** Execute a batch of statements as one atomic unit; any failure rolls back all. */
 export async function execCopilotSql(dbPath: string, statements: string[]): Promise<void> {
   if (statements.length === 0) return;
+  assertCopilotDbMode(dbPath, "write");
   const Database = await loadDatabaseSync();
   if (Database) {
     const db = new Database(dbPath);
@@ -99,7 +150,7 @@ export async function execCopilotSql(dbPath: string, statements: string[]): Prom
   // sqlite3 auto-commits per statement; the explicit BEGIN/COMMIT is what
   // makes the batch atomic, matching the node:sqlite path above. -bail stops
   // the shell at the first error so a mid-batch failure never reaches COMMIT.
-  const result = spawnSync("sqlite3", ["-bail", dbPath], {
+  const result = runSqlite3(["-bail", dbPath], {
     input: `BEGIN;\n${statements.join("\n")}\nCOMMIT;`,
     encoding: "utf8",
   });
@@ -116,6 +167,7 @@ export async function execCopilotSql(dbPath: string, statements: string[]): Prom
  * a transaction — call it after the delete batch commits.
  */
 export async function vacuumCopilotSql(dbPath: string): Promise<void> {
+  assertCopilotDbMode(dbPath, "write");
   const Database = await loadDatabaseSync();
   if (Database) {
     const db = new Database(dbPath);
@@ -126,7 +178,7 @@ export async function vacuumCopilotSql(dbPath: string): Promise<void> {
     }
     return;
   }
-  const result = spawnSync("sqlite3", ["-bail", dbPath], { input: "VACUUM;", encoding: "utf8" });
+  const result = runSqlite3(["-bail", dbPath], { input: "VACUUM;", encoding: "utf8" });
   if (result.error) throw new Error(`sqlite3 failed: ${result.error.message}`);
   if (result.status !== 0) {
     throw new Error(`sqlite3 exited ${result.status}: ${(result.stderr ?? "").trim()}`);
@@ -139,6 +191,7 @@ export async function queryCopilotSql(
   sql: string,
 ): Promise<Record<string, string | number | null>[]> {
   if (!existsSync(dbPath)) return [];
+  assertCopilotDbMode(dbPath, "read");
   const Database = await loadDatabaseSync();
   if (Database) {
     const db = new Database(dbPath, { readOnly: true });
@@ -151,7 +204,7 @@ export async function queryCopilotSql(
       db.close();
     }
   }
-  const result = spawnSync("sqlite3", ["-json", dbPath, sql], {
+  const result = runSqlite3(["-json", dbPath, sql], {
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
   });
@@ -176,12 +229,13 @@ export function newCopilotProviderId(): string {
 export type CopilotAppModel = {
   id: string;
   name: string;
-  contextWindow: number;
+  maxPromptTokens: number;
+  maxOutputTokens: number | null;
   /** JSON text of the effort list; the app hides its picker for NULL. */
   reasoningEfforts: string;
 };
 
 /** The provider_models INSERT for one model; the column list lives here only. */
 export function copilotModelInsert(providerId: string, model: CopilotAppModel): string {
-  return `INSERT INTO provider_models (id, provider_id, model_id, wire_model, display_name, max_prompt_tokens, max_output_tokens, wire_api_override, supported_reasoning_efforts) VALUES (${sqlString(randomUUID())}, ${sqlString(providerId)}, ${sqlString(model.id)}, ${sqlString(model.id)}, ${sqlString(model.name)}, ${sqlNumberOrNull(model.contextWindow)}, ${sqlNumberOrNull(model.contextWindow)}, ${sqlString("completions")}, ${sqlTextOrNull(model.reasoningEfforts)});`;
+  return `INSERT INTO provider_models (id, provider_id, model_id, wire_model, display_name, max_prompt_tokens, max_output_tokens, wire_api_override, supported_reasoning_efforts) VALUES (${sqlString(randomUUID())}, ${sqlString(providerId)}, ${sqlString(model.id)}, ${sqlString(model.id)}, ${sqlString(model.name)}, ${sqlNumberOrNull(model.maxPromptTokens)}, ${sqlNumberOrNull(model.maxOutputTokens)}, ${sqlString("completions")}, ${sqlTextOrNull(model.reasoningEfforts)});`;
 }

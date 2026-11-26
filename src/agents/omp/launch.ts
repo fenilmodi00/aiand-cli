@@ -1,9 +1,9 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { agentHome, writeFileAtomic } from "../../config.js";
+import { agentHome } from "../../config.js";
 import { PRIVATE_FILE_MODE } from "../../fsutil.js";
 import { resolveDefault } from "../catalog.js";
-import { createSessionOverlay, readTextIfExists } from "../managed-file.js";
+import { createSessionOverlay, readTextIfExists, writeKeyFile } from "../managed-file.js";
 import type { SessionLaunchInput } from "../types.js";
 import {
   buildOmpProviderBlock,
@@ -106,8 +106,9 @@ export async function ompRefreshKey(input: {
   // A rotation swaps only the key it replaced: a config baked from another
   // profile keeps routing to that profile's org.
   if (input.previousKey !== undefined && bakedKey !== input.previousKey) return false;
-  await writeFileAtomic(ompModelsPath(), editOmpProviderBlock(raw, "apiKey", input.apiKey), {
+  await writeKeyFile(ompModelsPath(), editOmpProviderBlock(raw, "apiKey", input.apiKey), {
     mode: PRIVATE_FILE_MODE,
+    agentId: "omp",
   });
   return true;
 }

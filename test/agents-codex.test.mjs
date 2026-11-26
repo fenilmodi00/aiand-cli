@@ -22,10 +22,20 @@ withTestEnv("aiand-codex-test-", (dir) => {
   process.env.PATH = [join(dir, "launcher"), process.env.PATH].filter(Boolean).join(delimiter);
 });
 
-const { codexAdapter } = await import("../dist/agents/codex/adapter.js");
-const { pickWindowsExecutable } = await import("../dist/cli/win-spawn.js");
+const { codexAdapter, resolveAuthLauncher } = await import("../dist/agents/codex/adapter.js");
 const { CliError } = await import("../dist/cli/errors.js");
 const { hasSnapshot, snapshotFiles } = await import("../dist/agents/snapshot.js");
+
+// The auth table as this platform bakes it: bare `aiand` on POSIX, node plus
+// this install's entry script on Windows (no shim, no PATH walk).
+const WIN = process.platform === "win32";
+const ENTRY = join(import.meta.dirname, "..", "dist", "index.js");
+const authCommand = WIN ? JSON.stringify(process.execPath) : '"aiand"';
+const authArgs = (...rest) =>
+  `[${[...(WIN ? [ENTRY] : []), "key", "export", ...rest].map((a) => JSON.stringify(a)).join(", ")}]`;
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const authCommandPattern = () => new RegExp(`command = ${literal(authCommand)}`);
+const authArgsPattern = (...rest) => new RegExp(`^args = ${literal(authArgs(...rest))}$`, "m");
 
 const KIMI = "moonshotai/kimi-k3";
 const GLM = "zai-org/glm-5.3";
@@ -82,6 +92,14 @@ beforeEach(() => {
 });
 
 describe("codex on", () => {
+  test("bakedBaseUrl(): reads back the https://api.aiand.com/v1 `on` baked, and nothing once off", async () => {
+    assert.equal(await codexAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await codexAdapter.enable(enableInput());
+    assert.equal(await codexAdapter.bakedBaseUrl(), "https://api.aiand.com/v1");
+    await codexAdapter.disable();
+    assert.equal(await codexAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
   test("writes a profile that asks aiand for the key and turns hosted tools off", async () => {
     const result = await codexAdapter.enable(enableInput());
     const text = readProfile();
@@ -95,7 +113,10 @@ describe("codex on", () => {
     // without a PATHEXT lookup (same assertion as scripts/e2e.mjs:415).
     assert.match(
       text,
-      /^\[model_providers\.aiand\.auth\]\ncommand = "(?:aiand|.*\\aiand\.cmd)"\nargs = \["key", "export"\]$/m,
+      new RegExp(
+        `^\\[model_providers\\.aiand\\.auth\\]\\ncommand = ${literal(authCommand)}\\nargs = ${literal(authArgs("--for", "https://api.aiand.com"))}$`,
+        "m",
+      ),
     );
     assert.match(text, /^in_app_browser = false\nview_image = false$/m);
     assert.doesNotMatch(text, /\[tools\]/);
@@ -155,7 +176,7 @@ describe("codex on", () => {
     await codexAdapter.enableGuard({ force: true });
     await snapshotFiles("codex", [profilePath()]);
     await codexAdapter.enable(enableInput());
-    assert.match(readProfile(), /command = "(?:aiand|.*\\aiand\.cmd)"/);
+    assert.match(readProfile(), authCommandPattern());
     const off = await codexAdapter.disable();
     assert.ok(off.notes.some((n) => n.includes("aiand restore codex --force")));
   });
@@ -215,11 +236,57 @@ describe("codex on", () => {
 });
 
 describe("codex on, the profile's own shapes", () => {
+  test("names the origin Codex sends to, so key export can refuse another's credential", async () => {
+    await codexAdapter.enable(enableInput({ baseUrl: "https://staging.example.com/" }));
+    assert.match(readProfile(), /^base_url = "https:\/\/staging\.example\.com\/v1"$/m);
+    assert.match(readProfile(), authArgsPattern("--for", "https://staging.example.com"));
+  });
+
+  test("a config written before --for is still ours", async () => {
+    seed(
+      HAND_WRITTEN.replace('command = "sh"', `command = ${authCommand}`).replace(
+        /args = .*/,
+        `args = ${authArgs()}`,
+      ),
+    );
+    assert.equal((await codexAdapter.probe()).active, true);
+    assert.equal((await codexAdapter.disable()).stripped, true);
+  });
+
+  test("warns when the env key's endpoint is not the one the stored login was issued for", async () => {
+    const config = await import("../dist/config.js");
+    const stash = process.env.AIAND_KEY_STORAGE;
+    process.env.AIAND_KEY_STORAGE = "plaintext";
+    try {
+      await config.saveCredential("default", {
+        access_token: "sk-stored",
+        origin: "paste",
+        bound_to: { auth_url: "https://api.aiand.com", api_url: "https://api.aiand.com" },
+      });
+      const staging = await codexAdapter.enable(
+        enableInput({ baseUrl: "https://staging.example.com" }),
+      );
+      assert.ok(
+        staging.warnings.some((w) => /issued for https:\/\/api\.aiand\.com/.test(w)),
+        staging.warnings.join("\n"),
+      );
+      const same = await codexAdapter.enable(enableInput());
+      assert.ok(!same.warnings.some((w) => /issued for/.test(w)));
+    } finally {
+      await config.clearCredential("default");
+      if (stash === undefined) delete process.env.AIAND_KEY_STORAGE;
+      else process.env.AIAND_KEY_STORAGE = stash;
+    }
+  });
+
   test("pins the aiand profile only when it is not the active one", async () => {
     await codexAdapter.enable(enableInput({ profileName: "work" }));
-    assert.match(readProfile(), /^args = \["key", "export", "--profile", "work"\]$/m);
+    assert.match(
+      readProfile(),
+      authArgsPattern("--profile", "work", "--for", "https://api.aiand.com"),
+    );
     await codexAdapter.enable(enableInput());
-    assert.match(readProfile(), /^args = \["key", "export"\]$/m);
+    assert.match(readProfile(), authArgsPattern("--for", "https://api.aiand.com"));
   });
 
   test("logging out another profile leaves a profile pinned to work alone", async () => {
@@ -369,16 +436,64 @@ describe("codex status and keys", () => {
     assert.equal((await codexAdapter.probe()).active, true);
   });
 
-  test("on Windows, the shim Codex can spawn wins over the extensionless launcher", () => {
-    const where = "C:\\Users\\me\\.local\\bin\\aiand\r\nC:\\Users\\me\\.local\\bin\\aiand.cmd\r\n";
-    const env = { PATHEXT: ".COM;.EXE;.BAT;.CMD" };
-    assert.equal(pickWindowsExecutable(where, env), "C:\\Users\\me\\.local\\bin\\aiand.cmd");
-    assert.equal(pickWindowsExecutable("", env), null);
+  test("on Windows, the baked auth command is node plus this install's entry script, no shim", () => {
+    const node = {
+      execPath: "C:\\Program Files\\nodejs\\node.exe",
+      entry: "C:\\aiand\\dist\\index.js",
+    };
+    // No PATH walk at all: an npm shim would run a bare `node` out of Codex's working directory.
+    const never = () => assert.fail("Windows must not look aiand up on PATH");
+    assert.deepEqual(resolveAuthLauncher("win32", never, node), {
+      command: node.execPath,
+      lead: [node.entry],
+    });
+  });
+
+  test("on POSIX the bare name is baked once aiand resolves outside the cwd", () => {
+    assert.deepEqual(
+      resolveAuthLauncher("linux", () => "/opt/aiand/bin/aiand"),
+      { command: "aiand", lead: [] },
+    );
+    assert.equal(
+      resolveAuthLauncher("darwin", () => null),
+      null,
+    );
+  });
+
+  test("a node + dist\\index.js auth command (what Windows bakes) marks the profile as ours", async () => {
+    await codexAdapter.enable(enableInput());
+    seed(
+      readProfile()
+        .replace('command = "aiand"', 'command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"')
+        .replace(
+          'args = ["key", "export"',
+          'args = ["C:\\\\Users\\\\me\\\\aiand\\\\dist\\\\index.js", "key", "export"',
+        ),
+    );
+    assert.match(readProfile(), /node\.exe"/);
+    assert.match(readProfile(), /dist\\\\index\.js", "key", "export", "--for"/);
+    assert.equal((await codexAdapter.probe()).active, true);
+  });
+
+  test("another node script is not ours, and neither is an extra argument before key export", async () => {
+    await codexAdapter.enable(enableInput());
+    const baked = readProfile();
+    for (const [command, lead] of [
+      ['"node"', '"other.js", '],
+      ['"node"', '"C:\\\\x\\\\dist\\\\index.js", "--flag", '],
+    ]) {
+      const swapped = baked
+        .replace(`command = ${authCommand}`, `command = ${command}`)
+        .replace(`args = ${authArgs().slice(0, -1)}`, `args = [${lead}"key", "export"`);
+      assert.notEqual(swapped, baked);
+      seed(swapped);
+      assert.equal((await codexAdapter.probe()).active, false, `${command} ${lead}`);
+    }
   });
 
   test("a trailing comment on a key line keeps the profile ours", async () => {
     await codexAdapter.enable(enableInput());
-    seed(readProfile().replace('command = "aiand"', 'command = "aiand"  # mine'));
+    seed(readProfile().replace(`command = ${authCommand}`, `command = ${authCommand}  # mine`));
     assert.equal((await codexAdapter.probe()).active, true);
   });
 
@@ -413,7 +528,7 @@ describe("codex sessionLaunch", () => {
     assert.ok(overrides.includes('model_provider="aiand"'));
     assert.ok(
       overrides.includes(
-        `model_providers.aiand={name = "ai&", base_url = "https://api.aiand.com/v1", wire_api = "responses", http_headers = {x-aiand-agent = "codex"}, auth = {command = ${JSON.stringify(process.execPath)}, args = ${JSON.stringify([process.argv[1], "key", "export", "--profile", "work"]).replaceAll(",", ", ")}}}`,
+        `model_providers.aiand={name = "ai&", base_url = "https://api.aiand.com/v1", wire_api = "responses", http_headers = {x-aiand-agent = "codex"}, auth = {command = ${JSON.stringify(process.execPath)}, args = ${JSON.stringify([process.argv[1], "key", "export", "--profile", "work", "--for", "https://api.aiand.com"]).replaceAll(",", ", ")}}}`,
       ),
     );
     assert.ok(overrides.includes("features.image_generation=false"));

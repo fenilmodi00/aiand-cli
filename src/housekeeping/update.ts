@@ -3,6 +3,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { publicJson, VERSION } from "../api/client.js";
+import { scrubAgentEnv } from "../cli/spawn-env.js";
 import { resolveWindowsCommand } from "../cli/win-spawn.js";
 import { configDir, writeFileAtomic } from "../config.js";
 import { DAY_MS, HOUR_MS, SECOND_MS } from "../time.js";
@@ -45,6 +46,9 @@ function updateDisabled(env: NodeJS.ProcessEnv): boolean {
   return env.AIAND_UPDATE_CHECK === "0" || env.NO_UPDATE_CHECK === "1" || env.CI !== undefined;
 }
 
+/** A registry `version` is printed in the update notice, so only a version-shaped string counts. */
+const VERSION_SHAPE = /^v?\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+
 function updateCachePath(): string {
   return join(configDir(), "update-check.json");
 }
@@ -56,7 +60,10 @@ function readUpdateCache(): UpdateCache | null {
     return {
       checkedAt: parsed.checkedAt,
       ok: parsed.ok,
-      latest: typeof parsed.latest === "string" ? parsed.latest : undefined,
+      latest:
+        typeof parsed.latest === "string" && VERSION_SHAPE.test(parsed.latest)
+          ? parsed.latest
+          : undefined,
     };
   } catch {
     return null;
@@ -139,7 +146,9 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       clearTimeout(timer);
     }
     const latest = data?.version;
-    if (typeof latest !== "string") throw new Error("registry response missing version");
+    if (typeof latest !== "string" || !VERSION_SHAPE.test(latest)) {
+      throw new Error("registry response has no usable version");
+    }
     const payload: UpdateCache = { checkedAt: Date.now(), ok: true, latest };
     await writeUpdateCache(payload).catch(() => {});
     return shouldOfferUpdate(latest, VERSION) ? { current: VERSION, latest } : null;
@@ -215,16 +224,17 @@ function isAiandCheckout(path: string): boolean {
 /**
  * Run `command` with inherited stdio and resolve its exit code (null when
  * the child was killed outright). `extraEnv` layers on top of the parent
- * env, which is always scrubbed of AIAND_API_KEY first: an installer runs
- * third-party code and must never inherit the session key.
+ * env, and the result is scrubbed of both CLI secrets (AIAND_API_KEY, the
+ * store master key) whatever the source: an installer runs third-party code
+ * and must never inherit either. PATH/HOME and every other variable a real
+ * installer needs pass through untouched.
  */
 export async function runInstallScript(
   command: string,
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<number | null> {
-  const env = { ...process.env, ...extraEnv };
-  delete env.AIAND_API_KEY;
+  const env = scrubAgentEnv({ ...process.env, ...extraEnv });
   const { promise, resolve, reject } = Promise.withResolvers<number | null>();
   // npm is a .cmd shim on Windows, which cannot be spawned directly.
   const resolved = process.platform === "win32" ? resolveWindowsCommand(command, args, env) : null;

@@ -8,12 +8,16 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { join, matchesGlob, resolve } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { enableInput as baseEnableInput, catalogModel, withTestEnv } from "./helpers.mjs";
+import {
+  assertMode,
+  enableInput as baseEnableInput,
+  catalogModel,
+  withTestEnv,
+} from "./helpers.mjs";
 
 withTestEnv("aiand-pi-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
@@ -120,6 +124,15 @@ describe("pi adapter", () => {
     assert.equal((await piAdapter.probe()).active, false);
   });
 
+  test("bakedBaseUrl(): reads back the URL `on` baked, and nothing once off", async () => {
+    seedUserFiles();
+    assert.equal(await piAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await piAdapter.enable(enableInput());
+    assert.equal(await piAdapter.bakedBaseUrl(), "https://api.aiand.com/v1");
+    await piAdapter.disable();
+    assert.equal(await piAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
   test("enable(): wires provider, credential, and defaults; keeps unrelated keys", async () => {
     seedUserFiles();
     const result = await piAdapter.enable(enableInput());
@@ -159,8 +172,7 @@ describe("pi adapter", () => {
     if (process.platform === "win32") return;
     seedUserFiles();
     await piAdapter.enable(enableInput());
-    const mode = statSync(authPath()).mode & 0o777;
-    assert.equal(mode, 0o600);
+    assertMode(authPath(), 0o600);
   });
 
   test("model entry shape: vision maps to image input, reasoning, cost", () => {
@@ -207,7 +219,11 @@ describe("pi adapter", () => {
       max: "max",
     });
     assert.equal(entry.compat.supportsReasoningEffort, true);
-    const provider = buildPiProvider({ baseUrl: "https://gw.example/v1", catalog: [glm] });
+    const provider = buildPiProvider({
+      baseUrl: "https://gw.example/v1",
+      catalog: [glm],
+      agentId: "pi",
+    });
     assert.equal(provider.compat, undefined);
     const plain = piModelEntry(catalogModel("qwen/qwen3.8-27b"));
     assert.equal(plain.thinkingLevelMap, undefined);
@@ -215,7 +231,11 @@ describe("pi adapter", () => {
   });
 
   test("buildPiProvider renders the catalog with live-gateway compat", () => {
-    const provider = buildPiProvider({ baseUrl: "https://gw.example/v1", catalog: CATALOG });
+    const provider = buildPiProvider({
+      baseUrl: "https://gw.example/v1",
+      catalog: CATALOG,
+      agentId: "pi",
+    });
     assert.equal(provider.name, "ai&");
     assert.equal(provider.api, "openai-completions");
     assert.deepEqual(provider.headers, { "x-aiand-agent": "pi" });
@@ -523,6 +543,73 @@ describe("pi adapter", () => {
     }
   });
 
+  test("off: a moved dir whose marker a Pi rewrite dropped still loses the credential", async () => {
+    const seed = seedUserFiles();
+    await piAdapter.enable(enableInput());
+    // Pi rewrote auth.json without our unknown key, then the dir moved.
+    const auth = readJson(authPath());
+    delete auth.aiand.managedBy;
+    writeJson(authPath(), auth);
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      const result = await piAdapter.disable();
+      assert.equal(result.stripped, true);
+      // The routing the record names proves the stale credential ours.
+      assert.equal(readJson(authPath()).aiand, undefined, "no baked key left behind");
+      assert.equal(readJson(authPath()).openai.key, "sk-user-openai");
+      assert.equal(readFileSync(modelsPath()).equals(seed.models), true);
+      assert.equal(readFileSync(settingsPath()).equals(seed.settings), true);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
+  test("off: a moved dir's block the user reshaped (same baseUrl) is theirs", async () => {
+    seedUserFiles();
+    await piAdapter.enable(enableInput());
+    const models = readJson(modelsPath());
+    models.providers.aiand.api = "openai-responses";
+    writeJson(modelsPath(), models);
+    const staleModels = readFileSync(modelsPath());
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      const result = await piAdapter.disable();
+      assert.ok(result.notes.some((n) => n.includes("left providers.aiand in")));
+      assert.equal(readFileSync(modelsPath()).equals(staleModels), true);
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+  });
+
+  test("off: a retry after a part-way off finishes, with the marker removed last", async () => {
+    const seed = seedUserFiles();
+    await piAdapter.enable(enableInput());
+    // What a first off leaves when it stops before auth.json: the block is
+    // gone and the defaults are handed back, but the marked credential
+    // (removed last) is still there.
+    const models = readJson(modelsPath());
+    delete models.providers.aiand;
+    writeJson(modelsPath(), models);
+    writeFileSync(settingsPath(), seed.settings);
+    const result = await piAdapter.disable();
+    assert.equal(result.stripped, true);
+    assert.ok(
+      !result.notes.some((n) => n.includes("left providers.aiand")),
+      result.notes.join("; "),
+    );
+    assert.equal(readFileSync(authPath()).equals(seed.auth), true);
+    assert.equal(existsSync(addedRecord()), false);
+  });
+
+  test("on, then on --model native: Pi's own defaults come back", async () => {
+    const seed = seedUserFiles();
+    await piAdapter.enable(enableInput());
+    assert.equal(readJson(settingsPath()).defaultProvider, "aiand");
+    await piAdapter.enable(enableInput({ model: "native" }));
+    assert.equal(readFileSync(settingsPath()).equals(seed.settings), true);
+    assert.ok(readJson(modelsPath()).providers.aiand, "the provider stays wired");
+  });
+
   // restore --force refused the relocated paths the
   // manifest still holds once the relocation env was unset
   test("managedFiles(): the recorded paths survive a config-dir move for restore", async () => {
@@ -614,7 +701,7 @@ describe("pi adapter", () => {
     chmodSync(authPath(), 0o600);
     await piAdapter.enable(enableInput());
     await piAdapter.disable();
-    assert.equal(statSync(authPath()).mode & 0o777, 0o600);
+    assertMode(authPath(), 0o600);
     assert.equal(readFileSync(authPath()).equals(seed.auth), true);
   });
 
@@ -630,7 +717,7 @@ describe("pi adapter", () => {
       openai: { type: "api_key", key: "sk-user-openai" },
     });
     await piAdapter.disable();
-    assert.equal(statSync(authPath()).mode & 0o777, 0o600);
+    assertMode(authPath(), 0o600);
     assert.deepEqual(readJson(authPath()), { openai: { type: "api_key", key: "sk-user-openai" } });
   });
 

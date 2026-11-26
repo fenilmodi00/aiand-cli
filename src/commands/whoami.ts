@@ -1,7 +1,7 @@
 import { classifySource, probeIdentity, sourceLabel, storageLabel } from "../auth/identity.js";
 import { bool, parse, str } from "../cli/args.js";
 import { CliError, NotLoggedInError } from "../cli/errors.js";
-import { fields, json, out, style } from "../cli/output.js";
+import { fields, json, out, style, styled } from "../cli/output.js";
 import { CREDENTIAL_ORIGIN, maskKey } from "../config.js";
 import { SECOND_MS } from "../time.js";
 
@@ -72,14 +72,14 @@ export async function run(argv: string[]): Promise<void> {
     });
   }
   fields([
-    ["email", user?.email || style.dim("unknown")],
-    ["user id", user?.id ?? style.dim("unknown")],
-    ["org", org ? `${org.name} ${style.dim(`(${org.id})`)}` : style.dim("none")],
+    ["email", user?.email || styled(style.dim, "unknown")],
+    ["user id", user?.id || styled(style.dim, "unknown")],
+    ["org", org ? [`${org.name} `, styled(style.dim, `(${org.id})`)] : styled(style.dim, "none")],
     ["profile", profile.name],
-    ["api", style.dim(profile.apiUrl)],
-    ["key", style.dim(maskKey(session.token))],
-    ["source", style.dim(sourceLabel(session.credential))],
-    ["storage", style.dim(storageLabel(storage))],
+    ["api", styled(style.dim, profile.apiUrl)],
+    ["key", styled(style.dim, maskKey(session.token))],
+    ["source", styled(style.dim, sourceLabel(session.credential))],
+    ["storage", styled(style.dim, storageLabel(storage, cached))],
     ["expires", expires],
   ]);
 }

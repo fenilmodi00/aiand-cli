@@ -3,6 +3,8 @@
 // nested mappings, scalars, block sequences and comments. Anything outside
 // that subset is a SyntaxError — fail loud, never silently mis-parse.
 
+import { parseDoubleQuoted, parseScalar, quoteYaml, renderScalar } from "./yaml-scalar.js";
+
 export type YamlValue =
   | string
   | number
@@ -11,90 +13,12 @@ export type YamlValue =
   | YamlValue[]
   | { [key: string]: YamlValue };
 
-const NUMBER = /^[+-]?(?:\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+)$/;
 // `key:` or `key: value` — quoted or bare keys; the value may hold colons.
 const KEY_LINE = /^("(?:[^"\\]|\\.)*"|'[^']*'|[^:#\s"'][^:#]*?)\s*:(?:[ \t]+(.*))?$/;
 // `-` or `- item` — a sequence entry.
 const SEQ_LINE = /^-(?:[ \t]+(.*))?$/;
 
-// YAML double-quoted escapes (YAML 1.2 §5.7); JSON.parse rejects the
-// YAML-only ones (`\_`, `\L`, `\a`, ...) that omp's writer emits.
-const YAML_ESCAPES: Record<string, string> = {
-  "0": "\0",
-  a: "\x07",
-  b: "\b",
-  t: "\t",
-  "\t": "\t",
-  n: "\n",
-  v: "\v",
-  f: "\f",
-  r: "\r",
-  e: "\x1b",
-  " ": " ",
-  '"': '"',
-  "/": "/",
-  "\\": "\\",
-  N: "\x85",
-  _: "\xa0",
-  L: "\u2028",
-  P: "\u2029",
-};
-
-function parseDoubleQuoted(text: string): string {
-  if (!/^"(?:[^"\\]|\\[\s\S])*"$/.test(text)) {
-    throw new SyntaxError(`bad double-quoted scalar: ${text}`);
-  }
-  return text
-    .slice(1, -1)
-    .replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[\s\S])/g, (_, esc: string) => {
-      if (esc.length > 1) return String.fromCodePoint(Number.parseInt(esc.slice(1), 16));
-      const out = YAML_ESCAPES[esc];
-      if (out === undefined) throw new SyntaxError(`bad escape \\${esc} in: ${text}`);
-      return out;
-    });
-}
-
-/** A scalar's value: quoted strings stay strings, `null`/`true`/`false` and
- * JSON-number shapes map to their type, everything else is a bare string
- * (model selectors like `aiand/zai-org/glm-5.3` included). */
-export function parseScalar(raw: string): YamlValue {
-  const text = raw.trim();
-  if (text === "" || text === "~" || text === "null") return null;
-  if (text === "true") return true;
-  if (text === "false") return false;
-  if (text.startsWith('"')) return parseDoubleQuoted(text);
-  if (text.startsWith("'")) {
-    if (text.length < 2 || !text.endsWith("'")) {
-      throw new SyntaxError(`bad single-quoted scalar: ${text}`);
-    }
-    return text.slice(1, -1).replace(/''/g, "'");
-  }
-  if (NUMBER.test(text)) return Number(text);
-  return text;
-}
-
-/** Render a scalar the parser reads back identically. */
-export function renderScalar(value: string | number | boolean | null): string {
-  if (value === null) return "null";
-  if (typeof value !== "string") return String(value);
-  if (
-    value === "" ||
-    value === "~" ||
-    value === "null" ||
-    value === "true" ||
-    value === "false" ||
-    NUMBER.test(value) ||
-    value !== value.trim() ||
-    /^["'#&*!|>%@`[\]{}?:,-]/.test(value) ||
-    value.includes(": ") ||
-    value.endsWith(":") ||
-    value.includes(" #") ||
-    value.includes("\n")
-  ) {
-    return JSON.stringify(value);
-  }
-  return value;
-}
+export { parseScalar, renderScalar } from "./yaml-scalar.js";
 
 /** Index of a `#` that starts a comment: outside quotes, after whitespace. */
 function findComment(text: string): number {
@@ -127,7 +51,7 @@ function stripComment(text: string): string {
 function unquoteKey(key: string): string {
   if (key.startsWith('"')) {
     try {
-      return JSON.parse(key) as string;
+      return parseDoubleQuoted(key);
     } catch {
       throw new SyntaxError(`bad double-quoted key: ${key}`);
     }
@@ -461,7 +385,7 @@ function childMapping(lines: string[], keyIndex: number, keyIndent: number): Map
 /** A generated key, quoted when a bare form would not parse back
  * as the same key (a `:` or `#` in it, or a leading `#`). */
 function renderKey(key: string): string {
-  return parseKeyLine(`${key}: v`)?.key === key ? key : JSON.stringify(key);
+  return parseKeyLine(`${key}: v`)?.key === key ? key : quoteYaml(key);
 }
 
 /** One mapping entry rendered as lines: scalars inline, nested maps and

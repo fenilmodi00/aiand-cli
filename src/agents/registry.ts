@@ -3,6 +3,7 @@ import { codexAdapter } from "./codex/adapter.js";
 import { copilotAdapter } from "./copilot/adapter.js";
 import { copilotAppAdapter } from "./copilot-app/adapter.js";
 import { hermesAdapter } from "./hermes/adapter.js";
+import { jouzuAdapter } from "./jouzu/adapter.js";
 import { ompAdapter } from "./omp/adapter.js";
 import { opencodeAdapter } from "./opencode/adapter.js";
 import { piAdapter } from "./pi/adapter.js";
@@ -18,6 +19,7 @@ const registered: AgentAdapter[] = [
   copilotAdapter,
   copilotAppAdapter,
   hermesAdapter,
+  jouzuAdapter,
 ];
 
 export const AGENTS: readonly AgentAdapter[] = registered;
@@ -33,4 +35,10 @@ export function findAgent(name: string): AgentAdapter | undefined {
   return AGENTS.find(
     (adapter) => adapter.id === name || adapter.aliases?.some((alias) => alias === name),
   );
+}
+
+/** An agent's marker check (does a managed file's text carry our wiring), by id. */
+export function wiringCheckFor(agentId: string): ((text: string) => boolean) | undefined {
+  const adapter = findAgent(agentId);
+  return adapter?.carriesWiring?.bind(adapter);
 }

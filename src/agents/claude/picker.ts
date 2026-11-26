@@ -13,12 +13,14 @@ const PICKER_KEY = "modelPicker";
 type PickerRow = { model: string; label: string; description: string };
 export type ModelPicker = { options: PickerRow[]; replaceBuiltInOptions: boolean };
 
-const TOKENS_PER_K = 1024;
-
+/** Picker labels describe the published window, independently of the startup hint. */
 function contextLabel(tokens: number): string {
-  if (!(tokens > 0)) return "";
-  const k = Math.round(tokens / TOKENS_PER_K);
-  return k >= TOKENS_PER_K ? ` · ${Math.round(k / TOKENS_PER_K)}M context` : ` · ${k}K context`;
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) return "";
+  if (tokens >= 1_000_000) {
+    return ` · ${Number((tokens / (tokens % 1000 === 0 ? 1_000_000 : 1_048_576)).toFixed(2))}M context`;
+  }
+  const k = tokens % 1000 === 0 ? tokens / 1000 : Math.round(tokens / 1024);
+  return ` · ${k}K context`;
 }
 
 export function buildModelPicker(catalog: Model[]): ModelPicker {
@@ -26,7 +28,7 @@ export function buildModelPicker(catalog: Model[]): ModelPicker {
     options: catalog.map((model) => ({
       model: model.id,
       label: modelLabel(model.id),
-      description: `ai& · ${visionLabel(model)}${contextLabel(model.context_window)}`,
+      description: `ai&${contextLabel(model.context_window)}${visionLabel(model) === "text-only" ? " · text only" : ""}`,
     })),
     // The built-in Opus, Sonnet and Haiku rows would run ai&'s slot models
     // under Anthropic names, so the picker shows only ai&'s own.

@@ -143,8 +143,75 @@ describe("logs footer and paging", () => {
   });
 });
 
+describe("logs with hostile or malformed fields", () => {
+  const BAD = "\x1b]52;c;Y3VybA==\x07\x1b[2J";
+  const hostile = () =>
+    entry("log-h", {
+      model: `m/x${BAD}`,
+      input_tokens: `5${BAD}`,
+      output_tokens: { evil: BAD },
+      latency_ms: `100${BAD}ms`,
+      ttft_ms: "NaN",
+      status_code: `200${BAD}`,
+      cost: `0.1${BAD}`,
+      api_key: `sk${BAD}`,
+      // An hour ago, so the "when" cell never grows a number the assertions below could match.
+      created_at: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+
+  test("the table prints - for a numeric field that is not a finite number", async () => {
+    handler = () => ({ data: [hostile()], has_more: false, next_after: null, next_after_id: null });
+    const { code, stdout } = await cli(["logs"]);
+    assert.equal(code, 0);
+    assert.ok(!stdout.includes("\x1b") && !stdout.includes("\x07"), JSON.stringify(stdout));
+    assert.ok(!stdout.includes("Y3VybA=="), stdout);
+    const row = stdout.split("\n").find((line) => line.split(/\s{2,}/).includes("x"));
+    assert.ok(row, stdout);
+    assert.doesNotMatch(row, /m\/x/);
+    assert.doesNotMatch(row, /evil|NaN|100ms/);
+  });
+
+  test("--follow prints a hostile row as plain text with - for bad numbers", async () => {
+    let calls = 0;
+    handler = () => {
+      calls += 1;
+      return {
+        data: calls === 1 ? [] : [hostile()],
+        has_more: false,
+        next_after: null,
+        next_after_id: null,
+      };
+    };
+    const child = spawn(process.execPath, [BIN, "logs", "--follow", "--interval", "1"], {
+      env: childEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.resume();
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    try {
+      await waitFor(() => stdout.includes("\n"));
+      child.kill("SIGINT");
+      await closed;
+    } finally {
+      child.kill("SIGKILL");
+    }
+    assert.ok(!stdout.includes("\x1b") && !stdout.includes("\x07"), JSON.stringify(stdout));
+    assert.match(stdout, / {2}x {2}/, "follow prints the bare model label");
+    assert.match(stdout, /-\/- tok/);
+    assert.doesNotMatch(stdout, /evil|NaN/);
+  });
+});
+
 describe("logs --follow", () => {
-  test("exits promptly on SIGINT instead of waiting out --interval", async () => {
+  test("exits promptly on SIGINT instead of waiting out --interval", {
+    skip:
+      process.platform === "win32" &&
+      "Windows has no SIGINT to send a child: kill() ends it outright",
+  }, async () => {
     requests.length = 0;
     handler = () => ({ data: [], has_more: false, next_after: null, next_after_id: null });
     const seen = requests.length;

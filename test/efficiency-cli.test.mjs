@@ -18,6 +18,20 @@ const { normalizeEnvelope } = await import("../dist/agents/envelope.js");
 const { insertEnvelope } = await import("../dist/store/envelopes.js");
 const { openStore, storePath } = await import("../dist/store/index.js");
 
+// Fixture instants: two days back at 10:00 UTC. A relative anchor keeps every
+// window (the 7-day default, --last 30d, and the explicit pairs below) over
+// the seeded rows however long this suite lives, while the fixed UTC hour and
+// minute-scale offsets stay clear of midnight boundaries. The original
+// spacing — one request per minute with envelopes half a minute later — is
+// preserved.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const FIXTURE_BASE = new Date(Date.now() - 2 * DAY_MS);
+FIXTURE_BASE.setUTCHours(10, 0, 0, 0);
+const fixtureAt = (offsetMs) => new Date(FIXTURE_BASE.getTime() + offsetMs).toISOString();
+// Explicit --since/--until pair that always brackets the fixture rows (the
+// both-flags window branch the command supports).
+const FIXTURE_WINDOW = ["--since", fixtureAt(-DAY_MS), "--until", fixtureAt(DAY_MS)];
+
 // Seed a store with 4 request rows and 3 captured envelopes (75% coverage):
 // edit a.ts, then a shell command, then a.ts again — the exact CodeBurn retry
 // shape (one one-shot, one retry) — on a named branch.
@@ -34,10 +48,10 @@ function seedStore(dir) {
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const requests = [
-      ["r1", "2026-10-25T10:00:00.000Z", 0.1],
-      ["r2", "2026-10-25T10:01:00.000Z", 0.2],
-      ["r3", "2026-10-25T10:02:00.000Z", 0.3],
-      ["r4", "2026-10-25T10:03:00.000Z", 0.4],
+      ["r1", fixtureAt(0), 0.1],
+      ["r2", fixtureAt(60_000), 0.2],
+      ["r3", fixtureAt(120_000), 0.3],
+      ["r4", fixtureAt(180_000), 0.4],
     ];
     for (const [id, createdAt, cost] of requests) {
       insert.run(
@@ -69,9 +83,9 @@ function seedStore(dir) {
           gitBranch: branch,
         }),
       });
-    env("e1", "2026-10-25T10:00:30.000Z", ["Edit"], ["/repo/src/a.ts"], "feat/envelope");
-    env("e2", "2026-10-25T10:01:30.000Z", ["Bash"], [], "feat/envelope");
-    env("e3", "2026-10-25T10:02:30.000Z", ["Edit"], ["/repo/src/a.ts"], "feat/envelope");
+    env("e1", fixtureAt(30_000), ["Edit"], ["/repo/src/a.ts"], "feat/envelope");
+    env("e2", fixtureAt(90_000), ["Bash"], [], "feat/envelope");
+    env("e3", fixtureAt(150_000), ["Edit"], ["/repo/src/a.ts"], "feat/envelope");
     db.close();
   } finally {
     process.env.AIAND_CONFIG_DIR = previous;
@@ -92,8 +106,8 @@ describe("aiand efficiency", () => {
   test("--json payload: one-shot/retry, task mix, attribution, coverage notes", async () => {
     const dir = join(box.dir, "json");
     seedStore(dir);
-    // Pinned fixture dates: widen the window so the 7-day default cannot age
-    // the seeded rows out of view.
+    // Relative fixture instants: --last 30d always brackets the rows, so the
+    // report sees every seed regardless of when the suite runs.
     const { code, stdout } = await runCli(["efficiency", "--last", "30d", "--json"], {
       env: cliEnvFor(dir),
     });
@@ -229,7 +243,7 @@ function seedImported(db, rows) {
       r.outcome ?? null,
       r.seq ?? null,
       r.at ?? null,
-      r.imported_at ?? "2026-10-25T00:00:00.000Z",
+      r.imported_at ?? fixtureAt(0),
     );
   }
 }
@@ -250,7 +264,7 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "ok",
           seq: 0,
-          at: "2026-10-25T09:00:00.000Z",
+          at: fixtureAt(-60 * 60_000),
         },
         {
           dedup_key: "x2",
@@ -259,7 +273,7 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "error",
           seq: 1,
-          at: "2026-10-25T09:01:00.000Z",
+          at: fixtureAt(-59 * 60_000),
         },
         {
           dedup_key: "x3",
@@ -268,7 +282,7 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "ok",
           seq: 2,
-          at: "2026-10-25T09:02:00.000Z",
+          at: fixtureAt(-58 * 60_000),
         },
         {
           dedup_key: "x4",
@@ -277,7 +291,7 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "ok",
           seq: 3,
-          at: "2026-10-25T09:03:00.000Z",
+          at: fixtureAt(-57 * 60_000),
         },
         {
           dedup_key: "x5",
@@ -285,7 +299,7 @@ describe("aiand efficiency — imported markers (#146)", () => {
           session_id: "s1",
           kind: "terminal",
           outcome: "clean",
-          at: "2026-10-25T09:04:00.000Z",
+          at: fixtureAt(-56 * 60_000),
         },
         {
           dedup_key: "x6",
@@ -293,18 +307,15 @@ describe("aiand efficiency — imported markers (#146)", () => {
           session_id: "s2",
           kind: "terminal",
           outcome: "clean",
-          at: "2026-10-25T09:10:00.000Z",
+          at: fixtureAt(-50 * 60_000),
         },
         { dedup_key: "x7", harness: "codex", session_id: "s2", kind: "compaction", at: null },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(
-      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"],
-      {
-        env: cliEnvFor(dir),
-      },
-    );
+    const { code, stdout } = await runCli(["efficiency", ...FIXTURE_WINDOW, "--json"], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0, stdout);
     const payload = JSON.parse(stdout);
 
@@ -357,15 +368,15 @@ describe("aiand efficiency — imported markers (#146)", () => {
           "0.1",
           0.1,
           "USD",
-          `2026-10-25T10:0${i}:00.000Z`,
-          `2026-10-25T10:0${i}:00.000Z`,
+          fixtureAt(i * 60_000),
+          fixtureAt(i * 60_000),
         );
         insertEnvelope(opened.db, {
           id: `eb${i}`,
           agent: "claude",
           model: "zai-org/glm-5.3",
           apiKey: "sk-abcd…1234",
-          createdAt: `2026-10-25T10:0${i}:30.000Z`,
+          createdAt: fixtureAt(i * 60_000 + 30_000),
           envelope: normalizeEnvelope({
             tools: ["Bash", "Edit"],
             editTargets: ["/repo/src/a.ts"],
@@ -387,17 +398,14 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "error",
           seq: 0,
-          at: "2026-10-25T11:00:00.000Z",
+          at: fixtureAt(60 * 60_000),
         },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(
-      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30", "--json"],
-      {
-        env: cliEnvFor(dir),
-      },
-    );
+    const { code, stdout } = await runCli(["efficiency", ...FIXTURE_WINDOW, "--json"], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0, stdout);
     const payload = JSON.parse(stdout);
     const claude = payload.oneShotRetry.byHarness.find((s) => s.key === "claude");
@@ -424,17 +432,14 @@ describe("aiand efficiency — imported markers (#146)", () => {
           kind: "tool",
           outcome: "error",
           seq: 0,
-          at: "2026-10-25T09:00:00.000Z",
+          at: fixtureAt(-60 * 60_000),
         },
       ]);
       opened.db.close();
     });
-    const { code, stdout } = await runCli(
-      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"],
-      {
-        env: cliEnvFor(dir),
-      },
-    );
+    const { code, stdout } = await runCli(["efficiency", ...FIXTURE_WINDOW], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0, stdout);
     assert.match(stdout, /imported markers: 1 session\(s\) across 1 harness\(es\)/);
     assert.match(stdout, /tool errors 100% \(imported markers\)/);
@@ -443,12 +448,9 @@ describe("aiand efficiency — imported markers (#146)", () => {
   test("no imported markers: the human line instructs the backfill", async () => {
     const dir = join(box.dir, "imported-empty");
     seedStore(dir);
-    const { code, stdout } = await runCli(
-      ["efficiency", "--since", "2026-10-01", "--until", "2026-11-30"],
-      {
-        env: cliEnvFor(dir),
-      },
-    );
+    const { code, stdout } = await runCli(["efficiency", ...FIXTURE_WINDOW], {
+      env: cliEnvFor(dir),
+    });
     assert.equal(code, 0, stdout);
     assert.match(
       stdout,

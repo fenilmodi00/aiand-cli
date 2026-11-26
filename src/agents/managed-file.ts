@@ -1,11 +1,13 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { CliError } from "../cli/errors.js";
 import { writeFileAtomic } from "../config.js";
 import { PRIVATE_FILE_MODE } from "../fsutil.js";
-import { fileCreatedByUs } from "./snapshot.js";
+import { dotfilesRepoFor } from "./git-tree.js";
+import { makeOverlayDir } from "./overlays.js";
+import { fileCreatedByUs, hasGitOptIn, recordGitOptIn } from "./snapshot.js";
 
 /** A plain object's own record, or undefined for arrays, null and primitives. */
 export const asObject = (value: unknown): Record<string, unknown> | undefined =>
@@ -494,6 +496,77 @@ export async function writeStrippedJsonc(
   }
 }
 
+/** Set to 1 to let `on` write the key into a file inside a git work tree. */
+export const ALLOW_GIT_TRACKED_ENV = "AIAND_ALLOW_GIT_TRACKED";
+
+/** Where a write to `path` really lands: symlinks resolved, missing tail kept. */
+async function realTarget(path: string): Promise<string> {
+  let current = resolve(path);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return join(await realpath(current), ...tail);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const parent = dirname(current);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === current) return resolve(path);
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * The git work tree a write to `path` would land in, or null. Walks up from
+ * the real target for a `.git` entry (a directory, or the file a worktree or
+ * submodule uses), so a stow or chezmoi symlink into a dotfiles repo counts;
+ * failing that, looks for a bare-style dotfiles repository in HOME whose work
+ * tree covers the target.
+ */
+export async function gitWorkTreeFor(path: string): Promise<{ real: string; repo: string } | null> {
+  const real = await realTarget(path);
+  let dir = dirname(real);
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) return { real, repo: dir };
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const bare = await dotfilesRepoFor(real);
+  return bare === null ? null : { real, repo: bare };
+}
+
+/**
+ * writeFileAtomic for a file that will hold the ai& key. The atomic writer
+ * follows symlinks so stow and chezmoi links survive, which for a key file
+ * means the key lands in the dotfiles repo, one `git add -A` from being
+ * pushed. Refuse that unless the user opted in; files without the key keep
+ * following links as before. The opt-in is `AIAND_ALLOW_GIT_TRACKED=1` for
+ * this process, and is remembered per file for the agent, so the key rotation
+ * a later login runs (without the variable) still swaps the key it wrote.
+ */
+export async function writeKeyFile(
+  path: string,
+  data: string,
+  options: { mode?: number; agentId: string },
+): Promise<void> {
+  const tracked = await gitWorkTreeFor(path);
+  if (tracked !== null) {
+    if (process.env[ALLOW_GIT_TRACKED_ENV] === "1") {
+      await recordGitOptIn(options.agentId, tracked.real);
+    } else if (!(await hasGitOptIn(options.agentId, tracked.real))) {
+      const via = tracked.real === resolve(path) ? "" : ` (${path} links there)`;
+      throw new CliError(
+        `Refusing to write your ai& key into ${tracked.real}${via}: it is inside the git repository at ${tracked.repo}.`,
+        {
+          hint: `The key would show up in that repository's git status and could be committed. Replace the link with a real file outside the repository (for GNU Stow, unstow that package), or add the file to the repository's .gitignore and re-run with ${ALLOW_GIT_TRACKED_ENV}=1.`,
+        },
+      );
+    }
+  }
+  await writeFileAtomic(path, data, { mode: options.mode });
+}
+
 /**
  * A throwaway overlay dir holding `files` (name -> contents) at 0600. A
  * failed write removes the dir (and any half-written key file) before
@@ -503,10 +576,10 @@ export async function createSessionOverlay(
   prefix: string,
   files: Record<string, string>,
 ): Promise<{ dir: string; cleanup: () => Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), prefix));
+  const dir = await makeOverlayDir(prefix);
   try {
     for (const [name, contents] of Object.entries(files)) {
-      await writeFile(join(dir, name), contents, { mode: PRIVATE_FILE_MODE });
+      await writeFile(join(dir, name), contents, { mode: PRIVATE_FILE_MODE, flag: "wx" });
     }
   } catch (error) {
     await rm(dir, { recursive: true, force: true });

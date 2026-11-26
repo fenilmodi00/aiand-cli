@@ -13,7 +13,17 @@ import { getLogsPaged, LOG_RANGES } from "../api/logs.js";
 import { listModels } from "../api/models.js";
 import { bool, int, list, oneOf, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import {
+  currencySymbol,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  style,
+  styled,
+  table,
+} from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { storeBudgetWarning } from "../obs/forecast.js";
 import {
@@ -205,7 +215,7 @@ function printReport(report: CacheReport, by: GroupBy): void {
       { label: "saved by cache", value: `${currencySymbol("usd")}${report.savedUsd.toFixed(6)}` },
     ],
     [
-      { header: "", value: (r) => style.dim(r.label) },
+      { header: "", value: (r) => styled(style.dim, r.label) },
       { header: "", value: (r) => r.value, align: "right" },
     ],
   );
@@ -245,10 +255,10 @@ function printGroups(groups: CacheGroup[]): void {
         const text = percent(hit);
         const verdict = cacheVerdict(g);
         return verdict === "bad"
-          ? style.red(text)
+          ? styled(style.red, text)
           : verdict === "warn"
-            ? style.yellow(text)
-            : style.green(text);
+            ? styled(style.yellow, text)
+            : styled(style.green, text);
       },
       align: "right",
     },

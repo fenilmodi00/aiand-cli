@@ -17,9 +17,15 @@ const env = withTestEnv("aiand-key-test-", (dir) => {
 
 /**
  * Seed a pasted-key credential (no refresh_token, so openSession never
- * rotates/network-calls) in the plaintext tier of the temp config dir.
+ * rotates/network-calls) in the plaintext tier of the temp config dir, beside
+ * the config.json every sign-in writes: an unbound credential takes its
+ * endpoints only from an aiand config.json.
  */
 function seedCredential(profile, key) {
+  writeFileSync(
+    join(env.dir, "config.json"),
+    `${JSON.stringify({ profile: "default", profiles: { default: {} } })}\n`,
+  );
   writeFileSync(
     join(env.dir, "credentials.json"),
     `${JSON.stringify({

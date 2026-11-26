@@ -4,16 +4,15 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { CliError } from "../cli/errors.js";
-import { configDir, writeFileAtomic } from "../fsutil.js";
+import { scrubAgentEnv } from "../cli/spawn-env.js";
+import { configDir, makePrivateTempDirSync, writeFileAtomic } from "../fsutil.js";
 
 /**
  * Personal task packs for harness comparison (ticket #129, plan §2.2): a task
@@ -165,11 +164,14 @@ function extractScore(output: string): number {
   return 0;
 }
 
-/** Run a task's verify script in `cwd` (the workspace root under test). */
+/** Run a task's verify script in `cwd` (the workspace root under test). The
+ * script is task-pack code, not the CLI: it inherits PATH/HOME/PWD but never
+ * the CLI's own secrets (AIAND_API_KEY, the store master key). */
 export function runVerify(dir: string, cwd?: string, timeoutMs?: number): VerifyResult {
   const script = join(dir, VERIFY_FILE);
   const proc = spawnSync("sh", [script], {
     cwd: cwd ?? dir,
+    env: scrubAgentEnv(process.env),
     encoding: "utf8",
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
@@ -304,7 +306,7 @@ export async function validateTask(id: string, goldenDir?: string): Promise<Task
  * file changes, run verify there. Must PASS for the task to validate.
  */
 function replayGolden(taskDir: string, goldenDir: string): VerifyResult {
-  const runDir = mkdtempSync(join(tmpdir(), `aiand-compare-${basename(taskDir)}-`));
+  const runDir = makePrivateTempDirSync(`aiand-compare-${basename(taskDir)}-`);
   try {
     cpSync(join(taskDir, "workspace"), runDir, { recursive: true });
     cpSync(goldenDir, runDir, { recursive: true, force: true });

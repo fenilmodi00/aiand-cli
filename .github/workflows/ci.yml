@@ -26,16 +26,22 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm install -g opencode-ai@1.18.32
+      # This job holds no AIAND_API_KEY: every third-party install below runs
+      # with --ignore-scripts or is a digest-checked binary. The live OpenCode
+      # run, whose package needs its postinstall, is the live-opencode job.
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       # No scripts field in the package (npm view @github/copilot@1.0.89
       # scripts is empty; bin is a plain node npm-loader.js), so
       # --ignore-scripts is a no-op here — it matches the pi pin's
       # discipline and keeps a future postinstall from running CI-side.
       - run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      # Pinned Jouzu for the jouzu-smoke tripwire below. The package has no
+      # install scripts (npm view jouzu@0.2.5 scripts: build/test/check
+      # only); --ignore-scripts keeps a dependency's from running CI-side.
+      - run: npm install -g --ignore-scripts jouzu@0.2.5
       # Pinned omp for the omp-smoke tripwire below: the v18.4.4 release
       # asset, checked against its published sha256 before it reaches PATH.
       - run: |
@@ -46,19 +52,18 @@ jobs:
           echo "$RUNNER_TEMP/omp" >> "$GITHUB_PATH"
       - run: npm run lint
       # Builds dist/ (reused by every later step), then runs the `npm test`
-      # suite under the coverage floor set in package.json.
+      # suite under the coverage floor set in package.json. Without a key,
+      # test/e2e-live.test.mjs skips itself here; live-opencode runs it.
       - run: npm run test:coverage
-        env:
-          AIAND_API_KEY: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.AIAND_API_KEY || '' }}
-      # The live e2e (test/e2e-live.test.mjs) runs inside `npm test` above
-      # with the same key (pushes and same-repo PRs) and skips itself without
-      # key+binary (fork PRs stay green). A fork push whose key has no credits also skips; official
-      # main still fails on that. No continue-on-error step.
       - run: node scripts/e2e.mjs
       # Real pinned Pi validating the generated config and a headless
       # --print round-trip against the loopback double (no real gateway,
       # no key): the schema-drift tripwire for models.json.
       - run: node scripts/pi-smoke.mjs
+      # Real pinned Jouzu (built on Pi, its own agent dir) accepting the
+      # config `aiand jouzu on` writes under JOUZU_HOME and a headless
+      # --print round-trip with the args `aiand jouzu` adds.
+      - run: node scripts/jouzu-smoke.mjs
       # Real pinned omp accepting the generated models.yml and a headless -p
       # round-trip: the schema-drift tripwire for omp's provider block.
       - run: node scripts/omp-smoke.mjs
@@ -74,14 +79,71 @@ jobs:
       - run: npm run benchmark:recorded
       - run: npm run check:dist
       - run: npm run check:public
+  # The live jobs need the AIAND_API_KEY secret, which lives in the `live`
+  # environment, and only `main` may deploy to it. PRs never reach these jobs,
+  # whoever opened them, so code nobody has merged never runs with the key.
+  # An empty key on `main` is a misconfigured secret, and fails loudly instead
+  # of letting test/e2e-live.test.mjs skip itself into a green check.
+  key:
+    if: github.event_name == 'push'
+    environment: live
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        env:
+          AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
+        run: |
+          if [ -n "$AIAND_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=AIAND_API_KEY is empty::The live jobs would pass without testing the gateway. Set the secret in the live environment."
+            exit 1
+          fi
+  # The live OpenCode e2e (test/e2e-live.test.mjs): `aiand opencode on`, then
+  # a real `opencode run`. It is a job of its own so the key never shares a
+  # job with install code it does not need. opencode-ai has to run its
+  # postinstall, which links the platform binary into place, so
+  # --ignore-scripts is not an option. That pinned package is the only
+  # third-party code here, and the binary it installs is the program the test
+  # hands the key to anyway. The key is set on the test step alone, which
+  # keeps it out of the other steps' environment; it is not a boundary against
+  # code that already runs in the job (see the Hermes note in the live job).
+  live-opencode:
+    needs: key
+    if: needs.key.outputs.available == 'true'
+    environment: live
+    # `key` already limited this to pushes to main.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm install -g opencode-ai@1.18.32
+      # The test skips itself without the binary; fail here instead, so a
+      # broken install cannot pass as a skip.
+      - run: opencode --version
+      - run: node --import ./test/setup.mjs --test test/e2e-live.test.mjs
+        env:
+          AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
   # Full live matrix against the real gateway: pasted-key login, whoami,
   # status, run, models, usage, orgs, config, logout, `opencode on/status/off`,
   # `restore --force`, `init`, and the `run-agent` launcher, all in a fresh
   # temp state dir. Needs the AIAND_API_KEY secret, so it runs on pushes to
-  # main and on PRs from branches of this repository (fork PRs get no
-  # secrets and skip). Spends a few cents of credit per run.
+  # main only. Spends a few cents of credit per run.
   live:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: key
+    if: needs.key.outputs.available == 'true'
+    environment: live
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -101,14 +163,29 @@ jobs:
       # in step. The installer itself is fetched at that commit from
       # raw.githubusercontent.com and checked against the digest recorded in
       # HERMES_INSTALL_SHA256 before it runs.
+      #
+      # The installer and the Python packages it pulls are third-party code
+      # running in the same job as the key step, and launcher-hermes-live has
+      # to hand the key to the Hermes it installs, so they can't be split into
+      # separate jobs. There is NO boundary between them: a hosted runner
+      # gives the job passwordless sudo, a writable tool cache and readable
+      # /proc/*/environ, so code that runs here can reach a later step's
+      # environment however the step file commands (GITHUB_ENV, GITHUB_PATH,
+      # BASH_ENV) are handled. What limits the damage is what the job holds:
+      # the key is a CI-only, low-credit key that is cheap to revoke and
+      # rotate, no other secret is in this job, and its GITHUB_TOKEN is
+      # read-only (`permissions: contents: read` at the top of this file).
+      # What the job does do: the installer is fetched at a pinned commit and
+      # its digest checked before it runs, and ~/.local/bin goes last on the
+      # key step's PATH, so a name Hermes drops there doesn't shadow one the
+      # runner already has. That is ordering, not defence.
       - run: |
           mkdir -p "$RUNNER_TEMP/hermes"
           curl -fsSLo "$RUNNER_TEMP/hermes/install.sh" https://raw.githubusercontent.com/NousResearch/hermes-agent/666f313d1d3abd8077291ba464cf0a10f1a6157f/scripts/install.sh
           echo "0fbf2969c12b9ef9c90b81519814865faa9ee4e22056e2a9a4d0b1d5e59966e8  $RUNNER_TEMP/hermes/install.sh" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/hermes/install.sh"
           bash "$RUNNER_TEMP/hermes/install.sh" --commit 666f313d1d3abd8077291ba464cf0a10f1a6157f --non-interactive --skip-browser --skip-computer-use
-      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: node scripts/sbx-test.mjs dist/index.js
+      - run: PATH="$PATH:$HOME/.local/bin" node scripts/sbx-test.mjs dist/index.js
         env:
           AIAND_API_KEY: ${{ secrets.AIAND_API_KEY }}
   installer:
@@ -120,7 +197,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
       # Install into an isolated HOME from the checkout itself (no network
       # clone: AIAND_SOURCE points at actions/checkout's copy) and assert
@@ -147,6 +224,11 @@ jobs:
           done
       # Isolated-HOME installer behavior cases (allowlist, stage-fail, NO_COLOR, pwsh).
       - run: node scripts/install-behavior.mjs
+      # The Windows hint for installing Hermes verifies this digest before it runs
+      # anything; check-dist keeps it equal to src/agents/hermes/install.ts.
+      - run: |
+          curl -fsSLo "$RUNNER_TEMP/hermes-install.ps1" https://raw.githubusercontent.com/NousResearch/hermes-agent/666f313d1d3abd8077291ba464cf0a10f1a6157f/scripts/install.ps1
+          echo "5204fb92ced8b94af58e9ce37151cbbbc489b3b03ca81830a57362362d3d20da  $RUNNER_TEMP/hermes-install.ps1" | sha256sum -c -
   installer-windows:
     runs-on: windows-latest
     timeout-minutes: 10
@@ -156,7 +238,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: 22.23.4
           cache: npm
       # Local-source path ($PSScriptRoot is the checkout, no GitHub clone).
       # AIAND_NO_MODIFY_PATH=1 keeps CI off the runner's real HKCU\Environment.
@@ -180,6 +262,38 @@ jobs:
           if (-not $bash) { throw "Git Bash is required to verify the Git Bash shim" }
           $actualShim = (& $bash $shim --version | Out-String).Trim()
           if ($actualShim -ne $expected) { throw "Git Bash shim --version '$actualShim' != '$expected'" }
+          # The PATH fallback, taken when the baked node is gone, still finds node.
+          $env:AIAND_NODE_BIN = Join-Path $iso 'gone\node.exe'
+          $fallback = (& $cmd --version | Out-String).Trim()
+          if ($fallback -ne $expected) { throw "aiand.cmd PATH fallback --version '$fallback' != '$expected'" }
+          $fallbackShim = (& $bash $shim --version | Out-String).Trim()
+          if ($fallbackShim -ne $expected) { throw "Git Bash shim PATH fallback --version '$fallbackShim' != '$expected'" }
+          # ...but never a node.exe planted in the current directory (where.exe looked there first).
+          $repo = Join-Path $iso 'repo'
+          New-Item -ItemType Directory -Path $repo | Out-Null
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $repo 'node.exe')
+          $savedPath = $env:PATH
+          $env:PATH = Join-Path $env:SystemRoot 'System32'
+          Push-Location $repo
+          $planted = (& $cmd --version | Out-String).Trim()
+          $plantedExit = $LASTEXITCODE
+          Pop-Location
+          $env:PATH = $savedPath
+          if ($plantedExit -eq 0 -or $planted -eq $expected) { throw "aiand.cmd ran node.exe from the current directory: '$planted' exit $plantedExit" }
+          # ...nor one reached through a relative PATH entry: `.`, an empty entry
+          # and a subdirectory all resolve under the current directory.
+          New-Item -ItemType Directory -Path (Join-Path $repo 'sub') | Out-Null
+          Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $repo 'sub\node.exe')
+          foreach ($relative in @('.', '', 'sub')) {
+            $env:PATH = $relative + ';' + (Join-Path $env:SystemRoot 'System32')
+            Push-Location $repo
+            $viaRelative = (& $cmd --version | Out-String).Trim()
+            $viaRelativeExit = $LASTEXITCODE
+            Pop-Location
+            if ($viaRelativeExit -eq 0 -or $viaRelative -eq $expected) { throw "aiand.cmd ran node.exe through relative PATH entry '$relative': '$viaRelative' exit $viaRelativeExit" }
+          }
+          $env:PATH = $savedPath
+          Remove-Item Env:AIAND_NODE_BIN
           powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE/install.ps1" uninstall --force
           if (Test-Path $cmd) { throw "uninstall left $cmd" }
           if (Test-Path $shim) { throw "uninstall left $shim" }
@@ -188,35 +302,55 @@ jobs:
       # e2e.mjs runs the adapter matrix plus its win32 install.ps1 uninstall
       # cases, which no other job exercises.
       - run: node scripts/e2e.mjs
+      # Real DPAPI and icacls, which the unit suite only reaches through stubs.
+      - run: node scripts/windows-secrets-smoke.mjs
+  # The Windows half of the live checks, split out of installer-windows so
+  # the key lives in the main-only `live` environment and the required
+  # installer-windows check never needs it.
+  live-windows:
+    needs: key
+    if: needs.key.outputs.available == 'true'
+    environment: live
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
       # Real npm-installed OpenCode and Pi (a .cmd shim on Windows) launched
-      # through `aiand run-agent`, against the live gateway. Needs the key, so
-      # same events as the live job. This is also the Windows install
-      # tripwire for the Pi pin — check-dist keeps the version in step.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: npm install -g opencode-ai@1.18.32
+      # through `aiand run-agent`, against the live gateway. This is also the
+      # Windows install tripwire for the Pi pin — check-dist keeps the
+      # version in step.
+      # The only install code that runs before the key step is opencode-ai's
+      # postinstall, which needs to link its binary. Pi and Copilot install
+      # with --ignore-scripts, and omp is a digest-checked binary. Each of the
+      # four is an agent the key step launches with the key by design.
+      - run: npm install -g opencode-ai@1.18.32
       - run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.87.1
       # check-dist keeps the pin in step with the CLI's install hint; the
-      # gated run-agent copilot smoke below needs the same-repo key.
+      # run-agent copilot smoke below needs the key.
       # No scripts field in the package (npm view @github/copilot@1.0.89
       # scripts is empty; bin is a plain node npm-loader.js), so
       # --ignore-scripts is a no-op here — it matches the pi pin's
       # discipline and keeps a future postinstall from running CI-side.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: npm install -g --ignore-scripts @github/copilot@1.0.89
+      - run: npm install -g --ignore-scripts @github/copilot@1.0.89
       # Windows downloads the same pinned release asset as the Linux job
       # (check-dist keeps the two in step). RUNNER_TEMP is not on PATH, so
-      # expose the dir via GITHUB_PATH. Gated with the run-agent check
-      # below so fork PRs skip the download.
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: |
+      # expose the dir via GITHUB_PATH.
+      - run: |
           $dir = Join-Path $env:RUNNER_TEMP 'omp'
           New-Item -ItemType Directory -Path $dir | Out-Null
           $exe = Join-Path $dir 'omp.exe'
           Invoke-WebRequest -Uri https://github.com/can1357/oh-my-pi/releases/download/v18.4.4/omp-windows-x64.exe -OutFile $exe
           if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne '5644e5d7c7cddd851d79999dbc3b98363817178b33426b355a20fdcad41a3f54') { throw 'omp-windows-x64.exe sha256 mismatch' }
           $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: |
+      - run: |
           $state = Join-Path $env:RUNNER_TEMP 'aiand-run-agent'
           New-Item -ItemType Directory -Path $state | Out-Null
           $env:AIAND_HOME = $state

@@ -78,7 +78,18 @@ describe("unknown-profile fallback warning on store/efficiency (#103)", () => {
       ]) {
         const r = await runCli(cmd, { env: childEnv(dir, profile) });
         assert.equal(r.code, 0, `${cmd.join(" ")}: ${r.stderr}`);
-        assert.equal(r.stderr, "", `${cmd.join(" ")} (profile ${profile}) must not warn`);
+        // Node 22 emits an ExperimentalWarning the first time node:sqlite is
+        // loaded; it is runtime noise, not a profile warning. Node 24 has
+        // stabilized the module and prints nothing.
+        const quiet = r.stderr
+          .split("\n")
+          .filter(
+            (line) =>
+              !/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature/.test(line) &&
+              !/^\(Use `node --trace-warnings /.test(line),
+          )
+          .join("\n");
+        assert.equal(quiet, "", `${cmd.join(" ")} (profile ${profile}) must not warn`);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

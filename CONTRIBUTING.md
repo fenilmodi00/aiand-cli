@@ -12,9 +12,13 @@ npm run build
 node dist/index.js --help    # or `npm link` to put `aiand` on PATH
 ```
 
-The installers build from a checkout too. `AIAND_SOURCE` points them at a
-local path or `https://github.com/aiandlabs/aiand-cli` (other remotes are
-refused), e.g. `AIAND_SOURCE=$PWD bash install.sh`.
+The installers install verified npm releases
+([ADR 1](docs/adr/0001-installers-verify-npm-release.md)), but they can
+build from a checkout for development. Run one from inside a checkout
+(`bash install.sh`), or point `AIAND_SOURCE` at a local path or
+`https://github.com/aiandlabs/aiand-cli` (other remotes are refused), e.g.
+`AIAND_SOURCE=$PWD bash install.sh`. Such a build is unverified, and the
+installer labels it that way.
 
 To run the CLI against a local gateway, point a profile at it. Base URLs must
 be `https`, except `http` on loopback:
@@ -85,14 +89,31 @@ when coverage goes up; never lower it to land a change.
   Copilot CLI accepting the providers.json `on` generates and a headless `-p`
   round-trip, including provider-qualified selection of a slashed catalog
   id), the offline `sbx-test.mjs --smoke`, `check:dist`, and `check:public`.
-  With the `AIAND_API_KEY` secret (pushes to main and pull requests from
-  branches of this repository), the test run includes the live OpenCode run.
+  This job holds no key.
+- `live-opencode`: `test/e2e-live.test.mjs`, a real pinned OpenCode routed
+  through the gateway with the `AIAND_API_KEY` secret. It runs on pushes to
+  main and on pull requests from branches of this repository.
 - `live`: the full `sbx-test.mjs` matrix against the real gateway, on the same
   events. Fork pull requests get no secrets and skip it.
 - `installer` / `installer-windows`: a real install into an isolated home on
   Ubuntu and Windows, `scripts/install-behavior.mjs`, and uninstall.
 - `npm audit` (daily, not per PR): advisories and registry signatures for the
   installed toolchain.
+
+A job that holds the key runs no third-party install code that it doesn't
+need, and ci.yml says, at each such step, why the code that does run there
+is acceptable. Keep it that way when adding a step.
+
+Within a job there is no boundary between a step and the next. On a hosted
+runner, code that runs in one step (the Hermes installer and the packages it
+pulls, the pinned `opencode-ai`) has passwordless sudo, a writable tool
+cache and readable `/proc/*/environ`, so no arrangement of step file commands
+(`GITHUB_ENV`, `GITHUB_PATH`, `BASH_ENV`) or step-level `env:` keeps a later
+step's key from it. What bounds the damage is what the job holds: the
+`AIAND_API_KEY` secret is a CI-only key with low credit that is cheap to
+revoke, no other secret is in a job that holds it, and `GITHUB_TOKEN` is
+read-only. Keep those three true, and don't describe a step arrangement as
+protecting the key.
 
 Security reports go through GitHub Security Advisories; see `SECURITY.md`.
 
@@ -124,6 +145,69 @@ above, runs the checks, and opens the PR. `tag` refuses unless main is clean,
 at `origin/main`, and has a successful CI run, then pushes the tag.
 
 `publish.yml` checks the same things again (tag matches `package.json`, commit
-on main with a successful CI run, version not yet on npm), publishes to npm,
-and creates the GitHub release with that version's changelog section as its
-notes.
+on main with a successful CI run, version not yet on npm), packs the tarball
+once, publishes exactly that tarball to npm, waits until npm serves the same
+sha512, and creates the GitHub release with that version's changelog section
+as its notes and `SHA256SUMS`, `install.sh`, and `install.ps1` as assets. The
+installers refuse a release with no `SHA256SUMS`, so don't create or edit a
+release by hand.
+
+If a run dies after `npm publish` (npm slow to serve the version, or the
+release step failing), re-run the workflow. A version already on npm with no
+complete GitHub release resumes: it publishes nothing, requires npm to serve
+the very tarball the first run packed (sha512), waits up to about ten minutes
+for that, and creates the release. Those bytes are not re-packed: the first run
+uploads the tarball to the draft release, tagged with its commit, before it
+publishes, and a resume downloads it from there. Only a resume reuses it: a
+first run always packs from the tagged checkout, and if the draft release
+already holds a tarball of that name it has to be byte-identical to that pack,
+or the run stops and says so. (Delete the asset from the draft release, after
+finding out who attached it, to go on.) The release is published only when the
+draft holds exactly the tarball, `SHA256SUMS`, `install.sh` and `install.ps1`;
+any other asset on it stops the run before anything is published, and the
+error names what to remove with `gh release delete-asset`. The workflow also pins an exact
+Node version, so a later run packs on the same toolchain; bump it deliberately.
+A tag moved after the publish stops the run. It stops, as before, once the release exists
+with its `SHA256SUMS`.
+
+### Settings outside the repository
+
+The publish job runs in the GitHub environment `release`. The installers'
+two-party check (npm and the GitHub release,
+[ADR 1](docs/adr/0001-installers-verify-npm-release.md)) only holds when these
+are set, and none of them can be set from a file in this repository. Someone
+with admin rights sets them once:
+
+- [ ] GitHub, Settings, Environments, `release`: required reviewers (not only
+      the person who pushes the tag); deployment branches and tags: selected
+      tags, pattern `v*`, no branches.
+- [ ] npm, `@aiand/cli`, Settings, Trusted Publisher: repository
+      `aiandlabs/aiand-cli`, workflow `publish.yml`, environment `release`.
+      Then, under Publishing access, choose "Require two-factor
+      authentication and disallow tokens", and delete the `NPM_TOKEN` secret.
+- [ ] GitHub, Settings, Rules, Rulesets: a tag ruleset on `v*` that restricts
+      creation, update, and deletion to the release maintainers and blocks
+      force pushes.
+- [ ] A branch rule on `main` that requires a pull request.
+
+Until they are set, anyone with write access to the repository can publish by
+pushing a commit and a tag, and the installers cannot tell the result from a
+real release.
+
+The README one-liners fetch `install.sh` and `install.ps1` from the latest
+release's assets, and update notices read npm's latest version while
+`install.sh update` installs the latest GitHub release. Both agree once the
+release exists, so don't leave a gap between the `npm publish` and the
+release.
+
+Release checklist for a change to `install.sh`, `install.ps1`, or the release
+helper embedded in them:
+
+- Cut a release immediately after merging. The one-liners fetch the
+  installers from the latest release's assets, and an installer installs only
+  a release that carries a `SHA256SUMS`. Between the merge and that release a
+  one-liner runs the previous script, or, before any release carries the new
+  assets (0.8.0 is the first), answers 404 or "no published release was
+  found". The installer's message and the README point at
+  `npm install -g @aiand/cli` meanwhile.
+- Don't merge one you can't release the same day.

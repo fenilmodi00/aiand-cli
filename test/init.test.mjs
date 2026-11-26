@@ -572,7 +572,11 @@ describe("init: wiring round-trips", () => {
     plantOpencodeStub();
     const { saveCredential } = await import("../dist/config.js");
     await withEnv({ AIAND_KEY_STORAGE: "plaintext" }, () =>
-      saveCredential("work", { access_token: "sk-work-profile-1", origin: "paste" }),
+      saveCredential("work", {
+        access_token: "sk-work-profile-1",
+        origin: "paste",
+        bound_to: { auth_url: CLOSED_URL, api_url: CLOSED_URL },
+      }),
     );
     mkdirSync(dirname(settingsPath()), { recursive: true });
 

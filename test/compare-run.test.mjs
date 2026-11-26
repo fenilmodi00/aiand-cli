@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   cliEnv,
   FAKE_API_KEY,
+  hermeticPath,
   plantStub,
   runCli,
   withEnv,
@@ -29,7 +30,8 @@ function cfg(name) {
 }
 
 /** The agent capture stub: dump argv+env, optionally solve, optionally hack. */
-const AGENT_STUB = `env > "$AIAND_CAPTURE.env"
+const AGENT_STUB = `if [ "$1" = "--version" ]; then echo "stub-agent 0.0.0"; exit 0; fi
+env > "$AIAND_CAPTURE.env"
 printf '%s\\n' "$@" > "$AIAND_CAPTURE.args"
 node -e "if(process.env.AIAND_SOLVE)require('fs').writeFileSync('solved.txt','x\\n')"
 node -e "if(process.env.AIAND_HACK)require('fs').writeFileSync(process.env.AIAND_HACK,'hacked\\n')"
@@ -199,6 +201,81 @@ test("happy path: solved row with gateway-metered cost and exact pinned shape", 
   });
 });
 
+/**
+ * main v0.8.0: an agent child never inherits the CLI's own secrets. The
+ * compare runner used to spread process.env and delete only AIAND_API_KEY,
+ * so AIAND_SECRET_STORE_MASTER_KEY — the key that decrypts the file tier —
+ * reached every harness process and everything it spawned. Codex is the one
+ * deliberate exception: its `aiand key export` child decrypts the file tier
+ * (see agentBaseEnv in src/agents/launch.ts), so compare must mirror
+ * agentSession, not blanket-delete it.
+ */
+test("agent env: store master key scrubbed, except Codex's key-export child", async () => {
+  const MASTER = "ab".repeat(32);
+  await withPinnedGateway(async ({ url }) => {
+    const dir = cfg("scrub-master");
+    await addValidatedTask(dir, "scrub-master-task");
+    plantStub(join(dir, "bin"), "opencode", AGENT_STUB);
+    const res = await runCli(
+      [
+        "compare",
+        "run",
+        "--task",
+        "scrub-master-task",
+        "--harness",
+        "opencode",
+        "--trials",
+        "1",
+        "--json",
+      ],
+      {
+        env: runEnv(dir, url, {
+          AIAND_SECRET_STORE_MASTER_KEY: MASTER,
+          AIAND_SOLVE: "1",
+        }),
+      },
+    );
+    assert.equal(res.code, 0, res.stderr);
+    const captured = readFileSync(join(dir, "capture.env"), "utf8");
+    assert.doesNotMatch(
+      captured,
+      /^AIAND_SECRET_STORE_MASTER_KEY=/m,
+      "a non-Codex harness must not inherit the store master key",
+    );
+    assert.match(captured, /^AIAND_CAPTURE=/m, "the stub capture knob still reaches the child");
+    assert.match(captured, /^AIAND_SOLVE=1$/m, "the stub solve knob still reaches the child");
+
+    const codexDir = cfg("codex-master");
+    await addValidatedTask(codexDir, "codex-master-task");
+    plantStub(join(codexDir, "bin"), "codex", AGENT_STUB);
+    const codexRes = await runCli(
+      [
+        "compare",
+        "run",
+        "--task",
+        "codex-master-task",
+        "--harness",
+        "codex",
+        "--trials",
+        "1",
+        "--json",
+      ],
+      {
+        env: runEnv(codexDir, url, {
+          AIAND_SECRET_STORE_MASTER_KEY: MASTER,
+          AIAND_SOLVE: "1",
+        }),
+      },
+    );
+    assert.equal(codexRes.code, 0, codexRes.stderr);
+    assert.match(
+      readFileSync(join(codexDir, "capture.env"), "utf8"),
+      new RegExp(`^AIAND_SECRET_STORE_MASTER_KEY=${MASTER}$`, "m"),
+      "Codex's aiand key export child needs it",
+    );
+  });
+});
+
 test("verify-fail row: success false, score null, exit recorded", async () => {
   await withPinnedGateway(async ({ url }) => {
     const dir = cfg("fail");
@@ -299,12 +376,15 @@ test("unvalidated task refused with a hint; --force overrides", async () => {
       "zai-org/glm-5.3",
       "--json",
     ],
-    { env: runEnv(dir, "http://127.0.0.1:9") },
+    { env: runEnv(dir, "http://127.0.0.1:9", { PATH: hermeticPath(join(dir, "bin")) }) },
   );
-  assert.notEqual(forced.code, 0, "infra rows fail the command, reported separately");
-  const rows = JSON.parse(forced.stdout).rows;
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].failure_mode, "infra");
+  // The capability pre-check runs before any session/catalog work: a harness
+  // that is not installed fails loudly, and --force only skips validation.
+  assert.equal(forced.code, 127, forced.stderr);
+  assert.match(forced.stderr, /Codex is not installed/);
+  assert.match(forced.stderr, /Install it with:/);
+  assert.doesNotMatch(forced.stderr, /not validated/, "--force skipped validation");
+  assert.equal(forced.stdout.trim(), "");
 });
 
 test("gateway unreachable => infra row, cost null, never folded into solve rate", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
 import { plantStub, withEnv, withTestEnv } from "./helpers.mjs";
@@ -163,6 +163,124 @@ describe("keychain spawn", () => {
         assert.equal(await secrets.loadSecret("epipe", "file"), blob);
       },
     );
+  });
+});
+
+const keychainTool = process.platform === "darwin" ? "security" : "secret-tool";
+
+describe("keychain children", { skip: process.platform === "win32" }, () => {
+  beforeEach(() => resetDir());
+
+  test("never see the CLI's own secrets, whatever the platform's tool", async () => {
+    const bin = mkdtempSync(join(env.dir, "shim-"));
+    const dump = join(bin, "env.txt");
+    plantStub(bin, keychainTool, `env > "${dump}"\nexit 1`);
+    await withEnv(
+      {
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+        AIAND_KEY_STORAGE: "keychain",
+        AIAND_API_KEY: "sk-must-not-leak",
+        AIAND_SECRET_STORE_MASTER_KEY: KEY_A,
+      },
+      async () => {
+        assert.equal(await secrets.storeSecret("leak", "blob"), "file");
+        await secrets.deleteSecret("leak");
+      },
+    );
+    const seen = readFileSync(dump, "utf8");
+    assert.match(seen, /^PATH=/m, "the stub ran with an environment");
+    assert.doesNotMatch(seen, /AIAND_API_KEY|sk-must-not-leak|AIAND_SECRET_STORE_MASTER_KEY/);
+  });
+
+  test("a tool planted in the current directory is not run through an empty or . PATH entry", async () => {
+    const repo = mkdtempSync(join(env.dir, "repo-"));
+    const marker = join(repo, "planted-ran");
+    plantStub(repo, keychainTool, `echo ran > "${marker}"\nexit 1`);
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(repo);
+      for (const entry of ["", ".", "./"]) {
+        await withEnv(
+          {
+            PATH: [entry, process.env.AIAND_TEST_STUB_BIN, process.env.PATH].join(delimiter),
+            AIAND_KEY_STORAGE: "keychain",
+            AIAND_SECRET_STORE_MASTER_KEY: KEY_A,
+          },
+          async () => {
+            await secrets.storeSecret("planted", "blob");
+            await secrets.loadSecret("planted", "keychain");
+            await secrets.deleteSecret("planted");
+          },
+        );
+        assert.equal(existsSync(marker), false, `planted ${keychainTool} ran with PATH "${entry}"`);
+      }
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+});
+
+describe("Windows has no keychain tier", () => {
+  beforeEach(() => resetDir());
+
+  // process.platform is patched, not the host: the real proof is logout on
+  // windows-latest (scripts/e2e.mjs); this pins that nothing is spawned.
+  async function asWindows(fn) {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      const bin = mkdtempSync(join(env.dir, "shim-"));
+      const marker = join(bin, "ran");
+      for (const tool of ["security", "secret-tool"]) {
+        plantStub(bin, tool, `echo ran >> "${marker}"\nexit 0`);
+      }
+      await withEnv(
+        { PATH: `${bin}${delimiter}${process.env.PATH}`, AIAND_SECRET_STORE_MASTER_KEY: KEY_A },
+        () => fn(marker),
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+    }
+  }
+
+  test("logout (deleteSecret) spawns no secret-tool, so none can be found in the cwd", async () => {
+    await asWindows(async (marker) => {
+      await withEnv({ AIAND_KEY_STORAGE: "file" }, async () => {
+        await secrets.storeSecret("win", "blob");
+        await secrets.deleteSecret("win");
+        assert.equal(await secrets.loadSecret("win"), null);
+      });
+      assert.equal(existsSync(marker), false);
+    });
+  });
+
+  test("a recorded keychain tier reads from the file tier without spawning anything", async () => {
+    await asWindows(async (marker) => {
+      await withEnv({ AIAND_KEY_STORAGE: "file" }, () => secrets.storeSecret("win", "blob"));
+      assert.equal(await secrets.loadSecret("win", "keychain"), "blob");
+      assert.equal(existsSync(marker), false);
+    });
+  });
+
+  test("AIAND_KEY_STORAGE=keychain is refused with a clear error", async () => {
+    await asWindows(async (marker) => {
+      await withEnv({ AIAND_KEY_STORAGE: "keychain" }, async () => {
+        for (const call of [
+          () => secrets.detectTier(),
+          () => secrets.storeSecret("win", "blob"),
+          () => secrets.loadSecret("win"),
+        ]) {
+          await assert.rejects(
+            call(),
+            (error) =>
+              error instanceof CliError &&
+              /keychain is not supported on Windows/.test(error.message) &&
+              /file/.test(error.hint ?? ""),
+          );
+        }
+      });
+      assert.equal(existsSync(marker), false);
+    });
   });
 });
 

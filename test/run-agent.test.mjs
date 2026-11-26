@@ -10,10 +10,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { describe, test } from "node:test";
 import {
-  assertFileMode,
+  assertMode,
   BIN,
   catalogModel,
   harnessEnv,
@@ -179,6 +180,32 @@ describe("run-agent launcher", () => {
     }
   });
 
+  test("a launch sweeps a crashed session's day-old overlay, and only that", async () => {
+    plantCaptureStub("pi");
+    const plant = (pid, ageMs) => {
+      const dir = mkdtempSync(join(tmpdir(), "aiand-pi-"));
+      writeFileSync(
+        join(dir, ".aiand-overlay"),
+        JSON.stringify({ pid, createdAt: Date.now() - ageMs }),
+      );
+      writeFileSync(join(dir, "auth.json"), '{"aiand":{"key":"sk-old"}}');
+      return dir;
+    };
+    const DAY = 24 * 60 * 60 * 1000;
+    const crashed = plant(2_147_483_646, 2 * DAY);
+    const recent = plant(2_147_483_646, 60 * 1000);
+    const capture = captureDir();
+    try {
+      const { code } = await stubCli(["pi", "--", "--version"], {}, capture);
+      assert.equal(code, 42);
+      assert.equal(existsSync(crashed), false, "the crashed overlay is gone");
+      assert.equal(existsSync(recent), true, "a recent one waits for logout or a day");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+      rmSync(recent, { recursive: true, force: true });
+    }
+  });
+
   test("pi: overlay dir + session dir env, key never in child env, overlay removed", async () => {
     plantCaptureStub("pi");
     const capture = captureDir();
@@ -231,7 +258,7 @@ describe("run-agent launcher", () => {
           "evil",
           "--provider=openai",
           "--model",
-          "gpt-4o",
+          "aiand/other",
           "--models",
           "a,b",
           "--print",
@@ -243,11 +270,15 @@ describe("run-agent launcher", () => {
       const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
       assert.equal(args[0], "--provider");
       assert.equal(args[1], "aiand");
-      assert.equal(args[2], "--model");
-      assert.ok(args[3] !== "gpt-4o", "the user's --model is stripped");
+      // Pi's own --model is the session's model, never dropped for our default.
+      assert.deepEqual(args.slice(2, 4), ["--model", "aiand/other"]);
+      assert.equal(
+        args.filter((arg) => arg === "--model").length,
+        1,
+        "the user's flag is not repeated",
+      );
       assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
       assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
-      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
       assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
       assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
     } finally {
@@ -339,8 +370,7 @@ describe("run-agent launcher", () => {
           "--api-key",
           "evil",
           "--provider=openai",
-          "--model",
-          "gpt-4o",
+          "--model=aiand/other",
           "--models",
           "a,b",
           "--print",
@@ -350,11 +380,11 @@ describe("run-agent launcher", () => {
       );
       assert.equal(code, 42);
       const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
-      assert.equal(args[0], "--model");
-      assert.ok(args[1].startsWith("aiand/"), "our selector comes first");
+      // omp's own --model is the session's model, in our selector form.
+      assert.deepEqual(args.slice(0, 2), ["--model", "aiand/aiand/other"]);
+      assert.ok(!args.includes("--model=aiand/other"), "the user's flag is not repeated");
       assert.ok(!args.includes("evil"), "the user's --api-key value is stripped");
       assert.ok(!args.includes("--provider=openai"), "--flag= form stripped");
-      assert.ok(!args.includes("gpt-4o"), "the user's --model value is stripped");
       assert.ok(!args.includes("a,b"), "the user's --models value is stripped");
       assert.equal(args.at(-1), "--print", "unrelated flags pass verbatim");
     } finally {
@@ -448,18 +478,71 @@ exit 42`,
     }
   });
 
-  test("copilot: the user's --model cannot override the injected routing", async () => {
+  // The agent's own --model picks the session's model; it is never
+  // dropped in favour of our default.
+  test("copilot: the user's --model is the session's model, through the injected routing", async () => {
     plantCaptureStub("copilot");
     const capture = captureDir();
     try {
       const { code } = await stubCli(
-        ["copilot", "--", "--model", "gpt-4o", "--model=x", "--version"],
+        ["copilot", "--", "--model", "aiand/other", "--version"],
         {},
         capture,
       );
       assert.equal(code, 42);
       const args = readFileSync(join(capture, "capture.args"), "utf8").trim().split("\n");
       assert.deepEqual(args, ["--no-auto-update", "--version"]);
+      const envText = readFileSync(join(capture, "capture.env"), "utf8");
+      assert.match(envText, /^COPILOT_MODEL=aiand\/aiand\/other$/m);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("a passed-through --model ai& does not serve is refused, never swapped for a default", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(
+        ["copilot", "--", "--model", "gpt-4o", "--version"],
+        {},
+        capture,
+      );
+      assert.notEqual(code, 42);
+      assert.match(stderr, /--model "gpt-4o" is not in the catalog/);
+      assert.equal(existsSync(join(capture, "capture.args")), false, "nothing launched");
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("two different --model values are refused", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(
+        ["copilot", "--model", "aiand/glm-5.3", "--", "--model=aiand/other"],
+        {},
+        capture,
+      );
+      assert.notEqual(code, 42);
+      assert.match(stderr, /--model was given twice: aiand\/glm-5\.3 and aiand\/other/);
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
+  test("--fast-model is refused for an agent with no fast model", async () => {
+    plantCaptureStub("copilot");
+    const capture = captureDir();
+    try {
+      const { code, stderr } = await stubCli(
+        ["copilot", "--fast-model", "aiand/other"],
+        {},
+        capture,
+      );
+      assert.notEqual(code, 42);
+      assert.match(stderr, /GitHub Copilot has no separate fast model/);
     } finally {
       rmSync(capture, { recursive: true, force: true });
     }
@@ -489,7 +572,7 @@ exit 42`,
       const { code, stderr } = await stubCli(["copilot"], { PATH: path }, capture);
       assert.equal(code, 127);
       assert.match(stderr, /GitHub Copilot is not installed/);
-      assert.match(stderr, /npm install -g @github\/copilot@/);
+      assert.match(stderr, /npm install -g --ignore-scripts @github\/copilot@/);
       assert.match(stderr, /docs\.github\.com/);
     } finally {
       rmSync(capture, { recursive: true, force: true });
@@ -898,6 +981,51 @@ exit 42`,
     }
   });
 
+  test("the store master key reaches Codex's `key export` child and no other agent", async () => {
+    const MASTER = "ab".repeat(32);
+    for (const agent of ["opencode", "claude", "pi", "omp", "copilot", "codex"]) {
+      plantCaptureStub(agent);
+      const capture = captureDir();
+      try {
+        await stubCli([agent], { AIAND_SECRET_STORE_MASTER_KEY: MASTER }, capture);
+        const envText = readFileSync(join(capture, "capture.env"), "utf8");
+        if (agent === "codex") {
+          assert.match(
+            envText,
+            /^AIAND_SECRET_STORE_MASTER_KEY=/m,
+            "Codex's auth command needs it",
+          );
+        } else {
+          assert.doesNotMatch(envText, /AIAND_SECRET_STORE_MASTER_KEY/, `${agent} inherited it`);
+        }
+      } finally {
+        rmSync(capture, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("the agent's PATH keeps absolute entries only, so a planted ./node is never found", async () => {
+    plantCaptureStub("opencode");
+    const capture = captureDir();
+    try {
+      const path = [binDir, ".", "node_modules/.bin", "", process.env.PATH].join(delimiter);
+      await stubCli(["opencode"], { PATH: path }, capture);
+      const seen = readFileSync(join(capture, "capture.env"), "utf8").match(
+        /^(?:PATH|Path)=(.*)$/m,
+      );
+      assert.ok(seen, "the child has a PATH");
+      const entries = seen[1].split(delimiter);
+      assert.ok(entries.includes(binDir), "the absolute entries stay");
+      assert.deepEqual(
+        entries.filter((entry) => !isAbsolute(entry)),
+        [],
+        "a relative or empty entry lets `#!/usr/bin/env node` run a ./node from the cwd",
+      );
+    } finally {
+      rmSync(capture, { recursive: true, force: true });
+    }
+  });
+
   test("http loopback --base-url passes https validation", async () => {
     // Same sessionless env: the failure must come from a later stage
     // (session, detection), never the https guard.
@@ -910,10 +1038,10 @@ exit 42`,
   });
 
   for (const [signal, expectedCode] of [
-    ["SIGINT", 130],
+    ["SIGINT", 0],
     ["SIGTERM", 143],
   ]) {
-    test(`${signal} to run-agent removes the throwaway key dir before exit`, async () => {
+    test(`${signal} to run-agent removes the throwaway key dir only after the agent exits`, async () => {
       if (process.platform === "win32") return;
       plantLingerStub("opencode");
       const capture = captureDir();
@@ -942,9 +1070,15 @@ exit 42`,
         const keyFile = apiKey.slice("{file:".length, -1);
         assert.ok(keyFile.includes("aiand-opencode-"));
         assert.equal(existsSync(keyFile), true);
-        // Signal the parent only: cleanup must wipe the dir before exit.
+        const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
         child.kill(signal);
-        const exitCode = await new Promise((resolve) => child.on("exit", (code) => resolve(code)));
+        if (signal === "SIGINT") {
+          await new Promise((r) => setTimeout(r, 300));
+          assert.equal(child.exitCode, null, "launcher still waiting on the agent");
+          assert.equal(existsSync(keyFile), true, "overlay kept while the agent runs");
+          writeFileSync(doneFile, "done");
+        }
+        const exitCode = await exited;
         assert.equal(exitCode, expectedCode);
         assert.equal(existsSync(keyFile), false);
         assert.equal(existsSync(dirname(keyFile)), false);
@@ -1004,9 +1138,9 @@ exit 42`,
           "--",
           "--provider",
           "x",
-          "--model=y",
+          "--model=aiand/glm-5.3",
           "-m",
-          "z",
+          "aiand/glm-5.3",
           "--keep",
         ],
         // Inherited ANTHROPIC_* must not reach the hermes child: they
@@ -1053,7 +1187,7 @@ exit 42`,
       // Overlay .env: 0600, gateway routing, the user's ANTHROPIC_* and
       // stale AIAND_HERMES_* stripped.
       const overlayEnv = readFileSync(join(copy, ".env"), "utf8");
-      assertFileMode(join(copy, ".env"), 0o600);
+      assertMode(join(copy, ".env"), 0o600);
       assert.match(overlayEnv, /AIAND_HERMES_API_KEY="sk-test-aiand"/);
       assert.match(overlayEnv, /AIAND_HERMES_BASE_URL="https:\/\/api\.aiand\.com\/v1"/);
       assert.ok(overlayEnv.includes("USER_KEY=keep"), "unrelated user lines carried");
@@ -1169,7 +1303,7 @@ exit 42`,
     }
   });
 
-  test("SIGINT removes the hermes overlay before exit", async () => {
+  test("SIGTERM removes the hermes overlay before exit", async () => {
     if (process.platform === "win32") return;
     plantLingerStub("hermes");
     const real = plantHermesReal();
@@ -1194,9 +1328,9 @@ exit 42`,
       const overlay = envText.match(/^HERMES_HOME=(.*)$/m)?.[1];
       assert.ok(overlay, "overlay path captured");
       assert.ok(existsSync(overlay), "overlay live while the child runs");
-      child.kill("SIGINT");
+      child.kill("SIGTERM");
       const exitCode = await new Promise((resolve) => child.on("exit", resolve));
-      assert.equal(exitCode, 130);
+      assert.equal(exitCode, 143);
       assert.equal(existsSync(overlay), false, "overlay removed before exit");
     } finally {
       writeFileSync(doneFile, "done");

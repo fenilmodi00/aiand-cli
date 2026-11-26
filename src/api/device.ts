@@ -1,7 +1,8 @@
 import { ApiError, CliError, EXIT, loginCancelled } from "../cli/errors.js";
+import { isValidKeyShape } from "../cli/redact.js";
 import { isLoopbackHost } from "../config.js";
 import { SECOND_MS } from "../time.js";
-import { parseJsonResponse, publicRequest } from "./client.js";
+import { parseJsonResponse, publicRequest, readBoundedText } from "./client.js";
 
 export const CLIENT_ID = "aiand-cli";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -10,7 +11,7 @@ export type DeviceCodeResponse = {
   device_code: string;
   user_code: string;
   verification_uri: string;
-  verification_uri_complete: string;
+  verification_uri_complete?: string;
   expires_in: number;
   interval: number;
 };
@@ -23,14 +24,112 @@ export type TokenResponse = {
   org?: { id: string; name: string };
 };
 
+function incompleteTokenResponse(): CliError {
+  return new CliError("The sign-in service returned an incomplete token response.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+export function validTokenResponse(body: unknown): TokenResponse {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw incompleteTokenResponse();
+  }
+  const candidate = body as Record<string, unknown>;
+  const { access_token, refresh_token, expires_in, token_type } = candidate;
+  if (
+    typeof access_token !== "string" ||
+    !isValidKeyShape(access_token) ||
+    typeof refresh_token !== "string" ||
+    refresh_token.length === 0 ||
+    typeof expires_in !== "number" ||
+    !Number.isFinite(expires_in) ||
+    expires_in <= 0 ||
+    typeof token_type !== "string" ||
+    token_type.length === 0
+  ) {
+    throw incompleteTokenResponse();
+  }
+
+  if (Object.hasOwn(candidate, "org")) {
+    const org = candidate.org;
+    const fields =
+      org !== null && typeof org === "object" ? (org as Record<string, unknown>) : null;
+    if (
+      fields === null ||
+      Array.isArray(fields) ||
+      typeof fields.id !== "string" ||
+      typeof fields.name !== "string"
+    ) {
+      const result = { ...candidate };
+      delete result.org;
+      return result as TokenResponse;
+    }
+    return {
+      ...candidate,
+      org: { id: fields.id, name: fields.name },
+    } as TokenResponse;
+  }
+  return body as TokenResponse;
+}
+
 type TokenErrorBody = { error: string; error_description?: string };
 
-function devicePost(url: string, body: unknown): Promise<Response> {
+function devicePost(url: string, body: unknown, signal?: AbortSignal): Promise<Response> {
   return publicRequest(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
+}
+
+/** Long enough for a slow gateway, short enough that the refresh lock is not held for good. */
+const ROTATE_TIMEOUT_MS = 30_000;
+
+function incompleteDeviceCodeResponse(): CliError {
+  return new CliError("The sign-in service returned an incomplete device-code response.", {
+    hint: "Run `aiand login` again.",
+  });
+}
+
+export function validDeviceCodeResponse(body: unknown): DeviceCodeResponse {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw incompleteDeviceCodeResponse();
+  }
+  const candidate = body as Record<string, unknown>;
+  const {
+    device_code,
+    user_code,
+    verification_uri,
+    verification_uri_complete,
+    expires_in,
+    interval,
+  } = candidate;
+  if (
+    typeof device_code !== "string" ||
+    device_code.length === 0 ||
+    typeof user_code !== "string" ||
+    user_code.length === 0 ||
+    typeof verification_uri !== "string" ||
+    verification_uri.length === 0 ||
+    (verification_uri_complete !== undefined && typeof verification_uri_complete !== "string") ||
+    typeof expires_in !== "number" ||
+    !Number.isFinite(expires_in) ||
+    expires_in <= 0 ||
+    typeof interval !== "number" ||
+    !Number.isFinite(interval) ||
+    interval < 0
+  ) {
+    throw incompleteDeviceCodeResponse();
+  }
+  return {
+    device_code,
+    user_code,
+    verification_uri,
+    expires_in,
+    interval,
+    ...(typeof verification_uri_complete === "string" ? { verification_uri_complete } : {}),
+  };
 }
 
 export async function startDeviceAuthorization(
@@ -45,7 +144,7 @@ export async function startDeviceAuthorization(
       hint: `${authUrl} did not accept the request (HTTP ${response.status}).`,
     });
   }
-  return parseJsonResponse<DeviceCodeResponse>(response);
+  return validDeviceCodeResponse(await parseJsonResponse<unknown>(response));
 }
 
 export function verificationUrl(authUrl: string, device: DeviceCodeResponse): string {
@@ -105,9 +204,22 @@ export async function pollForToken(
       device_code: device.device_code,
     });
 
-    if (response.ok) return parseJsonResponse<TokenResponse>(response);
+    if (response.ok) return validTokenResponse(await parseJsonResponse<unknown>(response));
 
-    const body = (await response.json().catch(() => ({}))) as Partial<TokenErrorBody>;
+    let body: Partial<TokenErrorBody> = {};
+    try {
+      // Any JSON parses: `null`, an array or a number must not reach the field reads below.
+      const parsed: unknown = JSON.parse(await readBoundedText(response));
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const { error, error_description } = parsed as Record<string, unknown>;
+        body = {
+          error: typeof error === "string" ? error : undefined,
+          error_description: typeof error_description === "string" ? error_description : undefined,
+        };
+      }
+    } catch {
+      // Not JSON: falls to the default case below.
+    }
     switch (body.error) {
       case "authorization_pending":
         continue;
@@ -122,35 +234,60 @@ export async function pollForToken(
       default:
         throw new ApiError(
           response.status,
-          body.error_description ?? body.error ?? "Device login failed.",
+          (body.error_description || body.error || "Device login failed.").slice(0, 500),
           { hint: "Run `aiand login` again." },
         );
     }
   }
 }
 
-export async function rotateTokens(authUrl: string, refreshToken: string): Promise<TokenResponse> {
-  const response = await devicePost(`${authUrl}/auth/device/token`, {
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
+export async function rotateTokens(
+  authUrl: string,
+  refreshToken: string,
+  { timeoutMs = ROTATE_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<TokenResponse> {
+  const response = await devicePost(
+    `${authUrl}/auth/device/token`,
+    { grant_type: "refresh_token", refresh_token: refreshToken },
+    AbortSignal.timeout(timeoutMs),
+  );
   if (!response.ok) {
     throw new CliError("Your CLI session could not be refreshed.", {
       exitCode: EXIT.NOT_SIGNED_IN,
       hint: "Run `aiand login` to sign in again.",
     });
   }
-  return parseJsonResponse<TokenResponse>(response);
+  const body = await parseJsonResponse<unknown>(response);
+  try {
+    return validTokenResponse(body);
+  } catch (error) {
+    if (error instanceof CliError) {
+      throw new CliError(error.message, {
+        exitCode: EXIT.NOT_SIGNED_IN,
+        hint: error.hint,
+      });
+    }
+    throw error;
+  }
 }
 
-export async function revokeTokens(authUrl: string, refreshToken: string): Promise<boolean> {
+/**
+ * Ask the issuer to revoke a refresh token. The gateway answers 200 for a token
+ * it does not know or already revoked, so anything else means the key was not
+ * revoked: `status` is the HTTP status when the server answered at all, and
+ * absent when it could not be reached.
+ */
+export async function revokeTokens(
+  authUrl: string,
+  refreshToken: string,
+): Promise<{ revoked: boolean; status?: number }> {
   try {
     const response = await devicePost(`${authUrl}/auth/device/logout`, {
       refresh_token: refreshToken,
     });
-    return response.ok;
+    return response.ok ? { revoked: true } : { revoked: false, status: response.status };
   } catch {
-    return false;
+    return { revoked: false };
   }
 }
 

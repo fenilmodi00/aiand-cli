@@ -5,15 +5,16 @@ dependencies (enforced by `scripts/check-dist.mjs`).
 
 ## Verification
 
-`npm run lint && npm test && npm run check:dist && npm run check:public` before handing over any change (`npm run lint` builds with tsc, then runs Biome and knip for unused files, exports, and dependencies; knip follows the tests' `dist/` imports back to `src/`, so it needs the build; `npm run fix` applies Biome's safe fixes and formatting) (`npm test` builds first via `pretest`). CI runs the suite as `npm run test:coverage`, which fails below the coverage floor in `package.json`; raise the floor when coverage rises, never lower it to land a change. Agent-adapter changes also run `node scripts/e2e.mjs`; installer changes also run `node scripts/install-behavior.mjs`.
+`npm run lint && npm test && npm run check:dist && npm run check:public` before handing over any change (`npm run lint` builds with tsc, then runs Biome and knip for unused files, exports, and dependencies; knip follows the tests' `dist/` imports back to `src/`, so it needs the build; `npm run fix` applies Biome's safe fixes and formatting) (`npm test` builds first via `pretest`). CI runs the suite as `npm run test:coverage`, which fails below the coverage floor in `package.json`; raise the floor when coverage rises, never lower it to land a change. Agent-adapter changes also run `node scripts/e2e.mjs`; installer changes also run `node scripts/install-behavior.mjs`. Windows key-storage changes (DPAPI, ACLs) are stub-tested everywhere and checked for real by `node scripts/windows-secrets-smoke.mjs` in the `installer-windows` job.
 
 ## Conventions
 
 Tests isolate with `AIAND_HOME`/`AIAND_CONFIG_DIR`, never the real home.
 `npm test` preloads `test/setup.mjs` (`AIAND_NO_BROWSER=1`,
-`AIAND_NO_CLIPBOARD=1`, stub `security`/`secret-tool` first on PATH, and
-`test/net-guard.mjs` on `NODE_OPTIONS`) so no test opens a browser, writes
-to the clipboard, touches the OS keychain, or reaches a non-loopback host. Run test files through it, build hermetic PATHs
+`AIAND_NO_CLIPBOARD=1`, `SSH_*` cleared, stub `security`/`secret-tool` first
+on PATH, and `test/net-guard.mjs` on `NODE_OPTIONS`) so no test opens a
+browser, writes to the clipboard, touches the OS keychain, or reaches a
+non-loopback host. Run test files through it, build hermetic PATHs
 with `hermeticPath()` from `test/helpers.mjs`, and point offline base URLs at
 `CLOSED_URL` or `withMockGateway`. Only `test/e2e-live.test.mjs` opts out of
 the network guard (`AIAND_TEST_ALLOW_NETWORK=1`).

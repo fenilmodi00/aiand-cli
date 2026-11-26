@@ -27,8 +27,21 @@ function cfgDir(name) {
 }
 
 const HOUR = 60 * 60 * 1000;
-// 2026-10-19 is a Monday, 10:00 UTC — deterministic weekday/hour buckets.
-const MONDAY_10 = Date.parse("2026-10-19T10:00:00.000Z");
+
+/**
+ * Most recent Monday 10:00 UTC whose 18:00 (the TUI's injected "now") is
+ * already in the past. A relative anchor keeps every windowed CLI seed inside
+ * the default 30-day window whenever the suite runs, while the weekday/hour
+ * buckets stay deterministic: Monday 10:00 and Monday 15:00 in UTC.
+ */
+function mostRecentMonday10() {
+  const at = new Date();
+  at.setUTCHours(10, 0, 0, 0);
+  at.setUTCDate(at.getUTCDate() - ((at.getUTCDay() + 6) % 7));
+  while (at.getTime() + 8 * HOUR > Date.now()) at.setUTCDate(at.getUTCDate() - 7);
+  return at.getTime();
+}
+const MONDAY_10 = mostRecentMonday10();
 
 function iso(offsetMs) {
   return new Date(MONDAY_10 + offsetMs).toISOString();

@@ -4,7 +4,18 @@ import { modelLabel } from "../api/models.js";
 import { bool, int, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
 import type { Column } from "../cli/output.js";
-import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import {
+  currencySymbol,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  renderCell,
+  style,
+  styled,
+  table,
+} from "../cli/output.js";
 import { inferExportFormat, toCsvRows, toMarkdownTable } from "../compare/table-export.js";
 import { resolveProfile } from "../config.js";
 import { writeFileAtomic } from "../fsutil.js";
@@ -762,10 +773,10 @@ function renderStats(rows: HarnessStatsRow[], noCost: boolean): void {
       header: "verdict",
       value: (r) =>
         r.verdict === "good"
-          ? style.green(r.verdict)
+          ? styled(style.green, r.verdict)
           : r.verdict === "bad"
-            ? style.red(r.verdict)
-            : style.yellow(r.verdict),
+            ? styled(style.red, r.verdict)
+            : styled(style.yellow, r.verdict),
     },
     ...behavioralColumns,
   ]);
@@ -1030,7 +1041,7 @@ function exportCompareTable(args: {
   );
   const headers = columns.map((c) => c.header);
   const aligns = columns.map((c) => c.align ?? "left");
-  const cellRows = args.rows.map((row) => columns.map((c) => c.value(row)));
+  const cellRows = args.rows.map((row) => columns.map((c) => renderCell(c.value(row))));
 
   let body: string;
   if (args.format === "json") {

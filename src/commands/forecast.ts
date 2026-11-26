@@ -1,7 +1,7 @@
 import { openSession } from "../api/client.js";
 import { bool, int, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { err, json, out, style, table } from "../cli/output.js";
+import { err, json, out, style, styled, table } from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import { budgetFor, loadBudget, warnSuppressed, warnThresholdLine } from "../obs/budget.js";
 import {
@@ -271,10 +271,10 @@ function printForecast(
   syncStatus: string,
 ): void {
   const symbol = currencyPrefix(result.currency);
-  const money = (value: number | null): string =>
-    value === null ? style.dim("-") : `${symbol}${value.toFixed(2)}`;
-  const rateText = (rate: RateResult): string =>
-    rate.ok ? `${money(rate.value.value)}/h` : style.dim("indeterminate");
+  const money = (value: number | null) =>
+    value === null ? styled(style.dim, "-") : `${symbol}${value.toFixed(2)}`;
+  const rateText = (rate: RateResult) =>
+    rate.ok ? `${money(rate.value.value)}/h` : styled(style.dim, "indeterminate");
 
   out(
     style.bold(
@@ -295,28 +295,28 @@ function printForecast(
         value: rateText(result.rate24h),
         label2: result.rate24h.ok
           ? formatLabel(result.rate24h.value.provenance)
-          : style.dim("not computed"),
+          : styled(style.dim, "not computed"),
       },
       {
         label: "burn rate (7d)",
         value: rateText(result.rate7d),
         label2: result.rate7d.ok
           ? formatLabel(result.rate7d.value.provenance)
-          : style.dim("not computed"),
+          : styled(style.dim, "not computed"),
       },
       {
         label: "projected month-end",
         value: result.projectedMonthEnd
           ? money(result.projectedMonthEnd.value)
-          : style.dim("indeterminate"),
+          : styled(style.dim, "indeterminate"),
         label2: result.projectedMonthEnd
           ? formatLabel(result.projectedMonthEnd.provenance)
-          : style.dim("not computed"),
+          : styled(style.dim, "not computed"),
       },
       {
         label: "projected exceed date",
-        value: result.exceedDate ?? style.dim("-"),
-        label2: result.exceedDate ? "heuristic(burn-rate v1)" : style.dim("not applicable"),
+        value: result.exceedDate ?? styled(style.dim, "-"),
+        label2: result.exceedDate ? "heuristic(burn-rate v1)" : styled(style.dim, "not applicable"),
       },
       {
         label: "verdict",
@@ -326,11 +326,12 @@ function printForecast(
       {
         label: "budget remaining",
         value: money(result.budgetRemaining),
-        label2: result.budgetRemaining === null ? style.dim("no budget set") : "gateway-billed",
+        label2:
+          result.budgetRemaining === null ? styled(style.dim, "no budget set") : "gateway-billed",
       },
     ],
     [
-      { header: "", value: (r) => style.dim(r.label) },
+      { header: "", value: (r) => styled(style.dim, r.label) },
       { header: "", value: (r) => r.value, align: "right" },
       { header: "provenance", value: (r) => r.label2 },
     ],
@@ -358,10 +359,10 @@ function currencyPrefix(currency: string | null | undefined): string {
   return currency === "usd" ? "$" : currency ? `${currency} ` : "";
 }
 
-function verdictCell(verdict: string): string {
-  if (verdict === "exceeding") return style.red(verdict);
-  if (verdict === "on-pace") return style.green(verdict);
-  return style.yellow(verdict);
+function verdictCell(verdict: string) {
+  if (verdict === "exceeding") return styled(style.red, verdict);
+  if (verdict === "on-pace") return styled(style.green, verdict);
+  return styled(style.yellow, verdict);
 }
 
 /**

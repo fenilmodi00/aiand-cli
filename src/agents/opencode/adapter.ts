@@ -1,31 +1,30 @@
-import { chmod, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { publicJson } from "../../api/client.js";
-import type { Model } from "../../api/models.js";
 import { CliError } from "../../cli/errors.js";
-import { err } from "../../cli/output.js";
 import {
   agentHome,
   commandName,
-  configDir,
   DEFAULT_BASE_URL,
   isRoutableBaseUrl,
   trimSlash,
   writeFileAtomic,
 } from "../../config.js";
 import { DEFAULT_FILE_MODE, existingFileMode, PRIVATE_FILE_MODE } from "../../fsutil.js";
-import { CATALOG_TTL_MS, resolveDefault } from "../catalog.js";
+import { resolveDefault } from "../catalog.js";
 import { detectBinary } from "../detect.js";
+import { takeFlagValues } from "../launch.js";
 import {
+  asObject,
   jsoncDelete,
   jsoncGet,
   jsoncSet,
   notValidJsonError,
   parseJsonc,
   readTextIfExists,
+  writeKeyFile,
 } from "../managed-file.js";
+import { makeOverlayDir } from "../overlays.js";
 import { clearAddedState, fileCreatedByUs, getAddedState, recordAddedState } from "../snapshot.js";
 import type {
   AgentAdapter,
@@ -33,14 +32,19 @@ import type {
   DisableResult,
   EnableInput,
   EnableResult,
+  ProbeDetail,
   ProbeResult,
   SessionLaunchInput,
 } from "../types.js";
+import { getApiModels, modelsFromCatalog, type OpencodeModelEntry } from "./models.js";
 
 /** What enable() recorded so off can leave hand-edited values alone. */
 type OpencodeRecord = {
   model?: string;
   previousModel?: string;
+  /** `small_model` (titles, summaries), written beside `model` and handed back alike. */
+  smallModel?: string;
+  previousSmallModel?: string;
   /** File mode before `on` locked it to 0600; disable() restores it. */
   previousMode?: number;
   providerAiand?: unknown;
@@ -74,71 +78,8 @@ const OPENCODE_KEY_PATH = ["provider", OPENCODE_PROVIDER_ID, "options", "apiKey"
 /** Recovery hint for an opencode.json that cannot be parsed or edited. */
 const INVALID_CONFIG_HINT = "Fix it by hand, or delete it and run aiand opencode on again.";
 
-/**
- * One model entry inside `provider.aiand.models`: taken verbatim from
- * `/v1/api.json` for `on` (it carries a real `limit.output`), derived from the
- * Model[] catalog for session launches.
- */
-type OpencodeModelEntry = Record<string, unknown>;
 function opencodeConfigPath(): string {
   return join(agentHome(), ".config", "opencode", "opencode.json");
-}
-
-/** Last-good `/v1/api.json` model map, so `on` survives an unreachable gateway. */
-const OPENCODE_API_CACHE_FILE = "opencode-api.json";
-
-type ApiJsonCache = {
-  fetchedAt: number;
-  baseUrl: string;
-  models: Record<string, OpencodeModelEntry>;
-};
-
-/**
- * Live api.json carries the canonical OpenCode model map (with real
- * limit.output) — take it verbatim so the picker matches the gateway. The
- * fetched map is cached per base URL; a failed fetch falls back to the last
- * good map instead of failing `on` outright (offline machine, fixture env).
- * A response without a models map, or with an empty one, counts as a failed
- * fetch, so it can never replace the last good map with an empty one.
- */
-async function getApiModels(baseUrl: string): Promise<Record<string, OpencodeModelEntry>> {
-  const cachePath = join(configDir(), OPENCODE_API_CACHE_FILE);
-  const trimmedBase = trimSlash(baseUrl);
-  try {
-    const api = await publicJson<{ opencode?: { models?: unknown } }>(`${trimmedBase}/v1/api.json`);
-    const models = api?.opencode?.models;
-    if (
-      !models ||
-      typeof models !== "object" ||
-      Array.isArray(models) ||
-      Object.keys(models).length === 0
-    ) {
-      throw new CliError(`${trimmedBase}/v1/api.json carried no OpenCode model map.`);
-    }
-    await writeFileAtomic(
-      cachePath,
-      `${JSON.stringify({ fetchedAt: Date.now(), baseUrl: trimmedBase, models }, null, 2)}\n`,
-      { mode: PRIVATE_FILE_MODE },
-    );
-    return models as Record<string, OpencodeModelEntry>;
-  } catch (error) {
-    try {
-      const cached = JSON.parse(await readFile(cachePath, "utf8")) as Partial<ApiJsonCache>;
-      if (
-        cached?.baseUrl === trimmedBase &&
-        cached.models &&
-        typeof cached.models === "object" &&
-        typeof cached.fetchedAt === "number" &&
-        Date.now() - cached.fetchedAt < CATALOG_TTL_MS
-      ) {
-        err("OpenCode model map unreachable; using the last cached map.");
-        return cached.models as Record<string, OpencodeModelEntry>;
-      }
-    } catch {
-      // No usable cache — fall through to the original fetch error.
-    }
-    throw error;
-  }
 }
 
 type OpencodeProviderOptions = {
@@ -188,6 +129,9 @@ export function buildOpencodeConfig({
     model: `${OPENCODE_PROVIDER_ID}/${model}`,
   };
   if (lockdown) {
+    // Titles and summaries on the same model: left unset, OpenCode picks its
+    // own small model, which may be one the user did not choose.
+    config.small_model = config.model;
     // Hide every built-in provider from the picker.
     config.enabled_providers = [OPENCODE_PROVIDER_ID];
     // OpenCode's own Zen provider auto-loads its models; disabled_providers
@@ -195,43 +139,6 @@ export function buildOpencodeConfig({
     config.disabled_providers = [OPENCODE_ZEN_PROVIDER_ID];
   }
   return config;
-}
-
-/**
- * Model has no output-token field, so limit.output mirrors context_window (the
- * cap the gateway enforces). Catalog prices are per 1M tokens, OpenCode's unit.
- * `reasoning_options` is the key `/v1/api.json` already publishes. Session
- * launches do not fetch that map, so the same key carries the catalog levels.
- */
-function modelEntryFromCatalog(model: Model): OpencodeModelEntry {
-  const caps = model.capabilities;
-  const input: string[] = ["text"];
-  if (caps.includes("vision")) input.push("image");
-  if (caps.includes("video")) input.push("video");
-  if (caps.includes("document")) input.push("pdf");
-  const price = (value: string | null): number => Number.parseFloat(value ?? "0");
-  const levels = model.reasoning_efforts ?? [];
-  return {
-    name: model.name,
-    attachment: caps.includes("vision") || caps.includes("attachment"),
-    reasoning: levels.length > 0,
-    ...(levels.length > 0 ? { reasoning_options: [{ type: "effort", values: [...levels] }] } : {}),
-    temperature: true,
-    tool_call: caps.includes("tools") || caps.includes("tool_calling"),
-    limit: { context: model.context_window, output: model.context_window },
-    modalities: { input, output: ["text"] },
-    cost: {
-      input: price(model.input_per_1m),
-      output: price(model.output_per_1m),
-      cache_read: price(model.cached_input_per_1m),
-    },
-  };
-}
-
-function modelsFromCatalog(catalog: Model[]): Record<string, OpencodeModelEntry> {
-  const out: Record<string, OpencodeModelEntry> = {};
-  for (const model of catalog) out[model.id] = modelEntryFromCatalog(model);
-  return out;
 }
 
 const OPENCODE_OPTIONS: OpencodeProviderOptions = {
@@ -351,7 +258,7 @@ async function readOpencodeConfig(): Promise<Record<string, unknown>> {
   }
 }
 
-async function probe(): Promise<ProbeResult> {
+async function probeDetail(): Promise<ProbeDetail> {
   let parsed: Record<string, unknown>;
   try {
     parsed = await readOpencodeConfig();
@@ -364,7 +271,13 @@ async function probe(): Promise<ProbeResult> {
   return {
     active,
     model: active && rootModel ? rootModel : null,
+    ...(active ? { baseUrl: String(providerOptions(parsed)?.baseURL) } : {}),
   };
+}
+
+async function probe(): Promise<ProbeResult> {
+  const { active, model } = await probeDetail();
+  return { active, model };
 }
 
 async function enable(input: EnableInput): Promise<EnableResult> {
@@ -441,6 +354,11 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   let recorded: string | undefined;
   let modelWritten: string | undefined;
   let previousModel: string | undefined;
+  const existingSmall = typeof current.small_model === "string" ? current.small_model : "";
+  const smallLive = prior?.smallModel !== undefined && existingSmall === prior.smallModel;
+  // Untouched by this run: the prior record stands only while the file holds it.
+  let recordedSmall = smallLive ? prior?.smallModel : undefined;
+  let previousSmall = smallLive ? prior?.previousSmallModel : undefined;
   if (isNative) {
     // leave the agent's own default
     recorded = priorLive ? priorModel : undefined;
@@ -450,10 +368,22 @@ async function enable(input: EnableInput): Promise<EnableResult> {
       warnings.push(
         `Left your existing model (${existingModel}). Switch with aiand opencode on --model <id>.`,
       );
+    } else if (existingSmall === "" || smallLive) {
+      // An ai& model kept: titles and summaries follow it (an `on` from
+      // before small_model was written left it to OpenCode's own pick).
+      text = jsoncSet(text, ["small_model"], existingModel);
+      recordedSmall = existingModel;
     }
     recorded = priorLive ? priorModel : undefined;
     previousModel = priorLive ? prior?.previousModel : undefined;
   } else {
+    // The root model is read through OpenCode's own `{env:}`/`{file:}`
+    // substitution, so only an id the cleaned map carries may be written.
+    if (!Object.hasOwn(models, input.model)) {
+      throw new CliError(`OpenCode cannot be pointed at ${input.model}.`, {
+        hint: "Pass --model with an id from `aiand models`.",
+      });
+    }
     const nextModel = `${OPENCODE_PROVIDER_ID}/${input.model}`;
     if (existingModel.startsWith(`${OPENCODE_PROVIDER_ID}/`)) {
       // Already our ref: the restore target is what the prior on recorded —
@@ -466,13 +396,18 @@ async function enable(input: EnableInput): Promise<EnableResult> {
     text = jsoncSet(text, ["model"], nextModel);
     recorded = nextModel;
     modelWritten = nextModel;
+    // Titles and summaries on the same model: left unset, OpenCode picks its
+    // own small model, which may be one the user did not choose.
+    previousSmall = smallLive ? prior?.previousSmallModel : existingSmall || undefined;
+    text = jsoncSet(text, ["small_model"], nextModel);
+    recordedSmall = nextModel;
   }
 
   // A re-on finds the file at 0600 (our lock); carry the first on's recorded
   // mode so off still restores the user's original.
   const previousMode = prior?.previousMode ?? (await existingFileMode(path)) ?? DEFAULT_FILE_MODE;
   if (text !== raw) {
-    await writeFileAtomic(path, text, { mode: PRIVATE_FILE_MODE });
+    await writeKeyFile(path, text, { mode: PRIVATE_FILE_MODE, agentId: OPENCODE_ID });
   } else {
     // Unchanged bytes still re-tighten a loosened file: the baked Session
     // key must stay 0600 for as long as it lives here.
@@ -483,6 +418,8 @@ async function enable(input: EnableInput): Promise<EnableResult> {
   await recordAddedState(OPENCODE_ID, {
     model: recorded,
     previousModel,
+    smallModel: recordedSmall,
+    previousSmallModel: previousSmall,
     previousMode,
     providerAiand: withoutApiKey(providerBlock),
     created: created || (prior?.created === true && marked),
@@ -518,15 +455,18 @@ export const opencodeAdapter: AgentAdapter = {
   label: "OpenCode",
   bin: OPENCODE_BIN,
   install: OPENCODE_INSTALL,
+  launchModelFlags: ["--model", "-m"],
   aliases: ["code"],
   nativeAiandKeys: opencodeNativeAiandKeys,
   detect(): DetectResult {
     return detectBinary(OPENCODE_BIN);
   },
+  carriesWiring: (text) => text.includes(`"${OPENCODE_MARKER_KEY}"`),
   managedFiles(): string[] {
     return [opencodeConfigPath()];
   },
   probe,
+  bakedBaseUrl: async () => (await probeDetail()).baseUrl,
   enable,
   async bakedKey(): Promise<string | null> {
     // The key OpenCode sends is the one in our provider block. A block
@@ -545,16 +485,22 @@ export const opencodeAdapter: AgentAdapter = {
       await clearAddedState(OPENCODE_ID);
       return { stripped: false };
     }
-    let parsed: Record<string, unknown>;
+    let parsed: Record<string, unknown> | undefined;
     try {
-      const value: unknown = parseJsonc(raw);
-      parsed =
-        value && typeof value === "object" && !Array.isArray(value)
-          ? (value as Record<string, unknown>)
-          : {};
+      parsed = asObject(parseJsonc(raw));
     } catch {
-      await clearAddedState(OPENCODE_ID);
-      return { stripped: false };
+      parsed = undefined;
+    }
+    if (parsed === undefined) {
+      // Unreadable is not "nothing to turn off": the key may still be in
+      // there. Keep the record so off can tell our values from the user's
+      // once the file is fixed (Claude Code's rule).
+      return {
+        stripped: false,
+        notes: [
+          `${path} is not valid JSON and may still hold your ai& key; fix it, then run aiand opencode off again.`,
+        ],
+      };
     }
 
     const added = await getAddedState<OpencodeRecord>(OPENCODE_ID);
@@ -610,6 +556,16 @@ export const opencodeAdapter: AgentAdapter = {
           notes.push("left model because you edited it");
         }
       }
+      const small = typeof live.small_model === "string" ? live.small_model : "";
+      if (added?.smallModel) {
+        if (small === added.smallModel) {
+          if (added.previousSmallModel) {
+            text = jsoncSet(text, ["small_model"], added.previousSmallModel);
+          } else text = jsoncDelete(text, ["small_model"]);
+        } else if (small) {
+          notes.push("left small_model because you edited it");
+        }
+      }
     }
 
     if (text !== raw) {
@@ -644,8 +600,9 @@ export const opencodeAdapter: AgentAdapter = {
 
     const path = opencodeConfigPath();
     const raw = await readTextIfExists(path);
-    await writeFileAtomic(path, jsoncSet(raw, OPENCODE_KEY_PATH, input.apiKey), {
+    await writeKeyFile(path, jsoncSet(raw, OPENCODE_KEY_PATH, input.apiKey), {
       mode: PRIVATE_FILE_MODE,
+      agentId: OPENCODE_ID,
     });
     // Rebake swaps only the key literal; refresh AddedState so disable()
     // does not treat the new key as a user edit.
@@ -665,14 +622,26 @@ export const opencodeAdapter: AgentAdapter = {
     // process the agent spawns would inherit it): it goes to a throwaway 0600
     // file read through OpenCode's `{file:}` substitution, and `cleanup`
     // removes it after the child exits. Inline config needs a concrete model.
-    const model = input.model ?? resolveDefault(input.catalog, input.profileModel);
-    const dir = await mkdtemp(join(tmpdir(), "aiand-opencode-"));
+    const models = modelsFromCatalog(input.catalog);
+    const servable = input.catalog.filter((entry) => Object.hasOwn(models, entry.id));
+    const model = input.model ?? resolveDefault(servable, input.profileModel);
+    if (!Object.hasOwn(models, model)) {
+      throw new CliError(`OpenCode cannot be pointed at ${model}.`, {
+        hint: "Pass --model with an id from `aiand models`.",
+      });
+    }
+    const dir = await makeOverlayDir("aiand-opencode-");
     const keyFile = join(dir, "key");
-    await writeFile(keyFile, input.apiKey, { mode: PRIVATE_FILE_MODE });
+    try {
+      await writeFile(keyFile, input.apiKey, { mode: PRIVATE_FILE_MODE, flag: "wx" });
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true });
+      throw error;
+    }
     const config = buildOpencodeConfig({
       apiKey: `{file:${keyFile}}`,
       model,
-      models: modelsFromCatalog(input.catalog),
+      models,
       options: { ...OPENCODE_OPTIONS, baseURL: opencodeBaseURL(input.baseUrl) },
       lockdown: true,
     });
@@ -686,12 +655,21 @@ export const opencodeAdapter: AgentAdapter = {
     };
   },
   async openExtras(input) {
+    // The user named a model in OpenCode's own args: theirs stands, and an
+    // ai& one takes titles and summaries too.
+    const [named] = takeFlagValues(input.args, ["--model", "-m"]).values.slice(-1);
+    if (named !== undefined) {
+      if (!named.startsWith(`${OPENCODE_PROVIDER_ID}/`) || process.env.OPENCODE_CONFIG_CONTENT) {
+        return {};
+      }
+      return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ small_model: named }) } };
+    }
     const config = await readOpencodeConfig();
     const model = typeof config.model === "string" ? config.model : "";
     if (!model || model.startsWith(`${OPENCODE_PROVIDER_ID}/`)) return {};
     if (process.env.OPENCODE_CONFIG_CONTENT) return {};
     const wired = Object.keys(aiandProviderField(config, "models") ?? {}).map((id) => ({ id }));
     const ref = `${OPENCODE_PROVIDER_ID}/${resolveDefault(wired, input.profileModel)}`;
-    return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: ref }) } };
+    return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: ref, small_model: ref }) } };
   },
 };

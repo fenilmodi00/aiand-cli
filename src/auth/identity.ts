@@ -1,6 +1,6 @@
 import { type AccountOrg, type AccountUser, getUser, listOrgs } from "../api/account.js";
-import { openSession, type Session } from "../api/client.js";
-import { ApiError, NotLoggedInError, SYNTHETIC_STATUS } from "../cli/errors.js";
+import { envApiKey, openSession, type Session } from "../api/client.js";
+import { ApiError, NotBoundError, NotLoggedInError, SYNTHETIC_STATUS } from "../cli/errors.js";
 import {
   CREDENTIAL_ORIGIN,
   type Credential,
@@ -42,12 +42,35 @@ export function sourceLabel(credential: Pick<Credential, "origin"> | null | unde
   return SOURCE_LABELS[classifySource(credential)];
 }
 
-export function storageLabel(storage: string | null): string {
+/**
+ * The file tier's label. Its key normally sits beside the ciphertext, so it
+ * is worth an owner-only file and no more; with AIAND_SECRET_STORE_MASTER_KEY
+ * the key is held elsewhere and the file really is encrypted at rest. On
+ * Windows an icacls failure leaves the inherited ACL, so it is not owner-only.
+ */
+function fileTierLabel(ownerOnly: boolean): string {
+  if (process.env.AIAND_SECRET_STORE_MASTER_KEY) {
+    return ownerOnly
+      ? "file (encrypted; key held outside the config folder)"
+      : "file (encrypted; key held outside the config folder; not owner-only)";
+  }
+  return ownerOnly
+    ? "file (owner-only, not encrypted at rest)"
+    : "file (not owner-only, not encrypted at rest)";
+}
+
+/** `credential` is what credentials.json records; omit it for a secret just stored with its ACLs intact. */
+export function storageLabel(
+  storage: string | null,
+  credential?: Pick<Credential, "owner_only"> | null,
+): string {
   switch (storage) {
     case "keychain":
       return "keychain";
+    case "dpapi":
+      return "Windows DPAPI";
     case "file":
-      return "encrypted file";
+      return fileTierLabel(credential?.owner_only !== false);
     case "plaintext":
       return "plaintext file";
     default:
@@ -68,13 +91,22 @@ export type Identity = {
   reachable: boolean;
   /** The gateway failure behind reachable=false; null when reachable. */
   probeError: ApiError | null;
+  /** The refusal when the stored sign-in is for another endpoint and the
+   * caller asked to absorb it (`absorbNotBound`); session stays null. */
+  notBound: NotBoundError | null;
 };
 
 /** The sign-in probe shared by status and whoami. Signed out returns
  * `session: null`; a gateway failure (connection refused, 5xx) returns
  * `reachable: false` with the error in `probeError`. Anything else (a
- * rejected key, corrupt local state, Ctrl-C) throws. */
-export async function probeIdentity(profileOverride?: string, local = false): Promise<Identity> {
+ * rejected key, corrupt local state, Ctrl-C) throws. A sign-in bound to
+ * another endpoint throws NotBoundError too, unless `absorbNotBound` returns it
+ * as `notBound` so status can say so. */
+export async function probeIdentity(
+  profileOverride?: string,
+  local = false,
+  { absorbNotBound = false }: { absorbNotBound?: boolean } = {},
+): Promise<Identity> {
   const profile = resolveProfile(profileOverride);
   let session: Session | null = null;
   let user: AccountUser | null = null;
@@ -83,13 +115,14 @@ export async function probeIdentity(profileOverride?: string, local = false): Pr
   let cached: LoadedCredential | null = null;
   let reachable = true;
   let probeError: ApiError | null = null;
+  let notBound: NotBoundError | null = null;
 
   try {
     if (local) {
       // Cached-only: never touch the network. openSession rotates device
       // tokens near expiry, so build the session straight from the stored
       // credential instead of opening one.
-      const fromEnv = process.env.AIAND_API_KEY?.trim() || undefined;
+      const fromEnv = envApiKey();
       if (fromEnv) {
         // The cached identity belongs to the stored credential, not the env
         // key, so it would name the wrong account here.
@@ -122,12 +155,14 @@ export async function probeIdentity(profileOverride?: string, local = false): Pr
       // can name the outage without failing scripts that gate on it.
       reachable = false;
       probeError = error;
+    } else if (absorbNotBound && error instanceof NotBoundError) {
+      notBound = error;
     } else {
       throw error;
     }
   }
 
-  return { profile, session, user, org, orgs, cached, reachable, probeError };
+  return { profile, session, user, org, orgs, cached, reachable, probeError, notBound };
 }
 
 /** The auth half of status --json: identity, masked key, key source, and the
@@ -145,7 +180,22 @@ export type AuthStatus = {
   org: string | null;
   key: string | null;
   source: CredentialSource | null;
+  /** Human label of the tier holding the key. */
   storage: string | null;
+  /** Stable machine-readable tier id behind `storage`: keychain, dpapi, file,
+   * or plaintext; null when signed out or the key came from AIAND_API_KEY. */
+  storage_tier: string | null;
+  /** One line on why a Windows key sits in the owner-only file, not DPAPI. */
+  storage_notice: string | null;
+  /** Why a stored sign-in is not in use: it was issued for another endpoint
+   * than this run's. Null otherwise. */
+  reason: string | null;
+};
+
+const STORAGE_NOTICES: Record<string, string> = {
+  clm: "PowerShell's Constrained Language Mode blocks Windows DPAPI here, so the key is in the owner-only file instead.",
+  unavailable:
+    "Windows DPAPI could not be reached through PowerShell, so the key is in the owner-only file instead; aiand tries again in a few minutes.",
 };
 
 export type AuthStatusOptions = {
@@ -155,9 +205,10 @@ export type AuthStatusOptions = {
 
 /** The auth half of `aiand status`, built on the same probe as whoami. */
 export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStatus> {
-  const { profile, session, user, org, cached, reachable } = await probeIdentity(
+  const { profile, session, user, org, cached, reachable, notBound } = await probeIdentity(
     opts.profile,
     opts.local,
+    { absorbNotBound: true },
   );
 
   if (!reachable || !session) {
@@ -170,6 +221,9 @@ export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStat
       key: null,
       source: null,
       storage: null,
+      storage_tier: null,
+      storage_notice: null,
+      reason: notBound?.message ?? null,
     };
   }
 
@@ -183,6 +237,12 @@ export async function authStatus(opts: AuthStatusOptions = {}): Promise<AuthStat
     org: org?.name ?? cached?.org?.name ?? null,
     key: maskKey(session.token),
     source: classifySource(credential),
-    storage: storage !== null ? storageLabel(storage) : null,
+    storage: storage !== null ? storageLabel(storage, cached) : null,
+    storage_tier: storage,
+    storage_notice:
+      storage === "file" && cached?.storage_fallback
+        ? (STORAGE_NOTICES[cached.storage_fallback] ?? null)
+        : null,
+    reason: null,
   };
 }

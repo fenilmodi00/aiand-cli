@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { withEnv, withTestEnv } from "./helpers.mjs";
+import { assertMode, withEnv, withTestEnv } from "./helpers.mjs";
 
 const MASTER_KEY = "a".repeat(64);
 
@@ -156,9 +156,7 @@ describe("credential file permissions", () => {
   test("is created 0600", async () => {
     await withEnv({ AIAND_KEY_STORAGE: "plaintext" }, async () => {
       await config.saveCredential("p", { access_token: "sk-a", refresh_token: "r", expires_at: 1 });
-      if (process.platform !== "win32") {
-        assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
-      }
+      assertMode(config.credentialsPath(), 0o600);
     });
   });
 
@@ -169,7 +167,7 @@ describe("credential file permissions", () => {
       const path = config.credentialsPath();
       chmodSync(path, 0o644);
       await config.saveCredential("p", { access_token: "sk-b", refresh_token: "r", expires_at: 2 });
-      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assertMode(path, 0o600);
     });
   });
 });
@@ -208,10 +206,8 @@ describe("credential storage", () => {
           refresh_token: "r",
           expires_at: 1,
         });
-        if (process.platform !== "win32") {
-          assert.equal(statSync(config.credentialsPath()).mode & 0o777, 0o600);
-          assert.equal(statSync(join(dir, "secret-store.key")).mode & 0o777, 0o600);
-        }
+        assertMode(config.credentialsPath(), 0o600);
+        assertMode(join(dir, "secret-store.key"), 0o600);
       },
     );
   });
@@ -233,7 +229,7 @@ describe("credential storage", () => {
           refresh_token: "r",
           expires_at: 2,
         });
-        assert.equal(statSync(path).mode & 0o777, 0o600);
+        assertMode(path, 0o600);
       },
     );
   });

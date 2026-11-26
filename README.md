@@ -1,42 +1,55 @@
 <img src="docs/assets/aiand-cli-logo.svg" alt="ai&amp; CLI logo" width="480">
 
+**English** | [日本語](README.ja.md)
+
 **Less setup. More building.**
 
-Connect the tools you love to ai& inference. ai& CLI handles sign-in and
-configuration, so you can get straight to building.
+`aiand` is the command line for ai& inference. It signs you in through your
+browser, then points your coding agent at ai& (Claude Code, OpenCode, Codex and
+others) without a proxy or a daemon. It also sends prompts, lists models and
+prices, and shows your requests and usage.
 
-- **Sign in through your browser.** Get started without copying API keys.
-- **Keep your settings.** Connect OpenCode while preserving your existing providers and chosen model.
-- **See models and prices.** Explore the catalog in your billing currency.
+Guide: [docs.aiand.com/cli](https://docs.aiand.com/cli/)
 
 ## Quick start
-```bash
-npm install -g @aiand/cli  # Requires Node.js 22 or newer.
-aiand code                 # Sign in, set up OpenCode, and open it on ai&
-```
 
-Prefer a quick prompt?
+1. **Install.** You need Node.js 22 or newer.
 
-```bash
-git diff | aiand run "Review this diff. Be ruthless."
-```
+   macOS and Linux:
 
-## Install
+   ```bash
+   curl -fsSL https://github.com/aiandlabs/aiand-cli/releases/latest/download/install.sh | bash
+   ```
 
-Requires Node.js 22 or newer.
+   Windows (PowerShell):
 
-```bash
-npm install -g @aiand/cli
-```
-or:
+   ```powershell
+   irm https://github.com/aiandlabs/aiand-cli/releases/latest/download/install.ps1 | iex
+   ```
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.sh | bash
-```
+   The installer runs on Windows PowerShell 5.1 as well as PowerShell 7. Every
+   other PowerShell command in this README is for PowerShell 7 (`pwsh`): see
+   [Updating and uninstalling](#updating-and-uninstalling).
 
-```powershell
-irm https://raw.githubusercontent.com/aiandlabs/aiand-cli/main/install.ps1 | iex
-```
+   Or on any system: `npm install -g @aiand/cli`.
+
+2. **Sign in.** The installer offers to do this at the end. To do it later:
+
+   ```bash
+   aiand login
+   ```
+
+3. **Open your agent on ai&.**
+
+   ```bash
+   aiand claude    # Claude Code
+   aiand code      # OpenCode
+   ```
+
+   Other agents are in [Supported agents](#supported-agents). No agent? Try
+   `aiand run "hello"`.
+
+Open a new terminal if `aiand` is not found after installing.
 
 ## Try the cli-v2 preview (side-by-side)
 
@@ -48,63 +61,397 @@ you can run the preview without touching a production install:
 curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/cli-v2/install.sh | bash
 ```
 
-`aiand-v2 update` re-fetches the preview branch. Uninstall the preview (it
-keeps the preview's profiles and credentials) with:
+Use `aiand-v2` wherever this README says `aiand` while you run the preview.
+`aiand-v2 update` re-fetches the preview branch, which the installer builds
+from that branch's source because a preview is not a published release.
+Uninstall the preview (it keeps the preview's profiles and credentials) with:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fenilmodi00/aiand-cli/cli-v2/install.sh | bash -s -- uninstall
 ```
 
-(On Windows, run the preview from Git Bash; `install.ps1` is unchanged on this
-branch.)
+Set `AIAND_V2_SIDEBYSIDE=0` to install the production defaults instead. On
+Windows, run the preview from Git Bash; `install.ps1` has no side-by-side mode.
 
-The installer will modify your shell, `AIAND_NO_MODIFY_PATH=1` to skip permanent PATH changes while still adding the CLI to the installer's process PATH.
+## Supported agents
 
-To update the CLI, run `aiand update` (or run the install command again).
+The ai& CLI works with these coding agents:
 
-To uninstall a copy from the installer:
+| Agent | Command | What the `on` command changes |
+| --- | --- | --- |
+| [OpenCode](https://opencode.ai) | `aiand opencode` or `aiand code` | Adds an `aiand` provider to `~/.config/opencode/opencode.json` |
+| [Claude Code](https://code.claude.com/docs) | `aiand claude` | Writes an `env` block to `~/.claude/settings.json` |
+| [Codex](https://developers.openai.com/codex/cli) | `aiand codex` | Writes a separate profile, `~/.codex/aiand.config.toml`. Run `codex --profile aiand` |
+| [Pi](https://pi.dev) | `aiand pi` | Adds a provider to `~/.pi/agent/models.json`, the key to `auth.json`, the default to `settings.json` |
+| [Oh My Pi](https://omp.sh) | `aiand omp` | Writes `~/.omp/agent/models.yml` and `config.yml` |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart) | `aiand copilot` | Adds a provider to `~/.copilot/providers.json` and sets the model in `settings.json` |
+| [GitHub Copilot app](https://github.com/features/ai/github-app) | `aiand copilot-app` | Writes provider rows to `~/.copilot/data.db`. aiand wires it; you open the app |
+| [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) | `aiand hermes` | Adds a provider plugin under `~/.hermes/plugins/`, plus `config.yaml` and `.env` |
+| [Jouzu](https://github.com/shisa-ai/jouzu) | `aiand jouzu` or `aiand jz` | Pi's three files, in Jouzu's own config dir: a provider in `agent/models.json`, the key in `auth.json`, the default in `settings.json` |
+
+`aiand <agent>` opens the agent on ai&, signing you in and wiring it first if
+needed. `aiand claude` is the exception: it runs one session and wires nothing
+(see the [example below](#example-use-ai-with-claude-code)). `aiand <agent> on` wires it without opening it. `aiand <agent> off`
+removes what aiand added. `aiand <agent> status` shows what the agent really
+uses.
+
+- Your other providers and your own edits are left alone. `off` removes only
+  what aiand wrote. `aiand restore <agent> --force` puts back the file as it was
+  before aiand first changed it.
+- `aiand run-agent <agent>` uses ai& for one session and writes nothing to the
+  agent's config.
+- `aiand init` detects installed agents and wires them together (`--all` for
+  every one, `--off` to turn them off).
+- If an agent is missing, aiand offers to install it when the install command
+  is an npm install. Otherwise it prints the command and exits with `127`.
+- Everything after the agent name goes to the agent as typed. Put aiand's own
+  flags before it (`aiand --profile work codex`), and put `--` before an
+  argument aiand would read as a verb (`aiand opencode -- status`).
+- When your key rotates, aiand updates the agents it wired.
+
+Details and per-agent notes: [docs/agents.md](https://github.com/aiandlabs/aiand-cli/blob/main/docs/agents.md).
+
+## Example: use ai& with Claude Code
+
+There are two ways to use ai& with Claude Code: one session at a time, or every
+session.
+
+### For one session only
+
+```bash
+aiand claude                              # open one Claude Code session on ai&
+aiand claude -p "explain this repo"       # pass arguments to Claude Code
+aiand claude --model <id>                 # pick the ai& model for this session
+aiand claude --session                    # the same, from the agent's own command
+aiand claude on --session
+```
+
+`aiand claude` starts one Claude Code session on ai& and writes nothing to your
+Claude Code settings. Plain `claude` sessions in other terminals keep using
+Anthropic's models, before, during and after. Everything after `claude` goes to
+Claude Code as typed, except `--model <id>`, which picks the ai& model for every
+model slot of the session; `aiand models` lists them.
+
+If you pick an ai& model in `/model` and save it as your default, aiand puts
+your own default back as soon as Claude Code saves it, so a plain `claude`, even
+one started while the ai& session is still open, starts on a model it can use.
+While `aiand claude on` is in effect, an ai& default is left in place, since
+every `claude` runs on ai& then.
+
+### For every session
+
+```bash
+aiand claude on                  # route every claude through ai&
+claude                           # now uses ai&
+aiand claude status              # check what Claude Code is configured to use
+aiand claude off                 # back to Anthropic's models
+```
+
+- **`aiand claude on`** writes the gateway URL, your key and model settings into
+  `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`). After that,
+  every `claude` uses ai&. Pass `--model <id>` to pick a model; Claude Code
+  then sends every request to it, background calls included.
+- **Sessions that are already open switch too.** Claude Code applies `on` and
+  `off` to running sessions: `on` moves them to ai& at once, and `off` moves
+  them back. `off` takes about three seconds while running sessions reload. If
+  a session still answers from ai&, restart it: `/exit`, then
+  `claude --continue`.
+- **To go back,** run `aiand claude off`. It removes what aiand added and keeps
+  your own edits. `aiand restore claude --force` puts back the file exactly as
+  it was before aiand first changed it.
+
+The key is stored in `settings.json` while Claude Code is wired. Keep that file
+out of a dotfiles repo. What else `on` changes (context size, `/model` list,
+WebSearch) is in [docs/agents.md](https://github.com/aiandlabs/aiand-cli/blob/main/docs/agents.md#claude-code).
+
+## Signing in
+
+`aiand login` opens your browser. Approving creates an API key for your
+organization, labeled `aiand@<hostname>` so you can tell your machines apart in
+the console. Over SSH, or if the browser sign-in cannot finish (no browser, a
+timeout, or a script with no terminal), aiand shows a code you approve from any
+device instead:
+
+```
+  Your code   BCDF-GHJK
+  Approve at  https://api.aiand.com/auth/device?user_code=BCDF-GHJK
+```
+
+Already have a key from the console?
+
+```bash
+aiand login --paste                # masked prompt
+aiand login --with-token < key.txt # read it from stdin
+```
+
+`aiand logout` offers to revoke a key that `login` created. If the revoke cannot
+reach ai&, you stay signed in so you can run `logout` again; `--keep-remote`
+forgets the key here without revoking it. A key you pasted in is only removed
+from this machine: revoke it in the [console](https://console.aiand.com/api-keys).
+
+Signing in again (`aiand login --force`, or yes to "Sign in again and replace
+it?") revokes the key the old sign-in created, once the new one is stored. A
+sign-in that fails or is cancelled before the new one is stored keeps the old
+one; if a later step fails, the old key is still revoked. If the revoke cannot
+reach ai&, the new sign-in still stands and aiand says so: revoke the old key
+in the console. `--keep-remote` keeps the old key valid. A pasted key is never
+revoked.
+
+Keys expire. aiand rotates one automatically in its last 3 days, or right away
+if the server rejects it.
+
+**CI and scripts:** skip `login` and set `AIAND_API_KEY`. Nothing is written to
+disk.
+
+## Where your key is stored
+
+`aiand status` shows which of these you have.
+
+| OS | Where | Protects against |
+| --- | --- | --- |
+| macOS | Keychain | Other accounts on the machine, and a copy of your files taken elsewhere |
+| Linux | Secret Service (GNOME Keyring, KWallet) through `secret-tool` | The same, once the keyring is unlocked at login |
+| Windows | DPAPI, through the Windows PowerShell that ships with Windows. The encrypted key is under `%USERPROFILE%\.config\aiand\` | Other Windows accounts, and a copy of the file taken to another machine or account |
+
+Nothing here protects the key from programs running as you.
+
+When none of these works (a headless Linux box with no keyring, or a Windows
+machine whose PowerShell runs in Constrained Language Mode), the key goes to a
+file under `~/.config/aiand/`. `aiand status` labels it
+`file (owner-only, not encrypted at rest)`, because the decryption key sits next
+to the file. It guards against a casual look, not against anyone who can read
+that folder. On Windows, `aiand status` also says why DPAPI was not used.
+
+<details>
+<summary>More on key storage</summary>
+
+- `AIAND_KEY_STORAGE` picks one tier: `keychain` (macOS and Linux only), `dpapi`
+  (Windows only), `file`, or `plaintext`, a plain owner-only file used only when
+  you ask for it. `--json` output adds `storage_tier` with the same ids.
+- Set `AIAND_SECRET_STORE_MASTER_KEY` to supply the file tier's key yourself and
+  the file is encrypted at rest against a copy of the folder. The label becomes
+  `file (encrypted; key held outside the config folder)`. If the owner-only ACL
+  could not be applied on Windows (`icacls` failed; `AIAND_DEBUG=1` says why),
+  the label says `not owner-only`.
+- A key stored in the file tier on Windows moves into DPAPI the next time aiand
+  reads it. If PowerShell cannot be reached (it hangs, times out or fails), the
+  key stays in the file, `aiand status` says why, and reads leave it there for
+  ten minutes before trying again, so a PowerShell that hangs costs one wait and
+  not one per `aiand` process. The next sign-in tries DPAPI at once.
+- Before you downgrade aiand on Windows, run `aiand logout`. An older version
+  cannot see a key that has moved into DPAPI, so it can neither sign it out nor
+  revoke it.
+- Each `aiand` run that reads a DPAPI key starts Windows PowerShell once, which
+  can take a moment on a cold machine. If your endpoint security blocks that,
+  set `AIAND_KEY_STORAGE=file` to skip DPAPI.
+
+Cost, endpoint-security behaviour and a test plan for Windows fleets:
+[docs/windows-key-storage.md](https://github.com/aiandlabs/aiand-cli/blob/main/docs/windows-key-storage.md).
+
+</details>
+
+## Shared and loaner computers
+
+The trust boundary is the operating-system account: anyone who can sign in to
+the same account can use what aiand stored there. Before you hand a machine
+back:
+
+```bash
+aiand logout --all
+```
+
+It asks first; off a terminal, pass `--force`. Then it:
+
+- revokes every key `login` created on this machine, one profile at a time, and
+  keeps the sign-in of any it could not reach, so you can run it again;
+- removes ai& from every coding agent, whichever profile wired it, and checks
+  that no ai& key is left in their config files;
+- deletes leftover session files that a crashed `aiand run-agent` left in the
+  temp directory, except one a Hermes shim still points into: deleting it
+  would break your `hermes` command, so it is reported, and goes on a later
+  run once Hermes is reinstalled;
+- deletes every stored key, OS keychain entries included, and `~/.config/aiand`
+  itself: profiles, settings and snapshots.
+
+To remove the CLI as well, run the installer's `uninstall --purge`. It does the
+same sign-out first and deletes nothing if that fails. See
+[Uninstall](#updating-and-uninstalling).
+
+**Revoke pasted keys in the console.** Keys you pasted in (`--paste`,
+`--with-token`) cannot be revoked from the CLI, which did not create them.
+`logout --all` lists them. Revoke them at
+[console.aiand.com/api-keys](https://console.aiand.com/api-keys), and do the
+same for any key it could not revoke.
+
+Then sign out of the coding agents themselves if you used them with other
+accounts.
+
+<details>
+<summary>When <code>logout --all</code> exits 1</summary>
+
+It exits `0` when nothing is left, and `1` after listing whatever was:
+
+- a key it could not revoke. That profile's sign-in and the config directory
+  stay, since the refresh token is the only thing that can revoke it. Run
+  `logout --all` again, or `logout --all --keep-remote` to forget it here and
+  revoke it in the console;
+- a stored sign-in it could not read (a locked keychain over SSH, or a corrupt
+  `credentials.json`). That profile keeps its sign-in files and the config
+  directory stays, so a retry can still revoke the key. Unlock the keychain or
+  fix the file, then run `logout --all` again. `uninstall --purge` stops here
+  too and deletes nothing;
+- an agent config it could not fix (for example one that is no longer valid
+  JSON). That agent keeps its `snapshots/<agent>` folder and the config
+  directory stays. Fix the config, run `aiand <agent> off`, then `logout --all`
+  again;
+- a session still running;
+- files of your own in the config directory, which it leaves in place.
+
+`--keep-remote` deletes everything locally without revoking anything. `--json`
+reports each step.
+
+`logout --all` deletes a config directory only inside your home directory. For
+an `AIAND_CONFIG_DIR` elsewhere, set `AIAND_WIPE_OUTSIDE_HOME=1`. It also wipes
+only a directory that proves it is aiand's, so a mistyped `AIAND_CONFIG_DIR`
+(say `~/.docker`) loses nothing. aiand puts a `.aiand-config` file in a
+directory the first time it writes there, but only when the directory is new,
+empty, or holds nothing but aiand's own files (a cache write into `~/.docker`
+marks nothing). The file holds a random id that the directory's `config.json`
+records too, so an empty or copied one proves nothing; a directory from before
+that passes when its `config.json` holds a `profile` and `profiles`. Sign-in
+files (`credentials.json`, `secret-store.*`) need that `config.json` beside
+them, since `.aiand-config` alone vouches only for caches. Otherwise
+it refuses before touching anything; run `aiand login` with `AIAND_CONFIG_DIR`
+set to the directory if it really is aiand's, so aiand writes them; if its
+`config.json` records another id than `.aiand-config`, delete `.aiand-config`
+first, since aiand never rewrites one that names an id. If that
+directory holds a sign-in with no `config.json` (one interrupted before it was
+written), run `aiand logout --profile <name>` there before that login, for each
+profile in its `credentials.json`: that revokes the key where it was issued, which a new
+`aiand login` over it would not. A sign-in that does not record where it was
+issued is not sent anywhere from a directory with no `config.json`, or one
+whose `config.json` records another id: revoke its key in the console and run
+`aiand logout --keep-remote`. Inside it,
+a `locks` or `snapshots` folder keeps any entry aiand did not put there. The
+directory is checked again right before anything is deleted from it, so one
+swapped for a link while a revoke ran is refused.
+
+</details>
+
+## Updating and uninstalling
+
+The installer puts the CLI in `~/.aiand/cli` and a launcher in `~/.local/bin`.
+It adds that folder to your PATH: in `~/.zshrc` (zsh), `~/.bash_profile` (bash on
+macOS) or `~/.bashrc` (bash on Linux), or in your user PATH on Windows. For fish
+and nushell it prints the command to run instead. Set `AIAND_NO_MODIFY_PATH=1`
+to skip the change. Re-running it, or `update`, never touches `~/.config/aiand`, so
+your agents stay wired.
+
+> **PowerShell 7.** The PowerShell commands in this README are for PowerShell 7
+> (`pwsh`). Windows PowerShell 5.1 only receives security fixes, and Microsoft
+> recommends installing PowerShell 7: see
+> [Install PowerShell on Windows](https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-windows)
+> (Windows PowerShell 5.1 prints the same link, <https://aka.ms/PSWindows>, each
+> time it starts). This is about the shell you type into. The installer still
+> runs on Windows PowerShell 5.1, so the one-line `irm … | iex` install works
+> from either, and aiand itself uses the Windows PowerShell 5.1 that ships with
+> Windows to reach DPAPI.
+
+**Update.** The CLI tells you on a terminal when a new version is out (set
+`AIAND_UPDATE_CHECK=0` to turn that off). For an npm install, run
+`npm install -g @aiand/cli@latest`. For the installer:
+
+```bash
+bash ~/.aiand/cli/install.sh update
+```
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File "$env:USERPROFILE\.aiand\cli\install.ps1" update
+```
+
+`-ExecutionPolicy Bypass` applies to that one PowerShell process only, so it
+works under Windows' default policy without changing it.
+
+**Uninstall.** This turns off every agent aiand wired, then removes the CLI. Your
+profiles and keys under `~/.config/aiand` are kept.
 
 ```bash
 bash ~/.aiand/cli/install.sh uninstall
 ```
 
 ```powershell
-& "$env:USERPROFILE\.aiand\cli\install.ps1" uninstall
+pwsh -ExecutionPolicy Bypass -File "$env:USERPROFILE\.aiand\cli\install.ps1" uninstall
 ```
 
-Uninstall turns off every agent aiand wired, then removes the CLI. Your
-profiles and credentials under `~/.config/aiand` are kept. For an npm install,
-run `aiand init --off` first, then `npm uninstall -g @aiand/cli`.
+For an npm install, run `aiand init --off`, then `npm uninstall -g @aiand/cli`.
 
-## Install sources
+**On a shared or loaner machine,** add `--purge` to leave nothing behind:
 
-The installer installs the published release by default. It reads the npm
-manifest, downloads the release tarball, and stages its already-built `dist/`,
-so no clone, `npm ci`, or TypeScript build runs and only Node.js and `tar` are
-needed. When the registry cannot be reached it builds from source instead,
-which needs `git` and `npm`; a failed stage still leaves the previous install
-untouched.
+```bash
+bash ~/.aiand/cli/install.sh uninstall --purge
+```
 
-Set `AIAND_SOURCE` to a local path or an allowlisted `https://` URL to install
-from your own source — a fork, a specific checkout, or a CI workspace — and
-that source is cloned or copied and built. Running the installer from inside a
-checkout uses that checkout. `AIAND_RELEASE_URL` reads a different manifest for
-the published release; tests use a local tarball.
+```powershell
+pwsh -ExecutionPolicy Bypass -File "$env:USERPROFILE\.aiand\cli\install.ps1" uninstall --purge
+```
 
-`AIAND_PUBLISHED_RELEASE` takes three states. `1` requires the published
-release and errors when the registry cannot be reached, `0` requires source,
-and unset tries the published release and then source. `AIAND_FAST_INSTALL` is
-the deprecated alias for `AIAND_PUBLISHED_RELEASE`, and the installer says so
-when it is set.
+`--purge` runs `aiand logout --all` first. That revokes the keys this CLI
+created and removes pasted keys from this machine, though a pasted key stays
+valid in the console. It also removes ai& from every agent's config. Then it
+deletes the config directory (`~/.config/aiand`, or `AIAND_CONFIG_DIR`) along
+with the CLI. If signing out fails, nothing is deleted. If it revokes every key
+but leaves something behind (a key still in an agent's config, a snapshot an
+agent still needs), the installer names it, keeps the config directory, and
+exits 1. `--force --purge` skips the sign-out and deletes the files anyway, but
+then the keys are not revoked, so revoke them in the console.
 
+<details>
+<summary>How the installer verifies what it installs</summary>
+
+The installer installs the latest release, never the main branch. It downloads
+the `@aiand/cli` tarball from npm and installs it only if it matches both npm's
+sha512 and the `SHA256SUMS` attached to the GitHub release. `AIAND_VERSION=x.y.z`
+picks a release, and is the only way to install one older than the version you
+have; without it the installer refuses to go backwards. Nothing older than
+0.8.0, the first release published with a `SHA256SUMS`, can be installed. If no
+release can be reached (or GitHub rate-limits the download), it stops and
+changes nothing.
+
+Those checks cover the tarball, not the script. The one-liner fetches the
+installer script from the latest GitHub release and runs it before anything is
+verified, so you trust GitHub for that first step. It comes from a release's
+assets, not the main branch, so a push to main does not change what it does. If
+you would rather not trust GitHub for it, use `npm install -g @aiand/cli`, which
+trusts npm alone. If the one-liner answers 404, no release carries the installer
+yet: use the npm command meanwhile.
+
+`update` runs the installer copy that arrived inside an earlier verified release,
+so, unlike the one-liner, it does not fetch a script from GitHub again. An
+install from an older installer (one that cloned the main branch) has no such
+copy and updates by running the one-line install command again.
+
+The installer swaps the new copy in for `~/.aiand/cli` only after it has run
+`--version` and `--help`. If it is stopped part-way (Ctrl-C, closing the
+terminal), it puts the previous copy back, and if it was killed outright the next
+run does that before anything else. That run also removes the `.cli-staging-*`
+and `cli.prev-*` folders an earlier run left in `~/.aiand`, except those of an
+installer that is still running, which it neither deletes nor puts back. It leaves a git
+checkout alone, and says so, when the installer did not create it, when it has
+local changes, when it has commits its upstream lacks, or when its branch has no
+upstream to compare against. A download that is larger than a release can be (16
+MiB for the tarball, 4 MiB for the checksums and npm's manifest) is stopped at
+that size with a message.
+
+</details>
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `aiand login` / `logout` | Start or end this machine's session |
+| `aiand logout --all` | Remove every ai& key and setting from this machine |
 | `aiand whoami` | Identity, organization, and key expiry |
-| `aiand status` | Sign-in state plus every agent's wiring |
+| `aiand status` | Sign-in state, key storage, and every agent's wiring |
 | `aiand code` | Open OpenCode on ai&, setting it up first if needed |
 | `aiand <agent>` | Open a coding agent on ai& the same way |
 | `aiand <agent> on\|off\|status` | Wire a coding agent to ai&, or unwire it |
@@ -144,267 +491,12 @@ description sits under a rule. A pipe gets the static home screen instead, so
 automatically when your terminal reports a light background. `NO_COLOR` turns
 all color off, and terminals without truecolor get the xterm-256 palette.
 
-## Coding agents
-
-aiand currently supports [OpenCode](https://opencode.ai),
-[Claude Code](https://code.claude.com/docs),
-[Codex](https://developers.openai.com/codex/cli), [Pi](https://pi.dev),
-[Oh My Pi](https://omp.sh),
-[GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart),
-the [GitHub Copilot app](https://github.com/features/ai/github-app)
-and [Hermes Agent](https://hermes-agent.nousresearch.com/docs/) (Nous Research).
-
-`aiand opencode`, `aiand claude`, `aiand codex`, `aiand pi`, `aiand omp`,
-`aiand copilot` and `aiand hermes` open the agent on ai&, and `aiand code` opens the default
-one, OpenCode. If you are signed out, aiand signs you in. If the agent is
-missing and its install command is an npm install, aiand offers to install
-it with the install command shown by `aiand <agent> --help`; other install
-hints are printed with no offer. If the agent is not wired
-yet, aiand runs `on` (below), so the plain `opencode`, `claude`,
-`codex --profile aiand`, `pi`, `omp`, `copilot` and `hermes` use ai& afterwards too.
-
-Everything after the agent name goes to the agent as typed, such as
-`aiand claude -p "explain this repo"`. Put aiand's own flags before the
-agent name (`aiand --profile work codex`), and put `--` before an argument
-aiand would read as a verb (`aiand opencode -- status`). Without a terminal
-to ask on, aiand never installs anything; it prints the install command and
-exits with `127`.
-
-```bash
-aiand opencode           # open OpenCode on ai&, wiring it first if needed
-aiand opencode on        # route OpenCode through ai&
-aiand opencode status    # check what OpenCode is actually configured to use
-aiand opencode off       # remove exactly what aiand added
-aiand run-agent opencode # or: use ai& for this one session, change nothing
-```
-
-`aiand run-agent opencode` writes each model's published reasoning levels into
-the session. GLM-5.3 gets low, high, and max. `aiand opencode on` already
-copies those levels from the gateway.
-
-`on` adds an `aiand` provider to `~/.config/opencode/opencode.json`, with the
-models from the live catalog, so plain `opencode` uses ai& afterwards. Your
-other providers and your own edits are left alone. If you already chose a
-model it stays chosen; pass `--model <id>` to switch, or `--model native` to
-keep OpenCode's own default. `aiand opencode` still opens on an ai& model,
-for that run only.
-
-`off` removes only what aiand wrote. If a config ever ends up in a state you
-do not want, `aiand restore opencode --force` puts back the exact file from
-before aiand first touched it.
-
-```bash
-aiand claude             # open Claude Code on ai&, wiring it first if needed
-aiand claude on          # route Claude Code through ai&
-aiand claude status
-aiand claude off
-aiand run-agent claude   # launch Claude Code on ai&, nothing written
-aiand claude --session   # the same, from the agent's own command
-aiand claude on --session
-```
-
-`on` writes an `env` block into `~/.claude/settings.json` (or
-`$CLAUDE_CONFIG_DIR/settings.json`): the gateway URL, your key, and a catalog
-model for every slot. The main slots get a vision model unless your profile
-names a model; background work (the `haiku` slot) gets a fast one. Pass
-`--model <id>` to switch the main slots. A `model` setting ai& cannot serve is
-set aside until `off`; one it can serve is kept, and Claude Code starts on it.
-Claude Code's context budget is capped at 200k tokens, so long sessions
-compact before open models start to degrade (a model shown with a `[1m]`
-suffix is sized the same way). Claude Code's attribution header is turned off,
-since ai& would otherwise pass it to the model as prompt text. `/model` lists
-every ai& model: Claude Code only discovers gateway models whose id contains
-"claude", so `on` writes them into its `modelPicker` setting, replacing the
-built-in Opus, Sonnet and Haiku rows (a `modelPicker` of your own is kept). The Bedrock, Vertex
-and Foundry switches are written as `0`, so one left on elsewhere cannot route
-Claude Code away from ai&. WebSearch is denied because it runs on Anthropic's
-servers; WebFetch still works. The key sits in that file while Claude Code is
-wired, so keep it out of a dotfiles repo, and Claude Code passes it to every
-command and hook it runs, as it does every `env` value. A project's own `.claude/settings.json`
-can override these values. `/effort` is sent to ai& as the model's reasoning
-level, so pick one the model publishes: `moonshotai/kimi-k3` takes `low`,
-`high` and `max`, and any other level is rejected.
-
-```bash
-aiand codex              # open Codex on its ai& profile, writing it first if needed
-aiand codex on           # write an ai& profile for Codex
-codex --profile aiand    # then start Codex on ai&
-aiand codex status
-aiand codex off
-aiand run-agent codex    # launch Codex on ai&, nothing written
-```
-
-`on` writes a separate profile, `~/.codex/aiand.config.toml` (or
-`$CODEX_HOME/aiand.config.toml`), and leaves your `config.toml` alone, so plain
-`codex` keeps your usual setup and `codex --profile aiand` uses ai&. The profile
-never holds your key: Codex runs `aiand key export` for your active aiand
-profile, so a rotation or `aiand config use` needs nothing (`on --profile
-<name>` pins another profile instead). It pins a reasoning level the model
-publishes, for Plan Mode too, and turns off Codex's hosted tools (web search,
-image generation and the like), which ai& does not run. A model or
-level you pick in Codex's `/model` stays across another `on`; pass
-`--model <id>` to switch. Settings of your own in the profile survive `on` and
-`off`. `on` refuses a profile that already routes Codex elsewhere; `--force`
-takes it over, and `aiand restore codex --force` brings the old one back. Your `config.toml` still loads under the profile, so its MCP servers and
-plugins come along. Which Codex versions work with ai&, and what changed
-between them, is in the
-[Codex guide](https://docs.aiand.com/integrations/codex/).
-
-```bash
-aiand pi             # open Pi on ai&, wiring it first if needed
-aiand pi on             # route Pi through ai&
-aiand pi status
-aiand pi off
-aiand run-agent pi      # or: one Pi session on ai&, no Pi config written
-```
-
-`on` writes an `aiand` provider into `~/.pi/agent/models.json` speaking the
-gateway's OpenAI-compatible dialect, with every model from the live catalog,
-saves the session key in `~/.pi/agent/auth.json` (readable only by you), and
-sets `defaultProvider`/`defaultModel` in `~/.pi/agent/settings.json`. Your
-other providers and credentials are untouched. A `defaultModel` ai& cannot
-serve is set aside until `off`; one it can serve is kept. Pass
-`--model <id>` to switch, or `--model native` to leave Pi's own default.
-Pi offers each model's published reasoning levels. A level the model does
-not publish stays hidden. Pi's own default is medium. When medium is not in
-the model's list, Pi moves up to the next level it does publish. On GLM-5.3
-that level is high.
-Pi's config root moves wholesale with `PI_CODING_AGENT_DIR`.
-
-```bash
-aiand omp            # open Oh My Pi on ai&, wiring it first if needed
-aiand omp on             # wire Oh My Pi through ai&
-aiand omp status
-aiand omp off
-aiand run-agent omp      # or: one Oh My Pi session on ai&, no omp config written
-```
-
-`on` writes an override-only `aiand` provider block into
-`~/.omp/agent/models.yml` (omp already bundles the aiand provider, so only the
-gateway URL, your key and the ownership marker are written) and pins
-`modelRoles.default` in `~/.omp/agent/config.yml`. Your other providers and
-settings are untouched. A `modelRoles.default` ai& cannot serve is set aside
-until `off`; one it can serve is kept. Pass `--model <id>` to switch, or
-`--model native` to leave omp's own default. `PI_CODING_AGENT_DIR` moves the
-config root wholesale; `PI_CONFIG_DIR` renames the `.omp` root.
-
-One-session launches keep session history in omp's own session dir, including
-its XDG location (`$XDG_DATA_HOME/omp/sessions`) when omp was migrated with
-`omp config init-xdg`.
-
-```bash
-aiand copilot        # open Copilot CLI on ai&, wiring it first if needed
-aiand copilot on         # wire GitHub Copilot CLI through ai&
-aiand copilot status
-aiand copilot off
-aiand run-agent copilot  # or: one Copilot CLI session on ai&, no config written
-```
-
-`on` writes an `aiand` provider into `~/.copilot/providers.json` (or
-`$COPILOT_HOME/providers.json`) with every model from the live catalog, and
-pins the `aiand/<id>` model in `~/.copilot/settings.json`, which a bare
-`copilot` launch needs - a BYOK provider has no built-in default. Your other
-providers and their rows are untouched, and the provider row holds the
-session key itself, so no GitHub sign-in is involved. Pass `--model <id>` to
-switch models; `off` hands back the `model` selection it replaced, or drops
-the key it added, and leaves a value you changed in between. The key sits in
-that file while Copilot is wired, so keep it out of a dotfiles repo.
-`--model native` leaves settings.json's model as it is.
-
-The GitHub Copilot desktop app takes the same wiring through its own provider
-store, and nothing else. `aiand copilot-app on` writes an `aiand-`-prefixed
-provider row and one model row per catalog model into `~/.copilot/data.db`
-(or `$COPILOT_HOME/data.db`); the app has to have created that database, so
-open it once first. The app keeps GitHub sign-in even for BYOK providers, and
-you pick the ai& model in its own model menu - aiand does not set a default
-there. Quit the app before `on` or `off`, since it rewrites the database as
-it exits and would clobber the change; `--force` goes ahead anyway. The app
-is a GUI, so there is no `run-agent copilot-app`: use `aiand copilot-app on`
-for permanent wiring. Bare `aiand copilot-app` wires the app and tells you
-how to open it yourself — aiand cannot launch a GUI app, and anything after
-`copilot-app` errors.
-
-```bash
-aiand hermes on          # route Hermes through ai&
-aiand hermes status
-aiand hermes off
-aiand run-agent hermes   # launch Hermes on ai& for one session, nothing written
-```
-
-`on` ships a dedicated `aiand` model provider as a `model-provider` plugin
-under `~/.hermes/plugins/model-providers/aiand`, adds a `providers.aiand`
-block to `~/.hermes/config.yaml`, and bakes your key into `~/.hermes/.env`
-(mode 0600) under a dedicated name, so the key lives in Hermes's own process
-after the `.env` load but never reaches the tools Hermes runs: the generated
-provider declares the var, which mirrors into Hermes's provider env
-blocklist, so terminal and tool children are spawned without it. The
-generated provider carries each model's published reasoning levels (GLM 5.3
-offers low, high, and max); a stock install leaves the level unset, so no
-`reasoning_effort` is sent and the gateway's per-model default applies, while
-a level you pick is clamped onto the published set. The top-level model
-pins from the live catalog: pass
-`--model <id>` to switch, or `--model native` to leave the model section
-exactly as it is (Hermes needs a default to send, so ai& never deletes one).
-Your other providers, plugins, sessions, and own edits are left alone.
-
-`off` removes only what aiand wrote. If a config ever ends up in a state you
-do not want, `aiand restore hermes --force` puts back the exact files from
-before aiand first touched it.
-
-`run-agent` routes one session through a throwaway `HERMES_HOME` overlay
-without a prior `on`: your sessions, skills, memories, logs, and own plugins
-are symlinked back so they stay native and resumable, while credentials exist
-only inside the overlay and the real `~/.hermes` — including its
-`config.yaml` — is never written. The overlay ships the same dedicated
-`aiand` model provider, and its `config.yaml` pins the model from the live
-catalog: `--model <id>` to choose (a session launch always names a model, so
-`--model native` is the usual catalog error). `--provider`, `--model`, and `-m` in the arguments after `--` are
-stripped so nothing can override the injected routing, and the overlay is
-removed after the session ends — success, failure, or Ctrl-C.
-
-When your key rotates, aiand updates the agents it wired, so they keep working
-without another `on`.
-
-## Signing in
-
-`aiand login` opens your browser. Approving creates an API key for your
-organization, labeled `aiand@<hostname>` so you can tell your machines apart
-in the console. If the browser sign-in cannot finish (no browser, a timeout, or
-a script with no terminal), aiand switches to a code you approve from any
-device:
-
-```
-  Your code   BCDF-GHJK
-  Approve at  https://api.aiand.com/auth/device?user_code=BCDF-GHJK
-```
-
-Already have a key from the console?
-
-```bash
-aiand login --paste                # masked prompt
-aiand login --with-token < key.txt # read it from stdin
-```
-
-`aiand logout` offers to revoke a key that `login` created. A key you pasted in
-is only removed from this machine; revoke it in the console.
-
-**Where the key lives.** The OS keychain when there is one, otherwise an
-encrypted file under `~/.config/aiand/`. The encrypted file keeps its key right
-next to it, so it guards against a casual look, not against anyone who can
-read that directory. `AIAND_KEY_STORAGE=plaintext` stores it as a plain
-owner-only file if you ask for that. `aiand status` shows which one you have.
-
-Keys last 30 days and rotate automatically during their last 3 days, or right
-away if the server rejects one.
-
-**CI and scripts:** skip `login` and set `AIAND_API_KEY`. Nothing is written to
-disk.
-
-## Running prompts
+### Running prompts
 
 ```bash
 aiand run "why is the sky blue?"
 cat main.ts | aiand run "review this file"
+git diff | aiand run "Review this diff. Be ruthless."
 aiand run -m deepseek-ai/deepseek-v4.1-flash-1017 --system "be terse" "summarize CAP theorem"
 aiand run --no-stream --json "hello" | jq .usage
 ```
@@ -412,9 +504,14 @@ aiand run --no-stream --json "hello" | jq .usage
 Piped input is added to the prompt. The answer goes to stdout and everything
 else to stderr, so `aiand run … > out.md` saves just the answer.
 
-After each answer, a dim footer shows the model, tokens, cost, time, and
-request ID (`-q` hides it). Cost and timing usually appear only with
-`--no-stream`:
+On a terminal, `aiand run` and `aiand chat` strip escape and control sequences
+from what the model writes, so a reply cannot set your clipboard, retitle the
+window, plant a disguised link, or move the cursor to overwrite earlier lines.
+A bare carriage return prints as a new line. Piped or redirected output is not
+filtered: `aiand run … > out.md` gets the model's raw text, byte for byte.
+
+After each answer, a dim footer shows the model, tokens, cost, time, and request
+ID (`-q` hides it). Cost and timing usually appear only with `--no-stream`:
 
 ```
 deepseek-ai/deepseek-v4.1-flash-1017  ·  9 in / 21 out  ·  0.00001530 USD  ·  181ms  ·  919a9aa4…
@@ -427,7 +524,7 @@ it. Set a default with `aiand config set model <id>`.
 If a reasoning model spends its whole budget thinking, aiand tells you so and
 suggests raising `--max-tokens`, rather than printing a blank line.
 
-## Logs and usage
+### Logs and usage
 
 ```bash
 aiand logs --range 1h --errors     # only failed requests
@@ -503,6 +600,13 @@ can use different organizations at the same time.
 
 Flags win over environment variables, which win over the stored profile.
 
+A stored sign-in only works against the endpoints it was issued by. If
+`--base-url`, `AIAND_BASE_URL`, `AIAND_AUTH_URL` or `aiand config set` point
+somewhere else, the CLI refuses to send the stored key (exit 2) rather than hand
+it, or its refresh token, to that host. Sign in for the other endpoint on its
+own profile: `aiand login --profile staging --base-url <url>`. `AIAND_API_KEY` is
+not stored, so it goes wherever you point it.
+
 | Variable | Effect |
 | --- | --- |
 | `AIAND_API_KEY` | Use this key; no login, nothing stored |
@@ -510,14 +614,71 @@ Flags win over environment variables, which win over the stored profile.
 | `AIAND_BASE_URL` | API endpoint (default `https://api.aiand.com`) |
 | `AIAND_AUTH_URL` | Sign-in endpoint, if different from the API |
 | `AIAND_CONFIG_DIR` | Where config and credentials live |
-| `AIAND_HOME` | Home directory to find agent configs in (e.g. your Windows home from WSL) |
-| `AIAND_KEY_STORAGE` | `keychain`, `file`, or `plaintext` |
-| `AIAND_SECRET_STORE_MASTER_KEY` | 64 hex characters; your own key for the encrypted file |
+| `AIAND_HOME` | Home directory to find agent configs in (for example your Windows home from WSL) |
+| `AIAND_KEY_STORAGE` | `keychain` (macOS and Linux only), `dpapi` (Windows only), `file`, or `plaintext` |
+| `AIAND_SECRET_STORE_MASTER_KEY` | Supplies the file tier's key from outside the config folder, instead of `secret-store.key` beside the ciphertext. Exactly 64 hex characters (a 32-byte AES-256 key, for example `openssl rand -hex 32`); anything else is an error. Keep it set for every run: without it, or with a different value, the stored key cannot be decrypted |
 | `AIAND_NO_BROWSER=1` | Never open a browser; print the sign-in link instead |
 | `AIAND_NO_CLIPBOARD=1` | Never write to the clipboard; `overview --share` saves the PNG and prints its path |
-| `AIAND_UPDATE_CHECK=0` or `NO_UPDATE_CHECK=1` | Turn off the daily update notice |
+| `AIAND_ALLOW_GIT_TRACKED=1` | Let `on` write the key into an agent config that sits inside a git repository (a Stow or chezmoi link into your dotfiles); refused otherwise, gitignored or not. Gitignore the file and set this variable |
+| `AIAND_WIPE_OUTSIDE_HOME=1` | Let `logout --all` delete an `AIAND_CONFIG_DIR` outside your home directory |
+| `AIAND_UPDATE_CHECK=0` or `NO_UPDATE_CHECK=1` | Turn off the update notice (it is also off when `CI` is set) |
 | `AIAND_AUTO_UPDATE=0` | Turn off the background update notice (foreground `aiand update` still works) |
+| `AIAND_DEBUG=1` | Show details that are normally hidden, such as why a file could not be restricted to your account |
 | `NO_COLOR` | Turn off color |
+
+The installers read their own variables (`AIAND_VERSION`, `AIAND_DIR`,
+`AIAND_NO_MODIFY_PATH`): see the top of `install.sh` and `install.ps1`.
+
+## Behind a corporate proxy
+
+The CLI sends its requests through `HTTPS_PROXY` or `HTTP_PROXY` when either is
+set. It honours `NO_PROXY`.
+
+It trusts certificates installed in the operating system's certificate store.
+A proxy that inspects HTTPS with a company certificate works when that
+certificate is installed there.
+
+If the company certificate is not in the system store, set
+`NODE_EXTRA_CA_CERTS` to a PEM file that contains it.
+
+Coding agents the CLI opens read the same variables themselves.
+
+Node 22.21 or later is required.
+
+## Troubleshooting
+
+**`Not logged in.` (exit 2).** You have no sign-in for this profile, or the
+session could not be refreshed. Run `aiand login` (add `--force` to replace an
+existing session). In a script, set `AIAND_API_KEY` instead.
+
+**`The key stored for profile "…" was issued for …; refusing to send it to …`
+(exit 2).** A stored sign-in only works against the endpoint that issued it, and
+`--base-url`, `AIAND_BASE_URL`, `AIAND_AUTH_URL` or `aiand config set` now point
+somewhere else. Drop the override, or sign in for that endpoint on its own
+profile: `aiand login --profile staging --base-url <url>`.
+
+**`aiand` is not found after installing.** The installer adds its folder to your
+PATH, and a terminal that was already open does not see that. Open a new
+terminal. In VS Code, restart VS Code so its terminal picks up the new PATH. If
+the installer printed that it could not update the PATH, add `~/.local/bin`
+(Windows: `%USERPROFILE%\.local\bin`) yourself.
+
+**PowerShell says running scripts is disabled** when you run `install.ps1` from a
+file. The one-line `irm … | iex` command is not affected. For a file, such as
+`update` or `uninstall`, use the form shown in
+[Updating and uninstalling](#updating-and-uninstalling):
+`pwsh -ExecutionPolicy Bypass -File … install.ps1 …`. It applies to that
+one process only.
+
+**On Windows, `aiand status` says PowerShell runs in Constrained Language Mode.**
+Your organization's policy blocks the Windows DPAPI call, so aiand stores the key
+in an owner-only file under `%USERPROFILE%\.config\aiand\` instead. Sign-in and
+everything else work. To encrypt that file at rest, set
+`AIAND_SECRET_STORE_MASTER_KEY` (see
+[Where your key is stored](#where-your-key-is-stored)). If your endpoint security
+blocks PowerShell instead, set `AIAND_KEY_STORAGE=file` to stop aiand trying.
+
+Reporting a problem: include the output of `aiand --version` and `aiand status`.
 
 ## Exit codes
 
@@ -534,6 +695,7 @@ Flags win over environment variables, which win over the stored profile.
 | `70` | A bug in aiand; the stack trace is printed, please report it |
 | `127` | Unknown command, or the agent is not installed |
 | `130` | Interrupted (Ctrl-C) |
+| `143` | Terminated (SIGTERM) |
 
 The `10`–`30` codes are the statusline automation contract (feature catalog
 G5). They are set on any `aiand status` run that requests the observability
@@ -553,12 +715,6 @@ local store's totals reconcile exactly with the gateway's, and `1` when any
 metric mismatches (the exact delta is reported, never smoothed). Windows the
 gateway cannot verify (past 3 months) are reported `UNVERIFIABLE` and do not
 change the exit code.
-
-## Roadmap
-
-- **Files:** uploads for vision, video, audio, and document inputs
-- **Billing:** balance, history, auto-recharge, redemption codes
-- **Video:** asynchronous generation jobs
 
 ## Contributing and security
 

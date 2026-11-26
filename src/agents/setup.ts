@@ -2,11 +2,20 @@ import { forgetAgentKeys, recordAgentKey } from "../api/agent-keys.js";
 import { publicRequest } from "../api/client.js";
 import { requireSessionKey } from "../auth/session.js";
 import { ApiError, CliError, SYNTHETIC_STATUS } from "../cli/errors.js";
-import { resolveProfile } from "../config.js";
-import { getCatalog, resolveDefault, validateCatalogModel, visionLabel } from "./catalog.js";
-import { installIfMissing, notInstalledError, runAgentBinary } from "./launch.js";
-import { discardSnapshot, hasSnapshot, snapshotCovers, snapshotFiles } from "./snapshot.js";
-import type { AgentAdapter } from "./types.js";
+import { normalizeBaseUrl, resolveProfile } from "../config.js";
+import {
+  getCatalog,
+  resolveDefault,
+  servedModelId,
+  validateCatalogModel,
+  visionLabel,
+} from "./catalog.js";
+import { knownKeys } from "./known-keys.js";
+import { installIfMissing, notInstalledError } from "./launch.js";
+import { assertFastModelFlag, launchAgentSession } from "./session.js";
+import { discardSnapshot, extendSnapshot } from "./snapshot.js";
+import type { AgentAdapter, ModelSlots } from "./types.js";
+import { forgetWired, recordWired } from "./wired.js";
 
 /**
  * The agent on/off/status verbs. `agentOn` wires an adapter to ai& (after a
@@ -19,6 +28,9 @@ import type { AgentAdapter } from "./types.js";
 
 export type AgentOnOptions = {
   model?: string;
+  fastModel?: string;
+  /** A model named in the agent's own launch args: wired as --model when the catalog serves it. */
+  launchModel?: string;
   force?: boolean;
   profile?: string;
 };
@@ -36,6 +48,7 @@ export type AgentOffResult = {
   agent: string;
   state: "off";
   note?: string;
+  warnings?: string[];
 };
 
 export type AgentStatusResult = {
@@ -44,6 +57,10 @@ export type AgentStatusResult = {
   binary: string | null;
   state: "on" | "off";
   model: string | null;
+  /** Every model slot the wired config holds (adapters with more than one). */
+  slots?: ModelSlots["slots"];
+  /** A slot holding a model the user did not choose. */
+  warnings?: string[];
 };
 
 /**
@@ -101,6 +118,8 @@ export async function agentOn(
     });
   }
 
+  if (opts.fastModel !== undefined) assertFastModelFlag(adapter);
+
   // Detect before resolving a session: a missing binary exits 127 with an
   // Install hint, never a login ceremony for a binary that isn't there.
   if (!adapter.detect().installed) throw notInstalledError(adapter);
@@ -124,38 +143,51 @@ export async function agentOn(
   // Explicit means explicit: only undefined falls back to the catalog
   // default. An empty --model hits the membership check and errors instead
   // of silently resolving.
-  if (opts.model !== undefined) {
+  const launchModel =
+    opts.model === undefined && opts.launchModel !== undefined
+      ? servedModelId(catalog, opts.launchModel)
+      : undefined;
+  const requested =
+    launchModel !== undefined && catalog.some((entry) => entry.id === launchModel)
+      ? launchModel
+      : opts.model;
+  if (requested !== undefined) {
     // The literal "native" leaves the model unpinned so the agent's own
     // default wins; it is not a catalog id, so it skips the membership check
     // and the adapter writes nothing for it.
-    if (opts.model !== "native") validateCatalogModel(catalog, opts.model);
-    model = opts.model;
+    if (requested !== "native") validateCatalogModel(catalog, requested);
+    model = requested;
   } else {
     model = resolveDefault(catalog, profile.model);
   }
+  if (opts.fastModel !== undefined) validateCatalogModel(catalog, opts.fastModel, "--fast-model");
 
-  const managed = adapter.managedFiles();
-  // A re-`on` while routed skips the snapshot, and an inactive `on` keeps an
-  // existing one, so the first pre-aiand capture stays authoritative. One of
-  // other files (the managed file moved, e.g. a new CLAUDE_CONFIG_DIR) could
-  // never restore this one, so it is replaced.
+  // A re-`on` while routed skips the snapshot, and an inactive `on` only
+  // adds paths the snapshot lacks (the managed file moved, e.g. a new
+  // PI_CODING_AGENT_DIR), so the first pre-aiand capture of every path stays
+  // authoritative. A file already carrying our marker or a known key is
+  // recorded without a copy: it is not pre-aiand, and the copy would keep
+  // the key past `off` and logout.
   let snapshottedThisCall = false;
-  if (!probe.active && !(await snapshotCovers(adapter.id, managed))) {
-    if (await hasSnapshot(adapter.id)) await discardSnapshot(adapter.id);
-    await snapshotFiles(adapter.id, managed);
-    snapshottedThisCall = true;
+  if (!probe.active) {
+    snapshottedThisCall = await extendSnapshot(adapter.id, adapter.managedFiles(), {
+      keys: await knownKeys(session.key),
+      carriesWiring: adapter.carriesWiring?.bind(adapter),
+    });
   }
 
   try {
     const written = await adapter.enable({
       apiKey: session.key,
       model,
-      pinModel: opts.model !== undefined && opts.model !== "native",
+      pinModel: requested !== undefined && requested !== "native",
+      ...(opts.fastModel !== undefined ? { fastModel: opts.fastModel } : {}),
       profileModel: profile.model,
       profileName: profile.name,
       catalog,
       baseUrl: profile.apiUrl,
     });
+    await recordWired(adapter.id, profile.name, normalizeBaseUrl(profile.apiUrl));
     // The wired model warns when it is text-only and can't take images. A
     // model that is not ours (the literal "native", a foreign ref) never warns.
     const warnings: string[] = [...(written.warnings ?? [])];
@@ -209,7 +241,13 @@ export async function agentOn(
  */
 export async function agentSession(
   adapter: AgentAdapter,
-  opts: { model?: string; profile?: string; passthrough?: string[]; install?: boolean } = {},
+  opts: {
+    model?: string;
+    fastModel?: string;
+    profile?: string;
+    passthrough?: string[];
+    install?: boolean;
+  } = {},
 ): Promise<string> {
   // Same refusal order as run-agent.ts: capability before session, so an
   // unsupported adapter never starts a login ceremony.
@@ -235,69 +273,15 @@ export async function agentSession(
   if (opts.install) await installIfMissing(adapter);
   if (!adapter.detect().installed) throw notInstalledError(adapter);
 
-  const session = await requireSessionKey(opts.profile);
-  const profile = resolveProfile(opts.profile);
-  const catalog = await getCatalog(profile.apiUrl);
-  const unpinned = opts.model === "native" && adapter.allowUnpinnedModel === true;
-  if (opts.model !== undefined && !unpinned) validateCatalogModel(catalog, opts.model);
-
-  const resolved = await launch({
-    apiKey: session.key,
+  // One launcher with `aiand run-agent`: the model flags, catalog validation,
+  // overlay sweep, key attribution, child env, spawn, and cleanup all match
+  // the session path there.
+  return launchAgentSession(adapter, launch, {
     model: opts.model,
-    profileModel: profile.model,
-    profileName: profile.name,
-    catalog,
-    baseUrl: profile.apiUrl,
+    fastModel: opts.fastModel,
+    profile: opts.profile,
+    passthrough: opts.passthrough,
   });
-
-  // The reported model: an explicit --model, else the catalog default.
-  // ponytail: an adapter with its own preferred order (claude's claude
-  // adapter) may pin a different model inside its sessionLaunch, and
-  // SessionLaunch does not report back which one it chose; extend
-  // SessionLaunch with `model` if the JSON report must match exactly.
-  const model = opts.model ?? resolveDefault(catalog, profile.model);
-
-  // Remember which key this session launch hands the agent, same as the
-  // persistent `on` path: without it the sync sweep self-records the same
-  // session key as aiand-cli and every request the agent makes is
-  // attributed to aiand-cli instead of the agent. Best-effort: attribution
-  // must never break a launch.
-  await recordAgentKey(adapter.id, session.key).catch(() => {});
-
-  // Child env = inherited, plus the adapter's own injection; the adapter's
-  // injection carries the key, so the spawn env starts scrubbed.
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  // The adapter's own injection carries the key; a leaked AIAND_API_KEY would
-  // hand it to every process the agent spawns.
-  delete env.AIAND_API_KEY;
-  // Adapters that route outside the child env list the inherited names that
-  // would shadow that routing; the launcher drops them so its own injection wins.
-  for (const k of adapter.shadowEnv ?? []) delete env[k];
-  Object.assign(env, resolved.env);
-
-  // The adapter may own routing flags in the passthrough: drop the user's
-  // `--flag value` and `--flag=value` forms so the injected routing cannot be
-  // overridden. Everything else passes verbatim. A value is only consumed when
-  // it is not itself a flag, so `--model --print` keeps --print and a trailing
-  // `--model` eats nothing.
-  const ownedFlags = resolved.stripPassthroughFlags ?? [];
-  const passthrough: string[] = [];
-  const input = opts.passthrough ?? [];
-  for (let i = 0; i < input.length; i += 1) {
-    const token = input[i]!;
-    if (ownedFlags.includes(token)) {
-      // `--flag value`: the value is the next token, when present and not
-      // itself a flag.
-      const next = input[i + 1];
-      if (next !== undefined && !next.startsWith("-")) i += 1;
-      continue;
-    }
-    if (ownedFlags.some((flag) => token.startsWith(`${flag}=`))) continue;
-    passthrough.push(token);
-  }
-
-  await runAgentBinary(adapter, [...(resolved.args ?? []), ...passthrough], env, resolved.cleanup);
-  return model;
 }
 
 /**
@@ -316,6 +300,7 @@ export async function agentOff(
   }
 
   const result = (await adapter.disable()) ?? { stripped: false };
+  await forgetWired(adapter.id);
   const notes = result.notes?.filter(Boolean) ?? [];
   // The agent no longer uses our key: drop the attribution so `aiand cache`
   // does not keep reporting it as an active agent.
@@ -327,13 +312,14 @@ export async function agentOff(
       note: "Already your own config — nothing to turn off.",
     };
   }
+  const warnings = result.warnings?.length ? { warnings: result.warnings } : {};
   if (notes.length > 0) {
     // `note` is one string by contract (agent.ts prints a single dim line, init
     // embeds it as `agent — note`, JSON carries it scalar), so a moved-dir strip
     // per file plus an edited-value note must stay readable: "; " separated.
-    return { agent: adapter.id, state: "off", note: notes.join("; ") };
+    return { agent: adapter.id, state: "off", note: notes.join("; "), ...warnings };
   }
-  return { agent: adapter.id, state: "off" };
+  return { agent: adapter.id, state: "off", ...warnings };
 }
 
 /**
@@ -343,11 +329,13 @@ export async function agentOff(
 export async function agentStatus(adapter: AgentAdapter): Promise<AgentStatusResult> {
   const detected = adapter.detect();
   const probe = await adapter.probe();
+  const slots = probe.active ? await adapter.modelSlots?.() : undefined;
   return {
     agent: adapter.id,
     installed: detected.installed,
     binary: detected.path,
     state: probe.active ? "on" : "off",
     model: probe.model,
+    ...(slots ? { slots: slots.slots, warnings: slots.warnings } : {}),
   };
 }

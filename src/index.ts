@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import os, { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { findAgent } from "./agents/registry.js";
 import { VERSION } from "./api/client.js";
@@ -12,8 +14,11 @@ import {
   signInItems,
   signInMode,
 } from "./cli/menu-items.js";
-import { err, heading, out, spinner, style } from "./cli/output.js";
+import { err, heading, out, safeLine, sanitizeForTerminal, spinner, style } from "./cli/output.js";
+import { forwardsInterrupt, proxyUnsupportedWarning, relaunchPlan } from "./cli/proxy.js";
+import { redactSecrets } from "./cli/redact.js";
 import type { PromptInput, PromptOutput } from "./cli/select.js";
+import { protectProcessEnv } from "./cli/spawn-env.js";
 import { renderHome } from "./cli/ui/home.js";
 import { playSplash } from "./cli/ui/splash.js";
 import { agentHelp, runAgentCommand } from "./commands/agent.js";
@@ -206,6 +211,47 @@ function showHelp(topicHelp?: string): void {
   out(homeScreen());
 }
 
+/** The command that upgrades this install: npm for an npm install, or the
+ * installer's `update`, which fetches and verifies the latest release (a
+ * plain re-run of an install's own installer would rebuild the same version).
+ * Windows runs the script through `powershell -ExecutionPolicy Bypass -File`,
+ * which works under the default policy, scoped to that one process. */
+export function updateInstallHint(opts?: {
+  platform?: NodeJS.Platform;
+  launched?: string;
+  aiandDir?: string | undefined;
+  home?: string;
+}): string {
+  const platform = opts?.platform ?? process.platform;
+  const launched = opts?.launched ?? process.argv[1] ?? "";
+  const root = installerRoot(launched, opts?.aiandDir ?? process.env.AIAND_DIR);
+  if (root === undefined) return "npm install -g @aiand/cli@latest";
+  if (platform === "win32") {
+    return `powershell -NoProfile -ExecutionPolicy Bypass -File "${root}\\install.ps1" update`;
+  }
+  const home = (opts?.home ?? homedir()).replace(/\/+$/, "");
+  const script =
+    root === `${home}/.aiand/cli` ? "~/.aiand/cli/install.sh" : shellQuote(`${root}/install.sh`);
+  return `bash ${script} update`;
+}
+
+/** The installer's install directory this CLI runs from, or undefined for
+ * any other install (npm, a dev checkout). */
+function installerRoot(launched: string, aiandDir: string | undefined): string | undefined {
+  const normalized = launched.replace(/\\/g, "/");
+  const entry = "/dist/index.js";
+  if (!normalized.endsWith(entry)) return undefined;
+  const root = launched.slice(0, launched.length - entry.length);
+  const normalizedRoot = normalized.slice(0, normalized.length - entry.length);
+  if (normalizedRoot.includes("/.aiand/")) return root;
+  const dir = aiandDir?.replace(/\\/g, "/").replace(/\/+$/, "");
+  return dir && normalizedRoot === dir ? root : undefined;
+}
+
+function shellQuote(value: string): string {
+  return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 /**
  * Background housekeeping shown only on an interactive terminal with a real
  * command (never --version, never --json, never CI). Update notice and
@@ -230,7 +276,9 @@ async function runSystemHousekeeping(): Promise<void> {
   ]);
   if (update) {
     err(
-      style.dim(`Update available: v${update.current} → v${update.latest}  (run \`aiand update\`)`),
+      style.dim(
+        `Update available: v${safeLine(update.current)} → v${safeLine(update.latest)}  (${updateInstallHint()})`,
+      ),
     );
   }
   for (const note of notes) err(style.dim(note));
@@ -281,6 +329,7 @@ function isMain(): boolean {
 }
 
 async function main(): Promise<number> {
+  protectProcessEnv();
   const argv = process.argv.slice(2);
   const { globalArgs, rest } = splitLeadingGlobals(argv);
   const first = rest[0];
@@ -326,7 +375,7 @@ async function main(): Promise<number> {
       showHelp(agentHelp(agentTopic));
       return 0;
     }
-    err(style.red(`Unknown help topic "${topicName}".`));
+    err(style.red(`Unknown help topic "${safeLine(topicName)}".`));
     const helpGuess = suggest(topicName);
     if (helpGuess) err(`Did you mean \`aiand help ${helpGuess}\`?`);
     err("Run `aiand help` to see the commands.");
@@ -350,7 +399,7 @@ async function main(): Promise<number> {
       return 0;
     }
     const guess = suggest(first);
-    err(style.red(`Unknown command "${first}".`));
+    err(style.red(`Unknown command "${safeLine(first)}".`));
     err(guess ? `Did you mean \`aiand ${guess}\`?` : "Run `aiand help` to see the commands.");
     return EXIT.NOT_FOUND;
   }
@@ -374,28 +423,58 @@ process.stdout?.on?.("error", (e: NodeJS.ErrnoException) => {
 });
 
 if (isMain()) {
-  main()
-    .then((code) => {
-      // A command (run-agent) may set process.exitCode to propagate a child's
-      // exit status without process.exit-ing (so stdio flushes); honor it when
-      // the command itself did not return a nonzero code. Assign exitCode and
-      // let the process end naturally — process.exit() can drop piped output.
-      const finalCode = code !== 0 ? code : (process.exitCode ?? 0);
-      process.exitCode = finalCode;
-    })
-    .catch((error: unknown) => {
-      if (error instanceof CliError) {
-        const prefix = error instanceof ApiError && error.status ? `HTTP ${error.status}: ` : "";
-        err(style.red(prefix + error.message));
-        if (error instanceof ApiError && error.requestId) {
-          err(style.dim(`request id: ${error.requestId}`));
-        }
-        if (error.hint) err(style.dim(error.hint));
-        process.exit(error.exitCode);
-      }
-
-      err(style.red("Unexpected error:"));
-      err(error instanceof Error ? (error.stack ?? error.message) : String(error));
-      process.exit(EXIT.BUG);
+  const plan = relaunchPlan({
+    env: process.env,
+    execPath: process.execPath,
+    execArgv: process.execArgv,
+    argv: process.argv,
+    version: process.version,
+  });
+  if (plan) {
+    const child = spawn(plan.cmd, plan.args, { env: plan.env, stdio: "inherit" });
+    process.on("SIGINT", () => {
+      if (forwardsInterrupt(Boolean(process.stdin.isTTY))) child.kill("SIGINT");
     });
+    process.on("SIGTERM", () => child.kill("SIGTERM"));
+    child.on("error", (error) => {
+      err(style.red(`Could not restart aiand to use the proxy: ${safeLine(error.message)}`));
+      process.exitCode = EXIT.BUG;
+    });
+    child.on("exit", (code, signal) => {
+      process.exitCode = signal ? 128 + (os.constants.signals[signal] ?? 0) : (code ?? 0);
+    });
+  } else {
+    const warning = proxyUnsupportedWarning(process.env, process.version);
+    if (warning) err(style.yellow(warning));
+
+    main()
+      .then((code) => {
+        // A command (run-agent) may set process.exitCode to propagate a child's
+        // exit status without process.exit-ing (so stdio flushes); honor it when
+        // the command itself did not return a nonzero code. Assign exitCode and
+        // let the process end naturally — process.exit() can drop piped output.
+        const finalCode = code !== 0 ? code : (process.exitCode ?? 0);
+        process.exitCode = finalCode;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof CliError) {
+          const prefix = error instanceof ApiError && error.status ? `HTTP ${error.status}: ` : "";
+          // Messages can quote a gateway's error body, so they are server text.
+          err(style.red(prefix + sanitizeForTerminal(error.message)));
+          if (error instanceof ApiError && error.requestId) {
+            err(style.dim(`request id: ${safeLine(error.requestId)}`));
+          }
+          if (error.hint) err(style.dim(sanitizeForTerminal(error.hint)));
+          process.exit(error.exitCode);
+        }
+
+        err(style.red("Unexpected error:"));
+        err(
+          sanitizeForTerminal(
+            redactSecrets(error instanceof Error ? (error.stack ?? error.message) : String(error)),
+          ),
+        );
+        process.exit(EXIT.BUG);
+      });
+  }
 }

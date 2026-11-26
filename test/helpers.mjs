@@ -2,6 +2,7 @@
 // - withTestEnv: temp dir + full env restore per file (mkdtemp in before(),
 //   recursive rm + env restore in after(); no per-test restore).
 // - withEnv / withFetch: scoped process.env and globalThis.fetch overrides.
+// - withOpener: a stub browser opener first on PATH, AIAND_NO_BROWSER cleared.
 // - runCli / cliEnv / hermeticPath: drive the built CLI as a child process.
 //   hermeticPath always keeps test/setup.mjs's keychain stubs first.
 // - enableInput / catalogModel / seedCatalogCache / makeFixture: adapter,
@@ -9,11 +10,15 @@
 // - FakeInput / FakeOutput / waitForListener / waitFor: prompt and polling.
 // - startMockGateway / withMockGateway: test/mock-gateway.mjs as its own
 //   process, file-wide or scoped to one callback.
+
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
+  copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -25,6 +30,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
+import { STUB_PRELUDE } from "./win-stub-launcher.mjs";
 
 /** The built CLI entry point every subprocess test runs. */
 export const BIN = fileURLToPath(new URL("../dist/index.js", import.meta.url));
@@ -112,16 +118,17 @@ export function catalogModel(
 }
 
 /**
- * Start test/mock-gateway.mjs as its own process; resolves
+ * Start test/mock-gateway.mjs as its own process (`args`: its own flags,
+ * e.g. `--log <file>`); resolves
  * { port, url, kill, stop } once it listens. `stop()` kills it and awaits
  * its exit. A separate process — not an in-test-process server — because
  * specs drive the CLI via child processes, which a blocked parent event loop
  * could never answer. Use it directly for a file-wide gateway (before/after);
  * withMockGateway scopes one to a single callback.
  */
-export async function startMockGateway() {
+export async function startMockGateway({ args = [] } = {}) {
   const gateway = fileURLToPath(new URL("./mock-gateway.mjs", import.meta.url));
-  const child = spawn(process.execPath, [gateway, "--port", "0"], {
+  const child = spawn(process.execPath, [gateway, "--port", "0", ...args], {
     stdio: ["ignore", "pipe", "inherit"],
   });
   // 'close' fires after stdio drains even when spawn emits only 'error'
@@ -180,6 +187,26 @@ export async function withMockGateway(fn) {
 }
 
 /**
+ * Run `fn(dir)` with a hermetic opener stub (body `script`) first on PATH so
+ * no real browser launches, and AIAND_NO_BROWSER cleared so openBrowser
+ * reaches the opener at all (test/setup.mjs sets it for the rest of the run).
+ */
+export async function withOpener(script, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "aiand-browser-test-"));
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  writeFileSync(join(dir, opener), `#!/bin/sh\n${script(dir)}\n`);
+  chmodSync(join(dir, opener), 0o755);
+  try {
+    await withEnv(
+      { PATH: `${dir}${delimiter}${process.env.PATH}`, AIAND_NO_BROWSER: undefined },
+      () => fn(dir),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Set (or, for `undefined`, delete) process.env keys for the duration of
  * `fn`, restoring every touched key afterwards even when `fn` throws.
  */
@@ -232,10 +259,11 @@ export function hermeticPath(...dirs) {
 
 /**
  * The test/setup.mjs isolation vars (network guard, no browser, keychain
- * stubs) to carry into a child whose env is built from scratch instead of
- * from process.env. PATHEXT too on win32: `where` lists a bare file plus its
- * `.cmd` mirror only when PATHEXT is set, and findWindowsExecutable() rejects
- * the extensionless one — without it every win32 stub spawn resolves to null.
+ * stubs, the run's own temp dir) to carry into a child whose env is built
+ * from scratch instead of from process.env. PATHEXT too on win32: `where`
+ * lists a bare file plus its `.cmd` mirror only when PATHEXT is set, and
+ * findWindowsExecutable() rejects the extensionless one — without it every
+ * win32 stub spawn resolves to null.
  */
 export function harnessEnv() {
   const keys = [
@@ -243,6 +271,10 @@ export function harnessEnv() {
     "AIAND_NO_BROWSER",
     "AIAND_TEST_STUB_BIN",
     ...(process.platform === "win32" ? ["PATHEXT"] : []),
+    "AIAND_TEST_TMPDIR",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
   ];
   return Object.fromEntries(
     keys.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]),
@@ -259,6 +291,19 @@ export function cliEnv(overrides = {}) {
 }
 
 /**
+ * Assert a file's POSIX permission bits. Windows has no such bits (stat reports
+ * 0666 or 0444 whatever was written); its owner-only guarantee is an ACL,
+ * which scripts/windows-secrets-smoke.mjs checks against real icacls.
+ */
+export function assertMode(path, expected, message) {
+  if (ON_WINDOWS) return;
+  assert.equal(statSync(path).mode & 0o777, expected, message);
+}
+
+/** The CLI ends its lines with os.EOL, CRLF on Windows; tests compare against LF. */
+export const lf = (text) => text.replaceAll("\r\n", "\n");
+
+/**
  * Run the built CLI and resolve { code, stdout, stderr } — never rejects on
  * a nonzero exit. `env` is the child's whole environment (build it with
  * cliEnv). stdin is an async pipe, the shape a Node parent hands over: it is
@@ -273,95 +318,100 @@ export function runCli(args, { env = process.env, input, stdin = "pipe" } = {}) 
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+    child.on("close", (code) =>
+      resolve({ code: code ?? 1, stdout: lf(stdout), stderr: lf(stderr) }),
+    );
     if (stdin === "pipe") child.stdin.end(input);
   });
 }
 
+// Read once at load: asWin32 below makes process.platform lie for a while, and
+// stubs are written for the OS the tests actually run on.
+const ON_WINDOWS = process.platform === "win32";
+
 /**
- * The win32 mirror of one POSIX-sh stub body: a `<name>-stub.cjs` shim plus
- * the `<name>.cmd` launcher spawn finds through PATHEXT. The POSIX body is
- * replayed statement by statement, so a capture stub still writes the same
- * `.env` / `.args` files the tests read. `$VAR` expansions resolve against the
- * child's own environment (test bodies only ever use `$AIAND_*`, `$COPILOT_HOME`
- * or `"$@"`), a `printf <text>` with no redirect goes to stdout (the tasklist
- * stub's output is the assertion), and a trailing `exit N` sets the exit code.
+ * Env that makes a node child see `root` as its SystemRoot. Node cannot start on
+ * Windows with a fake one, so there the value rides in
+ * AIAND_TEST_FAKE_SYSTEMROOT and test/fake-systemroot.mjs applies it once the
+ * child is up.
  */
-function plantWin32Stub(dir, name, script) {
-  const statements = script
-    .trim()
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  // A POSIX double-quoted token becomes a JS string expression. Emit each
-  // literal segment through JSON.stringify (backslashes, quotes, control
-  // chars all escaped correctly) and splice `$VAR` in as a real lookup, so a
-  // Windows path like C:\Users\...\npm-args stays one path.
-  const jsString = (literal) =>
-    literal
-      .split(/\$([A-Za-z_][A-Za-z0-9_]*)/g)
-      .map((part, i) =>
-        i % 2 === 1 ? `(process.env.${part} ?? '')` : part === "" ? "''" : JSON.stringify(part),
-      )
-      .join(" + ");
-  const lines = ["const fs = require('fs');"];
-  for (const line of statements) {
-    const exit = line.match(/^exit\s+(\d+)$/);
-    const envFile = line.match(/^env\s*>\s*"([^"]+)"$/);
-    const argvFile = line.match(/^printf\s+'%s\\n'\s+"\$@"\s*>\s*"([^"]+)"$/);
-    const touch = line.match(/^touch\s+"([^"]+)"$/);
-    const copy = line.match(/^cp\s+"([^"]+)"\s+"([^"]+)"$/);
-    const copyRecursive = line.match(/^cp\s+-[a-zA-Z]+\s+"([^"]+)"\s+"([^"]+)"$/);
-    const textFile = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"\s*>\s*"([^"]+)"/);
-    const stdout = line.match(/^printf\s+'%s\\n'\s+"((?:[^"\\]|\\.)*)"$/);
-    if (exit) {
-      lines.push(`process.exitCode = ${exit[1]};`);
-    } else if (argvFile) {
-      lines.push(
-        `fs.writeFileSync(${jsString(argvFile[1])}, process.argv.slice(2).join('\\n') + '\\n');`,
-      );
-    } else if (envFile) {
-      lines.push(
-        `fs.writeFileSync(${jsString(envFile[1])}, Object.entries(process.env).map(([k, v]) => k + '=' + v).join('\\n'));`,
-      );
-    } else if (touch) {
-      lines.push(`fs.closeSync(fs.openSync(${jsString(touch[1])}, 'w'));`);
-    } else if (copyRecursive) {
-      // `cp -a src dst` where dst does not exist yet: fs.cpSync with
-      // recursive copies the tree and carries file modes where the
-      // filesystem can represent them, matching cp closely enough for the
-      // overlay snapshot the tests read back.
-      lines.push(
-        `fs.cpSync(${jsString(copyRecursive[1])}, ${jsString(copyRecursive[2])}, { recursive: true });`,
-      );
-    } else if (copy) {
-      lines.push(`fs.copyFileSync(${jsString(copy[1])}, ${jsString(copy[2])});`);
-    } else if (textFile) {
-      lines.push(`fs.writeFileSync(${jsString(textFile[2])}, ${jsString(textFile[1])} + '\\n');`);
-    } else if (stdout) {
-      lines.push(`process.stdout.write(${jsString(stdout[1])} + '\\n');`);
-    } else {
-      lines.push(
-        `require('child_process').execSync(${JSON.stringify(line)}, { stdio: 'inherit' });`,
-      );
-    }
+export const systemRootEnv = (root) =>
+  ON_WINDOWS ? { AIAND_TEST_FAKE_SYSTEMROOT: root } : { SystemRoot: root };
+
+/** The `sh` Git for Windows ships: Windows has no other POSIX shell to run a stub script. */
+function windowsSh() {
+  const roots = [
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+    process.env.ProgramW6432,
+  ];
+  for (const root of roots) {
+    const sh = root && join(root, "Git", "bin", "sh.exe");
+    if (sh && existsSync(sh)) return sh;
   }
-  const shimPath = join(dir, `${name}-stub.cjs`);
-  writeFileSync(shimPath, `${lines.join("\n")}\n`);
-  writeFileSync(
-    join(dir, `${name}.cmd`),
-    `@echo off\r\n"${process.execPath}" "${shimPath}" %*\r\n`,
-  );
+  throw new Error("these tests need Git for Windows' sh.exe to run their POSIX stubs");
 }
 
-/** Write an executable POSIX-sh stub `name` into `dir`; returns its path. */
+/**
+ * Write an executable POSIX-sh stub `name` into `dir`; returns its path. On
+ * Windows spawn only finds PATHEXT names, so a `name.cmd` beside it hands the
+ * script to Git's sh.
+ */
 export function plantStub(dir, name, script = "exit 0") {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, name);
   writeFileSync(path, `#!/bin/sh\n${script}\n`);
   chmodSync(path, 0o755);
-  if (process.platform === "win32") plantWin32Stub(dir, name, script);
+  if (ON_WINDOWS) {
+    writeFileSync(
+      `${path}.cmd`,
+      `@echo off\r\n"${windowsSh()}" "%~dp0${name}" %*\r\nexit /b %ERRORLEVEL%\r\n`,
+    );
+  }
   return path;
+}
+
+/**
+ * A fake %SystemRoot% for the Windows tools the CLI spawns by absolute path
+ * (whoami, icacls, powershell). Each entry of `tools` maps a path under the
+ * root (e.g. "System32/icacls.exe") to the body of a Node ESM script; the
+ * stub runs it with the real argv. Point SystemRoot at the returned root.
+ * On Windows each stub is a copy of the launcher test/setup.mjs compiled (a
+ * shebang file is not an executable there), with the script and the node to
+ * run it beside it.
+ */
+export function plantWindowsTools(root, tools) {
+  const launcher = process.env.AIAND_TEST_EXE_LAUNCHER;
+  if (ON_WINDOWS && !launcher) {
+    throw new Error(
+      "the Windows stub launcher did not compile (is the .NET Framework's csc.exe there?)",
+    );
+  }
+  for (const [rel, body] of Object.entries(tools)) {
+    const path = join(root, ...rel.split("/"));
+    mkdirSync(dirname(path), { recursive: true });
+    if (ON_WINDOWS) {
+      writeFileSync(`${path}.mjs`, STUB_PRELUDE + body);
+      copyFileSync(launcher, path);
+      writeFileSync(`${path}.node`, `${process.execPath}\n${process.env.SystemRoot}\n`);
+      continue;
+    }
+    writeFileSync(`${path}.mjs`, body);
+    writeFileSync(path, `#!/bin/sh\nexec "${process.execPath}" "${path}.mjs" "$@"\n`);
+    chmodSync(path, 0o755);
+  }
+  return root;
+}
+
+/** Run `fn` with process.platform reporting win32, restored afterwards. */
+export async function asWin32(fn) {
+  const real = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...real, value: "win32" });
+  try {
+    return await fn();
+  } finally {
+    Object.defineProperty(process, "platform", real);
+  }
 }
 
 /**
@@ -550,7 +600,7 @@ export function captureStdio({ mute = false } = {}) {
     (stream) =>
     (chunk, ...rest) => {
       if (isRunnerFrame(chunk)) return real[stream](chunk, ...rest);
-      if (!mute) log[stream].push(chunk);
+      if (!mute) log[stream].push(typeof chunk === "string" ? lf(chunk) : chunk);
       return true;
     };
   process.stdout.write = tap("out");
@@ -562,4 +612,22 @@ export function captureStdio({ mute = false } = {}) {
       process.stderr.write = real.err;
     },
   };
+}
+
+/**
+ * What a sign-in leaves in aiand's config dir besides the credential, so
+ * `logout --all` will delete from it: a marker that names the install with an
+ * id, and a `config.json` recording the same id. An empty marker is not one,
+ * and sign-in files need the `config.json` (see `mayMarkConfigDir`).
+ */
+export function writeConfigMarker(dir) {
+  const id = randomBytes(16).toString("hex");
+  writeFileSync(
+    join(dir, ".aiand-config"),
+    `This directory belongs to the ai& CLI (aiand).\nid: ${id}\n`,
+  );
+  writeFileSync(
+    join(dir, "config.json"),
+    `${JSON.stringify({ profile: "default", profiles: { default: {} }, config_id: id })}\n`,
+  );
 }

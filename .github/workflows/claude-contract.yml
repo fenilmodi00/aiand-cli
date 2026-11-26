@@ -1,0 +1,51 @@
+name: Claude Code contract
+
+# aiand claude relies on undocumented Claude Code settings behaviour; catch releases that change it.
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/agents/claude/**"
+      - "src/agents/launch.ts"
+      - "src/commands/agent.ts"
+      - "src/commands/run-agent.ts"
+      - "scripts/claude-contract/**"
+      - "test/mock-gateway.mjs"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        tag: [stable, latest, next]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Resolve Claude Code ${{ matrix.tag }}
+        id: version
+        run: echo "version=$(npm view @anthropic-ai/claude-code@${{ matrix.tag }} version)" >> "$GITHUB_OUTPUT"
+      - run: docker build -t aiand-claude-contract --build-arg VERSIONS=${{ steps.version.outputs.version }} scripts/claude-contract
+      - run: |
+          mkdir -p contract-out
+          docker run --rm --network none -e CONTRACT_OUT=/out \
+            -v "$PWD:/src:ro" -v "$PWD/contract-out:/out" \
+            aiand-claude-contract node /src/scripts/claude-contract/run.mjs ${{ steps.version.outputs.version }}
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claude-contract-${{ matrix.tag }}
+          path: contract-out/

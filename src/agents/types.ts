@@ -8,14 +8,22 @@ export type ProbeResult = {
   active: boolean; // aiand routing live, ground truth from real files
   model: string | null;
 };
+/** What an adapter's own read of an active config yields: the probe, plus the base URL baked into it. */
+export type ProbeDetail = ProbeResult & { baseUrl?: string };
 export type EnableInput = {
   apiKey: string; // resolved session key, baked literal
   model: string; // resolved default or --model
   pinModel?: boolean; // --model was passed (not native): the adapter pins it where it keeps its model
+  fastModel?: string; // --fast-model (adapters with fastModelFlag): the one other model the user asked for
   profileModel?: string; // the profile's default, for adapters with their own default order
   profileName: string; // the aiand profile, for adapters that ask aiand for the key themselves
   catalog: Model[]; // live /v1/models
   baseUrl: string; // API origin (api.json fetches)
+};
+
+export type ModelSlots = {
+  slots: { key: string; label: string; model: string | null }[];
+  warnings: string[];
 };
 
 export type EnableResult = {
@@ -32,6 +40,7 @@ export type DisableInput = {
 export type DisableResult = {
   stripped: boolean;
   notes?: string[];
+  warnings?: string[];
 };
 
 /** Everything a one-process session launcher needs to build its injection. */
@@ -41,10 +50,12 @@ export type SessionLaunchInput = {
   // Codex asks `aiand key export` for the key, so when it came from
   // AIAND_API_KEY the launcher hands that variable back.
   model: string | undefined; // --model, catalog-validated; undefined = adapter picks
+  fastModel?: string; // --fast-model, catalog-validated (adapters with fastModelFlag)
   profileModel?: string; // the profile's default, for adapters that must bake a concrete model
   profileName: string; // the aiand profile, for adapters that ask aiand for the key themselves
   catalog: Model[]; // live /v1/models (adapters that build model maps)
   baseUrl?: string; // --base-url override; adapters fall back to their default
+  args?: string[]; // agent passthrough after launchModelFlags are lifted (an alias --model stays)
 };
 
 type SessionLaunch = {
@@ -77,6 +88,9 @@ export type AgentAdapter = {
   aliases?: string[];
   detect(): DetectResult; // which/where probe
   managedFiles(): string[]; // absolute paths this adapter touches
+  carriesWiring?(text: string): boolean; // a managed file's text holds our marker
+  // ^ Such a file is never snapshotted: it is not a pre-aiand state. Keys are
+  // checked separately, so an adapter without a marker leaves this out.
   probe(): Promise<ProbeResult>; // read real config, no flags trusted
   bakedKey?(): Promise<string | null>;
   // ^ The API key this agent's config currently carries, or null when the
@@ -95,6 +109,16 @@ export type AgentAdapter = {
   //   be read; never throws. Read-only: recording these keys never rewires
   //   or claims the agent — `off`/forgetAgentKeys still drops the agent's
   //   recorded keys (a later sync re-adds the native ones it still holds).
+  modelSlots?(): Promise<ModelSlots | undefined>;
+  // ^ Every model the wired config can send requests to, and a warning for
+  // each one the user did not choose. Undefined when not wired.
+  fastModelFlag?: boolean; // accepts --fast-model (a separate model for background calls)
+  launchModelFlags?: readonly string[];
+  // ^ The agent's own flags naming its model. A session launch takes their
+  // value from the passthrough as its --model, so every slot follows it.
+  passesLaunchModel?(value: string): boolean;
+  // ^ A launch-model value the agent resolves itself (an alias): it stays in
+  // the passthrough.
   enable(input: EnableInput): Promise<EnableResult>;
   enableGuard?(opts: GuardOptions): Promise<void>;
   // ^ Runs inside agentOn, before the snapshot + enable(). Adapters whose
@@ -114,6 +138,11 @@ export type AgentAdapter = {
   openExtras?(input: { args: string[]; profileModel?: string }): Promise<OpenExtras>;
   disable(input?: DisableInput): Promise<undefined | DisableResult>;
   // ^ Subtract marked aiand writes; never a snapshot rewind.
+  bakedBaseUrl?(): Promise<string | undefined>;
+  // ^ The base URL baked into the agent's active config, read from the real
+  // files, or undefined when the config is not ours or unreadable. Rebake
+  // judges an agent `on` never recorded by this, so an adapter that bakes a
+  // key leaves it out only if it cannot tell where the config points.
   refreshKey?(input: { apiKey: string; previousKey?: string }): Promise<boolean>;
   // ^ Swap ONLY the baked API-key literal in an already-active config, leaving
   // (with `previousKey`: only when that exact key is the one baked)
@@ -125,4 +154,5 @@ export type AgentAdapter = {
   // `aiand key export`) defines it as `false` so rebake stays silent.
   launcherOnly?: boolean; // adapters with session-only routing: on/off unsupported
   configOnly?: boolean; // adapters whose agent is a GUI app: open wires but never spawns
+  openLaunchesSession?: boolean; // bare `aiand <id>` runs one session (run-agent), never `on`
 };

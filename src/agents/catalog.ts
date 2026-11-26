@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { listModels, type Model } from "../api/models.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { configDir, writeFileAtomic } from "../config.js";
+import { safeLine } from "../cli/output.js";
+import { commandName, configDir, writeFileAtomic } from "../config.js";
 import { PRIVATE_FILE_MODE } from "../fsutil.js";
 import { HOUR_MS } from "../time.js";
 
@@ -80,16 +81,34 @@ export async function saveCatalogCache(baseUrl: string, models: Model[]): Promis
 }
 
 /**
+ * Drop catalog entries whose id carries a control, escape or bidi character.
+ * Ids flow into agent configs, banners, hints and warnings, so one that is not
+ * a plain line is refused here rather than escaped at every place it is shown.
+ */
+function withoutUnsafeIds(models: Model[]): Model[] {
+  const safe = models.filter(
+    (model) => typeof model?.id === "string" && safeLine(model.id) === model.id,
+  );
+  if (safe.length < models.length && process.env.AIAND_DEBUG === "1") {
+    process.stderr.write(
+      `[aiand] ignored ${models.length - safe.length} catalog model(s) whose id has control characters\n`,
+    );
+  }
+  return safe;
+}
+
+/**
  * The live /v1/models list, cached for 6h at <configDir>/model-catalog.json.
- * A fresh cache short-circuits the network entirely; a failed fetch does
- * not serve an expired cache.
+ * A fresh cache short-circuits the network entirely; a failed fetch does not
+ * serve an expired cache. Entries with an unsafe id are dropped on the way in
+ * and again on the way out of the cache, which anything can have written.
  */
 export async function getCatalog(baseUrl: string): Promise<Model[]> {
   const cached = await readCache();
-  if (cached && isFresh(cached, baseUrl)) return cached.models;
+  if (cached && isFresh(cached, baseUrl)) return withoutUnsafeIds(cached.models);
 
   try {
-    const models = await listModels(null, baseUrl);
+    const models = withoutUnsafeIds(await listModels(null, baseUrl));
     await saveCatalogCache(baseUrl, models);
     return models;
   } catch (error) {
@@ -112,6 +131,27 @@ export function validateCatalogModel(catalog: Model[], id: string, flag = "--mod
     hint: `Valid ids: ${catalog.map((entry) => entry.id).join(", ")}`,
   });
 }
+
+/**
+ * A model named in an agent's own args as its catalog id: the id itself, or
+ * the `aiand/<id>` ref the agents' provider form uses. Anything else comes
+ * back as given, for the caller's catalog check to refuse.
+ */
+export function servedModelId(catalog: readonly Pick<Model, "id">[], value: string): string {
+  const has = (id: string): boolean => catalog.some((model) => model.id === id);
+  if (has(value)) return value;
+  const bare = value.startsWith(AGENT_PROVIDER_PREFIX)
+    ? value.slice(AGENT_PROVIDER_PREFIX.length)
+    : value;
+  return has(bare) ? bare : value;
+}
+
+/**
+ * The provider id every adapter registers ai& under, as an agent model-ref
+ * prefix. The side-by-side install renames the command, and its adapters
+ * derive the same provider id from it, so the prefix follows `commandName()`.
+ */
+const AGENT_PROVIDER_PREFIX = `${commandName()}/`;
 
 /**
  * Pick the model written into agent configs: an explicit profile model wins

@@ -20,7 +20,25 @@ function cfgDir(name) {
   return dir;
 }
 
-const iso = (ms) => new Date(Date.parse("2026-10-20T10:00:00.000Z") + ms).toISOString();
+const DAY_MS = 86_400_000;
+
+/**
+ * Most recent Tuesday 10:00 UTC strictly before the run. A relative anchor
+ * keeps every windowed seed inside the 30-day default (and the 7-day loops)
+ * whenever the suite runs; the Tuesday 10:00 anchor keeps the #99 heatmap
+ * assertions on a fixed weekday and hour.
+ */
+function mostRecentTuesday10() {
+  const at = new Date();
+  at.setUTCHours(10, 0, 0, 0);
+  at.setUTCDate(at.getUTCDate() - ((at.getUTCDay() + 5) % 7));
+  if (at.getTime() >= Date.now()) at.setUTCDate(at.getUTCDate() - 7);
+  return at.getTime();
+}
+const TUE_10 = mostRecentTuesday10();
+/** The UTC weekday label of the fixture anchor ("Tue" by construction). */
+const FIXTURE_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(TUE_10).getUTCDay()];
+const iso = (ms) => new Date(TUE_10 + ms).toISOString();
 
 async function seedStore(cfg, rows) {
   const { openStore, storePath } = await import("../dist/store/index.js");
@@ -156,8 +174,8 @@ test("heatmap: metrics/window/filters compose; bad metric is a user error", asyn
 test("heatmap --json emits per-cell JSON (#99)", async () => {
   const cfg = cfgDir("heatmap-json");
   await seedStore(cfg, [
-    { id: "j1", cost: 0.25, created_at: "2026-10-20T10:30:00.000Z" },
-    { id: "j2", cost: 0.5, created_at: "2026-10-20T10:45:00.000Z" },
+    { id: "j1", cost: 0.25, created_at: iso(30 * 60_000) },
+    { id: "j2", cost: 0.5, created_at: iso(45 * 60_000) },
   ]);
   const out = await runCli(["heatmap", "--no-sync", "--json"], {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
@@ -167,7 +185,7 @@ test("heatmap --json emits per-cell JSON (#99)", async () => {
   assert.equal(payload.metric, "cost");
   assert.equal(payload.currency, "usd");
   assert.equal(payload.rowCount, 2);
-  const tuesday1030 = payload.cells.find((c) => c.day === "Tue" && c.hour === 10);
+  const tuesday1030 = payload.cells.find((c) => c.day === FIXTURE_DAY && c.hour === 10);
   assert.ok(tuesday1030);
   assert.equal(tuesday1030.spend, 0.75);
   assert.ok(payload.cells.every((c) => typeof c.day === "string" && typeof c.hour === "number"));
@@ -178,7 +196,7 @@ test("heatmap --json emits per-cell JSON (#99)", async () => {
     env: cliEnv({ AIAND_CONFIG_DIR: cfg }),
   });
   const reqPayload = JSON.parse(reqs.stdout);
-  assert.equal(reqPayload.cells.find((c) => c.day === "Tue" && c.hour === 10).count, 2);
+  assert.equal(reqPayload.cells.find((c) => c.day === FIXTURE_DAY && c.hour === 10).count, 2);
 
   // The help text lists --json like every other flag.
   const h = await runCli(["heatmap", "--help"], { env: cliEnv({ AIAND_CONFIG_DIR: cfg }) });
@@ -195,7 +213,7 @@ test("wrapped: formats/windows/no-cost/json; dead gateway fails open", async () 
     ["wrapped", "--no-sync", "--format", "markdown"],
     ["wrapped", "--no-sync", "--json"],
     ["wrapped", "--no-sync", "--last", "30d", "--no-cost"],
-    ["wrapped", "--no-sync", "--since", "2026-10-18", "--until", "2026-10-21"],
+    ["wrapped", "--no-sync", "--since", iso(-DAY_MS), "--until", iso(DAY_MS)],
   ]) {
     const out = await runCli(args, base);
     assert.equal(out.code, 0, `${args.join(" ")}\n${out.stdout}${out.stderr}`);
@@ -627,7 +645,7 @@ test("usage/sessions/heatmap/wrapped/overview/export flag-guard sweep (#91)", as
 
   // Heatmap window + metric composition over a seeded store.
   for (const args of [
-    ["heatmap", "--no-sync", "--since", "2026-10-19", "--until", "2026-10-21"],
+    ["heatmap", "--no-sync", "--since", iso(-DAY_MS), "--until", iso(DAY_MS)],
     ["heatmap", "--no-sync", "--range", "7d"],
     ["heatmap", "--no-sync", "--timezone", "America/New_York"],
   ]) {
@@ -645,9 +663,9 @@ test("usage/sessions/heatmap/wrapped/overview/export flag-guard sweep (#91)", as
       "--format",
       "prometheus",
       "--since",
-      "2026-10-19T00:00:00Z",
+      iso(-DAY_MS),
       "--until",
-      "2026-10-21T00:00:00Z",
+      iso(DAY_MS),
       "--file",
       file,
     ],

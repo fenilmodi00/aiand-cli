@@ -9,12 +9,16 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
-import { enableInput as baseEnableInput, catalogModel, withTestEnv } from "./helpers.mjs";
+import {
+  assertMode,
+  enableInput as baseEnableInput,
+  catalogModel,
+  withTestEnv,
+} from "./helpers.mjs";
 
 withTestEnv("aiand-copilot-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
@@ -85,7 +89,10 @@ describe("copilot adapter", () => {
     assert.equal(copilotAdapter.id, "copilot");
     assert.equal(copilotAdapter.label, "GitHub Copilot");
     assert.equal(copilotAdapter.bin, "copilot");
-    assert.equal(copilotAdapter.install.command, "npm install -g @github/copilot@1.0.89");
+    assert.equal(
+      copilotAdapter.install.command,
+      "npm install -g --ignore-scripts @github/copilot@1.0.89",
+    );
     assert.equal(
       copilotAdapter.install.url,
       "https://docs.github.com/en/copilot/get-started/cli-quickstart",
@@ -170,6 +177,15 @@ describe("copilot adapter", () => {
     assert.equal(second.maxPromptTokens, 128000);
   });
 
+  test("bakedBaseUrl(): reads back the URL `on` baked, and nothing once off", async () => {
+    seedUserFiles();
+    assert.equal(await copilotAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await copilotAdapter.enable(enableInput());
+    assert.equal(await copilotAdapter.bakedBaseUrl(), "https://api.aiand.com/v1");
+    await copilotAdapter.disable();
+    assert.equal(await copilotAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
   test("enable(): wires provider + models + settings pin; keeps foreign rows", async () => {
     seedUserFiles();
     const result = await copilotAdapter.enable(enableInput());
@@ -201,14 +217,14 @@ describe("copilot adapter", () => {
     assert.equal(readJson(copilotSettingsPath()).theme, "dark");
 
     if (process.platform !== "win32") {
-      assert.equal(statSync(copilotProvidersPath()).mode & 0o777, 0o600);
+      assertMode(copilotProvidersPath(), 0o600);
     }
   });
 
   test("enable(): a file that did not exist is created private", async () => {
     await copilotAdapter.enable(enableInput());
     if (process.platform !== "win32") {
-      assert.equal(statSync(copilotProvidersPath()).mode & 0o777, 0o600);
+      assertMode(copilotProvidersPath(), 0o600);
     }
   });
 
@@ -429,7 +445,7 @@ describe("copilot adapter", () => {
     await copilotAdapter.enable(enableInput());
     await copilotAdapter.disable();
     if (process.platform !== "win32") {
-      assert.equal(statSync(copilotProvidersPath()).mode & 0o777, 0o640);
+      assertMode(copilotProvidersPath(), 0o640);
     }
   });
 
@@ -548,6 +564,95 @@ describe("copilot adapter", () => {
     assert.deepEqual(readJson(copilotSettingsPath()), { theme: "dark" });
   });
 
+  test("disable(): a row the user repointed keeps their edit but loses our key", async () => {
+    seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    const file = readJson(copilotProvidersPath());
+    for (const row of file.providers) {
+      if (row.name === "aiand") row.baseUrl = "https://my-proxy.example/v1";
+    }
+    writeJson(copilotProvidersPath(), file);
+
+    const off = await copilotAdapter.disable();
+    assert.equal(off.stripped, true);
+    assert.ok(
+      off.notes.includes("left the aiand provider because you edited it, minus its ai& key"),
+    );
+    const row = readJson(copilotProvidersPath()).providers.find((r) => r.name === "aiand");
+    assert.equal(row.baseUrl, "https://my-proxy.example/v1");
+    assert.equal(row.apiKey, undefined);
+    assert.ok(!readFileSync(copilotProvidersPath(), "utf8").includes("sk-enable-1"));
+    assert.equal(existsSync(addedRecord()), false);
+    assert.equal(await copilotAdapter.refreshKey({ apiKey: "sk-rotated" }), false);
+  });
+
+  test("disable(): a repointed row keeps a key the user put there", async () => {
+    seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    const file = readJson(copilotProvidersPath());
+    for (const row of file.providers) {
+      if (row.name === "aiand") {
+        row.baseUrl = "https://my-proxy.example/v1";
+        row.apiKey = "sk-theirs-1";
+      }
+    }
+    writeJson(copilotProvidersPath(), file);
+
+    const off = await copilotAdapter.disable();
+    assert.ok(off.notes.includes("left the aiand provider because you edited it"));
+    const row = readJson(copilotProvidersPath()).providers.find((r) => r.name === "aiand");
+    assert.equal(row.apiKey, "sk-theirs-1", "the user's own key is theirs");
+    assert.equal(existsSync(addedRecord()), false);
+  });
+
+  test("disable(): a repointed row in the recorded (moved) dir loses our key too", async () => {
+    seedUserFiles();
+    await copilotAdapter.enable(enableInput());
+    const recorded = copilotProvidersPath();
+    const file = readJson(recorded);
+    for (const row of file.providers) {
+      if (row.name === "aiand") row.baseUrl = "http://not-loopback.example/v1";
+    }
+    writeJson(recorded, file);
+    process.env.COPILOT_HOME = join(process.env.AIAND_HOME, "moved");
+    try {
+      const off = await copilotAdapter.disable();
+      assert.ok(off.notes.some((n) => n.includes("minus its ai& key")));
+    } finally {
+      delete process.env.COPILOT_HOME;
+    }
+    assert.ok(!readFileSync(recorded, "utf8").includes("sk-enable-1"));
+    const row = readJson(recorded).providers.find((r) => r.name === "aiand");
+    assert.equal(row.baseUrl, "http://not-loopback.example/v1");
+  });
+
+  test("enableGuard: refuses a moved COPILOT_HOME while the recorded row holds our key", async () => {
+    await copilotAdapter.enable(enableInput());
+    process.env.COPILOT_HOME = join(process.env.AIAND_HOME, "moved");
+    try {
+      await assert.rejects(
+        () => copilotAdapter.enableGuard({ force: true }),
+        /already wired through/,
+      );
+      await copilotAdapter.disable();
+      await copilotAdapter.enableGuard({ force: false });
+    } finally {
+      delete process.env.COPILOT_HOME;
+    }
+  });
+
+  test("enableGuard: an unreadable recorded file does not block on", async () => {
+    await copilotAdapter.enable(enableInput());
+    const recorded = copilotProvidersPath();
+    process.env.COPILOT_HOME = join(process.env.AIAND_HOME, "moved");
+    try {
+      writeFileSync(recorded, "{ not json");
+      await copilotAdapter.enableGuard({ force: false });
+    } finally {
+      delete process.env.COPILOT_HOME;
+    }
+  });
+
   // Relocated config dir orphaned the baked key
   test("disable(): strips the recorded files when COPILOT_HOME moved", async () => {
     // Capture the pre-move paths: copilotProvidersPath() is env-dependent,
@@ -638,7 +743,7 @@ describe("copilot adapter", () => {
         "aiand/zai-org/glm-5.3",
       );
       if (process.platform !== "win32") {
-        assert.equal(statSync(join(launch.env.COPILOT_HOME, "providers.json")).mode & 0o777, 0o600);
+        assertMode(join(launch.env.COPILOT_HOME, "providers.json"), 0o600);
       }
     } finally {
       await launch.cleanup();

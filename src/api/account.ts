@@ -1,5 +1,11 @@
 import { ApiError } from "../cli/errors.js";
-import { parseJsonResponse, publicRequest, requestJson, type Session } from "./client.js";
+import {
+  assertValidKey,
+  parseJsonResponse,
+  publicRequest,
+  requestJson,
+  type Session,
+} from "./client.js";
 
 export type AccountUser = { id: string; email: string };
 export type AccountOrg = { id: string; name: string };
@@ -25,6 +31,7 @@ export function listOrgs(session: Session): Promise<AccountOrg[]> {
  * problem the caller should surface as-is.
  */
 export async function validateKey(key: string, authUrl: string): Promise<AccountUser> {
+  assertValidKey(key);
   const response = await publicRequest(`${authUrl}/api/user`, {
     headers: { Authorization: `Bearer ${key}` },
   });

@@ -6,7 +6,17 @@ import { BENCH_SCENARIOS, findBenchScenario } from "../benchmark/scenarios.js";
 import { saveSweep, sweepPath } from "../benchmark/sweep-store.js";
 import { bool, list, nearestMatch, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { currencySymbol, err, heading, json, num, out, style, table } from "../cli/output.js";
+import {
+  currencySymbol,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  style,
+  styled,
+  table,
+} from "../cli/output.js";
 import { resolveProfile } from "../config.js";
 import * as importCmd from "./harness-import.js";
 import { runHarnessMatrix } from "./harness-matrix.js";
@@ -175,7 +185,7 @@ function printSweep(sweep: { model: string; results: BenchResult[] }[], title: s
     out();
     table<BenchResult>(results, [
       { header: "harness", value: (r) => r.label },
-      { header: "dialect", value: (r) => style.dim(r.dialect) },
+      { header: "dialect", value: (r) => styled(style.dim, r.dialect) },
       { header: "hit", value: (r) => `${(r.hitRatio * 100).toFixed(1)}%`, align: "right" },
       {
         header: "cost",
@@ -201,7 +211,7 @@ function printResults(results: BenchResult[], scenarioTitle: string, model: stri
 
   table<BenchResult>(results, [
     { header: "harness", value: (r) => r.label },
-    { header: "dialect", value: (r) => style.dim(r.dialect) },
+    { header: "dialect", value: (r) => styled(style.dim, r.dialect) },
     { header: "turns", value: (r) => num(r.requests), align: "right" },
     {
       header: "hit",

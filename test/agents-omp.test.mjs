@@ -2,11 +2,16 @@
 // an omp session, plus the surgical YAML editors that edit omp's two config
 // files. Launcher tests live in test/run-agent.test.mjs.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import test, { beforeEach, describe } from "node:test";
 import { CliError } from "../dist/cli/errors.js";
-import { enableInput as baseEnableInput, catalogModel, withTestEnv } from "./helpers.mjs";
+import {
+  assertMode,
+  enableInput as baseEnableInput,
+  catalogModel,
+  withTestEnv,
+} from "./helpers.mjs";
 
 withTestEnv("aiand-omp-test-", (dir) => {
   process.env.AIAND_HOME = join(dir, "home");
@@ -123,10 +128,8 @@ describe("omp adapter", () => {
     assert.match(ompAdapter.install.command, /oh-my-pi\/releases\/download\/v\d+\.\d+\.\d+\/omp-/);
     assert.doesNotMatch(ompAdapter.install.command, /\|\s*sh\b/);
     assert.doesNotMatch(ompAdapter.install.command, /omp\.sh\/install/);
-    // The destination and the digest check are platform-specific: win32 lands
-    // an omp.exe under a PowerShell one-liner and verifies with Get-FileHash,
-    // while POSIX writes ~/.local/bin/omp and pipes into sha256sum/shasum.
     if (process.platform === "win32") {
+      assert.match(ompAdapter.install.command, /omp-\d+\.\d+\.\d+\.exe/);
       assert.match(ompAdapter.install.command, /\.local\\bin/);
       assert.match(ompAdapter.install.command, /Get-FileHash/);
     } else {
@@ -255,6 +258,15 @@ describe("omp adapter", () => {
     assert.equal(buildOmpProviderBlock({ apiKey: "sk-1" }).baseUrl, "https://api.aiand.com/v1");
   });
 
+  test("bakedBaseUrl(): reads back the URL `on` baked, and nothing once off", async () => {
+    seedUserFiles();
+    assert.equal(await ompAdapter.bakedBaseUrl(), undefined, "nothing wired yet");
+    await ompAdapter.enable(enableInput());
+    assert.equal(await ompAdapter.bakedBaseUrl(), "https://api.aiand.com/v1");
+    await ompAdapter.disable();
+    assert.equal(await ompAdapter.bakedBaseUrl(), undefined, "off: nothing baked");
+  });
+
   test("enable(): wires the provider block, keeps the user's files", async () => {
     const seed = seedUserFiles();
     const result = await ompAdapter.enable(enableInput());
@@ -289,7 +301,7 @@ describe("omp adapter", () => {
 
     // models.yml holds the session key: private for as long as it lives there.
     if (process.platform !== "win32") {
-      assert.equal(statSync(modelsPath()).mode & 0o777, 0o600);
+      assertMode(modelsPath(), 0o600);
     }
 
     // probe reads the real files back.
@@ -374,7 +386,7 @@ describe("omp adapter", () => {
     assert.equal((await ompAdapter.probe()).active, false);
   });
 
-  test("off: a repointed baseUrl inside our marked block is left with a note", async () => {
+  test("off: a repointed baseUrl inside our marked block keeps the block but loses our key", async () => {
     seedUserFiles();
     await ompAdapter.enable(enableInput());
     // The user repointed our block at their own origin: the
@@ -387,15 +399,70 @@ describe("omp adapter", () => {
       ),
     );
     const result = await ompAdapter.disable();
-    assert.ok(result.notes.some((n) => /left providers\.aiand because you edited it/.test(n)));
-    // The block stays exactly as the user left it…
-    assert.equal(
-      readYamlMapping(readText(modelsPath())).providers.aiand.baseUrl,
-      "https://api.their-own-origin.com/v1",
+    assert.ok(
+      result.notes.some((n) =>
+        /left providers\.aiand because you edited it, minus its ai& key/.test(n),
+      ),
     );
-    assert.equal(readYamlMapping(readText(modelsPath())).providers.aiand.managedBy, "aiand");
+    // The user's edit stays; the key and stamp we put there do not, so
+    // nothing of ours outlives off once the record clears.
+    const block = readYamlMapping(readText(modelsPath())).providers.aiand;
+    assert.equal(block.baseUrl, "https://api.their-own-origin.com/v1");
+    assert.equal(block.apiKey, undefined);
+    assert.equal(block.managedBy, undefined);
+    assert.ok(!readText(modelsPath()).includes("sk-enable-1"));
+    assert.equal(existsSync(addedRecord()), false);
+    // A later login's rebake must not put the key back.
+    assert.equal(await ompAdapter.refreshKey({ apiKey: "sk-rotated" }), false);
+    assert.ok(!readText(modelsPath()).includes("sk-rotated"));
     // …while the config.yml hand-back still runs.
     assert.equal(configDefault(), "anthropic/claude-haiku-4-5");
+  });
+
+  test("off: a repointed marked block keeps a key the user put there but loses our stamp", async () => {
+    seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    writeFileSync(
+      modelsPath(),
+      readText(modelsPath())
+        .replace(
+          "baseUrl: https://api.aiand.com/v1",
+          "baseUrl: https://api.their-own-origin.com/v1",
+        )
+        .replace("sk-enable-1", "sk-theirs-2"),
+    );
+    const result = await ompAdapter.disable();
+    assert.ok(
+      result.notes.some((n) =>
+        /left providers\.aiand because you edited it, with the key you set/.test(n),
+      ),
+    );
+    const block = readYamlMapping(readText(modelsPath())).providers.aiand;
+    assert.equal(block.apiKey, "sk-theirs-2");
+    assert.equal(block.managedBy, undefined);
+  });
+
+  test("off: a repointed marked block in the recorded (moved) dir loses our key too", async () => {
+    seedUserFiles();
+    await ompAdapter.enable(enableInput());
+    writeFileSync(
+      modelsPath(),
+      readText(modelsPath()).replace(
+        "baseUrl: https://api.aiand.com/v1",
+        "baseUrl: https://api.their-own-origin.com/v1",
+      ),
+    );
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      const result = await ompAdapter.disable();
+      assert.ok(result.notes.some((n) => /minus its ai& key/.test(n)));
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+    const block = readYamlMapping(readText(modelsPath())).providers.aiand;
+    assert.equal(block.baseUrl, "https://api.their-own-origin.com/v1");
+    assert.equal(block.apiKey, undefined);
+    assert.ok(!readText(modelsPath()).includes("sk-enable-1"));
   });
 
   test("off: a stamp-dropped, repointed block is left with a note", async () => {
@@ -535,6 +602,28 @@ describe("omp adapter", () => {
     } finally {
       delete process.env.PI_CODING_AGENT_DIR;
     }
+  });
+
+  test("enableGuard: refuses a moved dir while the recorded one still holds our key", async () => {
+    await ompAdapter.enable(enableInput());
+    process.env.PI_CODING_AGENT_DIR = join(process.env.AIAND_HOME, "moved", "agent");
+    try {
+      await assert.rejects(
+        () => ompAdapter.enableGuard({ force: true }),
+        (error) => error instanceof CliError && /already wired through/.test(error.message),
+      );
+      await ompAdapter.disable();
+      await ompAdapter.enableGuard({ force: false });
+    } finally {
+      delete process.env.PI_CODING_AGENT_DIR;
+    }
+    await ompAdapter.enableGuard({ force: false });
+  });
+
+  test("carriesWiring: recognises the stamp in models.yml text", () => {
+    assert.equal(ompAdapter.carriesWiring("providers:\n  aiand:\n    managedBy: aiand\n"), true);
+    assert.equal(ompAdapter.carriesWiring("providers:\n  aiand:\n    managedBy: 'aiand'\n"), true);
+    assert.equal(ompAdapter.carriesWiring("providers:\n  other:\n    managedBy: me\n"), false);
   });
 
   test("off: unparseable relocated config keeps the record for retry", async () => {
@@ -707,8 +796,8 @@ describe("omp adapter", () => {
         modelRoles: { default: "aiand/zai-org/glm-5.3" },
       });
       if (process.platform !== "win32") {
-        assert.equal(statSync(join(overlay, "models.yml")).mode & 0o777, 0o600);
-        assert.equal(statSync(join(overlay, "config.yml")).mode & 0o777, 0o600);
+        assertMode(join(overlay, "models.yml"), 0o600);
+        assertMode(join(overlay, "config.yml"), 0o600);
       }
 
       // Non-TTY stdin under the test runner: an explicit one-shot launch.
@@ -996,6 +1085,105 @@ describe("omp yaml editors", () => {
     assert.equal(parseScalar(renderScalar(null)), null);
     assert.equal(parseScalar(renderScalar(-2.5)), -2.5);
     assert.equal(parseScalar(renderScalar(true)), true);
+  });
+
+  // A catalog model id is written into config.yml as
+  // modelRoles.default, so any byte a YAML reader treats as structure must
+  // come out quoted and escaped. Cases follow YAML 1.2 (Bun's and js-yaml's
+  // reader): line breaks include NEL and U+2028/2029, the C1 range and DEL
+  // are not printable, and plain words like yes/on/NULL or 0x1F get typed.
+  const HOSTILE = [
+    "aiand/x\rapiKey: evil",
+    "aiand/x\rapiKey:\tevil",
+    "aiand/x\napiKey: evil",
+    "aiand/x\r\n  managedBy: evil",
+    "aiand/x\u0085apiKey: evil",
+    "aiand/x\u2028apiKey: evil",
+    "aiand/x\u2029apiKey: evil",
+    "aiand/x\u0000y",
+    "aiand/x\u007fy",
+    "aiand/x\u009by",
+    "\ufeffaiand/x",
+    "aiand/x\ty",
+    "aiand/x\t# not a comment",
+    "aiand/x #comment",
+    "aiand/x: y",
+    "aiand/x:",
+    " leading",
+    "trailing ",
+    "- item",
+    "? key",
+    "!tag",
+    "&anchor",
+    "*alias",
+    "|block",
+    ">folded",
+    "%directive",
+    "@reserved",
+    "`reserved",
+    "{flow: map}",
+    "[flow, seq]",
+    "'single'",
+    '"double"',
+    "yes",
+    "No",
+    "ON",
+    "off",
+    "y",
+    "NULL",
+    "True",
+    "~",
+    "0x1F",
+    "0o17",
+    "1_000",
+    "1:20",
+    "2026-11-05",
+    ".inf",
+    "-.INF",
+    ".NaN",
+    "1e3",
+    "モデル",
+    "a\\b",
+  ];
+
+  test("renderScalar quotes and escapes every YAML-significant string", () => {
+    for (const value of HOSTILE) {
+      const rendered = renderScalar(value);
+      assert.match(rendered, /^"/, `${JSON.stringify(value)} must be quoted`);
+      assert.doesNotMatch(
+        rendered,
+        /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/,
+        `${JSON.stringify(value)} rendered a raw control or line break`,
+      );
+      assert.equal(parseScalar(rendered), value, `${JSON.stringify(value)} round-trips`);
+      const doc = yamlRender({ modelRoles: { default: value } });
+      assert.equal(
+        doc.split("\n").filter(Boolean).length,
+        2,
+        `one line for ${JSON.stringify(value)}`,
+      );
+      assert.deepEqual(readYamlMapping(doc), { modelRoles: { default: value } });
+    }
+  });
+
+  test("renderScalar leaves ids, URLs and keys plain", () => {
+    for (const value of [
+      "aiand/zai-org/glm-5.3",
+      "https://api.aiand.com/v1",
+      "http://127.0.0.1:9/v1",
+      "sk-abc_DEF.123",
+      "aiand",
+      "anthropic/claude-haiku-4-5",
+      "/usr/bin/omp",
+    ]) {
+      assert.equal(renderScalar(value), value);
+    }
+  });
+
+  test("a hostile key is quoted with YAML escapes too", () => {
+    const doc = yamlRender({ "k\u2028x: y": "v" });
+    assert.doesNotMatch(doc, /\u2028/);
+    assert.deepEqual(readYamlMapping(doc), { "k\u2028x: y": "v" });
   });
 
   test("yamlSet: a replaced scalar line keeps its trailing comment", () => {

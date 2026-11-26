@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
-import { type RebakeNote, rebakeAgentKeys } from "../agents/rebake.js";
-import { type AccountOrg, getUser, listOrgs, validateKey } from "../api/account.js";
-import { openSession, type Session } from "../api/client.js";
+import { printRebakeNotes, rebakeForBinding } from "../agents/rebake.js";
+import { getUser, listOrgs, validateKey } from "../api/account.js";
+import { assertValidKey, openSession, type Session, withRefreshLock } from "../api/client.js";
 import {
   type DeviceCodeResponse,
   pollForToken,
@@ -12,12 +12,26 @@ import {
 import { openBrowser } from "../cli/browser.js";
 import { ApiError, CliError, EXIT, loginCancelled, SYNTHETIC_STATUS } from "../cli/errors.js";
 import { link } from "../cli/links.js";
-import { err, fields, out, spinner, style } from "../cli/output.js";
+import {
+  err,
+  fields,
+  json,
+  out,
+  safeLine,
+  sanitizeForTerminal,
+  spinner,
+  style,
+  styled,
+} from "../cli/output.js";
 import { confirm, isInteractive, readSecret } from "../cli/prompt.js";
-import { type PromptInput, type PromptOutput, promptSelect } from "../cli/select.js";
+import { INVALID_KEY_MESSAGE, isValidKeyShape } from "../cli/redact.js";
+import type { PromptInput, PromptOutput } from "../cli/select.js";
 import { readStdin } from "../cli/stdin.js";
 import {
+  bindingFor,
   CREDENTIAL_ORIGIN,
+  type CredentialBinding,
+  legacyBinding,
   loadConfig,
   maskKey,
   type ResolvedProfile,
@@ -26,31 +40,42 @@ import {
   saveCredential,
   updateProfile,
 } from "../config.js";
+import { fileTierNotOwnerOnly } from "../secrets.js";
 import { nowSeconds } from "../time.js";
 import { type BrowserFlowResult, signInViaLocalhostCallback } from "./browser.js";
 import { CREDENTIAL_SOURCE, storageLabel } from "./identity.js";
 
-function printRebakeNotes(notes: RebakeNote[]): void {
-  for (const note of notes) {
-    err(style.dim(`[${note.agent}] ${note.note}`));
-  }
-}
-
 /** Server-side name for a key minted on this machine. */
 const defaultKeyName = (): string => `aiand@${hostname() || "cli"}`;
 
-/** Promote a freshly-signed-in profile to the active one when it is not. */
-async function activateProfile(name: string): Promise<void> {
-  await updateProfile(name, {});
+/** Promote a freshly-signed-in profile to the active one when it is not. The
+ * URLs the credential was bound to are written onto the profile when they
+ * differ from what it already resolves to (`login --base-url X`), since the
+ * next run carries no flag and would otherwise be refused. */
+async function activateProfile(name: string, bound: CredentialBinding): Promise<void> {
+  const stored = legacyBinding(name);
+  await updateProfile(name, {
+    ...(bound.api_url === stored.api_url ? {} : { apiUrl: bound.api_url }),
+    ...(bound.auth_url === stored.auth_url ? {} : { authUrl: bound.auth_url }),
+  });
   if (loadConfig().profile !== name) {
     await saveConfig({ ...loadConfig(), profile: name });
   }
 }
 
+/** The rebake after sign-in, held to the endpoint each agent was wired for. */
+async function rebakeAfterSignIn(
+  profile: ResolvedProfile,
+  key: string,
+  binding: CredentialBinding,
+): Promise<void> {
+  printRebakeNotes(await rebakeForBinding(key, profile.name, binding));
+}
+
 export type DeviceLoginOptions = {
   profile?: string;
   json?: boolean;
-  /** Internal test seam: prompt streams for the multi-org picker. */
+  /** Internal test seam: prompt streams for the paste fallback confirm. */
   input?: PromptInput;
   output?: PromptOutput;
   /** Internal: display name for the minted key; defaults to aiand@<hostname>. */
@@ -83,10 +108,11 @@ export async function deviceLogin(opts: DeviceLoginOptions = {}): Promise<void> 
   // the code/URL a human follows go to stderr, like browserLogin's status.
   const show = opts.json ? err : out;
   show();
-  show(`  ${style.dim("Your code ")}  ${style.bold(style.cyan(deviceStart.user_code))}`);
+  show(`  ${style.dim("Your code ")}  ${style.bold(style.cyan(safeLine(deviceStart.user_code)))}`);
   show(`  ${style.dim("Approve at")}  ${link(url)}`);
   show();
-  if (!(await openBrowser(url)))
+  // Over SSH a browser opened here isn't the user's; the URL above is enough.
+  if (!isSshSession() && !(await openBrowser(url)))
     err(style.dim("Could not open a browser -- open the URL above to continue."));
 
   const controller = new AbortController();
@@ -137,7 +163,7 @@ async function degradeToPaste(
   if (!recoverable || !isInteractive() || opts.json) throw error;
   err(
     style.yellow(
-      `Device sign-in failed while ${doing} (${(error as Error).message}) — paste a key instead.`,
+      `Device sign-in failed while ${doing} (${safeLine((error as Error).message)}) — paste a key instead.`,
     ),
   );
   const ok = await confirm("Paste a key instead?", {
@@ -149,12 +175,22 @@ async function degradeToPaste(
   return pasteLogin({ ...opts, interactive: true });
 }
 
+/** Over SSH the loopback redirect lands on the laptop's 127.0.0.1, not this
+ * machine's listener, so the browser flow could only time out. */
+function isSshSession(): boolean {
+  return Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY);
+}
+
 /** Default interactive sign-in: browser authorization-code + PKCE with a
  * device-code fallback when the server or terminal cannot do the browser
  * half. Minted keys keep origin "device" either way. */
 export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void> {
   const profile = resolveProfile(opts.profile);
   const keyName = opts.keyName ?? defaultKeyName();
+  if (isSshSession()) {
+    err(style.dim("SSH session detected — signing in with a device code."));
+    return deviceLogin({ ...opts, keyName });
+  }
 
   const controller = new AbortController();
   const onInterrupt = () => controller.abort();
@@ -167,7 +203,7 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
       open: opts.open,
       timeoutMs: opts.timeoutMs,
       signal: controller.signal,
-      onStatus: (line) => err(style.dim(line)),
+      onStatus: (line) => err(style.dim(sanitizeForTerminal(line))),
     });
   } finally {
     process.removeListener("SIGINT", onInterrupt);
@@ -180,7 +216,7 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
     if (!result.unsupported) {
       err(
         style.dim(
-          `Browser sign-in didn't complete (${result.failure}) — continuing with a device code.`,
+          `Browser sign-in didn't complete (${safeLine(result.failure)}) — continuing with a device code.`,
         ),
       );
     }
@@ -189,81 +225,61 @@ export async function browserLogin(opts: DeviceLoginOptions = {}): Promise<void>
   await completeSignIn(profile, result.tokens, opts);
 }
 
-async function pickOrg(
-  orgs: AccountOrg[],
-  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput },
-): Promise<AccountOrg | null> {
-  if (orgs.length === 1) return orgs[0]!;
-  if (orgs.length === 0) return null;
-  if (!opts.json && isInteractive()) {
-    const picked = await promptSelect({
-      message: "Which organization should this machine use?",
-      choices: orgs.map((o) => ({ value: o.id, label: o.name })),
-      input: opts.input,
-      output: opts.output,
-    });
-    if (picked === null) throw loginCancelled();
-    return orgs.find((o) => o.id === picked) ?? orgs[0]!;
-  }
-  err(style.dim(`This account has multiple organizations; using ${orgs[0]!.name}.`));
-  return orgs[0]!;
-}
-
 async function completeSignIn(
   profile: ResolvedProfile,
   tokens: TokenResponse,
-  opts: { json?: boolean; input?: PromptInput; output?: PromptOutput },
+  opts: { json?: boolean },
 ): Promise<void> {
-  // Identity and org resolve before the first save, so cancelling at the
-  // picker (exit 130) leaves no credential behind. The pending session carries
-  // no refresh_token, which would otherwise rotate and save before pickOrg,
-  // and a non-null credential keeps a 401 from reading as a bad env key.
+  // A minted key belongs to exactly one org: the token response names it, and
+  // when it does not, /api/orgs lists the authenticating key's org first. No
+  // picker, since choosing another org would record one the key does not bill.
+  // The pending session carries no refresh_token, which would otherwise rotate
+  // and save before the org is known, and a non-null credential keeps a 401
+  // from reading as a bad env key.
+  assertValidKey(tokens.access_token);
+  const bound_to = bindingFor(profile);
   const pending: Session = {
     profile,
     token: tokens.access_token,
-    credential: { access_token: tokens.access_token, origin: CREDENTIAL_ORIGIN.DEVICE },
+    credential: { access_token: tokens.access_token, origin: CREDENTIAL_ORIGIN.DEVICE, bound_to },
   };
   const [user, orgs] = await Promise.all([getUser(pending), listOrgs(pending)]);
-  const org = tokens.org ?? (await pickOrg(orgs, opts));
+  const org = tokens.org ?? orgs[0] ?? null;
 
-  await saveCredential(profile.name, {
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: nowSeconds() + tokens.expires_in,
-    origin: CREDENTIAL_ORIGIN.DEVICE,
-    user,
-    ...(org ? { org } : {}),
-  });
+  await withRefreshLock(profile.name, () =>
+    saveCredential(profile.name, {
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_at: nowSeconds() + tokens.expires_in,
+      origin: CREDENTIAL_ORIGIN.DEVICE,
+      bound_to,
+      user,
+      ...(org ? { org } : {}),
+    }),
+  );
 
-  await activateProfile(profile.name);
+  await activateProfile(profile.name, bound_to);
 
   const session = await openSession(resolveProfile(profile.name));
 
-  const notes = await rebakeAgentKeys(session.token);
-  printRebakeNotes(notes);
+  await rebakeAfterSignIn(profile, session.token, bound_to);
 
   if (opts.json) {
-    return out(
-      JSON.stringify(
-        {
-          profile: profile.name,
-          user,
-          org: org ?? null,
-          key: maskKey(session.token),
-        },
-        null,
-        2,
-      ),
-    );
+    return json({
+      profile: profile.name,
+      user,
+      org: org ?? null,
+      key: maskKey(session.token),
+    });
   }
 
   out(style.green("Signed in."));
   out();
   fields([
-    ["email", user.email || style.dim("unknown")],
-    ["org", org ? `${org.name} ${style.dim(`(${org.id})`)}` : style.dim("none")],
+    ["email", user.email ?? styled(style.dim, "unknown")],
+    ["org", org ? [`${org.name} `, styled(style.dim, `(${org.id})`)] : styled(style.dim, "none")],
     ["profile", profile.name],
-    ["key", style.dim(maskKey(session.token))],
+    ["key", styled(style.dim, maskKey(session.token))],
   ]);
 }
 
@@ -303,12 +319,20 @@ async function readPastedKeyInteractive(
   opts: Pick<PasteLoginOptions, "input" | "output">,
 ): Promise<string> {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const key = await readSecret("Paste your ai& API key (sk-…): ", {
-      input: opts.input,
-      output: opts.output,
-    });
+    const key = (
+      await readSecret("Paste your ai& API key (sk-…): ", {
+        input: opts.input,
+        output: opts.output,
+      })
+    ).trim();
     if (!/^sk-/.test(key)) {
       err(style.red(`Keys start with "sk-" (attempt ${attempt} of 3).`));
+      continue;
+    }
+    // Inside the loop: a stray space or control character in the middle of a
+    // paste is another attempt, not a fatal error after the third-try budget.
+    if (!isValidKeyShape(key)) {
+      err(style.red(`${INVALID_KEY_MESSAGE} (attempt ${attempt} of 3).`));
       continue;
     }
     return key;
@@ -343,38 +367,41 @@ export async function pasteLogin(opts: PasteLoginOptions = {}): Promise<void> {
   const profile = resolveProfile(opts.profile);
 
   const key = await readPastedKey(opts);
+  assertValidKey(key);
   const user = await validateKey(key, profile.authUrl);
-  // Multi-org accounts pick an org as in completeSignIn, before the save, so
-  // cancelling the picker leaves no credential behind.
+  // A pasted key is already scoped to one org, so there is nothing to pick:
+  // offering a picker let the user record an org the key does not bill.
+  // The account API's /api/orgs lists the authenticating key's org first.
+  const bound_to = bindingFor(profile);
   const pending: Session = {
     profile,
     token: key,
-    credential: { access_token: key, origin: CREDENTIAL_ORIGIN.PASTE },
+    credential: { access_token: key, origin: CREDENTIAL_ORIGIN.PASTE, bound_to },
   };
-  const orgs = await listOrgs(pending);
-  const org = await pickOrg(orgs, opts);
-  const storage = await saveCredential(profile.name, {
-    access_token: key,
-    origin: CREDENTIAL_ORIGIN.PASTE,
-    user,
-    ...(org ? { org } : {}),
-  });
+  const [org = null] = await listOrgs(pending);
+  const storage = await withRefreshLock(profile.name, () =>
+    saveCredential(profile.name, {
+      access_token: key,
+      origin: CREDENTIAL_ORIGIN.PASTE,
+      bound_to,
+      user,
+      ...(org ? { org } : {}),
+    }),
+  );
 
-  await activateProfile(profile.name);
-  printRebakeNotes(await rebakeAgentKeys(key));
+  await activateProfile(profile.name, bound_to);
+  await rebakeAfterSignIn(profile, key, bound_to);
 
   if (opts.json) {
-    return out(
-      JSON.stringify({ profile: profile.name, source: CREDENTIAL_SOURCE.PASTED, storage }, null, 2),
-    );
+    return json({ profile: profile.name, source: CREDENTIAL_SOURCE.PASTED, storage });
   }
 
   out(style.green("Signed in with a pasted key."));
   out();
   fields([
-    ["email", user.email || style.dim("unknown")],
+    ["email", user.email || styled(style.dim, "unknown")],
     ["profile", profile.name],
     ["source", "pasted key"],
-    ["storage", storageLabel(storage)],
+    ["storage", storageLabel(storage, fileTierNotOwnerOnly() ? { owner_only: false } : null)],
   ]);
 }

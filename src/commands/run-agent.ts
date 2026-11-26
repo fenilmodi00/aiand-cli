@@ -1,6 +1,6 @@
 import { notInstalledError } from "../agents/launch.js";
 import { AGENTS, findAgent } from "../agents/registry.js";
-import { agentSession } from "../agents/setup.js";
+import { launchAgentSession } from "../agents/session.js";
 import { CliError } from "../cli/errors.js";
 import { out, style } from "../cli/output.js";
 import { assertHttpsBaseUrl, assertNoV1Suffix } from "../config.js";
@@ -11,26 +11,30 @@ const HELP_ID_WIDTH = 28;
 export const help = `${style.bold("aiand run-agent")} -- run a coding agent on ai& for one session
 
 Usage
-  aiand run-agent <agent> [--model <id>] [--] [args…]
+  aiand run-agent <agent> [--model <id>] [--fast-model <id>] [--] [args…]
 
 Agents
 ${AGENTS.map((a) => `  ${a.id.padEnd(HELP_ID_WIDTH)} ${a.label}`).join("\n")}
 
 Options
-      --model <id>       model from the catalog (default: the agent's own)
+      --model <id>       model from the catalog for every model the agent uses
+                         (default: the agent's own)
+      --fast-model <id>  a separate model for background calls (Claude Code)
       --profile <name>   use a stored profile
       --base-url <url>   point at a different API endpoint
   -h, --help             show this help
 
 Everything after \`--\` (and any bare positional before it) is passed to the
 agent's binary as-is, except the routing flags the adapter owns — those are
-stripped so the injected wiring cannot be overridden.
+stripped so the injected wiring cannot be overridden. The agent's own model
+flag (--model) there counts as --model above.
 
 Try: aiand run-agent opencode -- --version`;
 
 type Invocation = {
   agent: string | undefined;
   model: string | undefined;
+  fastModel: string | undefined;
   profile: string | undefined;
   baseUrl: string | undefined;
   help: boolean;
@@ -51,6 +55,7 @@ function splitInvocation(argv: string[]): Invocation {
 
   let agent: string | undefined;
   let model: string | undefined;
+  let fastModel: string | undefined;
   let profile: string | undefined;
   let baseUrl: string | undefined;
   let help = false;
@@ -73,6 +78,12 @@ function splitInvocation(argv: string[]): Invocation {
     } else if (token.startsWith("--model=")) {
       model = inlineValue(token, "--model");
       i += 1;
+    } else if (token === "--fast-model") {
+      fastModel = takeValue(head, i, "--fast-model");
+      i += 2;
+    } else if (token.startsWith("--fast-model=")) {
+      fastModel = inlineValue(token, "--fast-model");
+      i += 1;
     } else if (token === "--profile") {
       profile = takeValue(head, i, "--profile");
       i += 2;
@@ -93,7 +104,7 @@ function splitInvocation(argv: string[]): Invocation {
     }
   }
 
-  return { agent, model, profile, baseUrl, help, passthrough: [...prepend, ...tail] };
+  return { agent, model, fastModel, profile, baseUrl, help, passthrough: [...prepend, ...tail] };
 }
 
 function takeValue(head: string[], i: number, name: string): string {
@@ -145,15 +156,17 @@ export async function run(argv: string[]): Promise<void> {
 
   // Capability before session, for the same reason: no sign-in for a launch
   // this adapter cannot do.
-  if (!adapter.sessionLaunch) {
+  const launch = adapter.sessionLaunch;
+  if (!launch) {
     throw new CliError(`${adapter.label} does not support session launches.`, {
       hint: `Run \`aiand ${adapter.id} on\` for permanent wiring.`,
     });
   }
 
-  await agentSession(adapter, {
+  await launchAgentSession(adapter, launch, {
     model: split.model,
-    profile: split.profile,
+    fastModel: split.fastModel,
     passthrough: split.passthrough,
+    profile: split.profile,
   });
 }

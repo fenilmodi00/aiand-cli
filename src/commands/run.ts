@@ -1,3 +1,5 @@
+import { EOL } from "node:os";
+
 import { resolveEffectiveModel } from "../agents/catalog.js";
 import { openSession, type Session } from "../api/client.js";
 import {
@@ -13,7 +15,7 @@ import {
 import { modelLabel } from "../api/models.js";
 import { bool, float, int, parse, str } from "../cli/args.js";
 import { CliError } from "../cli/errors.js";
-import { err, json, out, style } from "../cli/output.js";
+import { err, json, out, safeLine, streamWriter, style } from "../cli/output.js";
 import { readStdin } from "../cli/stdin.js";
 import { type ResolvedProfile, resolveProfile } from "../config.js";
 
@@ -38,6 +40,8 @@ Options
   -q, --quiet                suppress the stats footer
 
 Piped stdin is appended to the prompt, so you can pass a file as context.
+On a terminal, escape and control sequences in the answer are removed;
+redirect or pipe stdout to get the model's raw text.
 Omitting -m resolves a concrete catalog model (profile model when still listed,
 else the curated preferred default). Pass -m auto to let ai& choose per request
 when your account supports it; the choice is reported in the footer.`;
@@ -120,18 +124,24 @@ export async function run(argv: string[]): Promise<void> {
       if (wantsJson) return json(result.raw);
 
       if (result.reasoning && bool(parsed, "show-reasoning")) {
-        err(style.dim(`thinking: ${result.reasoning}`));
+        const reasoning = streamWriter(process.stderr);
+        reasoning.write(`thinking: ${result.reasoning}${EOL}`, style.dim);
+        reasoning.endLine();
       }
       if (result.text) {
-        out(result.text);
+        const answer = streamWriter(process.stdout);
+        answer.write(`${result.text}${EOL}`);
+        answer.endLine();
       } else {
         err(
           style.yellow("No content. ") +
-            describeEmptyResponse({
-              meta: result.meta,
-              finishReason: result.finishReason,
-              usage: result.usage,
-            }),
+            safeLine(
+              describeEmptyResponse({
+                meta: result.meta,
+                finishReason: result.finishReason,
+                usage: result.usage,
+              }),
+            ),
         );
       }
       if (!quiet) err(statsLine(result.meta, result.usage));
@@ -155,32 +165,36 @@ async function runStreaming(
   let text = "";
   let finishReason: string | undefined;
   let reasoningOpen = false;
+  const answer = streamWriter(process.stdout);
+  const reasoning = streamWriter(process.stderr);
 
   for await (const chunk of chunks) {
     if (chunk.reasoning && options.showReasoning) {
       if (!reasoningOpen) {
-        process.stderr.write(style.dim("thinking: "));
+        reasoning.write("thinking: ", style.dim);
         reasoningOpen = true;
       }
-      process.stderr.write(style.dim(chunk.reasoning));
+      reasoning.write(chunk.reasoning, style.dim);
     }
     if (chunk.text) {
       if (reasoningOpen) {
-        process.stderr.write("\n");
+        reasoning.endLine();
         reasoningOpen = false;
       }
       text += chunk.text;
-      process.stdout.write(chunk.text);
+      answer.write(chunk.text);
     }
     if (chunk.finishReason) finishReason = chunk.finishReason;
     if (chunk.usage) usage = chunk.usage;
   }
 
-  if (reasoningOpen) process.stderr.write("\n");
-  if (text && !text.endsWith("\n")) process.stdout.write("\n");
+  if (reasoningOpen) reasoning.endLine();
+  answer.endLine();
 
   if (!text) {
-    err(style.yellow("No content. ") + describeEmptyResponse({ meta, finishReason, usage }));
+    err(
+      style.yellow("No content. ") + safeLine(describeEmptyResponse({ meta, finishReason, usage })),
+    );
   }
 
   if (!options.quiet) err(statsLine(meta, usage));
@@ -204,7 +218,8 @@ function statsLine(meta: ChatMeta, usage: Usage | null): string {
   }
   if (meta.reasoningEffort) parts.push(`effort=${meta.reasoningEffort}`);
   if (meta.requestId) parts.push(meta.requestId);
-  return style.dim(parts.join("  ·  "));
+  // Model, cost, effort and request id come from response headers.
+  return style.dim(safeLine(parts.join("  ·  ")));
 }
 
 async function buildPrompt(positionals: string[]): Promise<string> {

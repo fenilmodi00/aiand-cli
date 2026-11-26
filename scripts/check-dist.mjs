@@ -58,6 +58,9 @@ const { OPENCODE_VERSION } = await import(
 const { PI_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "pi", "adapter.js")).href
 );
+const { JOUZU_VERSION } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "jouzu", "adapter.js")).href
+);
 const { OMP_VERSION } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "omp", "install.js")).href
 );
@@ -82,6 +85,13 @@ const PINS = [
     expected: PI_VERSION,
     message: (pin) =>
       `ci.yml installs pi-coding-agent@${pin} but src/agents/pi/adapter.ts pins ${PI_VERSION}`,
+  },
+  {
+    label: "ci.yml should install a pinned jouzu",
+    regex: /\bjouzu@([0-9A-Za-z.+-]+)/g,
+    expected: JOUZU_VERSION,
+    message: (pin) =>
+      `ci.yml installs jouzu@${pin} but src/agents/jouzu/adapter.ts pins ${JOUZU_VERSION}`,
   },
   // omp installs as a pinned release asset (omp-linux-x64 /
   // omp-windows-x64.exe) from the vX.Y.Z release, digest-checked in
@@ -124,9 +134,8 @@ for (const { label, regex, expected, message } of PINS) {
 // installs unaudited bytes. The pin is imported here rather than beside the
 // version PINS above: the hash lives outside src/agents/hermes/adapter.ts,
 // and the cross-file sweep below reads surfaces PINS has no entry for.
-const { HERMES_COMMIT, HERMES_INSTALL_SHA256 } = await import(
-  pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "install.js")).href
-);
+const { HERMES_COMMIT, HERMES_INSTALL_PS1_SHA256, HERMES_INSTALL_SHA256, hermesInstallCommand } =
+  await import(pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "install.js")).href);
 const hermesPinFiles = [
   [".github/workflows/ci.yml", ciYml],
   ["scripts/contree-e2e.sh", readFileSync(join(repoRoot, "scripts", "contree-e2e.sh"), "utf8")],
@@ -166,6 +175,25 @@ for (const [file, digest] of hermesDigests) {
     `${file} verifies the hermes installer against ${digest} but src/agents/hermes/install.ts pins ${HERMES_INSTALL_SHA256}`,
   );
 }
+// The Windows installer has its own digest, checked in ci.yml and in the hint.
+const hermesPs1Digests = [
+  ...ciYml.matchAll(/echo "([0-9a-f]{64})\s+\S*install\.ps1"\s*\|\s*sha256sum -c/g),
+].map((m) => m[1]);
+assert.ok(
+  hermesPs1Digests.length > 0,
+  "ci.yml should verify the hermes install.ps1 with its sha256",
+);
+for (const digest of hermesPs1Digests) {
+  assert.equal(
+    digest,
+    HERMES_INSTALL_PS1_SHA256,
+    `ci.yml verifies hermes install.ps1 against ${digest} but src/agents/hermes/install.ts pins ${HERMES_INSTALL_PS1_SHA256}`,
+  );
+}
+assert.ok(
+  hermesInstallCommand("win32").includes(HERMES_INSTALL_PS1_SHA256),
+  "the Windows hermes install hint must verify install.ps1 against its pinned sha256 before running it",
+);
 const { hermesAdapter } = await import(
   pathToFileURL(join(repoRoot, "dist", "agents", "hermes", "adapter.js")).href
 );
@@ -177,6 +205,48 @@ assert.ok(
     hermesAdapter.install.command.includes(`-Commit ${HERMES_COMMIT}`),
   `the hermes install hint must carry --commit ${HERMES_COMMIT}, got: ${hermesAdapter.install.command}`,
 );
+if (process.platform !== "win32") {
+  assert.ok(
+    hermesAdapter.install.command.includes(HERMES_INSTALL_SHA256),
+    `the hermes install hint must verify the installer against ${HERMES_INSTALL_SHA256} before running it`,
+  );
+}
+
+// `open` runs an npm install hint after a yes, so each one names an exact
+// release, and passes --ignore-scripts unless the package needs its install
+// script to work (each exception says why at the pin).
+const NEEDS_INSTALL_SCRIPT = new Map([
+  ["opencode-ai", "postinstall links the platform binary"],
+  ["@anthropic-ai/claude-code", "postinstall places the native binary"],
+]);
+const { AGENTS } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "registry.js")).href
+);
+for (const adapter of AGENTS) {
+  const [bin, ...args] = adapter.install.command.split(" ");
+  if (bin !== "npm") continue;
+  const spec = args.find((arg) => !arg.startsWith("-") && arg !== "install");
+  const match = /^(@?[^@]+)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(spec ?? "");
+  assert.ok(
+    match,
+    `${adapter.id}'s install hint must pin an exact version: ${adapter.install.command}`,
+  );
+  if (!NEEDS_INSTALL_SCRIPT.has(match[1])) {
+    assert.ok(
+      args.includes("--ignore-scripts"),
+      `${adapter.id}'s install hint must pass --ignore-scripts, or list ${match[1]} in NEEDS_INSTALL_SCRIPT with a reason: ${adapter.install.command}`,
+    );
+  }
+}
+
+// A release install unpacks the npm tarball into ~/.aiand/cli, and its
+// uninstall and update run the installer copy from there.
+for (const installer of ["install.sh", "install.ps1"]) {
+  assert.ok(
+    pkg.files?.includes(installer),
+    `package.json files must ship ${installer}: release installs run it from ~/.aiand/cli`,
+  );
+}
 
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
 assert.deepEqual(
@@ -195,4 +265,23 @@ assert.deepEqual(
   `pin devDependencies to exact versions; found: ${ranged.map(([n, v]) => `${n}@${v}`).join(", ")}`,
 );
 
+const { formatAgentSummary } = await import(
+  pathToFileURL(join(repoRoot, "dist", "agents", "install-summary.js")).href
+);
+const installSummary = formatAgentSummary(AGENTS, () => false);
+for (const adapter of AGENTS) {
+  const row = `  ${adapter.id}  Install it with:`;
+  if (adapter.configOnly) {
+    assert.equal(
+      installSummary.includes(row),
+      false,
+      `${adapter.id} is not a PATH binary and must stay out of the install summary`,
+    );
+    continue;
+  }
+  assert.ok(
+    installSummary.includes(`${row} ${adapter.install.command}`),
+    `the install summary must print ${adapter.id}'s install.command`,
+  );
+}
 console.log(`check-dist ok: ${binName} v${pkg.version}, 0 runtime deps`);

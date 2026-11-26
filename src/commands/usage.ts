@@ -7,7 +7,19 @@ import {
 import { openSession } from "../api/client.js";
 import { bool, list, oneOf, type Parsed, parse, str } from "../cli/args.js";
 import { CliError, EXIT } from "../cli/errors.js";
-import { delta, err, heading, json, num, out, sparkline, style, table } from "../cli/output.js";
+import {
+  delta,
+  err,
+  heading,
+  json,
+  num,
+  out,
+  safeLine,
+  sparkline,
+  style,
+  styled,
+  table,
+} from "../cli/output.js";
 import { assertSafeProfileName, resolveProfile } from "../config.js";
 import { storeBudgetWarning, storePacingSummary } from "../obs/forecast.js";
 import {
@@ -213,10 +225,10 @@ export async function run(argv: string[]): Promise<void> {
   heading(`Last ${range}`);
   out();
   table(rows, [
-    { header: "", value: (r) => style.dim(r.label) },
+    { header: "", value: (r) => styled(style.dim, r.label) },
     { header: "", value: (r) => num(r.current), align: "right" },
     { header: "", value: (r) => delta(r.current, r.previous), align: "right" },
-    { header: "", value: (r) => style.dim(`was ${num(r.previous)}`) },
+    { header: "", value: (r) => styled(style.dim, `was ${num(r.previous)}`) },
   ]);
 
   if (summary.timeseries.length > 1) {
@@ -226,7 +238,7 @@ export async function run(argv: string[]): Promise<void> {
     const last = summary.timeseries[summary.timeseries.length - 1]!;
     out(
       style.dim(
-        `        ${first.timestamp.replace("T", " ")}  to  ${last.timestamp.replace("T", " ")}`,
+        `        ${safeLine(first.timestamp.replace("T", " "))}  to  ${safeLine(last.timestamp.replace("T", " "))}`,
       ),
     );
   }
@@ -257,7 +269,7 @@ function printAudit(rows: ProvenanceEntry[]): void {
     { header: "report", value: (r) => r.report },
     { header: "field", value: (r) => r.field },
     { header: "label", value: (r) => formatLabel(r.provenance) },
-    { header: "computed from", value: (r) => style.dim(describeProvenance(r.provenance)) },
+    { header: "computed from", value: (r) => styled(style.dim, describeProvenance(r.provenance)) },
   ]);
   out();
   out(
@@ -286,8 +298,11 @@ function printMetrics(metrics: AnalyticsMetric[], range: string): void {
       },
       align: "right",
     },
-    { header: "unit", value: (m) => style.dim(m.unit) },
-    { header: "trend", value: (m) => style.cyan(sparkline(m.timeseries.map((p) => p.value))) },
+    { header: "unit", value: (m) => styled(style.dim, m.unit) },
+    {
+      header: "trend",
+      value: (m) => styled(style.cyan, sparkline(m.timeseries.map((p) => p.value))),
+    },
   ]);
 }
 
@@ -379,10 +394,10 @@ function formatValue(row: VerifyRow, value: number): string {
   return row.metric === "cost" ? value.toFixed(6) : num(value);
 }
 
-function formatStatus(row: VerifyRow): string {
-  if (row.status === "ok") return style.green("OK");
-  if (row.status === "mismatch") return style.red("MISMATCH");
-  return style.yellow("UNVERIFIABLE");
+function formatStatus(row: VerifyRow) {
+  if (row.status === "ok") return styled(style.green, "OK");
+  if (row.status === "mismatch") return styled(style.red, "MISMATCH");
+  return styled(style.yellow, "UNVERIFIABLE");
 }
 
 // ---------------------------------------------------------------------------

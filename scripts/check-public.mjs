@@ -15,6 +15,8 @@ const ROOTS = [
   "install.sh",
   "install.ps1",
   "README.md",
+  "README.ja.md",
+  "docs",
   "CHANGELOG.md",
   "AGENTS.md",
   "CONTEXT.md",
@@ -140,6 +142,35 @@ function* walk(entry, root = ROOT) {
 // seams (as src/auth/ is: identity, login, logout) instead of raising this.
 const MAX_SOURCE_LINES = 650;
 
+// Modules that predate this gate (cli-v2's harness/observability work), with
+// the size each had when main's check reached this branch. The baseline is a
+// ratchet: a listed module may not grow past its number, and any module not
+// listed still fails at MAX_SOURCE_LINES. Lower an entry when the file shrinks
+// and delete it once the file is under the limit.
+const KNOWN_OVERSIZED = new Map([
+  ["src/agents/claude/adapter.ts", 667],
+  ["src/agents/codex/adapter.ts", 711],
+  ["src/agents/copilot/adapter.ts", 680],
+  ["src/agents/hermes/routing.ts", 655],
+  ["src/agents/opencode/adapter.ts", 675],
+  ["src/agents/pi/family.ts", 680],
+  ["src/commands/compare.ts", 667],
+  ["src/commands/dashboard.ts", 859],
+  ["src/commands/harness-stats.ts", 1309],
+  ["src/commands/sessions.ts", 773],
+  ["src/commands/usage-report.ts", 1163],
+  ["src/compare/run.ts", 710],
+  ["src/config.ts", 716],
+  ["src/fsutil.ts", 664],
+  ["src/obs/harness-stats.ts", 770],
+  ["src/obs/otel.ts", 858],
+  ["src/report/data.ts", 1046],
+  ["src/store/artifact-import.ts", 783],
+  ["src/store/index.ts", 793],
+  ["src/store/local-usage.ts", 798],
+  ["src/store/sessions.ts", 666],
+]);
+
 const findings = [];
 let scanned = 0;
 
@@ -156,14 +187,20 @@ for (const target of ROOTS) {
     // A trailing newline ends the last line; it does not start another.
     const lineCount = lines.at(-1) === "" ? lines.length - 1 : lines.length;
     if (file.startsWith("src/") && file.endsWith(".ts") && lineCount > MAX_SOURCE_LINES) {
-      findings.push({
-        file,
-        line: lineCount,
-        rule: "oversized module",
-        match: `${lineCount} lines`,
-        hint: `Keep src modules under ${MAX_SOURCE_LINES} lines; split by responsibility.`,
-        context: "",
-      });
+      const baseline = KNOWN_OVERSIZED.get(file);
+      if (baseline === undefined || lineCount > baseline) {
+        findings.push({
+          file,
+          line: lineCount,
+          rule: "oversized module",
+          match: `${lineCount} lines`,
+          hint:
+            baseline === undefined
+              ? `Keep src modules under ${MAX_SOURCE_LINES} lines; split by responsibility.`
+              : `Grew past its ${baseline}-line baseline; split by responsibility instead.`,
+          context: "",
+        });
+      }
     }
     lines.forEach((line, index) => {
       for (const rule of RULES) {
